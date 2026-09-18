@@ -1127,8 +1127,8 @@ func TestRetry_Exhausted(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error after exhausting retries")
 	}
-	if attempts != 3 {
-		t.Fatalf("expected 3 attempts, got %d", attempts)
+	if attempts != 4 {
+		t.Fatalf("expected 4 attempts, got %d", attempts)
 	}
 }
 
@@ -1160,8 +1160,8 @@ func TestRetryWithBackoff(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	if attempts != 4 {
-		t.Fatalf("expected 4 attempts, got %d", attempts)
+	if attempts != 5 {
+		t.Fatalf("expected 5 attempts, got %d", attempts)
 	}
 	if elapsed < 70*time.Millisecond {
 		t.Fatalf("expected at least 70ms with backoff, got %v", elapsed)

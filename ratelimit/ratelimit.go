@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/jxue/async/core"
-	"github.com/rs/zerolog/log"
 )
 
 // Strategy defines the behaviour when the limiter is drained.
@@ -142,17 +141,17 @@ func (rl *RateLimiter) Acquire(ctx context.Context) error {
 	switch strat {
 	case Reject:
 		select {
-		case rl.tokens <- struct{}{}:
+		case <-rl.tokens:
 			return nil
 		default:
 			return core.ErrRateLimiterStopped
 		}
 	case BlockForce:
-		rl.tokens <- struct{}{}
+		<-rl.tokens
 		return nil
 	default:
 		select {
-		case rl.tokens <- struct{}{}:
+		case <-rl.tokens:
 			return nil
 		case <-ctx.Done():
 			return ctx.Err()
@@ -162,10 +161,10 @@ func (rl *RateLimiter) Acquire(ctx context.Context) error {
 
 func (rl *RateLimiter) Release() {
 	if rl.closed.Load() {
-		log.Ctx(rl.ctx).Warn().Msg("rate limiter release on closed limiter, token may be lost")
+		core.LogCtxWarn(rl.ctx, "rate limiter release on closed limiter, token may be lost")
 	}
 	select {
-	case <-rl.tokens:
+	case rl.tokens <- struct{}{}:
 	default:
 	}
 }

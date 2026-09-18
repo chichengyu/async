@@ -32,6 +32,9 @@ type PanicError = core.PanicError
 type PoolTask[T any] = core.PoolTask[T]
 type TaskLogLevel = core.TaskLogLevel
 type TraceIDKeyType = core.TraceIDKeyType
+type Logger = core.Logger
+type LogField = core.LogField
+type LogLevel = core.LogLevel
 
 // 日志级别
 const (
@@ -68,6 +71,8 @@ var (
 	GetTaskFailLogLevel    = core.GetTaskFailLogLevel
 	SetTraceLogEnabled     = core.SetTraceLogEnabled
 	GetTraceLogEnabled     = core.GetTraceLogEnabled
+	SetLogger              = core.SetLogger
+	GetLogger              = core.GetLogger
 	MergeCancel            = core.MergeCancel
 	CPU                    = core.CPU
 	IO                     = core.IO
@@ -678,7 +683,7 @@ func Retry(ctx context.Context, maxRetries int, fn func(ctx context.Context) err
 func RetryWithBackoff(ctx context.Context, maxRetries int, backoff time.Duration, fn func(ctx context.Context) error) error {
 	_, err := retry.RetryWithBackoff[struct{}](ctx, func(ctx context.Context) (struct{}, error) {
 		return struct{}{}, fn(ctx)
-	}, maxRetries, backoff, backoff)
+	}, maxRetries, backoff, 0)
 	return err
 }
 
@@ -734,11 +739,11 @@ func (p *Pipeline[T]) Run(input T) (T, error) {
 	result := input
 	ctx := p.ctx
 	for _, stage := range p.stages {
-		var err error
-		result, err = stage(ctx, result)
+		val, err := stage(ctx, result)
 		if err != nil {
 			return result, err
 		}
+		result = val
 	}
 	return result, nil
 }

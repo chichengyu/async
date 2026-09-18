@@ -8,7 +8,6 @@ import (
 
 	"github.com/jxue/async/core"
 	"github.com/jxue/async/group"
-	"github.com/rs/zerolog/log"
 )
 
 // ──────────────────────────── Map ────────────────────────────
@@ -304,32 +303,22 @@ func logMapSerialPanic(r any, pe *core.PanicError) {
 	if more {
 		fnName = frame.Function
 	}
-	log.Error().
-		Str("fn", fnName).
-		Interface("panic", r).
-		Bytes("stack", pe.Stack).
-		Msg("async serial path panic recovered")
+	core.LogError("async serial path panic recovered",
+		core.Str("fn", fnName),
+		core.Any("panic", r),
+		core.Bytes("stack", pe.Stack))
 }
 
 func logMapSerialError(err error, fnName string) {
-	log.Error().
-		Str("fn", fnName).
-		Err(err).
-		Msg("async serial path error")
+	core.LogError("async serial path error",
+		core.Str("fn", fnName),
+		core.Err(err))
 }
 
 func logMapSerialTaskFail(err error, fnName string) {
-	level := core.GetTaskFailLogLevel()
-	switch level {
-	case core.LogLevelError:
-		log.Error().Str("fn", fnName).Err(err).Msg("async serial task failed")
-	case core.LogLevelWarn:
-		log.Warn().Str("fn", fnName).Err(err).Msg("async serial task failed")
-	case core.LogLevelInfo:
-		log.Info().Str("fn", fnName).Err(err).Msg("async serial task failed")
-	case core.LogLevelDebug:
-		log.Debug().Str("fn", fnName).Err(err).Msg("async serial task failed")
-	}
+	core.LogTaskFailCtx(context.Background(), "async serial task failed",
+		core.Str("fn", fnName),
+		core.Err(err))
 }
 
 func safeCallNoResultFn[T any](ctx context.Context, item T, fn func(context.Context, T) error) (err error) {

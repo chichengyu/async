@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/jxue/async/core"
-	"github.com/rs/zerolog/log"
 )
 
 // Pool 泛型协程池，复用 goroutine 处理高频并发任务。
@@ -186,10 +185,9 @@ func (p *Pool[T]) processTask(task core.PoolTask[T]) {
 
 	defer func() {
 		if r := recover(); r != nil {
-			log.Ctx(taskCtx).Error().
-				Interface("panic", r).
-				Bytes("stack", core.NewPanicError(r).Stack).
-				Msg("async pool panic recovered")
+			core.LogCtxError(taskCtx, "async pool panic recovered",
+				core.Any("panic", r),
+				core.Bytes("stack", core.NewPanicError(r).Stack))
 			var zero T
 			if index >= 0 {
 				record(core.Result[T]{Value: zero, Err: core.NewPanicError(r), Occupied: true}, index)
@@ -407,12 +405,11 @@ func (p *Pool[T]) Resize(newSize int) int {
 	current := int(p.size.Load())
 	if newSize > current {
 		added := newSize - current
+		p.size.Store(int32(newSize))
 		for i := 0; i < added; i++ {
 			p.workerWg.Add(1)
 			go p.worker()
 		}
-		p.size.Store(int32(newSize))
-		p.taskCh = make(chan core.PoolTask[T], newSize)
 		return added
 	} else if newSize < current {
 		quit := current - newSize
@@ -440,7 +437,7 @@ func (p *Pool[T]) enqueueTask(ctx context.Context, taskCtx context.Context, task
 			return taskCtx.Err()
 		case <-timer.C:
 			err := core.ErrSubmitTimeout
-			log.Ctx(ctx).Warn().Err(err).Msg("async: Pool submit timeout, task queue full")
+			core.LogCtxWarn(ctx, "async: Pool submit timeout, task queue full", core.Err(err))
 			p.discardTask(record, idx, taskCancel, err)
 			return err
 		}
@@ -457,7 +454,8 @@ func (p *Pool[T]) enqueueTask(ctx context.Context, taskCtx context.Context, task
 			p.discardTask(record, idx, taskCancel, taskCtx.Err())
 			return taskCtx.Err()
 		case <-timer.C:
-			log.Ctx(ctx).Warn().Dur("elapsed", core.SlotAcquireWarnTimeout).Msg("async: Pool.Submit blocking on task queue, consider setting WithSubmitTimeout")
+			core.LogCtxWarn(ctx, "async: Pool.Submit blocking on task queue, consider setting WithSubmitTimeout",
+				core.Dur("elapsed", core.SlotAcquireWarnTimeout))
 			timer.Reset(core.SlotAcquireWarnTimeout)
 		}
 	}
@@ -516,7 +514,10 @@ func (p *Pool[T]) CloseAndWait() {
 }
 
 func (p *Pool[T]) CloseAndWaitTimeout(timeout time.Duration) (ok bool, workerDone <-chan struct{}) {
-	p.Close()
+	if !p.closed.CompareAndSwap(false, true) {
+		return false, nil
+	}
+	close(p.taskCh)
 	done := make(chan struct{})
 	go func() {
 		p.workerWg.Wait()
@@ -616,7 +617,7 @@ func (p *Pool[T]) Errors() []error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if !p.waited {
-		log.Ctx(p.ctx).Warn().Str("type", "Pool").Msg("async: Pool.Errors called before Wait, results may be incomplete")
+		core.LogCtxWarn(p.ctx, "async: Pool.Errors called before Wait, results may be incomplete", core.Str("type", "Pool"))
 	}
 	errs := make([]error, 0, p.FailCount())
 	for _, r := range p.results {
@@ -631,7 +632,7 @@ func (p *Pool[T]) FirstError() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if !p.waited {
-		log.Ctx(p.ctx).Warn().Str("type", "Pool").Msg("async: Pool.FirstError called before Wait, results may be incomplete")
+		core.LogCtxWarn(p.ctx, "async: Pool.FirstError called before Wait, results may be incomplete", core.Str("type", "Pool"))
 	}
 	for _, r := range p.results {
 		if r.Err != nil {
@@ -677,9 +678,10 @@ func checkErr(err error, name string) {
 	if err != nil {
 		var buf [4096]byte
 		n := runtime.Stack(buf[:], false)
-		log.Fatal().Err(err).Str("stack", string(buf[:n])).
-			Str("name", name).
-			Msg("async pool fatal")
+		core.LogFatal("async pool fatal",
+			core.Err(err),
+			core.Str("stack", string(buf[:n])),
+			core.Str("name", name))
 	}
 }
 
@@ -802,9 +804,8 @@ func (p *Pool[T]) Reset() (*Pool[T], error) {
 		p.cancel()
 		p.cancel = nil
 	}
-	log.Ctx(context.Background()).Debug().
-		Dur("timeout", savedTimeout).
-		Dur("submit_timeout", savedSubmitTimeout).
-		Msg("async: Pool.Reset completed")
+	core.LogCtxDebug(context.Background(), "async: Pool.Reset completed",
+		core.Dur("timeout", savedTimeout),
+		core.Dur("submit_timeout", savedSubmitTimeout))
 	return p, nil
 }

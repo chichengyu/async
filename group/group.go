@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/jxue/async/core"
-	"github.com/rs/zerolog/log"
 )
 
 // ──────────────────────────── Group ────────────────────────────
@@ -158,7 +157,7 @@ func (g *Group[T]) WithCtxSubmitTOTraceID(ctx context.Context, submitTimeout tim
 
 func (g *Group[T]) groupPrecheck(ctx context.Context, record GroupRecordFunc[T], index int, caller string) (context.Context, context.CancelFunc, error) {
 	if g.waiting.Load() {
-		log.Ctx(ctx).Error().Msg(fmt.Sprintf("async: Group.%s called while Group.Wait is in progress, task discarded", caller))
+		core.LogCtxError(ctx, fmt.Sprintf("async: Group.%s called while Group.Wait is in progress, task discarded", caller))
 		record(core.Result[T]{Err: core.ErrGroupWaiting})
 		atomic.AddInt64(&g.errCnt, 1)
 		var cancel context.CancelFunc
@@ -175,7 +174,7 @@ func (g *Group[T]) groupPrecheck(ctx context.Context, record GroupRecordFunc[T],
 			g.results = append(g.results, core.Result[T]{Err: core.ErrGroupWaited, Occupied: true})
 		}
 		g.mu.Unlock()
-		log.Ctx(ctx).Error().Msg(fmt.Sprintf("async: Group.%s called after Group.Wait, task discarded", caller))
+		core.LogCtxError(ctx, fmt.Sprintf("async: Group.%s called after Group.Wait, task discarded", caller))
 		atomic.AddInt64(&g.errCnt, 1)
 		var cancel context.CancelFunc
 		return ctx, cancel, core.ErrGroupWaited
@@ -219,7 +218,7 @@ func (g *Group[T]) groupAcquireSlot(ctx context.Context, taskCtx context.Context
 			return taskCtx.Err()
 		case <-timer.C:
 			err := core.ErrSubmitTimeout
-			log.Ctx(ctx).Warn().Err(err).Msg("async: Group submit timeout, concurrency slot unavailable")
+			core.LogCtxWarn(ctx, "async: Group submit timeout, concurrency slot unavailable", core.Err(err))
 			g.discardTask(record, taskCancel, err)
 			return err
 		}
@@ -236,7 +235,8 @@ func (g *Group[T]) groupAcquireSlot(ctx context.Context, taskCtx context.Context
 			g.discardTask(record, taskCancel, taskCtx.Err())
 			return taskCtx.Err()
 		case <-timer.C:
-			log.Ctx(ctx).Warn().Dur("elapsed", core.SlotAcquireWarnTimeout).Msg("async: Group.Go blocking on concurrency slot, consider setting WithSubmitTimeout")
+			core.LogCtxWarn(ctx, "async: Group.Go blocking on concurrency slot, consider setting WithSubmitTimeout",
+				core.Dur("elapsed", core.SlotAcquireWarnTimeout))
 			timer.Reset(core.SlotAcquireWarnTimeout)
 		}
 	}
@@ -318,10 +318,9 @@ func (g *Group[T]) runTaskImpl(taskCtx context.Context, taskCancel context.Cance
 
 	defer func() {
 		if r := recover(); r != nil {
-			log.Ctx(taskCtx).Error().
-				Interface("panic", r).
-				Bytes("stack", core.NewPanicError(r).Stack).
-				Msg("async group panic recovered")
+			core.LogCtxError(taskCtx, "async group panic recovered",
+				core.Any("panic", r),
+				core.Bytes("stack", core.NewPanicError(r).Stack))
 			var zero T
 			record(core.Result[T]{Value: zero, Err: core.NewPanicError(r)})
 			atomic.AddInt64(&g.errCnt, 1)
@@ -487,7 +486,7 @@ func (g *Group[T]) Errors() []error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if !g.waited {
-		log.Ctx(g.ctx).Warn().Str("type", "Group").Msg("async: Group.Errors called before Wait, results may be incomplete")
+		core.LogCtxWarn(g.ctx, "async: Group.Errors called before Wait, results may be incomplete", core.Str("type", "Group"))
 	}
 	errs := make([]error, 0, g.FailCount())
 	for _, r := range g.results {
@@ -502,7 +501,7 @@ func (g *Group[T]) FirstError() error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if !g.waited {
-		log.Ctx(g.ctx).Warn().Str("type", "Group").Msg("async: Group.FirstError called before Wait, results may be incomplete")
+		core.LogCtxWarn(g.ctx, "async: Group.FirstError called before Wait, results may be incomplete", core.Str("type", "Group"))
 	}
 	for _, r := range g.results {
 		if r.Err != nil {
@@ -516,7 +515,7 @@ func (g *Group[T]) Values() []T {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if !g.waited {
-		log.Ctx(g.ctx).Warn().Str("type", "Group").Msg("async: Group.Values called before Wait, results may be incomplete")
+		core.LogCtxWarn(g.ctx, "async: Group.Values called before Wait, results may be incomplete", core.Str("type", "Group"))
 	}
 	vals := make([]T, 0, len(g.results))
 	for _, r := range g.results {
@@ -555,11 +554,10 @@ func (g *Group[T]) Reset() (*Group[T], error) {
 	g.active.Store(0)
 	g.busy.Store(0)
 	g.waiting.Store(false)
-	log.Ctx(context.Background()).Debug().
-		Dur("timeout", savedTimeout).
-		Dur("submit_timeout", savedSubmitTimeout).
-		Int("concurrency", savedConcurrency).
-		Msg("async: Group.Reset completed, above config preserved across reset")
+	core.LogCtxDebug(context.Background(), "async: Group.Reset completed, above config preserved across reset",
+		core.Dur("timeout", savedTimeout),
+		core.Dur("submit_timeout", savedSubmitTimeout),
+		core.Int64("concurrency", int64(savedConcurrency)))
 	return g, nil
 }
 

@@ -140,17 +140,38 @@ async.SetTaskFailLogLevel(async.LogLevelWarn)
 async.SetTraceLogEnabled(true)
 ```
 
+## 日志接口
+
+本库不依赖任何第三方日志框架，采用接口注入方式。默认使用空日志实现（静默运行），你可以注入任意日志实现。
+
+```go
+// 注入自定义日志实现（例如基于 zerolog）
+async.SetLogger(myLogger)
+
+// 获取当前日志器
+logger := async.GetLogger()
+```
+
+如果需要与 zerolog 集成，可以实现 `async.Logger` 接口：
+
+```go
+type Logger interface {
+    Log(ctx context.Context, level LogLevel, msg string, fields ...LogField)
+    With(fields ...LogField) Logger
+    WithContext(ctx context.Context) context.Context
+}
+```
+
 ## 并发度控制
 
 ```go
 async.CPU()   // 返回 CPU 密集型并发度，默认为 runtime.NumCPU()
-async.IO()    // 返回 IO 密集型并发度，默认为 runtime.NumCPU() * 4
+async.IO()    // 返回 IO 密集型并发度，默认为 runtime.NumCPU() * 2
 ```
 
 ## 依赖
 
-- [rs/zerolog](https://github.com/rs/zerolog) - 结构化日志
-- Go 1.25+
+零外部依赖，仅需 Go 1.25+。
 
 ## License
 

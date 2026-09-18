@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/jxue/async/core"
-	"github.com/rs/zerolog/log"
 )
 
 // RetryWithBackoff executes fn with exponential backoff, respecting maxRetries+1 total attempts.
@@ -209,10 +208,9 @@ func invokeSafely[T any](ctx context.Context, fn func(ctx context.Context) (T, e
 	defer func() {
 		if r := recover(); r != nil {
 			pe := core.NewPanicError(r)
-			log.Ctx(ctx).Error().
-				Interface("panic", r).
-				Bytes("stack", pe.Stack).
-				Msg("async retry panic recovered")
+			core.LogCtxError(ctx, "async retry panic recovered",
+				core.Any("panic", r),
+				core.Bytes("stack", pe.Stack))
 			err = pe
 		}
 	}()

@@ -13,8 +13,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/rs/zerolog/log"
 )
 
 // ──────────────────────────── 常量 ────────────────────────────
@@ -123,18 +121,7 @@ func GetTraceLogEnabled() bool {
 }
 
 func LogTaskFail(ctx context.Context, err error, msg string) {
-	level := TaskLogLevel(atomic.LoadInt32(&taskFailLogLevel))
-	switch level {
-	case LogLevelError:
-		log.Ctx(ctx).Error().Err(err).Msg(msg)
-	case LogLevelWarn:
-		log.Ctx(ctx).Warn().Err(err).Msg(msg)
-	case LogLevelInfo:
-		log.Ctx(ctx).Info().Err(err).Msg(msg)
-	case LogLevelDebug:
-		log.Ctx(ctx).Debug().Err(err).Msg(msg)
-	case LogLevelSilent:
-	}
+	LogTaskFailCtx(ctx, msg, Err(err))
 }
 
 // ──────────────────────────── PoolTask ────────────────────────────
@@ -298,15 +285,15 @@ func WaitTimeoutImpl[T any](
 				case <-done:
 					return
 				case <-maxCh:
-					log.Ctx(logCtx).Error().Dur("elapsed", maxDur).Msg("async: WaitTimeout cleanup goroutine exiting after max cleanup duration, tasks may still be running")
+					LogCtxError(logCtx, "async: WaitTimeout cleanup goroutine exiting after max cleanup duration, tasks may still be running", Dur("elapsed", maxDur))
 					return
 				case <-warnTicker.C:
 					tickCount++
 					elapsed := time.Duration(tickCount) * WaitContextCleanupWarn
 					if maxDur <= 0 && elapsed >= WaitContextCleanupError {
-						log.Ctx(logCtx).Error().Dur("elapsed", elapsed).Msg("async: WaitTimeout cleanup goroutine still waiting for tasks, possible goroutine leak")
+						LogCtxError(logCtx, "async: WaitTimeout cleanup goroutine still waiting for tasks, possible goroutine leak", Dur("elapsed", elapsed))
 					} else {
-						log.Ctx(logCtx).Warn().Dur("elapsed", elapsed).Msg("async: WaitTimeout cleanup goroutine still waiting for tasks, they may not respect ctx.Done()")
+						LogCtxWarn(logCtx, "async: WaitTimeout cleanup goroutine still waiting for tasks, they may not respect ctx.Done()", Dur("elapsed", elapsed))
 					}
 				}
 			}
@@ -377,15 +364,15 @@ func WaitContextImpl[T any](
 				case <-done:
 					return
 				case <-maxCh:
-					log.Ctx(logCtx).Error().Dur("elapsed", maxDur).Msgf("async: %s.WaitContext cleanup goroutine exiting after max cleanup duration, tasks may still be running", callerType)
+					LogCtxError(logCtx, fmt.Sprintf("async: %s.WaitContext cleanup goroutine exiting after max cleanup duration, tasks may still be running", callerType), Dur("elapsed", maxDur))
 					return
 				case <-warnTicker.C:
 					tickCount++
 					elapsed := time.Duration(tickCount) * WaitContextCleanupWarn
 					if maxDur <= 0 && elapsed >= WaitContextCleanupError {
-						log.Ctx(logCtx).Error().Dur("elapsed", elapsed).Msgf("async: %s.WaitContext cleanup goroutine still waiting for tasks, possible goroutine leak", callerType)
+						LogCtxError(logCtx, fmt.Sprintf("async: %s.WaitContext cleanup goroutine still waiting for tasks, possible goroutine leak", callerType), Dur("elapsed", elapsed))
 					} else {
-						log.Ctx(logCtx).Warn().Dur("elapsed", elapsed).Msgf("async: %s.WaitContext cleanup goroutine still waiting for tasks, they may not respect ctx.Done()", callerType)
+						LogCtxWarn(logCtx, fmt.Sprintf("async: %s.WaitContext cleanup goroutine still waiting for tasks, they may not respect ctx.Done()", callerType), Dur("elapsed", elapsed))
 					}
 				}
 			}
@@ -432,7 +419,7 @@ func EnsureTraceID(ctx context.Context) context.Context {
 	}
 	traceID := NewTraceID()
 	if atomic.LoadInt32(&traceLogEnabled) == 1 {
-		logger := log.With().Str("trace_id", traceID).Logger()
+		logger := GetLogger().With(Str("trace_id", traceID))
 		ctx = logger.WithContext(ctx)
 	}
 	ctx = context.WithValue(ctx, TraceIDKey, traceID)
@@ -451,7 +438,7 @@ func WithTraceID(ctx context.Context, id string) context.Context {
 		return EnsureTraceID(ctx)
 	}
 	if atomic.LoadInt32(&traceLogEnabled) == 1 {
-		logger := log.With().Str("trace_id", id).Logger()
+		logger := GetLogger().With(Str("trace_id", id))
 		ctx = logger.WithContext(ctx)
 	}
 	ctx = context.WithValue(ctx, TraceIDKey, id)
@@ -461,7 +448,7 @@ func WithTraceID(ctx context.Context, id string) context.Context {
 func NewTraceID() string {
 	b := make([]byte, 16)
 	if _, err := rand.Read(b); err != nil {
-		log.Error().Err(err).Str("trace_id", "").Msg("async: crypto/rand.Read failed, falling back to timestamp-based id")
+		LogError("async: crypto/rand.Read failed, falling back to timestamp-based id", Err(err))
 		now := time.Now().UnixNano()
 		cnt := traceIDFallbackCounter.Add(1)
 		for i := 0; i < 8; i++ {
@@ -480,10 +467,7 @@ func SafeCall[T any, R any](ctx context.Context, item T, fn func(ctx context.Con
 	defer func() {
 		if r := recover(); r != nil {
 			pe := NewPanicError(r)
-			log.Ctx(ctx).Error().
-				Interface("panic", r).
-				Bytes("stack", pe.Stack).
-				Msg("async serial path panic recovered")
+			LogCtxError(ctx, "async serial path panic recovered", Any("panic", r), Bytes("stack", pe.Stack))
 			err = pe
 		}
 	}()
@@ -494,10 +478,7 @@ func SafeCallVoid[T any](ctx context.Context, item T, fn func(ctx context.Contex
 	defer func() {
 		if r := recover(); r != nil {
 			pe := NewPanicError(r)
-			log.Ctx(ctx).Error().
-				Interface("panic", r).
-				Bytes("stack", pe.Stack).
-				Msg("async serial path panic recovered")
+			LogCtxError(ctx, "async serial path panic recovered", Any("panic", r), Bytes("stack", pe.Stack))
 			err = pe
 		}
 	}()
