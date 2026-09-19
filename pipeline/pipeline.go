@@ -6,8 +6,8 @@ import (
 	"context"
 	"sync"
 
-	"github.com/jxue/async/core"
-	"github.com/jxue/async/group"
+	"github.com/chichengyu/async/core"
+	"github.com/chichengyu/async/group"
 )
 
 // Stage[T] is a pipeline stage with a Name and a Concurrency hint.

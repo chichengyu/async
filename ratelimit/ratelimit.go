@@ -8,7 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/jxue/async/core"
+	"github.com/chichengyu/async/core"
 )
 
 // Strategy defines the behaviour when the limiter is drained.

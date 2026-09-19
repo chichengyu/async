@@ -9,7 +9,7 @@ import (
 	"runtime/debug"
 	"time"
 
-	"github.com/jxue/async/core"
+	"github.com/chichengyu/async/core"
 )
 
 // RetryWithBackoff executes fn with exponential backoff, respecting maxRetries+1 total attempts.

@@ -10,7 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/jxue/async/core"
+	"github.com/chichengyu/async/core"
 )
 
 // ──────────────────────────── Group ────────────────────────────

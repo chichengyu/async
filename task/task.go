@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jxue/async/core"
+	"github.com/chichengyu/async/core"
 )
 
 // Task 表示一个可取消的异步任务。

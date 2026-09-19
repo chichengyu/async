@@ -5,8 +5,8 @@ import (
 	"context"
 	"time"
 
-	"github.com/jxue/async/core"
-	"github.com/jxue/async/group"
+	"github.com/chichengyu/async/core"
+	"github.com/chichengyu/async/group"
 )
 
 // ──────────────────────────── Map 扩展 ────────────────────────────

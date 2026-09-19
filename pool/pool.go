@@ -13,7 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/jxue/async/core"
+	"github.com/chichengyu/async/core"
 )
 
 // Pool 泛型协程池，复用 goroutine 处理高频并发任务。

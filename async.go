@@ -6,14 +6,14 @@ import (
 	"context"
 	"time"
 
-	"github.com/jxue/async/core"
-	"github.com/jxue/async/group"
-	"github.com/jxue/async/mapreduce"
-	"github.com/jxue/async/pipeline"
-	"github.com/jxue/async/pool"
-	"github.com/jxue/async/ratelimit"
-	"github.com/jxue/async/retry"
-	"github.com/jxue/async/task"
+	"github.com/chichengyu/async/core"
+	"github.com/chichengyu/async/group"
+	"github.com/chichengyu/async/mapreduce"
+	"github.com/chichengyu/async/pipeline"
+	"github.com/chichengyu/async/pool"
+	"github.com/chichengyu/async/ratelimit"
+	"github.com/chichengyu/async/retry"
+	"github.com/chichengyu/async/task"
 )
 
 // ──────────────────────────── core 重导出 ────────────────────────────

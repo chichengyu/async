@@ -1,11 +1,15 @@
 # async
 
+[![Go Version](https://img.shields.io/badge/Go-1.25-00ADD8?style=flat&logo=go)](https://go.dev/)
+[![Go Reference](https://pkg.go.dev/badge/github.com/chichengyu/async.svg)](https://pkg.go.dev/github.com/chichengyu/async)
+[![License](https://img.shields.io/badge/license-MIT-green?style=flat)](LICENSE)
+
 泛型 Go 并发工具库，提供协程池、任务组、异步任务、Map/Reduce、重试、限流、管道等开箱即用的并发原语。
 
 ## 安装
 
 ```bash
-go get github.com/jxue/async
+go get github.com/chichengyu/async
 ```
 
 ## 快速开始
@@ -17,7 +21,7 @@ import (
     "context"
     "fmt"
 
-    "github.com/jxue/async"
+    "github.com/chichengyu/async"
 )
 
 func main() {
