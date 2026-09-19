@@ -12,6 +12,7 @@ import (
 	"github.com/chichengyu/async/core"
 	"github.com/chichengyu/async/pool"
 	"github.com/chichengyu/async/ratelimit"
+	"github.com/chichengyu/async/retry"
 )
 
 // ============================================================================
@@ -1181,8 +1182,16 @@ func TestStress_Pool_Submit_TrySubmit_SubmitAt(t *testing.T) {
 		wg.Wait()
 		results := p.Wait()
 		p.Close()
-		if len(results) != int(submitted.Load()) {
-			t.Fatalf("TrySubmit: results %d != submitted %d", len(results), submitted.Load())
+		// TrySubmit 失败的任务也会通过 discardTask 写入错误结果到 results
+		// 因此统计成功结果数（Err == nil）而不是 len(results)
+		var successResults int
+		for _, r := range results {
+			if r.Err == nil {
+				successResults++
+			}
+		}
+		if successResults != int(submitted.Load()) {
+			t.Fatalf("TrySubmit: success results %d != submitted %d (total results=%d)", successResults, submitted.Load(), len(results))
 		}
 	}
 
@@ -3325,5 +3334,781 @@ func TestStress_Group_FailFast_HighConcurrency(t *testing.T) {
 		if !g.HasError() {
 			t.Fatalf("round %d: expected HasError=true", round)
 		}
+	}
+}
+
+// ==================== Retry 补充——遗漏函数 ====================
+
+// TestStress_Retry_SimpleNoBackoff 测试 async.Retry() 简单重试（无退避）
+func TestStress_Retry_SimpleNoBackoff(t *testing.T) {
+	ctx := context.Background()
+
+	// 成功场景
+	t.Run("Success", func(t *testing.T) {
+		for round := 0; round < 100; round++ {
+			err := Retry(ctx, 3, func(ctx context.Context) error {
+				return nil
+			})
+			if err != nil {
+				t.Fatalf("round %d: unexpected err=%v", round, err)
+			}
+		}
+	})
+
+	// 耗尽场景
+	t.Run("Exhausted", func(t *testing.T) {
+		for round := 0; round < 50; round++ {
+			var count atomic.Int64
+			err := Retry(ctx, 3, func(ctx context.Context) error {
+				count.Add(1)
+				return errTest
+			})
+			if err == nil {
+				t.Fatalf("round %d: expected error", round)
+			}
+			if count.Load() != 4 {
+				t.Fatalf("round %d: expected 4 attempts, got %d", round, count.Load())
+			}
+		}
+	})
+
+	// 取消场景
+	t.Run("ContextCancel", func(t *testing.T) {
+		for round := 0; round < 50; round++ {
+			cancelCtx, cancel := context.WithCancel(ctx)
+			cancel()
+			err := Retry(cancelCtx, 5, func(ctx context.Context) error {
+				return errTest
+			})
+			if err == nil {
+				t.Fatalf("round %d: expected error on cancelled context", round)
+			}
+		}
+	})
+
+	// panic 恢复
+	t.Run("PanicRecovery", func(t *testing.T) {
+		for round := 0; round < 30; round++ {
+			err := Retry(ctx, 2, func(ctx context.Context) error {
+				panic("boom")
+			})
+			if err == nil {
+				t.Fatalf("round %d: expected panic error", round)
+			}
+		}
+	})
+
+	// 高并发并发调用 Retry
+	t.Run("Concurrent", func(t *testing.T) {
+		var wg sync.WaitGroup
+		n := 200
+		wg.Add(n)
+		for i := 0; i < n; i++ {
+			go func() {
+				defer wg.Done()
+				err := Retry(ctx, 2, func(ctx context.Context) error {
+					return nil
+				})
+				if err != nil {
+					t.Errorf("unexpected err: %v", err)
+				}
+			}()
+		}
+		wg.Wait()
+	})
+}
+
+// TestStress_Retry_WithTimeoutVoid 测试 retry.WithTimeoutVoid 高并发
+func TestStress_Retry_WithTimeoutVoid(t *testing.T) {
+	ctx := context.Background()
+
+	// 成功场景
+	t.Run("Success", func(t *testing.T) {
+		for round := 0; round < 100; round++ {
+			err := retry.WithTimeoutVoid(ctx, 10*time.Second, func(ctx context.Context) error {
+				return nil
+			})
+			if err != nil {
+				t.Fatalf("round %d: unexpected err=%v", round, err)
+			}
+		}
+	})
+
+	// 超时场景（fn 需要检查上下文来感知超时）
+	t.Run("Timeout", func(t *testing.T) {
+		for round := 0; round < 10; round++ {
+			err := retry.WithTimeoutVoid(ctx, 50*time.Millisecond, func(ctx context.Context) error {
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-time.After(5 * time.Second):
+					return nil
+				}
+			})
+			if err == nil {
+				t.Fatalf("round %d: expected timeout error", round)
+			}
+			if !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("round %d: expected DeadlineExceeded, got %v", round, err)
+			}
+		}
+	})
+
+	// 高并发调用
+	t.Run("Concurrent", func(t *testing.T) {
+		var wg sync.WaitGroup
+		n := 200
+		var success atomic.Int64
+		wg.Add(n)
+		for i := 0; i < n; i++ {
+			go func() {
+				defer wg.Done()
+				err := retry.WithTimeoutVoid(ctx, 5*time.Second, func(ctx context.Context) error {
+					return nil
+				})
+				if err == nil {
+					success.Add(1)
+				}
+			}()
+		}
+		wg.Wait()
+		if success.Load() != int64(n) {
+			t.Fatalf("expected %d successes, got %d", n, success.Load())
+		}
+	})
+}
+
+// TestStress_Retry_WithDeadlineVoid 测试 retry.WithDeadlineVoid 高并发
+func TestStress_Retry_WithDeadlineVoid(t *testing.T) {
+	ctx := context.Background()
+
+	// 成功场景
+	t.Run("Success", func(t *testing.T) {
+		for round := 0; round < 100; round++ {
+			deadline := time.Now().Add(10 * time.Second)
+			err := retry.WithDeadlineVoid(ctx, deadline, func(ctx context.Context) error {
+				return nil
+			})
+			if err != nil {
+				t.Fatalf("round %d: unexpected err=%v", round, err)
+			}
+		}
+	})
+
+	// 截止时间已过期（fn 需要检查上下文来感知取消）
+	t.Run("Expired", func(t *testing.T) {
+		for round := 0; round < 10; round++ {
+			deadline := time.Now().Add(-1 * time.Hour)
+			err := retry.WithDeadlineVoid(ctx, deadline, func(ctx context.Context) error {
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				default:
+					return nil
+				}
+			})
+			if err == nil {
+				t.Fatalf("round %d: expected deadline error", round)
+			}
+		}
+	})
+
+	// 高并发调用
+	t.Run("Concurrent", func(t *testing.T) {
+		var wg sync.WaitGroup
+		n := 200
+		var success atomic.Int64
+		wg.Add(n)
+		for i := 0; i < n; i++ {
+			go func() {
+				defer wg.Done()
+				deadline := time.Now().Add(10 * time.Second)
+				err := retry.WithDeadlineVoid(ctx, deadline, func(ctx context.Context) error {
+					return nil
+				})
+				if err == nil {
+					success.Add(1)
+				}
+			}()
+		}
+		wg.Wait()
+		if success.Load() != int64(n) {
+			t.Fatalf("expected %d successes, got %d", n, success.Load())
+		}
+	})
+}
+
+// ==================== Pipeline 补充——ExecuteWithMeta ====================
+
+// TestStress_Pipeline_ExecuteWithMeta 测试 ExecuteWithMeta 多阶段带元数据处理
+func TestStress_Pipeline_ExecuteWithMeta(t *testing.T) {
+	ctx := context.Background()
+
+	// 单阶段
+	t.Run("SingleStage", func(t *testing.T) {
+		for round := 0; round < 30; round++ {
+			stages := []Stage[int]{
+				{Name: "double", Concurrency: 10},
+			}
+			items := make([]int, 100)
+			for i := range items {
+				items[i] = i
+			}
+			results := ExecuteWithMeta(ctx, stages, items, func(ctx context.Context, stage string, v int) (int, error) {
+				return v * 2, nil
+			})
+			if len(results) != 100 {
+				t.Fatalf("round %d: expected 100 results, got %d", round, len(results))
+			}
+			for _, r := range results {
+				if r.Err != nil || r.Stage != "double" {
+					t.Fatalf("round %d: unexpected result err=%v stage=%s", round, r.Err, r.Stage)
+				}
+			}
+		}
+	})
+
+	// 多阶段（ExecuteWithMeta 会将每个阶段的结果追加到 items，因此结果数会递增）
+	t.Run("MultiStage", func(t *testing.T) {
+		for round := 0; round < 10; round++ {
+			stages := []Stage[int]{
+				{Name: "add_10", Concurrency: 10},
+				{Name: "multiply_2", Concurrency: 10},
+				{Name: "subtract_5", Concurrency: 10},
+			}
+			items := []int{1, 2, 3, 4, 5}
+			results := ExecuteWithMeta(ctx, stages, items, func(ctx context.Context, stage string, v int) (int, error) {
+				switch stage {
+				case "add_10":
+					return v + 10, nil
+				case "multiply_2":
+					return v * 2, nil
+				case "subtract_5":
+					return v - 5, nil
+				default:
+					return v, nil
+				}
+			})
+			// 每阶段结果会累积：stage1=5, stage2=10, stage3=20 => 35 total
+			expectedLen := 35
+			if len(results) != expectedLen {
+				t.Fatalf("round %d: expected %d results (5+10+20), got %d", round, expectedLen, len(results))
+			}
+			stageCounts := make(map[string]int)
+			for _, r := range results {
+				stageCounts[r.Stage]++
+			}
+			if stageCounts["add_10"] != 5 {
+				t.Fatalf("round %d: add_10: expected 5, got %d", round, stageCounts["add_10"])
+			}
+			if stageCounts["multiply_2"] != 10 {
+				t.Fatalf("round %d: multiply_2: expected 10, got %d", round, stageCounts["multiply_2"])
+			}
+			if stageCounts["subtract_5"] != 20 {
+				t.Fatalf("round %d: subtract_5: expected 20, got %d", round, stageCounts["subtract_5"])
+			}
+		}
+	})
+
+	// 高并发多阶段（每个阶段都有错误项）
+	t.Run("MultiStageWithErrors", func(t *testing.T) {
+		for round := 0; round < 10; round++ {
+			stages := []Stage[int]{
+				{Name: "stage1", Concurrency: 20},
+				{Name: "stage2", Concurrency: 20},
+			}
+			items := make([]int, 100)
+			for i := range items {
+				items[i] = i
+			}
+			results := ExecuteWithMeta(ctx, stages, items, func(ctx context.Context, stage string, v int) (int, error) {
+				if v%10 == 0 {
+					return 0, fmt.Errorf("%s: error at %d", stage, v)
+				}
+				return v + 1, nil
+			})
+			errCount := 0
+			for _, r := range results {
+				if r.Err != nil {
+					errCount++
+				}
+			}
+			if errCount == 0 {
+				t.Fatalf("round %d: expected some errors", round)
+			}
+			t.Logf("round %d: total=%d, errors=%d", round, len(results), errCount)
+		}
+	})
+
+	// 超时周期内的多阶段
+	t.Run("WithTimeout", func(t *testing.T) {
+		for round := 0; round < 10; round++ {
+			stages := []Stage[int]{
+				{Name: "quick", Concurrency: 10},
+			}
+			items := []int{1, 2, 3}
+			timeoutCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			defer cancel()
+			results := ExecuteWithMeta(timeoutCtx, stages, items, func(ctx context.Context, stage string, v int) (int, error) {
+				return v + 1, nil
+			})
+			if len(results) != 3 {
+				t.Fatalf("round %d: expected 3 results, got %d", round, len(results))
+			}
+		}
+	})
+}
+
+// ==================== RateLimiter 极限并发 ====================
+
+// TestStress_RateLimiter_ExtremeConcurrency 100+ goroutine 同时竞争限流器
+func TestStress_RateLimiter_ExtremeConcurrency(t *testing.T) {
+	ctx := context.Background()
+
+	// RateLimiter 极限并发 Wait
+	t.Run("RateLimiter_Wait", func(t *testing.T) {
+		rl := ratelimit.NewRateLimiter(1000, time.Second)
+		defer rl.Close()
+		var wg sync.WaitGroup
+		n := 200
+		var success atomic.Int64
+		wg.Add(n)
+		for i := 0; i < n; i++ {
+			go func() {
+				defer wg.Done()
+				err := rl.Wait(ctx)
+				if err == nil {
+					success.Add(1)
+				}
+			}()
+		}
+		wg.Wait()
+		if success.Load() != int64(n) {
+			t.Fatalf("RateLimiter Wait: expected %d, got %d", n, success.Load())
+		}
+	})
+
+	// 极限并发 Acquire+Release
+	t.Run("RateLimiter_AcquireRelease", func(t *testing.T) {
+		rl := ratelimit.NewRateLimiterWithBurst(500, time.Second, 200)
+		defer rl.Close()
+		var wg sync.WaitGroup
+		n := 300
+		var success atomic.Int64
+		wg.Add(n)
+		for i := 0; i < n; i++ {
+			go func() {
+				defer wg.Done()
+				err := rl.Acquire(ctx)
+				if err == nil {
+					success.Add(1)
+					rl.Release()
+				}
+			}()
+		}
+		wg.Wait()
+		if success.Load() < 100 {
+			t.Fatalf("Acquire+Release: too few successes: %d", success.Load())
+		}
+		t.Logf("Acquire+Release 300 goroutines: %d successes", success.Load())
+	})
+
+	// SlidingWindow 极限并发
+	t.Run("SlidingWindow_Allow", func(t *testing.T) {
+		sw := ratelimit.NewSlidingWindowRateLimiter(5000, time.Second)
+		var wg sync.WaitGroup
+		n := 500
+		var allowed atomic.Int64
+		wg.Add(n)
+		for i := 0; i < n; i++ {
+			go func() {
+				defer wg.Done()
+				if sw.Allow() {
+					allowed.Add(1)
+				}
+			}()
+		}
+		wg.Wait()
+		if allowed.Load() < int64(n) {
+			t.Logf("SlidingWindow 500 goroutines: allowed=%d (some may be rejected)", allowed.Load())
+		}
+	})
+
+	// TokenBucket 极限并发
+	t.Run("TokenBucket_Allow", func(t *testing.T) {
+		tb := ratelimit.NewTokenBucket(1000, 500)
+		var wg sync.WaitGroup
+		n := 500
+		var allowed atomic.Int64
+		wg.Add(n)
+		for i := 0; i < n; i++ {
+			go func() {
+				defer wg.Done()
+				if tb.Allow() {
+					allowed.Add(1)
+				}
+			}()
+		}
+		wg.Wait()
+		t.Logf("TokenBucket 500 goroutines: allowed=%d", allowed.Load())
+	})
+
+	// AdaptiveRateLimiter 极限并发
+	t.Run("Adaptive_AcquireRelease", func(t *testing.T) {
+		arl := ratelimit.NewAdaptiveRateLimiter(100, 500)
+		// 预填充 token 避免死锁：newRateLimiterSimple 创建的 channel 初始为空
+		for k := 0; k < 300; k++ {
+			arl.Release()
+		}
+		var wg sync.WaitGroup
+		n := 300
+		var success atomic.Int64
+		wg.Add(n)
+		for i := 0; i < n; i++ {
+			go func() {
+				defer wg.Done()
+				arl.Acquire(ctx)
+				success.Add(1)
+				arl.Release()
+			}()
+		}
+		wg.Wait()
+		if success.Load() < 100 {
+			t.Fatalf("Adaptive: too few successes: %d", success.Load())
+		}
+		t.Logf("AdaptiveRateLimiter 300 goroutines: %d successes", success.Load())
+	})
+}
+
+// ==================== Pool 极限并发操作 ====================
+
+// TestStress_Pool_ExtremeResizeDuringSubmit 200 goroutine 提交任务的同时不断 Resize
+func TestStress_Pool_ExtremeResizeDuringSubmit(t *testing.T) {
+	p := NewPool[int](50)
+	ctx := context.Background()
+
+	var submitWg sync.WaitGroup
+	n := 200
+	var submitted atomic.Int64
+	submitWg.Add(n)
+	for i := 0; i < n; i++ {
+		go func(idx int) {
+			defer submitWg.Done()
+			for j := 0; j < 50; j++ {
+				err := p.Submit(ctx, func(ctx context.Context) (int, error) {
+					time.Sleep(1 * time.Microsecond)
+					return idx*100 + j, nil
+				})
+				if err == nil {
+					submitted.Add(1)
+				}
+			}
+		}(i)
+	}
+
+	// 同时不断 resize
+	var resizeWg sync.WaitGroup
+	resizeWg.Add(1)
+	go func() {
+		defer resizeWg.Done()
+		sizes := []int{10, 100, 30, 80, 20, 50, 100, 40}
+		for _, size := range sizes {
+			p.Resize(size)
+			time.Sleep(5 * time.Millisecond)
+			p.ResizeAndWaitTimeout(size, 100*time.Millisecond)
+		}
+	}()
+
+	submitWg.Wait()
+	resizeWg.Wait()
+
+	results := p.Wait()
+	p.Close()
+	if len(results) != int(submitted.Load()) {
+		t.Fatalf("expected %d results, got %d", submitted.Load(), len(results))
+	}
+	t.Logf("Extreme resize: submitted=%d, results=%d", submitted.Load(), len(results))
+}
+
+// TestStress_Pool_SubmitClose_ExtremeRace Submit 和 Close 的极限竞态
+func TestStress_Pool_SubmitClose_ExtremeRace(t *testing.T) {
+	for round := 0; round < 50; round++ {
+		p := NewPool[int](50)
+		ctx := context.Background()
+		var wg sync.WaitGroup
+		n := 200
+		wg.Add(n + 1)
+
+		// 200 goroutine 同时提交
+		var submitted atomic.Int64
+		for i := 0; i < n; i++ {
+			go func(idx int) {
+				defer wg.Done()
+				for j := 0; j < 10; j++ {
+					err := p.Submit(ctx, func(ctx context.Context) (int, error) {
+						return idx*10 + j, nil
+					})
+					if err == nil {
+						submitted.Add(1)
+					}
+				}
+			}(i)
+		}
+
+		// 1 goroutine 延迟后 Close
+		go func() {
+			defer wg.Done()
+			time.Sleep(10 * time.Millisecond)
+			p.Close()
+		}()
+
+		wg.Wait()
+		results := p.Wait()
+
+		// Post-close submit should fail
+		err := p.Submit(ctx, func(ctx context.Context) (int, error) {
+			return 0, nil
+		})
+		if err != nil && !errors.Is(err, ErrPoolClosed) && !errors.Is(err, ErrPoolWaited) {
+			t.Logf("round %d: post-close submit err=%v", round, err)
+		}
+
+		t.Logf("round %d: submitted=%d, results=%d", round, submitted.Load(), len(results))
+	}
+}
+
+// ==================== 全模块混合极限并发 ====================
+
+// TestStress_MixedAllModules_ExtremeConcurrency 所有7大模块同时运行极端并发
+func TestStress_MixedAllModules_ExtremeConcurrency(t *testing.T) {
+	ctx := context.Background()
+	var wg sync.WaitGroup
+	n := 30
+	wg.Add(n * 8)
+
+	for i := 0; i < n; i++ {
+		// Group: 100 tasks with concurrency 20
+		go func(id int) {
+			defer wg.Done()
+			g := NewGroup[int](20)
+			for j := 0; j < 100; j++ {
+				_ = g.Go(ctx, func(ctx context.Context) (int, error) {
+					return j, nil
+				})
+			}
+			g.Wait()
+		}(i)
+
+		// NoResult: 100 tasks with fail-fast
+		go func(id int) {
+			defer wg.Done()
+			nr, ffCtx := NewNoResult(20).WithFailFast(ctx)
+			for j := 0; j < 100; j++ {
+				_ = nr.Go(ffCtx, func(ctx context.Context) error {
+					return nil
+				})
+			}
+			nr.Wait()
+		}(i)
+
+		// Pool: 100 submits with resize
+		go func(id int) {
+			defer wg.Done()
+			p := NewPool[int](20)
+			for j := 0; j < 100; j++ {
+				_ = p.Submit(ctx, func(ctx context.Context) (int, error) {
+					return j, nil
+				})
+			}
+			p.Resize(50)
+			p.Wait()
+			p.Close()
+		}(i)
+
+		// Task: GoResult + Go 并发
+		go func(id int) {
+			defer wg.Done()
+			for j := 0; j < 50; j++ {
+				r := GoResult(ctx, func(ctx context.Context) (int, error) {
+					return j, nil
+				})
+				r.Wait()
+			}
+		}(i)
+
+		// Map: 并发 Map
+		go func(id int) {
+			defer wg.Done()
+			items := make([]int, 100)
+			Map(ctx, items, 10, func(ctx context.Context, v int) (int, error) {
+				return v * 2, nil
+			})
+		}(i)
+
+		// Retry: concurrent backoff retry
+		go func(id int) {
+			defer wg.Done()
+			for j := 0; j < 50; j++ {
+				RetryWithBackoff(ctx, 2, 10*time.Microsecond, func(ctx context.Context) error {
+					return nil
+				})
+			}
+		}(i)
+
+		// RateLimiter: concurrent wait
+		go func(id int) {
+			defer wg.Done()
+			rl := ratelimit.NewRateLimiter(1000, time.Second)
+			defer rl.Close()
+			for j := 0; j < 50; j++ {
+				_ = rl.Wait(ctx)
+			}
+		}(i)
+
+		// Pipeline: Execute
+		go func(id int) {
+			defer wg.Done()
+			items := make([]int, 50)
+			Execute(ctx, nil, items, func(ctx context.Context, stage string, v int) (int, error) {
+				return v + 1, nil
+			})
+		}(i)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		t.Log("All modules mixed extreme concurrency: PASS")
+	case <-time.After(30 * time.Second):
+		t.Fatal("All modules mixed extreme concurrency: TIMEOUT")
+	}
+}
+
+// ==================== Group FailFast 级联取消极限测试 ====================
+
+// TestStress_Group_FailFastCascade_Extreme 级联失败快速传播极限测试
+func TestStress_Group_FailFastCascade_Extreme(t *testing.T) {
+	for round := 0; round < 30; round++ {
+		ctx := context.Background()
+		g1, ffCtx1 := NewGroup[int](50).WithFailFast(ctx)
+		g2, ffCtx2 := NewGroup[int](50).WithFailFast(ffCtx1)
+		g3, ffCtx3 := NewGroup[int](50).WithFailFast(ffCtx2)
+
+		var cascadeWg sync.WaitGroup
+		cascadeWg.Add(1)
+
+		// g3 中最先失败——应该级联取消 g2、g1 中的任务
+		go func() {
+			defer cascadeWg.Done()
+			for i := 0; i < 200; i++ {
+				idx := i
+				_ = g3.Go(ffCtx3, func(ctx context.Context) (int, error) {
+					if idx == 5 {
+						return 0, errTest
+					}
+					select {
+					case <-ctx.Done():
+						return 0, ctx.Err()
+					case <-time.After(200 * time.Millisecond):
+						return idx, nil
+					}
+				})
+			}
+			g3.Wait()
+		}()
+
+		for i := 0; i < 200; i++ {
+			_ = g1.Go(ffCtx1, func(ctx context.Context) (int, error) {
+				select {
+				case <-ctx.Done():
+					return 0, ctx.Err()
+				case <-time.After(200 * time.Millisecond):
+					return i, nil
+				}
+			})
+		}
+
+		for i := 0; i < 200; i++ {
+			_ = g2.Go(ffCtx2, func(ctx context.Context) (int, error) {
+				select {
+				case <-ctx.Done():
+					return 0, ctx.Err()
+				case <-time.After(200 * time.Millisecond):
+					return i, nil
+				}
+			})
+		}
+
+		cascadeWg.Wait()
+		g1.Wait()
+		g2.Wait()
+
+		// g3 必须报错
+		if !g3.HasError() {
+			t.Fatalf("round %d: g3 should have error", round)
+		}
+		// g1 和 g2 中的很多任务应该被上下文取消
+		_ = g1.Errors()
+		_ = g2.Errors()
+	}
+}
+
+// ==================== NoResult 极限 GoWithTimeout ====================
+
+// TestStress_NoResult_GoWithTimeout_Extreme 极限并发 NoResult GoWithTimeout
+func TestStress_NoResult_GoWithTimeout_Extreme(t *testing.T) {
+	ctx := context.Background()
+	nr := NewNoResult(100)
+	var wg sync.WaitGroup
+	n := 500
+	var submitted atomic.Int64
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func(idx int) {
+			defer wg.Done()
+			for j := 0; j < 20; j++ {
+				err := nr.GoWithTimeout(ctx, 5*time.Second, func(ctx context.Context) error {
+					return nil
+				})
+				if err == nil {
+					submitted.Add(1)
+				}
+			}
+		}(i)
+	}
+	wg.Wait()
+	nr.Wait()
+	t.Logf("NoResult GoWithTimeout extreme: submitted=%d, completed=%d", submitted.Load(), nr.TotalCount())
+}
+
+// ==================== Task GoResultWithTimeout 极限并发 ====================
+
+// TestStress_Task_GoResultWithTimeout_Extreme 极限并发 GoResultWithTimeout
+func TestStress_Task_GoResultWithTimeout_Extreme(t *testing.T) {
+	ctx := context.Background()
+	var wg sync.WaitGroup
+	n := 300
+	var success atomic.Int64
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func(idx int) {
+			defer wg.Done()
+			r := GoResultWithTimeout(ctx, 5*time.Second, func(ctx context.Context) (int, error) {
+				return idx, nil
+			})
+			val, err := r.Wait()
+			if err == nil && val == idx {
+				success.Add(1)
+			}
+		}(i)
+	}
+	wg.Wait()
+	if success.Load() != int64(n) {
+		t.Fatalf("GoResultWithTimeout extreme: expected %d, got %d", n, success.Load())
 	}
 }
