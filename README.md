@@ -368,9 +368,11 @@ async.IOMulti(n) // 自定义倍数 = runtime.NumCPU() * n
 | 常量 | 说明 |
 |------|------|
 | `ErrPoolClosed` | 池已关闭 |
-| `ErrPoolWaited` | Wait 后调用 Submit |
+| `ErrPoolWaiting` | Pool Wait 后调用 Submit |
+| `ErrPoolWaited` | Pool Wait 后调用 Submit（别名） |
 | `ErrSubmitTimeout` | 提交超时 |
 | `ErrGroupWaited` | Group Wait 后调用 Go |
+| `ErrGroupWaiting` | Group Wait 进行中调用 Go |
 | `ErrSkipped` | FailFast 模式任务被跳过 |
 | `ErrRateLimiterStopped` | 限流器已停止 |
 | `ErrTimeout` | 操作超时 |
@@ -384,25 +386,80 @@ async.IOMulti(n) // 自定义倍数 = runtime.NumCPU() * n
 | 函数 | 说明 |
 |------|------|
 | `NewPool[T](size)` | 创建协程池 |
-| `NewGroup[T](concurrency)` | 创建任务组 |
-| `NewNoResult(concurrency)` | 创建无返回值任务组 |
+| `DefaultPool[T]()` | 创建 IO 并发度协程池 |
 | `NewNoResultPool(size)` | 创建无返回值协程池 |
-| `NewRateLimiter(rate, d)` | 创建限流器 |
+| `DefaultNoResultPool()` | 创建 IO 并发度无返回值池 |
+| `NewGroup[T](concurrency)` | 创建任务组 |
+| `DefaultGroup[T]()` | 创建 IO 并发度任务组 |
+| `NewNoResult(concurrency)` | 创建无返回值任务组 |
+| `DefaultNoResult()` | 创建 IO 并发度无返回值任务组 |
+| `NewRateLimiter(rate, d)` | 创建令牌桶限流器 |
+| `NewRateLimiterWithBurst(rate, d, burst)` | 创建带突发容量的限流器 |
 | `NewSlidingWindowRateLimiter(limit, window)` | 创建滑动窗口限流器 |
 | `NewTokenBucket(rate, capacity)` | 创建经典令牌桶 |
 | `NewAdaptiveRateLimiter(min, max)` | 创建自适应限流器 |
 | `NewPipeline[T](ctx, stages...)` | 创建串行管道 |
+| `NewPanicError(r any)` | 创建 panic 包装错误 |
+
+### 协程池辅助函数
+
+| 函数 | 说明 |
+|------|------|
+| `Submit[T](ctx, fn)` | 快速创建池并提交单个任务 |
+| `SubmitN[T](ctx, fn, n)` | 快速创建池并提交 N 个相同任务 |
+| `SubmitSafeN[T](ctx, fn, n)` | 提交 N 个任务（忽略提交失败） |
+| `SubmitBatch[T, S](ctx, items, fn)` | 批量提交切片元素 |
+| `SubmitFunc(ctx, fn)` | 提交 func() → (*Pool, index, error) |
+| `MapPool[T, R](ctx, items, fn, c)` | 池化 Map |
+| `ForEachPool[T](ctx, items, fn, c)` | 池化 ForEach |
+| `SubmitAction(p, ctx, fn)` | 提交无返回值动作 |
+| `TrySubmitAction(p, ctx, fn)` | 非阻塞提交无返回值动作 |
+| `SubmitAtAction(p, idx, ctx, fn)` | 指定位置提交无返回值动作 |
+| `TrySubmitAtAction(p, idx, ctx, fn)` | 指定位置非阻塞提交 |
+| `GoAction(p, ctx, fn)` | 提交并断言成功 |
+| `SubmitActionWithTimeout(p, ctx, d, fn)` | 带超时提交 |
+| `SubmitAtActionWithTimeout(p, idx, ctx, d, fn)` | 指定位置带超时提交 |
+| `GoActionWithTimeout(p, ctx, d, fn)` | 带超时提交并断言成功 |
 
 ### 并发执行
 
 | 函数 | 说明 |
 |------|------|
 | `Go(ctx, fn)` | 启动无返回值异步任务 |
+| `GoWithTimeout(ctx, d, fn)` | 带超时的无返回值异步任务 |
 | `GoResult[T](ctx, fn)` | 启动带返回值异步任务 |
+| `GoResultWithTimeout[T](ctx, d, fn)` | 带超时的带返回值异步任务 |
 | `Map[T,R](ctx, items, c, fn)` | 并发映射 |
+| `MapWithFailFast[T,R](ctx, items, c, fn)` | FailFast 映射 |
+| `MapWithTimeout[T,R](ctx, items, c, d, fn)` | 带超时映射 |
+| `MapWithFFTimeout[T,R](ctx, items, c, d, fn)` | FailFast + 超时映射 |
+| `MapSerial[T,R](ctx, items, fn)` | 串行映射 |
+| `MapSerialFailFast[T,R](ctx, items, fn)` | 串行 FailFast 映射 |
 | `ForEach[T](ctx, items, c, fn)` | 并发遍历 |
+| `ForEachWithFailFast[T](ctx, items, c, fn)` | FailFast 遍历 |
+| `ForEachWithTimeout[T](ctx, items, c, d, fn)` | 带超时遍历 |
+| `ForEachWithFFTimeout[T](ctx, items, c, d, fn)` | FailFast + 超时遍历 |
+| `ForEachSerial[T](ctx, items, fn)` | 串行遍历 |
+| `ForEachSerialFailFast[T](ctx, items, fn)` | 串行 FailFast 遍历 |
 | `Reduce[T,R](ctx, items, c, mapFn, init, reduceFn)` | 并发聚合 |
 | `Execute[T](ctx, stages, items, fn)` | 执行多阶段管道 |
+| `ExecuteWithMeta[T](ctx, stages, items, fn)` | 管道（带元信息） |
+| `ExecuteWithGroup[T](ctx, items, fn, c)` | Group 管道 |
+
+### 数据分块
+
+| 函数 | 说明 |
+|------|------|
+| `MapChunk[T,R](ctx, items, c, bs, fn)` | 分块 Map |
+| `MapChunked[T,R](ctx, items, c, bs, fn)` | 分块 Map（逐元素回调） |
+| `ForEachChunk[T](ctx, items, c, bs, fn)` | 分块 ForEach |
+| `ForEachChunked[T](ctx, items, c, bs, fn)` | 分块 ForEach（逐元素回调） |
+| `Chunk[T](items, size)` | 按大小分块 |
+| `ChunkN[T](items, n)` | 按数量均分 |
+| `Flat[T](results)` | 提取成功值的切片 |
+| `OnlyErrors[T](results)` | 提取所有错误 |
+
+> MapChunk / MapChunked / ForEachChunk / ForEachChunked 均支持 Default / FailFast / Timeout / FFTimeout 变体。
 
 ### 工具函数
 
@@ -410,10 +467,24 @@ async.IOMulti(n) // 自定义倍数 = runtime.NumCPU() * n
 |------|------|
 | `Retry(ctx, n, fn)` | 简单重试 |
 | `RetryWithBackoff(ctx, n, d, fn)` | 指数退避重试 |
-| `Chunk(items, size)` | 按大小分块 |
-| `ChunkN(items, n)` | 按数量均分 |
+| `RetryWithLinearBackoff(ctx, n, d, fn)` | 线性退避重试 |
+| `RetryWithConfig[T](ctx, fn, n, ib, mb, opts)` | 完整配置重试 |
+| `RetryWithConfigVoid(ctx, fn, n, ib, mb, opts)` | Void 版完整配置重试 |
+| `WithTimeout[T](ctx, d, fn)` | 单次调用超时包装 |
+| `WithTimeoutVoid(ctx, d, fn)` | Void 版单次调用超时包装 |
+| `WithDeadline[T](ctx, dl, fn)` | 单次调用截止时间包装 |
+| `WithDeadlineVoid(ctx, dl, fn)` | Void 版单次调用截止时间包装 |
+| `BindRetryToWorker(ctx, pool, fn, n, ib, mb)` | Worker 绑定重试 |
+| `RetryFn(fn).WithRetry(n)` | 简单函数式重试 |
 | `ResultValues(results)` | 提取成功值 |
+| `ResultErrors(results)` | 提取错误 |
+| `Every(results)` | 全部成功？ |
+| `Some(results)` | 至少一个成功？ |
+| `AnyError(results)` | 存在错误？ |
 | `Partition(results)` | 分离值和错误 |
+| `SafeCall[T,R](ctx, item, fn)` | 安全调用（捕获 panic） |
+| `SafeCallVoid[T](ctx, item, fn)` | Void 安全调用 |
+| `MergeCancel(old, new)` | 合并 CancelFunc |
 
 ---
 

@@ -173,7 +173,7 @@ ctx := async.EnsureTraceID(context.Background())
 // 从 ctx 中提取 trace_id
 traceID := async.GetTraceID(ctx)
 
-// 设置指定的 trace_id
+// 设置指定的 trace_id（便捷方法，等价于 context.WithValue）
 ctx = async.WithTraceID(ctx, "my-custom-id")
 
 // 生成新的随机 trace_id
@@ -204,3 +204,78 @@ err := async.SafeCallVoid(ctx, input, func(ctx context.Context, item MyType) err
     return item.DoSomething(ctx)
 })
 ```
+
+### 检查 PanicError
+
+```go
+result, err := async.SafeCall(ctx, input, riskyFn)
+if err != nil && async.IsPanicError(err) {
+    // 区分 panic 错误和普通业务错误
+    var pe *async.PanicError
+    if errors.As(err, &pe) {
+        log.Printf("panic: %v at %s", pe.Cause, pe.Stack)
+    }
+}
+```
+
+---
+
+## 方法速查表
+
+### 超时配置
+
+| 方法 | 说明 |
+|------|------|
+| `SetDefaultTimeout(d)` | 设置全局默认超时 |
+| `GetDefaultTimeout()` | 获取全局默认超时 |
+| `SetSubmitTimeout(d)` | 设置全局提交超时 |
+| `GetSubmitTimeout()` | 获取全局提交超时 |
+| `SetMaxCleanupDuration(d)` | 设置清理最大时长 |
+| `GetMaxCleanupDuration()` | 获取清理最大时长 |
+
+### 日志配置
+
+| 方法 | 说明 |
+|------|------|
+| `SetTaskFailLogLevel(level)` | 设置失败日志级别 |
+| `GetTaskFailLogLevel()` | 获取失败日志级别 |
+| `SetTraceLogEnabled(bool)` | 开关 Trace 日志 |
+| `GetTraceLogEnabled()` | 获取 Trace 日志状态 |
+| `SetLogger(logger)` | 注入自定义 Logger |
+
+### 日志级别
+
+| 常量 | 说明 |
+|------|------|
+| `LogLevelError` | 错误（默认） |
+| `LogLevelWarn` | 警告 |
+| `LogLevelInfo` | 信息 |
+| `LogLevelDebug` | 调试 |
+| `LogLevelSilent` | 静默 |
+
+### 并发度
+
+| 函数 | 说明 |
+|------|------|
+| `CPU()` | CPU 密集型并发度（核心数） |
+| `IO()` | IO 密集型并发度（核心数×2） |
+| `IOMulti(n)` | 自定义倍数（核心数×n） |
+| `WithConfig(n)` | n>0 返回 n，否则返回 IO() |
+
+### TraceID
+
+| 函数 | 说明 |
+|------|------|
+| `EnsureTraceID(ctx)` | 确保 ctx 有 trace_id |
+| `GetTraceID(ctx)` | 提取 trace_id |
+| `WithTraceID(ctx, id)` | 设置指定 trace_id |
+| `NewTraceID()` | 生成随机 trace_id |
+
+### 安全调用
+
+| 函数 | 说明 |
+|------|------|
+| `SafeCall[T, R](ctx, input, fn)` | 安全调用（有返回值，捕获 panic） |
+| `SafeCallVoid[T](ctx, input, fn)` | 安全调用（无返回值，捕获 panic） |
+| `IsPanicError(err)` | 检查是否为 PanicError |
+| `NewPanicError(r)` | 创建 PanicError

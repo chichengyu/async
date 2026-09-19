@@ -234,7 +234,8 @@ func callWithRetry(ctx context.Context, url string) (string, error) {
 | `Retry(ctx, maxRetries, fn)` | 无 | 立即重试 |
 | `RetryWithBackoff(ctx, max, backoff, fn)` | 指数 | 指数退避重试 |
 | `RetryWithLinearBackoff(ctx, max, backoff, fn)` | 线性 | 等间隔重试 |
-| `RetryWithConfig[T](ctx, fn, max, init, max, opts)` | 指数 | 带每次调用超时 |
+| `RetryWithConfig[T](ctx, fn, max, init, max, opts)` | 指数 | 带每次调用超时（有返回值） |
+| `RetryWithConfigVoid(ctx, fn, max, init, max, opts)` | 指数 | 带每次调用超时（无返回值） |
 
 ### 超时/截止时间包装
 

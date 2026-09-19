@@ -9,9 +9,15 @@
 - [提交任务](#提交任务)
 - [等待结果](#等待结果)
 - [高级选项](#高级选项)
+- [FailFast 模式](#failfast-模式)
+- [查询 Group 状态](#查询-group-状态)
+- [结果提取](#结果提取)
+- [带超时提交](#带超时提交)
+- [Reset 重置](#reset-重置)
 - [NoResult 无返回值任务组](#noresult-无返回值任务组)
 - [Group/NoResult 对比 Pool](#groupnoresult-对比-pool)
 - [完整示例](#完整示例)
+- [方法速查表](#group-方法速查表)
 
 ---
 
@@ -55,7 +61,7 @@ nr := async.DefaultNoResult()
 
 ## 提交任务
 
-### Go（追加提交）
+### Go - 追加提交
 
 ```go
 g := async.NewGroup[int](4)
@@ -74,7 +80,7 @@ results := g.Wait()
 // results[1] = fetchOrderCount 的结果
 ```
 
-### GoAt（指定位置提交）
+### GoAt - 指定位置提交
 
 ```go
 // 指定结果数组索引，保证结果顺序
@@ -93,94 +99,266 @@ results := g.Wait()
 // results[2] 一定对应 "charlie"
 ```
 
+### GoAt 注意事项
+
+```go
+// 跳空提交：位置 0 无任务，位置 0 的结果为 Result{T, Err: nil, Occupied: false}
+g.GoAt(1, ctx, func(ctx context.Context) (string, error) {
+    return "only position 1", nil
+})
+results := g.Wait()
+// results[0]: Occupied=false, Err=nil
+// results[1]: Value="only position 1"
+```
+
 ---
 
 ## 等待结果
 
-### Wait
+### Wait - 阻塞等待
 
 ```go
-// 阻塞等待所有任务完成
 results := g.Wait()
+// 此后不可再 Go（会返回 ErrGroupWaited）
 
 for i, r := range results {
     if r.Ok() {
-        fmt.Printf("成功: %v\n", r.Value)
-    } else if r.IsPanic() {
-        fmt.Printf("panic: %v\n", r.Err)
+        fmt.Printf("任务 %d 成功: %v\n", i, r.Value)
     } else {
-        fmt.Printf("失败: %v\n", r.Err)
+        log.Printf("任务 %d 失败: %v", i, r.Err)
     }
 }
 ```
 
-### WaitTimeout
+### WaitTimeout - 带超时等待
 
 ```go
-// 最多等 5 秒
-results := g.WaitTimeout(5 * time.Second)
+results, ok := g.WaitTimeout(5 * time.Second)
+if !ok {
+    log.Println("等待超时，部分任务可能未完成")
+}
 ```
 
-### WaitContext
+### WaitContext - Context 控制等待
 
 ```go
 ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 defer cancel()
-results := g.WaitContext(ctx)
-```
 
-**与 Pool 的重要区别**：Group 调用 Wait 后立即可以继续使用 `Go/GoAt`，不会被标记为 "已等待"。
+results, ok := g.WaitContext(ctx)
+if !ok {
+    log.Println("context 已取消")
+}
+```
 
 ---
 
 ## 高级选项
 
-```go
-g := async.NewGroup[int](4)
+### 超时控制
 
-// 单个任务超时（覆盖全局默认值）
+```go
+// 设置单个任务的超时（覆盖全局默认值）
 g.WithTimeout(10 * time.Second)
 
-// 提交超时
+// 设置 Go 等待并发槽位的超时
 g.WithSubmitTimeout(2 * time.Second)
+```
 
-// FailFast：一个任务失败，立即取消其他任务
-g, ffCtx := g.WithFailFast(ctx)
+### Context 注入
 
-// 组合使用：FailFast + 超时
-g, ffCtx := g.WithFFTimeout(ctx, 5*time.Second)
+```go
+// 带取消能力的 context
+g, ctx := g.WithContext(ctx)
 
 // 带 TraceID
 g, ctx := g.WithTraceID(ctx)
 
-// FailFast + TraceID
-g, ctx := g.WithFFTraceID(ctx)
+// Context + 超时
+g, ctx := g.WithCtxTimeout(ctx, 10*time.Second)
+
+// Context + 超时 + TraceID
+g, ctx := g.WithCtxTimeoutTraceID(ctx, 10*time.Second)
+
+// Context + 提交超时 + TraceID
+g, ctx := g.WithCtxSubmitTOTraceID(ctx, 3*time.Second)
 ```
 
-### 查询 Group 状态
+### With 方法完整速查
+
+| 方法 | 说明 |
+|------|------|
+| `WithTimeout(d)` | 设置单个任务超时 |
+| `WithSubmitTimeout(d)` | 设置提交等待超时 |
+| `WithContext(ctx)` | 注入 Context（带取消） |
+| `WithTraceID(ctx)` | 确保 context 有 trace_id |
+| `WithFailFast(ctx)` | 开启 FailFast 模式 |
+| `WithFFCtx(ctx)` | = WithFailFast |
+| `WithFFTraceID(ctx)` | FailFast + TraceID |
+| `WithFFSubmitTO(ctx, d)` | FailFast + 提交超时 |
+| `WithFFSubmitTOTraceID(ctx, d)` | FailFast + 提交超时 + TraceID |
+| `WithFFTimeout(ctx, d)` | FailFast + 超时 |
+| `WithFFTimeoutTraceID(ctx, d)` | FailFast + 超时 + TraceID |
+| `WithFFTimeoutSubmitTO(ctx, d, sd)` | FailFast + 超时 + 提交超时 |
+| `WithFFTimeoutSubmitTOTraceID(ctx, d, sd)` | FailFast + 超时 + 提交超时 + TraceID |
+| `WithCtxTraceID(ctx)` | Context + TraceID |
+| `WithCtxTimeout(ctx, d)` | Context + 超时 |
+| `WithCtxTimeoutTraceID(ctx, d)` | Context + 超时 + TraceID |
+| `WithCtxSubmitTO(ctx, d)` | Context + 提交超时 |
+| `WithCtxSubmitTOTraceID(ctx, d)` | Context + 提交超时 + TraceID |
+
+---
+
+## FailFast 模式
 
 ```go
-// Worker 数量（即并发度）
-size := g.Size()
+g := async.NewGroup[string](5)
 
-// 当前活跃任务数
-active := g.Active()
+// 开启 FailFast 模式
+ctx, cancel := context.WithCancel(context.Background())
+defer cancel()
+g, ffCtx := g.WithFailFast(ctx)
 
-// 当前空闲槽位数
-idle := g.Idle()
-
-// 失败任务数
-errCnt := g.ErrCount()
-
-// 第一个错误
-firstErr := g.FirstError()
+g.Go(ffCtx, someTask)
+g.Go(ffCtx, anotherTask)
+// 任一任务返回错误时，其他未运行的提交将被跳过（ErrSkipped）
 ```
+
+---
+
+## 查询 Group 状态
+
+### Concurrency / Active / Idle / Busy
+
+```go
+// 并发度
+fmt.Printf("并发度: %d\n", g.Concurrency())
+
+// 活跃任务数
+fmt.Printf("活跃任务: %d\n", g.Active())
+
+// 空闲槽位数
+fmt.Printf("空闲槽位: %d\n", g.Idle())
+
+// 繁忙槽位数
+fmt.Printf("繁忙槽位: %d\n", g.Busy())
+```
+
+### Stats - 完整统计
+
+```go
+stats := g.Stats()
+fmt.Printf("GroupStats{concurrency=%d, active=%d, busy=%d, failFast=%v, timeout=%v, total=%d, success=%d, fail=%d}\n",
+    stats.Concurrency, stats.Active, stats.Busy,
+    stats.FailFast, stats.Timeout,
+    stats.TotalTask, stats.SuccessTask, stats.FailTask)
+```
+
+### FailCount / SuccessCount / TotalCount / HasError
+
+```go
+results := g.Wait()
+
+fmt.Printf("总数: %d, 成功: %d, 失败: %d\n",
+    g.TotalCount(), g.SuccessCount(), g.FailCount())
+
+if g.HasError() {
+    log.Printf("存在失败的任务")
+}
+```
+
+---
+
+## 结果提取
+
+### Values - 提取成功值
+
+```go
+results := g.Wait()
+values := g.Values() // []T，只包含成功的值
+fmt.Printf("成功值: %v\n", values)
+```
+
+### Errors - 提取所有错误
+
+```go
+errs := g.Errors() // []error
+for i, e := range errs {
+    log.Printf("错误 %d: %v", i, e)
+}
+```
+
+### FirstError - 首个错误
+
+```go
+if firstErr := g.FirstError(); firstErr != nil {
+    log.Printf("首个错误: %v", firstErr)
+}
+```
+
+### JoinErrors - 合并错误
+
+```go
+if err := g.JoinErrors(); err != nil {
+    if errors.Is(err, async.ErrTimeout) {
+        log.Println("存在超时错误")
+    }
+}
+```
+
+---
+
+## 带超时提交
+
+### GoWithTimeout - 追加带超时提交
+
+```go
+g := async.NewGroup[string](5)
+
+// 单个任务最多执行 3 秒
+g.GoWithTimeout(ctx, 3*time.Second, func(ctx context.Context) (string, error) {
+    return fetchData(ctx)
+})
+```
+
+### GoAtWithTimeout - 指定位置带超时提交
+
+```go
+// 位置 0，单个任务最多执行 3 秒
+g.GoAtWithTimeout(0, ctx, 3*time.Second, func(ctx context.Context) (string, error) {
+    return fetchData(ctx)
+})
+```
+
+---
+
+## Reset 重置
+
+Wait 后需要再次使用同一个 Group 实例时调用 Reset：
+
+```go
+g := async.NewGroup[string](5)
+g.Go(ctx, task1)
+results := g.Wait()
+
+// Wait 后再次使用需要 Reset
+newG, err := g.Reset()
+if err != nil {
+    log.Printf("重置失败: %v", err)
+}
+newG.Go(ctx, task2)
+newResults := newG.Wait()
+```
+
+> 调用 Reset 前必须已完成 Wait()，否则返回错误。
 
 ---
 
 ## NoResult 无返回值任务组
 
 适合批量写入、通知发送、文件下载等**只关心错误**的场景。
+
+### 基本使用
 
 ```go
 nr := async.NewNoResult(8)
@@ -205,6 +383,34 @@ if err := nr.FirstError(); err != nil {
 fmt.Printf("成功: %d, 失败: %d\n", nr.SuccessCount(), nr.FailCount())
 ```
 
+### NoResult - Go / GoWithTimeout / GoAt / GoAtWithTimeout
+
+```go
+nr := async.NewNoResult(4)
+
+// 追加提交
+nr.Go(ctx, func(ctx context.Context) error {
+    return processItem(ctx)
+})
+
+// 追加提交带超时
+nr.GoWithTimeout(ctx, 3*time.Second, func(ctx context.Context) error {
+    return processItemWithTimeout(ctx)
+})
+
+// 指定位置提交
+nr.GoAt(0, ctx, func(ctx context.Context) error {
+    return processFirst(ctx)
+})
+
+// 指定位置带超时提交
+nr.GoAtWithTimeout(1, ctx, 3*time.Second, func(ctx context.Context) error {
+    return processSecond(ctx)
+})
+
+nr.Wait()
+```
+
 ### NoResult 高级选项
 
 ```go
@@ -217,7 +423,7 @@ nr, ffCtx := nr.WithFFSubmitTO(ctx, 5*time.Second)
 // FailFast + 超时
 nr, ffCtx := nr.WithFFTimeout(ctx, 10*time.Second)
 
-// 组合：FailFast + 超时 + 提交超时 + TraceID
+// FailFast + 超时 + 提交超时 + TraceID
 nr, ffCtx := nr.WithFFTimeoutSubmitTOTraceID(ctx, 10*time.Second, 3*time.Second)
 ```
 
@@ -227,9 +433,18 @@ nr, ffCtx := nr.WithFFTimeoutSubmitTOTraceID(ctx, 10*time.Second, 3*time.Second)
 |------|------|
 | `SuccessCount()` | 成功任务数 |
 | `FailCount()` | 失败任务数 |
-| `ErrCount()` | 错误数 |
+| `TotalCount()` | 总任务数 |
+| `HasError()` | 是否有错误 |
 | `FirstError()` | 第一个错误 |
+| `Errors()` | 所有错误 |
+| `JoinErrors()` | 合并所有错误 |
 | `Stats()` | 完整统计信息 |
+| `Concurrency()` | 并发度 |
+| `Active()` | 活跃任务数 |
+| `Busy()` | 繁忙任务数 |
+| `WaitTimeout(d)` | 带超时等待 |
+| `WaitContext(ctx)` | Context 控制等待 |
+| `Reset()` | 重置 |
 
 ---
 
@@ -241,11 +456,14 @@ nr, ffCtx := nr.WithFFTimeoutSubmitTOTraceID(ctx, 10*time.Second, 3*time.Second)
 | 适用场景 | 一次性批量任务 | 长期运行反复提交 |
 | 生命周期管理 | 用完即销毁 | 需手动 Close |
 | 结果顺序保证 | ✅ GoAt 保证 | ✅ SubmitAt 保证 |
-| Wait 后可继续提交 | ✅ | ❌ |
+| Wait 后可继续提交 | ✅ (需 Reset) | ❌ |
+| 动态调整并发度 | ❌ | ✅ Resize |
 
 ---
 
 ## 完整示例
+
+### 示例1：并发查询用户信息
 
 ```go
 package main
@@ -262,18 +480,16 @@ func main() {
     ctx := context.Background()
     ctx = async.EnsureTraceID(ctx)
 
-    // 场景：并发查询用户信息并统计
     userIDs := []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}
 
     // 创建并发度为 5 的任务组
     g := async.NewGroup[string](5)
 
-    // 提交任务
+    // 提交任务（保证结果顺序）
     for i, uid := range userIDs {
         idx := i
         id := uid
         g.GoAt(idx, ctx, func(ctx context.Context) (string, error) {
-            // 模拟查询用户信息
             name, err := queryUser(ctx, id)
             if err != nil {
                 return "", fmt.Errorf("查询用户 %d 失败: %w", id, err)
@@ -295,35 +511,149 @@ func main() {
         }
     }
 
+    // 统计
     fmt.Printf("成功查询 %d 个用户: %v\n", len(names), names)
+    fmt.Printf("总数: %d, 成功: %d, 失败: %d\n",
+        g.TotalCount(), g.SuccessCount(), g.FailCount())
 }
 
 func queryUser(ctx context.Context, id int) (string, error) {
-    // 实际业务逻辑
     return fmt.Sprintf("User-%d", id), nil
+}
+```
+
+### 示例2：NoResult 批量文件下载
+
+```go
+func downloadFiles(urls []string) error {
+    ctx := context.Background()
+    nr := async.NewNoResult(8)
+    nr.WithTimeout(30 * time.Second) // 每个文件最多 30 秒
+
+    for _, url := range urls {
+        u := url
+        nr.Go(ctx, func(ctx context.Context) error {
+            return downloadFile(ctx, u)
+        })
+    }
+
+    nr.Wait()
+
+    // 检查结果
+    stats := nr.Stats()
+    fmt.Printf("下载完成: 成功=%d 失败=%d\n", stats.SuccessTask, stats.FailTask)
+
+    if err := nr.FirstError(); err != nil {
+        log.Printf("首个失败: %v", err)
+        // 合并所有错误
+        if joinedErr := nr.JoinErrors(); joinedErr != nil {
+            return fmt.Errorf("批量下载失败: %w", joinedErr)
+        }
+    }
+    return nil
+}
+```
+
+### 示例3：FailFast + 验证
+
+```go
+func validateAll(items []string) error {
+    ctx, cancel := context.WithCancel(context.Background())
+    defer cancel()
+
+    g, ffCtx := async.NewGroup[bool](3).WithFailFast(ctx)
+
+    for i, item := range items {
+        idx := i
+        it := item
+        g.GoAt(idx, ffCtx, func(ctx context.Context) (bool, error) {
+            if !isValid(it) {
+                return false, fmt.Errorf("验证失败: %s", it)
+            }
+            return true, nil
+        })
+    }
+
+    results := g.Wait()
+
+    // 检查结果
+    if g.HasError() {
+        return fmt.Errorf("验证失败 (首个): %w", g.FirstError())
+    }
+
+    // 全部通过
+    values := g.Values()
+    fmt.Printf("全部验证通过，共 %d 项\n", len(values))
+    return nil
 }
 ```
 
 ---
 
-## 方法速查表
+## Group 方法速查表
 
-| 方法 | 说明 |
+### 创建
+
+| 函数 | 说明 |
 |------|------|
 | `NewGroup[T](concurrency)` | 创建泛型任务组 |
 | `DefaultGroup[T]()` | 使用默认 IO 并发度创建 |
-| `Go(ctx, fn)` | 追加提交任务 |
-| `GoAt(index, ctx, fn)` | 指定位置提交任务 |
-| `Wait()` | 阻塞等待所有任务 |
+| `NewNoResult(concurrency)` | 创建无返回值任务组 |
+| `DefaultNoResult()` | 创建默认并发度无返回值任务组 |
+
+### 提交
+
+| 方法 | 说明 |
+|------|------|
+| `Go(ctx, fn)` | 追加到任务队列 |
+| `GoAt(index, ctx, fn)` | 指定结果位置添加任务 |
+| `GoWithTimeout(ctx, d, fn)` | 追加带超时任务 |
+| `GoAtWithTimeout(index, ctx, d, fn)` | 指定位置带超时任务 |
+
+### 等待
+
+| 方法 | 说明 |
+|------|------|
+| `Wait()` | 阻塞等待，返回全部结果 |
 | `WaitTimeout(d)` | 带超时等待 |
 | `WaitContext(ctx)` | Context 控制等待 |
+
+### 高级选项
+
+| 方法 | 说明 |
+|------|------|
 | `WithTimeout(d)` | 设置超时 |
 | `WithSubmitTimeout(d)` | 设置提交超时 |
 | `WithFailFast(ctx)` | 开启 FailFast |
 | `WithContext(ctx)` | 设置上下文 |
 | `WithTraceID(ctx)` | 设置 TraceID |
-| `Size()` | Worker 数量 |
+| ... 及其组合变体 | (共 16 种组合) |
+
+### 查询
+
+| 方法 | 说明 |
+|------|------|
+| `Concurrency()` | Worker 数量 |
 | `Active()` | 活跃任务数 |
 | `Idle()` | 空闲槽位数 |
-| `ErrCount()` | 错误数量 |
-| `FirstError()` | 第一个错误 |
+| `Busy()` | 繁忙槽位数 |
+| `Stats()` | 完整统计 GroupStats |
+
+### 结果提取
+
+| 方法 | 说明 |
+|------|------|
+| `Values()` | 成功值切片 |
+| `Errors()` | 错误切片 |
+| `FirstError()` | 首个错误 |
+| `JoinErrors()` | 合并所有错误 |
+| `FailCount()` | 失败数 |
+| `SuccessCount()` | 成功数 |
+| `TotalCount()` | 总数 |
+| `HasError()` | 是否有错误 |
+
+### 动态管理
+
+| 方法 | 说明 |
+|------|------|
+| `Reset()` | 关闭旧组创建新组 |
