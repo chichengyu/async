@@ -1,5 +1,28 @@
 // Package pipeline 提供多阶段数据处理管道。
-// Pipeline 依赖于 core、group、task 等包。
+//
+// 核心功能：
+//   - 多阶段串行管道：Stage 定义阶段名和并发度，前一阶段输出作为后一阶段输入
+//   - Execute：依次执行各阶段，每阶段并发处理
+//   - ExecuteWithMeta：带阶段元信息的执行，记录每项在哪个阶段产生
+//   - ExecuteWithGroup：使用 Group 执行的变体，支持错误聚合
+//
+// 使用示例：
+//
+//	// 定义两个阶段：解析 + 校验
+//	stages := []pipeline.Stage[string]{
+//	    {Name: "parse", Concurrency: 4},
+//	    {Name: "validate", Concurrency: 2},
+//	}
+//	items := []string{"data1", "data2", "data3"}
+//	results, err := pipeline.Execute(ctx, stages, items, func(ctx context.Context, stage string, item string) (string, error) {
+//	    switch stage {
+//	    case "parse":
+//	        return parseData(ctx, item)
+//	    case "validate":
+//	        return validateData(ctx, item)
+//	    }
+//	    return item, nil
+//	})
 package pipeline
 
 import (
@@ -10,20 +33,53 @@ import (
 	"github.com/chichengyu/async/group"
 )
 
-// Stage[T] is a pipeline stage with a Name and a Concurrency hint.
+// Stage 定义管道中的一个处理阶段。
+//
+// 使用示例：
+//
+//	stages := []pipeline.Stage[int]{
+//	    {Name: "multiply", Concurrency: 4},  // 阶段1：乘以2，4个并发
+//	    {Name: "add", Concurrency: 2},       // 阶段2：加1，2个并发
+//	}
 type Stage[T any] struct {
-	Name        string
-	Concurrency int
+	Name        string // 阶段名称（可用于日志和 ExecuteWithMeta 中的标识）
+	Concurrency int    // 该阶段的并发度（<=0 时使用默认 IO 并发度）
 }
 
-// ResultWithMeta wraps core.Result with stage name.
+// ResultWithMeta 带阶段信息的 Result，用于 ExecuteWithMeta。
 type ResultWithMeta[T any] struct {
-	core.Result[T]
-	Stage string
+	core.Result[T]        // 嵌入标准 Result
+	Stage          string // 产生此结果的阶段名称
 }
 
 // Execute 依次执行各阶段，前一个阶段的输出作为后一个阶段的输入。
-// 每个阶段用 Group 并发处理。
+// 每个阶段用分块并发的方式处理所有元素。
+//
+// 参数：
+//   - ctx：上下文
+//   - stages：阶段定义列表
+//   - initialItems：初始数据
+//   - fn：处理函数，接收 ctx、阶段名和当前元素，返回处理后的元素
+//
+// 使用示例：
+//
+//	// 数据清洗管道：去重 -> 标准化 -> 校验
+//	stages := []pipeline.Stage[Record]{
+//	    {Name: "dedup", Concurrency: 2},
+//	    {Name: "normalize", Concurrency: 4},
+//	    {Name: "validate", Concurrency: 2},
+//	}
+//	results, err := pipeline.Execute(ctx, stages, records, func(ctx context.Context, stage string, r Record) (Record, error) {
+//	    switch stage {
+//	    case "dedup":
+//	        return dedupRecord(ctx, r)
+//	    case "normalize":
+//	        return normalizeRecord(ctx, r)
+//	    case "validate":
+//	        return validateRecord(ctx, r)
+//	    }
+//	    return r, nil
+//	})
 func Execute[T any](
 	ctx context.Context,
 	stages []Stage[T],
@@ -78,6 +134,15 @@ func Execute[T any](
 }
 
 // ExecuteWithMeta 和 Execute 类似，但返回带 stage 信息的 ResultWithMeta。
+// 每个阶段处理后的每个元素都会生成一个 ResultWithMeta 记录，便于追踪每项在哪一阶段产生。
+//
+// 使用示例：
+//
+//	// 追踪每个元素在各阶段的处理情况
+//	metaResults := pipeline.ExecuteWithMeta(ctx, stages, items, fn)
+//	for _, mr := range metaResults {
+//	    fmt.Printf("阶段=%s 值=%v 错误=%v\n", mr.Stage, mr.Value, mr.Err)
+//	}
 func ExecuteWithMeta[T any](
 	ctx context.Context,
 	stages []Stage[T],
@@ -100,7 +165,7 @@ func ExecuteWithMeta[T any](
 			concurrency = 1
 		}
 
-		results := make([]core.Result[T], len(items))
+		stageResults := make([]core.Result[T], len(items))
 		chunkSize := (len(items) + concurrency - 1) / concurrency
 		var wg sync.WaitGroup
 		var mu sync.Mutex
@@ -119,13 +184,14 @@ func ExecuteWithMeta[T any](
 				for j := start; j < end; j++ {
 					val, err := fn(ctx, stage.Name, items[j])
 					mu.Lock()
-					results[j] = core.Result[T]{Value: val, Err: err}
+					stageResults[j] = core.Result[T]{Value: val, Err: err}
 					mu.Unlock()
 				}
 			}(start, end)
 		}
 		wg.Wait()
-		for _, r := range results {
+		for _, r := range stageResults {
+			results = append(results, ResultWithMeta[T]{Result: r, Stage: stage.Name})
 			items = append(items, r.Value)
 		}
 	}
@@ -133,7 +199,18 @@ func ExecuteWithMeta[T any](
 	return results
 }
 
-// ExecuteWithGroup 使用 Group 执行所有项，支持错误聚合。
+// ExecuteWithGroup 使用 Group 执行所有项，支持错误聚合（通过 Group.Errors/FirstError）。
+// 适合需要在阶段间关心每个元素状态的场景。
+//
+// 使用示例：
+//
+//	// 用 Group 并发处理所有元素
+//	results, err := pipeline.ExecuteWithGroup(ctx, items, func(ctx context.Context, item string) (string, error) {
+//	    return processItem(ctx, item)
+//	}, 8)
+//	if err != nil {
+//	    log.Printf("处理出错: %v", err)
+//	}
 func ExecuteWithGroup[T any](
 	ctx context.Context,
 	items []T,

@@ -99,10 +99,10 @@ func (rl *RateLimiter) startRefill() {
 	ticker := time.NewTicker(interval)
 	go func() {
 		defer ticker.Stop()
-		defer close(rl.refillDone)
 		for {
 			select {
 			case <-rl.refillStop:
+				close(rl.refillDone)
 				return
 			case <-ticker.C:
 				select {
@@ -160,9 +160,11 @@ func (rl *RateLimiter) Acquire(ctx context.Context) error {
 }
 
 func (rl *RateLimiter) Release() {
-	if rl.closed.Load() {
-		core.LogCtxWarn(rl.ctx, "rate limiter release on closed limiter, token may be lost")
-	}
+	defer func() {
+		if r := recover(); r != nil {
+			core.LogCtxWarn(rl.ctx, "rate limiter release on closed limiter, token may be lost")
+		}
+	}()
 	select {
 	case rl.tokens <- struct{}{}:
 	default:
@@ -170,15 +172,19 @@ func (rl *RateLimiter) Release() {
 }
 
 func (rl *RateLimiter) Close() {
-	if rl.closed.CompareAndSwap(false, true) {
-		if rl.refillStop != nil {
-			close(rl.refillStop)
-		}
+	rl.mu.Lock()
+	if !rl.closed.CompareAndSwap(false, true) {
+		rl.mu.Unlock()
+		return
+	}
+	if rl.refillStop != nil {
+		close(rl.refillStop)
 		if rl.refillDone != nil {
 			<-rl.refillDone
 		}
-		close(rl.tokens)
 	}
+	close(rl.tokens)
+	rl.mu.Unlock()
 }
 
 func (rl *RateLimiter) Resize(newRate int) {
@@ -188,26 +194,29 @@ func (rl *RateLimiter) Resize(newRate int) {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 
+	if rl.closed.Load() {
+		return
+	}
+
 	current := int(rl.size)
 	if newRate == current {
 		return
 	}
 
+	oldTokens := rl.tokens
 	newTokens := make(chan struct{}, newRate)
 	for i := 0; i < current; i++ {
 		select {
-		case <-rl.tokens:
+		case <-oldTokens:
 		default:
 		}
 	}
 	for i := 0; i < newRate; i++ {
 		newTokens <- struct{}{}
 	}
-	if rl.closed.Load() {
-		close(newTokens)
-	}
 	rl.tokens = newTokens
 	rl.size = int32(newRate)
+	close(oldTokens)
 }
 
 func (rl *RateLimiter) Size() int {

@@ -436,9 +436,14 @@ func (g *Group[T]) HasError() bool {
 
 func (g *Group[T]) TotalCount() int64 {
 	g.mu.Lock()
-	n := len(g.results)
-	g.mu.Unlock()
-	return int64(n)
+	defer g.mu.Unlock()
+	var n int64
+	for _, r := range g.results {
+		if r.Occupied {
+			n++
+		}
+	}
+	return n
 }
 
 func (g *Group[T]) Concurrency() int {
@@ -554,6 +559,7 @@ func (g *Group[T]) Reset() (*Group[T], error) {
 	g.active.Store(0)
 	g.busy.Store(0)
 	g.waiting.Store(false)
+	g.limit = make(chan struct{}, savedConcurrency)
 	core.LogCtxDebug(context.Background(), "async: Group.Reset completed, above config preserved across reset",
 		core.Dur("timeout", savedTimeout),
 		core.Dur("submit_timeout", savedSubmitTimeout),

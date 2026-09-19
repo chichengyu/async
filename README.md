@@ -4,7 +4,9 @@
 [![Go Reference](https://pkg.go.dev/badge/github.com/chichengyu/async.svg)](https://pkg.go.dev/github.com/chichengyu/async)
 [![License](https://img.shields.io/badge/license-MIT-green?style=flat)](LICENSE)
 
-泛型 Go 并发工具库，提供协程池、任务组、异步任务、Map/Reduce、重试、限流、管道等开箱即用的并发原语。
+泛型 Go 并发工具库，提供协程池、任务组、异步任务、Map/Reduce、重试、限流、管道等开箱即用的并发原语。**零外部依赖，仅需 Go 1.25+**。
+
+---
 
 ## 安装
 
@@ -12,7 +14,264 @@
 go get github.com/chichengyu/async
 ```
 
-## 快速开始
+---
+
+## 使用流程
+
+推荐按以下步骤使用 async 库：
+
+```
+第一步：全局配置      → 设置超时、并发度、Logger
+第二步：选择并发工具  → Pool / Group / Task，根据场景选择合适的并发模式
+第三步：数据并行处理  → Map / ForEach / Reduce / Chunk 处理切片数据
+第四步：处理结果      → 使用 Result 辅助函数提取和判断结果
+第五步：高级功能      → Retry / RateLimiter / Pipeline，增强健壮性
+```
+
+---
+
+## 第一步：全局配置
+
+在程序启动时一次性配置，影响后续所有操作。
+
+```go
+import "github.com/chichengyu/async"
+
+func init() {
+    // 设置全局默认超时
+    async.SetDefaultTimeout(30 * time.Second)
+
+    // 设置提交超时（worker 满时最多等多久）
+    async.SetSubmitTimeout(5 * time.Second)
+
+    // 设置失败日志级别
+    async.SetTaskFailLogLevel(async.LogLevelWarn)
+}
+```
+
+| 配置项 | 函数 | 默认值 |
+|--------|------|--------|
+| 默认超时 | `SetDefaultTimeout(d)` | 30s |
+| 提交超时 | `SetSubmitTimeout(d)` | 5s |
+| 清理超时 | `SetMaxCleanupDuration(d)` | 30min |
+| 失败日志级别 | `SetTaskFailLogLevel(lvl)` | Error |
+| Trace 日志开关 | `SetTraceLogEnabled(bool)` | 开 |
+| 自定义 Logger | `SetLogger(logger)` | 静默 |
+
+> 详细说明请参阅：[全局配置文档](docs/config.md)
+
+---
+
+## 第二步：选择并发工具
+
+async 提供了三种并发模式，根据场景选择：
+
+| 场景 | 使用 | 特点 |
+|------|------|------|
+| 长期运行的后台服务，反复提交任务 | [Pool（协程池）](docs/pool.md) | goroutine 复用，需手动 Close |
+| 一次性批量任务（数据迁移、批量 API 调用） | [Group（任务组）](docs/group.md) | 用完即销毁，每次 Go 新建 goroutine |
+| 单个异步任务，fire-and-forget | [Task（异步任务）](docs/task.md) | 不阻塞当前 goroutine，支持超时 |
+
+### Pool - 协程池
+
+```go
+p := async.NewPool[string](async.IO()) // IO 密集型并发度
+defer p.Close()
+
+for _, url := range urls {
+    p.Submit(ctx, func(ctx context.Context) (string, error) {
+        return httpGet(ctx, url)
+    })
+}
+
+results, err := p.Wait()
+```
+
+> 详细说明请参阅：[协程池 (Pool) 文档](docs/pool.md)
+
+### Group - 任务组
+
+```go
+g := async.NewGroup[int](4)
+
+g.Go(ctx, func(ctx context.Context) (int, error) {
+    return fetchUserCount(ctx), nil
+})
+g.Go(ctx, func(ctx context.Context) (int, error) {
+    return fetchOrderCount(ctx), nil
+})
+
+results := g.Wait()
+```
+
+> 详细说明请参阅：[任务组 (Group) 文档](docs/group.md)
+
+### Task - 异步任务
+
+```go
+// fire-and-forget
+async.Go(ctx, func(ctx context.Context) {
+    metrics.Record(ctx, "request.count", 1)
+})
+
+// 带返回值异步
+ar := async.GoResult(ctx, func(ctx context.Context) (*User, error) {
+    return db.GetUser(ctx, userID)
+})
+user, err := ar.Wait()
+```
+
+> 详细说明请参阅：[异步任务 (Task) 文档](docs/task.md)
+
+---
+
+## 第三步：数据并行处理
+
+对切片元素进行并发处理，是 async 最常用的功能。
+
+### Map - 并发映射
+
+```go
+results := async.Map(ctx, items, async.IO(), func(ctx context.Context, item string) (Result, error) {
+    return process(ctx, item)
+})
+```
+
+### ForEach - 并发遍历
+
+```go
+nr, err := async.ForEach(ctx, records, async.IO(), func(ctx context.Context, r Record) error {
+    return db.Insert(ctx, r)
+})
+fmt.Printf("成功: %d, 失败: %d\n", nr.SuccessCount(), nr.FailCount())
+```
+
+### Reduce - 并发聚合
+
+```go
+sum, err := async.Reduce(ctx, nums, async.IO(),
+    func(ctx context.Context, n int) (int, error) { return n * n, nil },
+    0,
+    func(acc, val int) int { return acc + val },
+)
+```
+
+### Chunk - 分块批量处理
+
+```go
+// 每 100 条一批，批量 INSERT
+results := async.MapChunk(ctx, records, 4, 100, func(ctx context.Context, batch []Record) (int64, error) {
+    return db.BatchInsert(ctx, batch)
+})
+```
+
+> 详细说明请参阅：[数据并行 (Map/ForEach/Reduce/Chunk) 文档](docs/mapreduce.md)
+
+### 变体矩阵
+
+每种数据并行函数都支持以下变体：
+
+| 变体 | 说明 |
+|------|------|
+| 基础 | `Map` / `ForEach` / `Reduce` |
+| `WithFailFast` | 首个失败立即取消其他任务 |
+| `WithTimeout` | 指定总超时时间 |
+| `WithFFTimeout` | FailFast + 超时 |
+| `Default*` | 使用默认 IO 并发度的快捷方式 |
+| `Serial` | 串行处理（数据量小或需严格顺序） |
+
+---
+
+## 第四步：处理结果
+
+所有并发操作返回 `Result[T]` 或 `[]Result[T]`，通过辅助函数判断和提取。
+
+```go
+results := async.Map(ctx, items, async.IO(), fn)
+
+// 判断结果状态
+if async.Every(results)     { fmt.Println("全部成功") }
+if async.Some(results)      { fmt.Println("至少有一个成功") }
+if async.AnyError(results)  { fmt.Println("存在失败") }
+
+// 提取结果
+values := async.ResultValues(results)  // 只提取成功的值
+errors := async.ResultErrors(results)  // 只提取错误
+
+// 分区
+successes, failures := async.Partition(results)
+```
+
+**Result 方法：**
+
+| 方法 | 说明 |
+|------|------|
+| `r.Ok()` | 是否成功（无错误无 panic） |
+| `r.IsPanic()` | 错误是否由 panic 导致 |
+| `r.Value` | 结果值 |
+| `r.Err` | 错误信息 |
+
+---
+
+## 第五步：高级功能
+
+### 重试机制
+
+```go
+// 指数退避重试：100ms → 200ms → 400ms → ...
+err := async.RetryWithBackoff(ctx, 3, 100*time.Millisecond, func(ctx context.Context) error {
+    return callExternalAPI(ctx, request)
+})
+
+// 带每次调用超时
+result, err := async.RetryWithConfig(ctx, fn, 3, 100*time.Millisecond, 5*time.Second,
+    async.TimeoutOpt{PerCallTimeout: 2 * time.Second})
+```
+
+> 详细说明请参阅：[重试机制 (Retry) 文档](docs/retry.md)
+
+### 限流器
+
+```go
+// 令牌桶：每秒 10 次
+rl := async.NewRateLimiter(10, time.Second)
+defer rl.Close()
+rl.Wait(ctx)
+
+// 滑动窗口：每 10 秒最多 100 次
+sw := async.NewSlidingWindowRateLimiter(100, 10*time.Second)
+if sw.Allow() { doRequest() }
+
+// 自适应限流：根据成功率自动调整
+al := async.NewAdaptiveRateLimiter(5, 100)
+```
+
+> 详细说明请参阅：[限流器 (RateLimiter) 文档](docs/ratelimit.md)
+
+### 管道处理
+
+```go
+stages := []async.Stage[Record]{
+    {Name: "parse", Concurrency: 4},
+    {Name: "enrich", Concurrency: 8},
+    {Name: "validate", Concurrency: 2},
+}
+results, err := async.Execute(ctx, stages, records, func(ctx context.Context, stage string, r Record) (Record, error) {
+    // 根据 stage 分发不同逻辑
+    switch stage {
+    case "parse":   return parseRecord(ctx, r)
+    case "enrich":  return enrichRecord(ctx, r)
+    case "validate": return validateRecord(ctx, r)
+    }
+    return r, nil
+})
+```
+
+> 详细说明请参阅：[管道 (Pipeline) 文档](docs/pipeline.md)
+
+---
+
+## 完整示例
 
 ```go
 package main
@@ -20,158 +279,143 @@ package main
 import (
     "context"
     "fmt"
+    "log"
+    "time"
 
     "github.com/chichengyu/async"
 )
 
 func main() {
+    // 第一步：全局配置
+    async.SetDefaultTimeout(30 * time.Second)
+    async.SetTaskFailLogLevel(async.LogLevelWarn)
+
     ctx := context.Background()
+    ctx = async.EnsureTraceID(ctx)
 
-    // 并发 Map：对每个元素并发执行转换
-    results, _ := async.Map(ctx, []int{1, 2, 3, 4, 5}, func(ctx context.Context, n int) (int, error) {
-        return n * 2, nil
-    }, 3)
+    // 第二步：选择并发工具 - 使用 Pool 处理高频任务
+    p := async.NewPool[string](async.IO())
+    defer p.Close()
 
-    for _, r := range results {
-        fmt.Println(r.Value) // 2, 4, 6, 8, 10
+    urls := []string{"url1", "url2", "url3", "url4", "url5"}
+    for _, url := range urls {
+        u := url
+        p.Submit(ctx, func(ctx context.Context) (string, error) {
+            return fetchURL(ctx, u)
+        })
+    }
+
+    results, _ := p.Wait()
+
+    // 第四步：处理结果
+    if async.Every(results) {
+        fmt.Println("全部请求成功")
+    } else {
+        values, errors := async.Partition(results)
+        log.Printf("成功 %d 个, 失败 %d 个: %v", len(values), len(errors), errors)
     }
 }
+
+func fetchURL(ctx context.Context, url string) (string, error) {
+    // 第五步：使用重试机制
+    return async.RetryWithConfig(ctx,
+        func(ctx context.Context) (string, error) {
+            return httpGetWithTimeout(ctx, url)
+        },
+        3, 100*time.Millisecond, 5*time.Second,
+        async.TimeoutOpt{PerCallTimeout: 3 * time.Second},
+    )
+}
 ```
+
+---
 
 ## 模块概览
 
-| 包 | 说明 |
-|---|---|
-| `async` | 顶层入口，重导出所有子包的类型与函数 |
-| `core` | 基础类型、错误、日志、全局配置 |
-| `pool` | 泛型协程池 `Pool[T]`，复用 goroutine 处理高频小任务 |
-| `group` | 泛型任务组 `Group[T]`，一次性批量并发任务 |
-| `task` | 单个异步任务 `Task[T]` 与可取消的 `AsyncResult[T]` |
-| `mapreduce` | 并发 `Map`、`ForEach`、`Reduce`、`Chunk` 等数据并行操作 |
-| `retry` | 指数退避重试与超时控制 |
-| `ratelimit` | 速率限制器，支持阻塞/拒绝/强制阻塞策略 |
-| `pipeline` | 多阶段数据处理管道 |
+| 包 | 说明 | 详文档 |
+|---|---|---|
+| `async` | 顶层入口，重导出所有子包的类型与函数 | - |
+| `core` | 基础类型、错误、日志、全局配置 | [config.md](docs/config.md) |
+| `pool` | 泛型协程池 `Pool[T]`，复用 goroutine | [pool.md](docs/pool.md) |
+| `group` | 泛型任务组 `Group[T]`，一次性批量并发 | [group.md](docs/group.md) |
+| `task` | 单个异步任务 `Task[T]` 与可取消的 `AsyncResult[T]` | [task.md](docs/task.md) |
+| `mapreduce` | 并发 Map/ForEach/Reduce/Chunk 数据并行操作 | [mapreduce.md](docs/mapreduce.md) |
+| `retry` | 指数退避重试与超时控制 | [retry.md](docs/retry.md) |
+| `ratelimit` | 速率限制器（令牌桶/滑动窗口/自适应） | [ratelimit.md](docs/ratelimit.md) |
+| `pipeline` | 多阶段数据处理管道 | [pipeline.md](docs/pipeline.md) |
 
-## 主要功能
+---
 
-### Pool - 协程池
-
-适合高频小任务的协程复用场景，支持超时控制、快速失败、提交超时。
+## 并发度选择指南
 
 ```go
-p := async.NewPool[int](4)
-defer p.Close()
-
-for i := 0; i < 10; i++ {
-    p.Submit(ctx, i, func(ctx context.Context, n int) (int, error) {
-        return n * n, nil
-    })
-}
-
-results, err := p.Wait()
+async.CPU()    // CPU 密集型 = runtime.NumCPU()
+async.IO()     // IO 密集型 = runtime.NumCPU() * 2（推荐默认值）
+async.IOMulti(n) // 自定义倍数 = runtime.NumCPU() * n
 ```
 
-### Group - 任务组
+| 场景 | 推荐并发度 | 说明 |
+|------|-----------|------|
+| 纯计算（加解密、编码） | `CPU()` | CPU 核心数即可 |
+| 网络请求、数据库查询 | `IO()` | IO 等待多，可超额订阅 |
+| 文件读写 | `IO()` | 磁盘 IO 也是等待型 |
+| 批量调用外部 API | `IOMulti(4)` | 高延迟外部服务 |
 
-适合一次性批量并发任务，每次 `Go` 新建 goroutine。
+---
 
-```go
-g := async.NewGroup[string](4)
-g.Go(ctx, "hello", func(ctx context.Context, s string) (string, error) {
-    return s + " world", nil
-})
-results, err := g.Wait()
-```
+## 错误类型速查
 
-### Map / ForEach / Reduce
+| 常量 | 说明 |
+|------|------|
+| `ErrPoolClosed` | 池已关闭 |
+| `ErrPoolWaited` | Wait 后调用 Submit |
+| `ErrSubmitTimeout` | 提交超时 |
+| `ErrGroupWaited` | Group Wait 后调用 Go |
+| `ErrSkipped` | FailFast 模式任务被跳过 |
+| `ErrRateLimiterStopped` | 限流器已停止 |
+| `ErrTimeout` | 操作超时 |
 
-对集合进行并发操作。
+---
 
-```go
-// Map
-results, _ := async.Map(ctx, items, transformFn, concurrency)
+## API 总览
 
-// ForEach
-async.ForEach(ctx, items, fn, concurrency)
+### 创建函数
 
-// Reduce
-result, _ := async.Reduce(ctx, items, initial, reducer, concurrency)
-```
+| 函数 | 说明 |
+|------|------|
+| `NewPool[T](size)` | 创建协程池 |
+| `NewGroup[T](concurrency)` | 创建任务组 |
+| `NewNoResult(concurrency)` | 创建无返回值任务组 |
+| `NewNoResultPool(size)` | 创建无返回值协程池 |
+| `NewRateLimiter(rate, d)` | 创建限流器 |
+| `NewSlidingWindowRateLimiter(limit, window)` | 创建滑动窗口限流器 |
+| `NewTokenBucket(rate, capacity)` | 创建经典令牌桶 |
+| `NewAdaptiveRateLimiter(min, max)` | 创建自适应限流器 |
+| `NewPipeline[T](ctx, stages...)` | 创建串行管道 |
 
-### Retry - 重试
+### 并发执行
 
-指数退避重试，支持最大重试次数和退避时间限制。
+| 函数 | 说明 |
+|------|------|
+| `Go(ctx, fn)` | 启动无返回值异步任务 |
+| `GoResult[T](ctx, fn)` | 启动带返回值异步任务 |
+| `Map[T,R](ctx, items, c, fn)` | 并发映射 |
+| `ForEach[T](ctx, items, c, fn)` | 并发遍历 |
+| `Reduce[T,R](ctx, items, c, mapFn, init, reduceFn)` | 并发聚合 |
+| `Execute[T](ctx, stages, items, fn)` | 执行多阶段管道 |
 
-```go
-val, err := async.RetryWithBackoff(ctx, fn, 3, 100*time.Millisecond, 5*time.Second)
-```
+### 工具函数
 
-### RateLimiter - 限流
+| 函数 | 说明 |
+|------|------|
+| `Retry(ctx, n, fn)` | 简单重试 |
+| `RetryWithBackoff(ctx, n, d, fn)` | 指数退避重试 |
+| `Chunk(items, size)` | 按大小分块 |
+| `ChunkN(items, n)` | 按数量均分 |
+| `ResultValues(results)` | 提取成功值 |
+| `Partition(results)` | 分离值和错误 |
 
-```go
-rl := async.NewRateLimiter(10, time.Second) // 每秒 10 次
-rl.Wait(ctx)
-```
-
-### Pipeline - 管道
-
-多阶段数据处理，前一阶段输出作为后一阶段输入。
-
-```go
-stages := []async.Stage[int]{
-    {Name: "stage1", Concurrency: 2},
-    {Name: "stage2", Concurrency: 3},
-}
-results, _ := async.Execute(ctx, stages, items, fn)
-```
-
-## 配置
-
-```go
-// 全局默认超时（影响 Group 和 Pool）
-async.SetDefaultTimeout(30 * time.Second)
-
-// Pool 提交超时
-async.SetSubmitTimeout(5 * time.Second)
-
-// 清理 goroutine 最大存活时间
-async.SetMaxCleanupDuration(30 * time.Minute)
-
-// 任务失败日志级别
-async.SetTaskFailLogLevel(async.LogLevelWarn)
-
-// Trace 日志开关
-async.SetTraceLogEnabled(true)
-```
-
-## 日志接口
-
-本库不依赖任何第三方日志框架，采用接口注入方式。默认使用空日志实现（静默运行），你可以注入任意日志实现。
-
-```go
-// 注入自定义日志实现（例如基于 zerolog）
-async.SetLogger(myLogger)
-
-// 获取当前日志器
-logger := async.GetLogger()
-```
-
-如果需要与 zerolog 集成，可以实现 `async.Logger` 接口：
-
-```go
-type Logger interface {
-    Log(ctx context.Context, level LogLevel, msg string, fields ...LogField)
-    With(fields ...LogField) Logger
-    WithContext(ctx context.Context) context.Context
-}
-```
-
-## 并发度控制
-
-```go
-async.CPU()   // 返回 CPU 密集型并发度，默认为 runtime.NumCPU()
-async.IO()    // 返回 IO 密集型并发度，默认为 runtime.NumCPU() * 2
-```
+---
 
 ## 依赖
 

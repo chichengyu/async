@@ -1,4 +1,29 @@
 // Package retry 提供重试策略和超时控制。
+//
+// 核心功能：
+//   - 指数退避重试：RetryWithBackoff / RetryWithBackoffVoid / RetryWithBackoffResult
+//   - 线性退避重试：RetryWithLinearBackoff / RetryWithLinearBackoffVoid / RetryWithLinearBackoffResult
+//   - 可配置重试（支持每次调用超时）：RetryWithConfig / RetryWithConfigVoid
+//   - 超时与截止时间包装：WithTimeout / WithTimeoutVoid / WithDeadline / WithDeadlineVoid
+//   - 简单函数式重试：RetryFn.WithRetry(maxRetries)
+//   - Worker 绑定重试：BindRetryToWorker
+//
+// 退避算法：backoff = min(initialBackoff * 2^attempt, maxBackoff)
+//
+// 使用示例：
+//
+//	// 指数退避重试：最多重试3次，初始退避100ms，最大退避5s
+//	val, err := retry.RetryWithBackoff(ctx, fn, 3, 100*time.Millisecond, 5*time.Second)
+//
+//	// 带每次调用超时的重试
+//	val, err := retry.RetryWithConfig(ctx, fn, 3, 100*time.Millisecond, 5*time.Second,
+//	    retry.TimeoutOpt{PerCallTimeout: 2 * time.Second})
+//
+//	// 简单函数式重试
+//	err := retry.RetryFn(func() error { return doSomething() }).WithRetry(3)
+//
+//	// 给函数加超时
+//	val, err := retry.WithTimeout(ctx, 5*time.Second, fn)
 package retry
 
 import (
@@ -6,13 +31,28 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"runtime/debug"
 	"time"
 
 	"github.com/chichengyu/async/core"
 )
 
-// RetryWithBackoff executes fn with exponential backoff, respecting maxRetries+1 total attempts.
+// RetryWithBackoff 使用指数退避策略执行 fn，最多执行 maxRetries+1 次。
+// 退避时间计算公式：min(initialBackoff * 2^attempt, maxBackoff)。
+// 如果 initialBackoff 为 0，则不等待直接重试。
+//
+// 参数：
+//   - ctx：上下文，取消后终止重试
+//   - fn：要执行的函数
+//   - maxRetries：最大重试次数（总执行次数 = maxRetries + 1）
+//   - initialBackoff：初始退避时间
+//   - maxBackoff：最大退避时间上限
+//
+// 使用示例：
+//
+//	// 调用 RPC，最多重试3次（共4次尝试），退避从100ms开始指数增长到最多5s
+//	result, err := retry.RetryWithBackoff(ctx, func(ctx context.Context) (*Response, error) {
+//	    return rpcClient.Call(ctx, request)
+//	}, 3, 100*time.Millisecond, 5*time.Second)
 func RetryWithBackoff[T any](
 	ctx context.Context,
 	fn func(ctx context.Context) (T, error),
@@ -41,7 +81,14 @@ func RetryWithBackoff[T any](
 	panic("unreachable")
 }
 
-// RetryWithBackoffVoid is RetryWithBackoff for fn returning only error.
+// RetryWithBackoffVoid 与 RetryWithBackoff 相同，但 fn 只返回 error。
+//
+// 使用示例：
+//
+//	// 重试发送消息
+//	err := retry.RetryWithBackoffVoid(ctx, func(ctx context.Context) error {
+//	    return kafkaProducer.Send(ctx, msg)
+//	}, 3, 100*time.Millisecond, 5*time.Second)
 func RetryWithBackoffVoid(
 	ctx context.Context,
 	fn func(ctx context.Context) error,
@@ -55,7 +102,15 @@ func RetryWithBackoffVoid(
 	return err
 }
 
-// RetryWithBackoffResult is RetryWithBackoff returning Result[T].
+// RetryWithBackoffResult 与 RetryWithBackoff 相同，但返回 Result[T] 而非两个返回值。
+//
+// 使用示例：
+//
+//	// 返回 Result 类型便于统一处理
+//	r := retry.RetryWithBackoffResult(ctx, fn, 3, 100*time.Millisecond, 5*time.Second)
+//	if !r.Ok() {
+//	    log.Printf("重试失败: %v", r.Err)
+//	}
 func RetryWithBackoffResult[T any](
 	ctx context.Context,
 	fn func(ctx context.Context) (T, error),
@@ -67,7 +122,13 @@ func RetryWithBackoffResult[T any](
 	return core.Result[T]{Value: val, Err: err}
 }
 
-// RetryWithLinearBackoff executes fn with linear backoff.
+// RetryWithLinearBackoff 使用线性退避策略（固定退避时间）执行 fn。
+// 每次重试等待相同的 backoff 时间。
+//
+// 使用示例：
+//
+//	// 每次重试等1秒，最多重试5次
+//	val, err := retry.RetryWithLinearBackoff(ctx, fn, 5, 1*time.Second)
 func RetryWithLinearBackoff[T any](
 	ctx context.Context,
 	fn func(ctx context.Context) (T, error),
@@ -77,7 +138,7 @@ func RetryWithLinearBackoff[T any](
 	return RetryWithBackoff(ctx, fn, maxRetries, backoff, backoff)
 }
 
-// RetryWithLinearBackoffVoid is RetryWithLinearBackoff for fn returning only error.
+// RetryWithLinearBackoffVoid 与 RetryWithLinearBackoff 相同，但 fn 只返回 error。
 func RetryWithLinearBackoffVoid(
 	ctx context.Context,
 	fn func(ctx context.Context) error,
@@ -90,7 +151,7 @@ func RetryWithLinearBackoffVoid(
 	return err
 }
 
-// RetryWithLinearBackoffResult is RetryWithLinearBackoff returning Result[T].
+// RetryWithLinearBackoffResult 与 RetryWithLinearBackoff 相同，但返回 Result[T]。
 func RetryWithLinearBackoffResult[T any](
 	ctx context.Context,
 	fn func(ctx context.Context) (T, error),
@@ -101,40 +162,71 @@ func RetryWithLinearBackoffResult[T any](
 	return core.Result[T]{Value: val, Err: err}
 }
 
-// WithTimeout wraps fn with a context timeout.
+// WithTimeout 包装 fn，使其在指定超时后自动取消。
+//
+// 使用示例：
+//
+//	// 单个调用最多3秒
+//	val, err := retry.WithTimeout(ctx, 3*time.Second, func(ctx context.Context) (string, error) {
+//	    return httpGet(ctx, url)
+//	})
 func WithTimeout[T any](ctx context.Context, timeout time.Duration, fn func(ctx context.Context) (T, error)) (T, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	return fn(ctx)
 }
 
-// WithTimeoutVoid is WithTimeout for fn returning only error.
+// WithTimeoutVoid 与 WithTimeout 相同，但 fn 只返回 error。
 func WithTimeoutVoid(ctx context.Context, timeout time.Duration, fn func(ctx context.Context) error) error {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	return fn(ctx)
 }
 
-// WithDeadline wraps fn with a context deadline.
+// WithDeadline 包装 fn，使其在指定截止时间后自动取消。
+//
+// 使用示例：
+//
+//	// 必须在 5 秒后之前完成
+//	deadline := time.Now().Add(5 * time.Second)
+//	val, err := retry.WithDeadline(ctx, deadline, fn)
 func WithDeadline[T any](ctx context.Context, deadline time.Time, fn func(ctx context.Context) (T, error)) (T, error) {
 	ctx, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
 	return fn(ctx)
 }
 
-// WithDeadlineVoid is WithDeadline for fn returning only error.
+// WithDeadlineVoid 与 WithDeadline 相同，但 fn 只返回 error。
 func WithDeadlineVoid(ctx context.Context, deadline time.Time, fn func(ctx context.Context) error) error {
 	ctx, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
 	return fn(ctx)
 }
 
-// TimeoutOpt allows configuring per-call timeout within retry.
+// TimeoutOpt 用于 RetryWithConfig 的每次调用超时配置。
+//
+// 使用示例：
+//
+//	retry.RetryWithConfig(ctx, fn, 3, 100*time.Millisecond, 5*time.Second,
+//	    retry.TimeoutOpt{PerCallTimeout: 2 * time.Second})
 type TimeoutOpt struct {
-	PerCallTimeout time.Duration
+	PerCallTimeout time.Duration // 每次调用（含重试中的每次尝试）的超时时间
 }
 
-// RetryWithConfig supports per-call timeouts and configurable error hooks.
+// RetryWithConfig 支持每次调用超时的指数退避重试。
+// 相比 RetryWithBackoff，增加了对每次 fn 调用的超时控制，
+// 并且会区分 context.DeadlineExceeded 和 context.Canceled 错误（这两种错误不重试）。
+//
+// 使用示例：
+//
+//	// 每次调用最多2秒，最多重试3次，退避100ms到5s
+//	result, err := retry.RetryWithConfig(ctx, func(ctx context.Context) (*Data, error) {
+//	    return fetchData(ctx, id)
+//	}, 3, 100*time.Millisecond, 5*time.Second,
+//	    retry.TimeoutOpt{PerCallTimeout: 2 * time.Second})
+//	if err != nil {
+//	    // 可能的重试耗尽错误
+//	}
 func RetryWithConfig[T any](
 	ctx context.Context,
 	fn func(ctx context.Context) (T, error),
@@ -187,7 +279,7 @@ func RetryWithConfig[T any](
 	panic("unreachable")
 }
 
-// RetryWithConfigVoid is RetryWithConfig for fn returning only error.
+// RetryWithConfigVoid 与 RetryWithConfig 相同，但 fn 只返回 error。
 func RetryWithConfigVoid(
 	ctx context.Context,
 	fn func(ctx context.Context) error,
@@ -233,9 +325,23 @@ func computeBackoff(attempt int, initialBackoff time.Duration, maxBackoff time.D
 
 // ──────────────────────────── RetryFn helpers ────────────────────────────
 
-// RetryFn calls fn up to maxRetries+1 times; panics are recovered and wrapped.
+// RetryFn 函数式重试辅助类型，支持方法链式调用。
+// 将普通函数转换为 RetryFn 后直接调用 WithRetry。
+//
+// 使用示例：
+//
+//	// 简单重试：最多3次
+//	err := retry.RetryFn(func() error {
+//	    return doSomething()
+//	}).WithRetry(3)
+//
+//	// 带 panic 保护的重试
+//	err := retry.RetryFn(func() error {
+//	    return riskyOperation()
+//	}).WithRetry(2)
 type RetryFn func() error
 
+// WithRetry 执行 fn，最多执行 maxRetries+1 次，自动捕获 panic。
 func (r RetryFn) WithRetry(maxRetries int) error {
 	var lastErr error
 	for attempt := 0; attempt <= maxRetries; attempt++ {
@@ -251,21 +357,26 @@ func (r RetryFn) WithRetry(maxRetries int) error {
 func (r RetryFn) safeCall() (err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			err = &core.PanicError{
-				Value: r,
-				Stack: debug.Stack(),
-			}
+			err = core.NewPanicError(r)
 		}
 	}()
 	return r()
 }
 
-// WorkerPoolBackend is a minimal interface to abstract Pool/Workers for bindings.
+// WorkerPoolBackend 是 Pool/Workers 的最小抽象接口，用于 BindRetryToWorker。
 type WorkerPoolBackend interface {
 	Submit(ctx context.Context, fn func(ctx context.Context) error) error
 }
 
-// BindRetryToWorker submits fn to pool with retry on ErrSubmitTimeout.
+// BindRetryToWorker 向 worker 池提交任务，并在遇到 ErrSubmitTimeout 时自动重试。
+// 适用于高负载场景下提交任务时池满需要重试的情况。
+//
+// 使用示例：
+//
+//	// 向协程池提交任务，提交超时时自动退避重试
+//	err := retry.BindRetryToWorker(ctx, pool, func(ctx context.Context) error {
+//	    return processItem(ctx, item)
+//	}, 3, 10*time.Millisecond, 1*time.Second)
 func BindRetryToWorker(
 	ctx context.Context,
 	backend WorkerPoolBackend,
@@ -296,8 +407,4 @@ func BindRetryToWorker(
 		return err
 	}
 	return fmt.Errorf("bind retry exhausted: %w", lastErr)
-}
-
-func init() {
-	debug.SetTraceback("system")
 }

@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"runtime"
-	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -36,6 +35,7 @@ type Pool[T any] struct {
 	pending       atomic.Int32
 	waiting       atomic.Bool
 	waited        bool
+	quitting      atomic.Int32
 	ctx           context.Context
 }
 
@@ -169,9 +169,24 @@ func (p *Pool[T]) WithCtxSubmitTOTraceID(ctx context.Context, submitTimeout time
 func (p *Pool[T]) worker() {
 	defer p.workerWg.Done()
 	for task := range p.taskCh {
+		if task.Quit {
+			p.quitting.Add(-1)
+			return
+		}
 		p.active.Add(1)
 		p.processTask(task)
 		p.active.Add(-1)
+		if p.quitting.Load() > 0 {
+			for {
+				v := p.quitting.Load()
+				if v <= 0 {
+					break
+				}
+				if p.quitting.CompareAndSwap(v, v-1) {
+					return
+				}
+			}
+		}
 	}
 }
 
@@ -414,6 +429,15 @@ func (p *Pool[T]) Resize(newSize int) int {
 	} else if newSize < current {
 		quit := current - newSize
 		p.size.Store(int32(newSize))
+		p.quitting.Add(int32(quit))
+		if !p.closed.Load() {
+			for i := 0; i < quit; i++ {
+				select {
+				case p.taskCh <- core.PoolTask[T]{Quit: true}:
+				default:
+				}
+			}
+		}
 		return quit
 	}
 	return 0
@@ -500,11 +524,14 @@ func (p *Pool[T]) WaitAndClose() []core.Result[T] {
 }
 
 func (p *Pool[T]) Close() {
+	p.mu.Lock()
 	if p.closed.Load() {
+		p.mu.Unlock()
 		return
 	}
 	p.closed.Store(true)
 	close(p.taskCh)
+	p.mu.Unlock()
 	p.workerWg.Wait()
 }
 
@@ -514,10 +541,13 @@ func (p *Pool[T]) CloseAndWait() {
 }
 
 func (p *Pool[T]) CloseAndWaitTimeout(timeout time.Duration) (ok bool, workerDone <-chan struct{}) {
+	p.mu.Lock()
 	if !p.closed.CompareAndSwap(false, true) {
+		p.mu.Unlock()
 		return false, nil
 	}
 	close(p.taskCh)
+	p.mu.Unlock()
 	done := make(chan struct{})
 	go func() {
 		p.workerWg.Wait()
@@ -678,7 +708,7 @@ func checkErr(err error, name string) {
 	if err != nil {
 		var buf [4096]byte
 		n := runtime.Stack(buf[:], false)
-		core.LogFatal("async pool fatal",
+		core.LogCtxError(context.Background(), "async pool fatal",
 			core.Err(err),
 			core.Str("stack", string(buf[:n])),
 			core.Str("name", name))
@@ -769,9 +799,6 @@ func ForEachPool[T any](ctx context.Context, items []T, fn func(context.Context,
 func (p *Pool[T]) Values() []T {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if !p.waited {
-		_ = debug.Stack()
-	}
 	vals := make([]T, 0, len(p.results))
 	for _, r := range p.results {
 		if r.Err == nil {

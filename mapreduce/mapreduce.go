@@ -54,13 +54,21 @@ func mapImpl[T any, R any](ctx context.Context, items []T, fn func(context.Conte
 	var wg sync.WaitGroup
 	chunkSize := (n + concurrency - 1) / concurrency
 
+	var cancel context.CancelFunc
 	if failFast {
-		mapParallelFailFast(ctx, items, fn, results, concurrency, chunkSize, &wg)
+		ctx, cancel = context.WithCancel(ctx)
+	}
+
+	if failFast {
+		mapParallelFailFast(ctx, cancel, items, fn, results, concurrency, chunkSize, &wg)
 	} else {
 		mapParallel(ctx, items, fn, results, concurrency, chunkSize, &wg)
 	}
 
 	wg.Wait()
+	if cancel != nil {
+		cancel()
+	}
 
 	if failFast {
 		for _, r := range results {
@@ -94,10 +102,7 @@ func mapParallel[T any, R any](ctx context.Context, items []T, fn func(context.C
 	}
 }
 
-func mapParallelFailFast[T any, R any](ctx context.Context, items []T, fn func(context.Context, T) (R, error), results []core.Result[R], concurrency int, chunkSize int, w *sync.WaitGroup) {
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
+func mapParallelFailFast[T any, R any](ctx context.Context, cancel context.CancelFunc, items []T, fn func(context.Context, T) (R, error), results []core.Result[R], concurrency int, chunkSize int, w *sync.WaitGroup) {
 	for i := 0; i < concurrency; i++ {
 		start := i * chunkSize
 		end := start + chunkSize
@@ -309,29 +314,6 @@ func logMapSerialPanic(r any, pe *core.PanicError) {
 		core.Bytes("stack", pe.Stack))
 }
 
-func logMapSerialError(err error, fnName string) {
-	core.LogError("async serial path error",
-		core.Str("fn", fnName),
-		core.Err(err))
-}
-
-func logMapSerialTaskFail(err error, fnName string) {
-	core.LogTaskFailCtx(context.Background(), "async serial task failed",
-		core.Str("fn", fnName),
-		core.Err(err))
-}
-
-func safeCallNoResultFn[T any](ctx context.Context, item T, fn func(context.Context, T) error) (err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			pe := core.NewPanicError(r)
-			logMapSerialPanic(r, pe)
-			err = pe
-		}
-	}()
-	return fn(ctx, item)
-}
-
 func SafeCallWithResult[T any, R any](ctx context.Context, item T, fn func(context.Context, T) (R, error)) (val R, err error) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -390,14 +372,4 @@ func OnlyErrors[T any](results []core.Result[T]) []error {
 		}
 	}
 	return out
-}
-
-// ──────────────────────────── Wait helpers ────────────────────────────
-
-var waitMu sync.Mutex
-var waitBuffers = sync.Pool{
-	New: func() any {
-		b := make([]int64, 0, 64)
-		return &b
-	},
 }

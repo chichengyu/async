@@ -394,10 +394,11 @@ func DefaultForEachChunkWithFFTimeout[T any](ctx context.Context, items []T, bat
 // ──────────────────────────── ForEachChunked ────────────────────────────
 
 func ForEachChunked[T any](ctx context.Context, items []T, concurrency int, batchSize int, fn func(ctx context.Context, item T) error) (total int64, failCnt int64, firstErr error, results []core.Result[struct{}]) {
-	return ForEachChunk(ctx, items, concurrency, batchSize, func(ctx context.Context, chunk []T) error {
-		_, _, _, _ = ForEach(ctx, chunk, fn, core.WithConfig(concurrency))
-		return nil
+	total, failCnt, firstErr, results = ForEachChunk(ctx, items, concurrency, batchSize, func(ctx context.Context, chunk []T) error {
+		_, _, fe, _ := ForEach(ctx, chunk, fn, core.WithConfig(concurrency))
+		return fe
 	})
+	return
 }
 
 func DefaultForEachChunked[T any](ctx context.Context, items []T, batchSize int, fn func(ctx context.Context, item T) error) (total int64, failCnt int64, firstErr error, results []core.Result[struct{}]) {
@@ -405,10 +406,11 @@ func DefaultForEachChunked[T any](ctx context.Context, items []T, batchSize int,
 }
 
 func ForEachChunkedWithFailFast[T any](ctx context.Context, items []T, concurrency int, batchSize int, fn func(ctx context.Context, item T) error) (total int64, failCnt int64, firstErr error, results []core.Result[struct{}]) {
-	return ForEachChunkWithFailFast(ctx, items, concurrency, batchSize, func(ctx context.Context, chunk []T) error {
-		_, _, _, _ = ForEachWithFailFast(ctx, chunk, fn, core.WithConfig(concurrency))
-		return nil
+	total, failCnt, firstErr, results = ForEachChunkWithFailFast(ctx, items, concurrency, batchSize, func(ctx context.Context, chunk []T) error {
+		_, _, fe, _ := ForEachWithFailFast(ctx, chunk, fn, core.WithConfig(concurrency))
+		return fe
 	})
+	return
 }
 
 func DefaultForEachChunkedWithFailFast[T any](ctx context.Context, items []T, batchSize int, fn func(ctx context.Context, item T) error) (total int64, failCnt int64, firstErr error, results []core.Result[struct{}]) {
@@ -416,10 +418,11 @@ func DefaultForEachChunkedWithFailFast[T any](ctx context.Context, items []T, ba
 }
 
 func ForEachChunkedWithTimeout[T any](ctx context.Context, items []T, concurrency int, batchSize int, timeout time.Duration, fn func(ctx context.Context, item T) error) (total int64, failCnt int64, firstErr error, results []core.Result[struct{}]) {
-	return ForEachChunkWithTimeout(ctx, items, concurrency, batchSize, timeout, func(ctx context.Context, chunk []T) error {
-		_, _, _, _ = ForEach(ctx, chunk, fn, core.WithConfig(concurrency))
-		return nil
+	total, failCnt, firstErr, results = ForEachChunkWithTimeout(ctx, items, concurrency, batchSize, timeout, func(ctx context.Context, chunk []T) error {
+		_, _, fe, _ := ForEach(ctx, chunk, fn, core.WithConfig(concurrency))
+		return fe
 	})
+	return
 }
 
 func DefaultForEachChunkedWithTimeout[T any](ctx context.Context, items []T, batchSize int, timeout time.Duration, fn func(ctx context.Context, item T) error) (total int64, failCnt int64, firstErr error, results []core.Result[struct{}]) {
@@ -427,10 +430,11 @@ func DefaultForEachChunkedWithTimeout[T any](ctx context.Context, items []T, bat
 }
 
 func ForEachChunkedWithFFTimeout[T any](ctx context.Context, items []T, concurrency int, batchSize int, timeout time.Duration, fn func(ctx context.Context, item T) error) (total int64, failCnt int64, firstErr error, results []core.Result[struct{}]) {
-	return ForEachChunkWithFFTimeout(ctx, items, concurrency, batchSize, timeout, func(ctx context.Context, chunk []T) error {
-		_, _, _, _ = ForEachWithFailFast(ctx, chunk, fn, core.WithConfig(concurrency))
-		return nil
+	total, failCnt, firstErr, results = ForEachChunkWithFFTimeout(ctx, items, concurrency, batchSize, timeout, func(ctx context.Context, chunk []T) error {
+		_, _, fe, _ := ForEachWithFailFast(ctx, chunk, fn, core.WithConfig(concurrency))
+		return fe
 	})
+	return
 }
 
 func DefaultForEachChunkedWithFFTimeout[T any](ctx context.Context, items []T, batchSize int, timeout time.Duration, fn func(ctx context.Context, item T) error) (total int64, failCnt int64, firstErr error, results []core.Result[struct{}]) {
