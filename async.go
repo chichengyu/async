@@ -366,6 +366,9 @@ func DefaultGroup[T any]() *Group[T] {
 
 // NewNoResult 创建无返回值任务组。
 //
+// 参数：
+//   - concurrency：最大并发数
+//
 // 示例：
 //
 //	nr := async.NewNoResult(8)
@@ -421,8 +424,14 @@ type NoResultPool = pool.Pool[struct{}]
 // PoolStats 协程池的统计信息。
 type PoolStats = pool.PoolStats
 
+// SubmitResult 封装 Pool.Submit 的返回结果，包含提交索引和可能发生的错误。
+type SubmitResult = pool.SubmitResult
+
 // NewPool 创建泛型协程池，size 个 worker goroutine 立即启动。
 // size <= 0 时使用默认 IO 并发度。
+//
+// 参数：
+//   - size：worker 数量，<=0 时使用默认 IO 并发度
 //
 // 示例：
 //
@@ -438,6 +447,9 @@ func DefaultPool[T any]() *Pool[T] {
 }
 
 // NewNoResultPool 创建无返回值协程池。
+//
+// 参数：
+//   - size：worker 数量
 //
 // 示例：
 //
@@ -466,6 +478,24 @@ type Task[T any] = task.Task[T]
 // AsyncResult[T] 异步结果句柄，支持 Wait/WaitTimeout/Cancel/Ok/IsPanic。
 type AsyncResult[T any] = task.AsyncResult[T]
 
+// Mu[T] 线程安全的切片容器，支持并发安全的 Appen d 和 Snapshot。
+// 适用于多个 goroutine 需要安全地收集结果的场景。
+//
+// 示例：
+//
+//	var mu async.Mu[int]
+//	var wg sync.WaitGroup
+//	for i := 0; i < 100; i++ {
+//	    wg.Add(1)
+//	    go func(val int) {
+//	        defer wg.Done()
+//	        mu.Append(func() int { return val })
+//	    }(i)
+//	}
+//	wg.Wait()
+//	all := mu.Snapshot()
+type Mu[T any] = task.Mu[T]
+
 // TaskVoid 无返回值异步任务句柄，Wait() 只返回 error。
 //
 // 示例：
@@ -478,7 +508,7 @@ type AsyncResult[T any] = task.AsyncResult[T]
 //	    log.Printf("任务失败: %v", err)
 //	}
 type TaskVoid struct {
-	ar *task.AsyncResult[struct{}]
+	ar *task.AsyncResult[struct{}] // 内部的异步结果持有者
 }
 
 // Wait 阻塞等待任务完成，返回错误。
@@ -524,7 +554,12 @@ func Go(ctx context.Context, fn func(ctx context.Context)) *TaskVoid {
 
 // GoWithTimeout 启动无返回值异步任务，指定超时。
 //
-// 示例：
+// 参数：
+//   - ctx：上下文
+//   - timeout：任务超时时间
+//   - fn：异步执行的函数
+//
+// 使用示例：
 //
 //	// 最多等 3 秒
 //	async.GoWithTimeout(ctx, 3*time.Second, func(ctx context.Context) {
@@ -560,6 +595,11 @@ func GoResult[T any](ctx context.Context, fn func(ctx context.Context) (T, error
 }
 
 // GoResultWithTimeout 启动带返回值和超时的异步任务。
+//
+// 参数：
+//   - ctx：上下文
+//   - timeout：任务超时时间
+//   - fn：任务执行函数
 //
 // 示例：
 //
@@ -610,6 +650,12 @@ func Map[T any, R any](ctx context.Context, items []T, concurrency int, fn func(
 // MapWithFailFast 带 FailFast 的 Map：某个元素失败时立即取消其他还在执行的任务。
 // 返回第二个值为第一个遇到的错误。
 //
+// 参数：
+//   - ctx：上下文
+//   - items：输入元素切片
+//   - concurrency：并发度
+//   - fn：处理函数
+//
 // 示例：
 //
 //	// 批量验证，第一个失败就停止
@@ -628,6 +674,13 @@ func MapWithFailFast[T any, R any](ctx context.Context, items []T, concurrency i
 
 // MapWithTimeout 带总超时的 Map：超过指定时间后未完成的任务会收到 context 取消信号。
 //
+// 参数：
+//   - ctx：上下文
+//   - items：输入元素切片
+//   - concurrency：并发度
+//   - timeout：总超时时间
+//   - fn：处理函数
+//
 // 示例：
 //
 //	// 整体操作最多 10 秒
@@ -638,6 +691,13 @@ func MapWithTimeout[T any, R any](ctx context.Context, items []T, concurrency in
 
 // MapWithFFTimeout 带 FailFast 和总超时的 Map。
 //
+// 参数：
+//   - ctx：上下文
+//   - items：输入元素切片
+//   - concurrency：并发度
+//   - timeout：总超时时间
+//   - fn：处理函数
+//
 // 示例：
 //
 //	results, err := async.MapWithFFTimeout(ctx, items, async.IO(), 5*time.Second, fn)
@@ -646,6 +706,11 @@ func MapWithFFTimeout[T any, R any](ctx context.Context, items []T, concurrency 
 }
 
 // DefaultMap 使用默认 IO 并发度的 Map。
+//
+// 参数：
+//   - ctx：上下文
+//   - items：输入元素切片
+//   - fn：处理函数
 //
 // 示例：
 //
@@ -672,6 +737,11 @@ func DefaultMapWithFFTimeout[T any, R any](ctx context.Context, items []T, timeo
 // MapSerial 串行 Map，逐个处理元素，无并发。
 // 适合数据量小或需要严格顺序的场景。
 //
+// 参数：
+//   - ctx：上下文
+//   - items：输入元素切片
+//   - fn：处理函数
+//
 // 示例：
 //
 //	results := async.MapSerial(ctx, items, fn)
@@ -691,6 +761,12 @@ func MapSerialFailFast[T any, R any](ctx context.Context, items []T, fn func(con
 // 返回 NoResult 可查看每个元素的执行结果。
 //
 // 适用场景：批量发送消息、批量写入数据库、批量清理等只关心错误的场景。
+//
+// 参数：
+//   - ctx：上下文
+//   - items：输入元素切片
+//   - concurrency：并发度
+//   - fn：处理函数，只返回 error
 //
 // 示例：
 //
@@ -846,6 +922,13 @@ func OnlyErrors[T any](results []Result[T]) []error {
 // MapChunk 先分块再并发 Map，处理函数接收整个 chunk。
 // 适合需要批量处理的场景，如数据库批量 INSERT。
 //
+// 参数：
+//   - ctx：上下文
+//   - items：输入元素切片
+//   - concurrency：并发度
+//   - batchSize：每批元素数
+//   - fn：处理函数，接收整个 chunk
+//
 // 示例：
 //
 //	// 每 100 个一批，并发度为 4
@@ -935,6 +1018,13 @@ func DefaultMapChunkedWithFFTimeout[T any, R any](ctx context.Context, items []T
 // ──────────────────────────── ForEachChunk 分块并发遍历 ────────────────────────────
 
 // ForEachChunk 先分块再并发 ForEach，处理函数接收整个 chunk。
+//
+// 参数：
+//   - ctx：上下文
+//   - items：输入元素切片
+//   - concurrency：并发度
+//   - batchSize：每批元素数
+//   - fn：处理函数，接收整个 chunk
 //
 // 示例：
 //
@@ -1064,13 +1154,12 @@ func DefaultForEachChunkedWithFFTimeout[T any](ctx context.Context, items []T, b
 // Reduce 先并发 Map 再聚合结果。等价于 Map + Reduce。
 //
 // 参数：
-//
-//	ctx        - 上下文
-//	items      - 输入切片
-//	concurrency - Map 阶段的并发度
-//	mapFn      - Map 阶段的处理函数
-//	initial    - 聚合初始值
-//	reduceFn   - 聚合函数：(累加器, 下一个值) -> 新累加器
+//   - ctx：上下文
+//   - items：输入切片
+//   - concurrency：Map 阶段的并发度
+//   - mapFn：Map 阶段的处理函数
+//   - initial：聚合初始值
+//   - reduceFn：聚合函数：(累加器, 下一个值) -> 新累加器
 //
 // 适用场景：统计汇总、求和、拼接等。
 //
@@ -1104,11 +1193,26 @@ func Reduce[T any, R any](ctx context.Context, items []T, concurrency int, mapFn
 }
 
 // DefaultReduce 使用默认 IO 并发度的 Reduce。
+//
+// 参数：
+//   - ctx：上下文
+//   - items：输入切片
+//   - mapFn：Map 阶段的处理函数
+//   - initial：聚合初始值
+//   - reduceFn：聚合函数
 func DefaultReduce[T any, R any](ctx context.Context, items []T, mapFn func(context.Context, T) (R, error), initial R, reduceFn func(R, R) R) (R, error) {
 	return Reduce(ctx, items, core.IO(), mapFn, initial, reduceFn)
 }
 
 // ReduceWithFailFast 带 FailFast 的 Reduce。
+//
+// 参数：
+//   - ctx：上下文
+//   - items：输入切片
+//   - concurrency：Map 阶段的并发度
+//   - mapFn：Map 阶段的处理函数
+//   - initial：聚合初始值
+//   - reduceFn：聚合函数
 func ReduceWithFailFast[T any, R any](ctx context.Context, items []T, concurrency int, mapFn func(context.Context, T) (R, error), initial R, reduceFn func(R, R) R) (R, error) {
 	results, err := MapWithFailFast(ctx, items, concurrency, mapFn)
 	if err != nil {
@@ -1122,11 +1226,27 @@ func ReduceWithFailFast[T any, R any](ctx context.Context, items []T, concurrenc
 }
 
 // DefaultReduceWithFailFast 使用默认 IO 并发度的 FailFast Reduce。
+//
+// 参数：
+//   - ctx：上下文
+//   - items：输入切片
+//   - mapFn：Map 阶段的处理函数
+//   - initial：聚合初始值
+//   - reduceFn：聚合函数
 func DefaultReduceWithFailFast[T any, R any](ctx context.Context, items []T, mapFn func(context.Context, T) (R, error), initial R, reduceFn func(R, R) R) (R, error) {
 	return ReduceWithFailFast(ctx, items, core.IO(), mapFn, initial, reduceFn)
 }
 
 // ReduceWithTimeout 带超时的 Reduce。
+//
+// 参数：
+//   - ctx：上下文
+//   - items：输入切片
+//   - concurrency：Map 阶段的并发度
+//   - timeout：总超时时间
+//   - mapFn：Map 阶段的处理函数
+//   - initial：聚合初始值
+//   - reduceFn：聚合函数
 func ReduceWithTimeout[T any, R any](ctx context.Context, items []T, concurrency int, timeout time.Duration, mapFn func(context.Context, T) (R, error), initial R, reduceFn func(R, R) R) (R, error) {
 	results := MapWithTimeout(ctx, items, concurrency, timeout, mapFn)
 	acc := initial
@@ -1144,11 +1264,28 @@ func ReduceWithTimeout[T any, R any](ctx context.Context, items []T, concurrency
 }
 
 // DefaultReduceWithTimeout 使用默认 IO 并发度的带超时 Reduce。
+//
+// 参数：
+//   - ctx：上下文
+//   - items：输入切片
+//   - timeout：总超时时间
+//   - mapFn：Map 阶段的处理函数
+//   - initial：聚合初始值
+//   - reduceFn：聚合函数
 func DefaultReduceWithTimeout[T any, R any](ctx context.Context, items []T, timeout time.Duration, mapFn func(context.Context, T) (R, error), initial R, reduceFn func(R, R) R) (R, error) {
 	return ReduceWithTimeout(ctx, items, core.IO(), timeout, mapFn, initial, reduceFn)
 }
 
 // ReduceWithFFTimeout 带 FailFast 和超时的 Reduce。
+//
+// 参数：
+//   - ctx：上下文
+//   - items：输入切片
+//   - concurrency：Map 阶段的并发度
+//   - timeout：总超时时间
+//   - mapFn：Map 阶段的处理函数
+//   - initial：聚合初始值
+//   - reduceFn：聚合函数
 func ReduceWithFFTimeout[T any, R any](ctx context.Context, items []T, concurrency int, timeout time.Duration, mapFn func(context.Context, T) (R, error), initial R, reduceFn func(R, R) R) (R, error) {
 	results, err := MapWithFFTimeout(ctx, items, concurrency, timeout, mapFn)
 	if err != nil {
@@ -1162,6 +1299,14 @@ func ReduceWithFFTimeout[T any, R any](ctx context.Context, items []T, concurren
 }
 
 // DefaultReduceWithFFTimeout 使用默认 IO 并发度的带 FailFast 和超时 Reduce。
+//
+// 参数：
+//   - ctx：上下文
+//   - items：输入切片
+//   - timeout：总超时时间
+//   - mapFn：Map 阶段的处理函数
+//   - initial：聚合初始值
+//   - reduceFn：聚合函数
 func DefaultReduceWithFFTimeout[T any, R any](ctx context.Context, items []T, timeout time.Duration, mapFn func(context.Context, T) (R, error), initial R, reduceFn func(R, R) R) (R, error) {
 	return ReduceWithFFTimeout(ctx, items, core.IO(), timeout, mapFn, initial, reduceFn)
 }
@@ -1189,10 +1334,25 @@ var (
 
 	// WithDeadlineVoid 无返回值版本的截止时间包装。
 	WithDeadlineVoid = retry.WithDeadlineVoid
+
+	// RetryWithConfigVoid 与 RetryWithConfig 相同，但 fn 只返回 error。
+	// 支持每次调用超时的指数退避重试。
+	//
+	// 示例：
+	//   err := async.RetryWithConfigVoid(ctx, func(ctx context.Context) error {
+	//       return sendMessage(ctx, msg)
+	//   }, 3, 100*time.Millisecond, 5*time.Second,
+	//       async.TimeoutOpt{PerCallTimeout: 2 * time.Second})
+	RetryWithConfigVoid = retry.RetryWithConfigVoid
 )
 
 // Retry 简单重试（无退避），最多执行 maxRetries+1 次。
 // 适用场景：瞬时性故障重试，如网络抖动。
+//
+// 参数：
+//   - ctx：上下文
+//   - maxRetries：最大重试次数（总执行次数 = maxRetries + 1）
+//   - fn：要执行的函数
 //
 // 示例：
 //
@@ -1208,10 +1368,16 @@ func Retry(ctx context.Context, maxRetries int, fn func(ctx context.Context) err
 }
 
 // RetryWithBackoff 带指数退避的重试。
-// backoff 为初始退避时间，每次失败后翻倍（直到 maxBackoff = 0 表示不设上限）。
+// backoff 为初始退避时间，每次失败后翻倍（默认最大退避 30 秒）。
 // 退避公式：min(backoff * 2^attempt, maxBackoff)。
 //
 // 适用于：调用外部 API、数据库连接等需要退避的场景。
+//
+// 参数：
+//   - ctx：上下文
+//   - maxRetries：最大重试次数
+//   - backoff：初始退避时间
+//   - fn：要执行的函数
 //
 // 示例：
 //
@@ -1223,11 +1389,17 @@ func Retry(ctx context.Context, maxRetries int, fn func(ctx context.Context) err
 func RetryWithBackoff(ctx context.Context, maxRetries int, backoff time.Duration, fn func(ctx context.Context) error) error {
 	_, err := retry.RetryWithBackoff[struct{}](ctx, func(ctx context.Context) (struct{}, error) {
 		return struct{}{}, fn(ctx)
-	}, maxRetries, backoff, 0)
+	}, maxRetries, backoff, 30*time.Second)
 	return err
 }
 
 // RetryWithLinearBackoff 带线性退避的重试，每次重试等待相同的 backoff。
+//
+// 参数：
+//   - ctx：上下文
+//   - maxRetries：最大重试次数
+//   - backoff：每次重试的固定等待时间
+//   - fn：要执行的函数
 //
 // 示例：
 //
@@ -1239,6 +1411,14 @@ func RetryWithLinearBackoff(ctx context.Context, maxRetries int, backoff time.Du
 
 // RetryWithConfig 支持每次调用超时的指数退避重试（带返回值）。
 // 相比 RetryWithBackoff，增加了 PerCallTimeout 控制每次 fn 调用的超时。
+//
+// 参数：
+//   - ctx：上下文
+//   - fn：要执行的函数（带返回值）
+//   - maxRetries：最大重试次数
+//   - initialBackoff：初始退避时间
+//   - maxBackoff：最大退避上限（0 = 无上限）
+//   - opts：可选 TimeoutOpt，PerCallTimeout 控制每次调用超时
 //
 // 示例：
 //
@@ -1253,6 +1433,11 @@ func RetryWithConfig[T any](ctx context.Context, fn func(ctx context.Context) (T
 
 // WithTimeout 包装 fn，使其在指定超时后自动取消。
 //
+// 参数：
+//   - ctx：上下文
+//   - timeout：超时时间
+//   - fn：要执行的函数
+//
 // 示例：
 //
 //	val, err := async.WithTimeout(ctx, 3*time.Second, func(ctx context.Context) (string, error) {
@@ -1264,12 +1449,59 @@ func WithTimeout[T any](ctx context.Context, timeout time.Duration, fn func(ctx 
 
 // WithDeadline 包装 fn，使其在指定截止时间后自动取消。
 //
+// 参数：
+//   - ctx：上下文
+//   - deadline：截止时间
+//   - fn：要执行的函数
+//
 // 示例：
 //
 //	deadline := time.Now().Add(5 * time.Second)
 //	val, err := async.WithDeadline(ctx, deadline, fn)
 func WithDeadline[T any](ctx context.Context, deadline time.Time, fn func(ctx context.Context) (T, error)) (T, error) {
 	return retry.WithDeadline(ctx, deadline, fn)
+}
+
+// RetryWithBackoffResult 与 RetryWithBackoff 相同，但返回 Result[T] 而非两个返回值。
+// Result[T] 提供 Ok()、IsPanic() 等便捷方法，便于统一处理成功和失败。
+//
+// 参数：
+//   - ctx：上下文
+//   - fn：要执行的函数（带返回值）
+//   - maxRetries：最大重试次数
+//   - initialBackoff：初始退避时间
+//   - maxBackoff：最大退避上限
+//
+// 示例：
+//
+//	r := async.RetryWithBackoffResult(ctx, func(ctx context.Context) (*Data, error) {
+//	    return fetchData(ctx, id)
+//	}, 3, 100*time.Millisecond, 5*time.Second)
+//	if r.Ok() {
+//	    fmt.Println(r.Value)
+//	} else {
+//	    log.Printf("重试失败: %v", r.Err)
+//	}
+func RetryWithBackoffResult[T any](ctx context.Context, fn func(ctx context.Context) (T, error), maxRetries int, initialBackoff time.Duration, maxBackoff time.Duration) core.Result[T] {
+	return retry.RetryWithBackoffResult(ctx, fn, maxRetries, initialBackoff, maxBackoff)
+}
+
+// RetryWithLinearBackoffResult 与 RetryWithLinearBackoff 相同，但返回 Result[T]。
+//
+// 参数：
+//   - ctx：上下文
+//   - fn：要执行的函数（带返回值）
+//   - maxRetries：最大重试次数
+//   - backoff：每次重试的固定等待时间
+//
+// 示例：
+//
+//	r := async.RetryWithLinearBackoffResult(ctx, fn, 5, 1*time.Second)
+//	if !r.Ok() {
+//	    log.Printf("重试失败: %v", r.Err)
+//	}
+func RetryWithLinearBackoffResult[T any](ctx context.Context, fn func(ctx context.Context) (T, error), maxRetries int, backoff time.Duration) core.Result[T] {
+	return retry.RetryWithLinearBackoffResult(ctx, fn, maxRetries, backoff)
 }
 
 // ──────────────────────────── RateLimiter 限流 ────────────────────────────
@@ -1462,6 +1694,11 @@ func (p *Pipeline[T]) Run(input T) (T, error) {
 
 // SubmitAction 向 NoResultPool 提交一个无返回值的动作。
 //
+// 参数：
+//   - p：无返回值协程池
+//   - ctx：上下文
+//   - fn：动作函数，只返回 error
+//
 // 示例：
 //
 //	p := async.NewNoResultPool(10)
@@ -1476,6 +1713,11 @@ func SubmitAction(p *NoResultPool, ctx context.Context, fn func(context.Context)
 }
 
 // TrySubmitAction 非阻塞地向 NoResultPool 提交动作，队列满时返回 ErrSubmitTimeout。
+//
+// 参数：
+//   - p：无返回值协程池
+//   - ctx：上下文
+//   - fn：动作函数
 func TrySubmitAction(p *NoResultPool, ctx context.Context, fn func(context.Context) error) error {
 	return p.TrySubmit(ctx, func(ctx context.Context) (struct{}, error) {
 		return struct{}{}, fn(ctx)
@@ -1483,6 +1725,12 @@ func TrySubmitAction(p *NoResultPool, ctx context.Context, fn func(context.Conte
 }
 
 // TrySubmitAtAction 指定位置非阻塞地向 NoResultPool 提交动作。
+//
+// 参数：
+//   - p：无返回值协程池
+//   - index：在结果切片中的索引位置
+//   - ctx：上下文
+//   - fn：动作函数
 func TrySubmitAtAction(p *NoResultPool, index int, ctx context.Context, fn func(context.Context) error) error {
 	return p.TrySubmit(ctx, func(ctx context.Context) (struct{}, error) {
 		return struct{}{}, fn(ctx)
@@ -1490,6 +1738,12 @@ func TrySubmitAtAction(p *NoResultPool, index int, ctx context.Context, fn func(
 }
 
 // SubmitAtAction 向 NoResultPool 指定位置提交动作。
+//
+// 参数：
+//   - p：无返回值协程池
+//   - index：在结果切片中的索引位置
+//   - ctx：上下文
+//   - fn：动作函数
 func SubmitAtAction(p *NoResultPool, index int, ctx context.Context, fn func(context.Context) error) error {
 	return p.SubmitAt(index, ctx, func(ctx context.Context) (struct{}, error) {
 		return struct{}{}, fn(ctx)
@@ -1498,6 +1752,11 @@ func SubmitAtAction(p *NoResultPool, index int, ctx context.Context, fn func(con
 
 // GoAction 向 NoResultPool 提交动作，失败时会 panic。
 // 适用于初始化阶段必须成功的任务提交。
+//
+// 参数：
+//   - p：无返回值协程池
+//   - ctx：上下文
+//   - fn：动作函数
 func GoAction(p *NoResultPool, ctx context.Context, fn func(context.Context) error) {
 	if err := p.Submit(ctx, func(ctx context.Context) (struct{}, error) {
 		return struct{}{}, fn(ctx)
@@ -1507,6 +1766,12 @@ func GoAction(p *NoResultPool, ctx context.Context, fn func(context.Context) err
 }
 
 // SubmitActionWithTimeout 带超时地向 NoResultPool 提交动作。
+//
+// 参数：
+//   - p：无返回值协程池
+//   - ctx：上下文
+//   - timeout：任务超时时间
+//   - fn：动作函数
 func SubmitActionWithTimeout(p *NoResultPool, ctx context.Context, timeout time.Duration, fn func(context.Context) error) error {
 	tCtx, cancel := context.WithTimeout(ctx, timeout)
 	return SubmitAction(p, tCtx, func(ctx context.Context) error {
@@ -1516,6 +1781,13 @@ func SubmitActionWithTimeout(p *NoResultPool, ctx context.Context, timeout time.
 }
 
 // SubmitAtActionWithTimeout 指定位置带超时地向 NoResultPool 提交动作。
+//
+// 参数：
+//   - p：无返回值协程池
+//   - index：在结果切片中的索引位置
+//   - ctx：上下文
+//   - timeout：任务超时时间
+//   - fn：动作函数
 func SubmitAtActionWithTimeout(p *NoResultPool, index int, ctx context.Context, timeout time.Duration, fn func(context.Context) error) error {
 	tCtx, cancel := context.WithTimeout(ctx, timeout)
 	return SubmitAtAction(p, index, tCtx, func(ctx context.Context) error {
@@ -1531,4 +1803,118 @@ func GoActionWithTimeout(p *NoResultPool, ctx context.Context, timeout time.Dura
 		defer cancel()
 		return fn(ctx)
 	})
+}
+
+// ──────────────────────────── Pool 便捷函数 ────────────────────────────
+
+// Submit 创建默认协程池并提交单个任务，返回池、索引和错误。
+// 适用于快速的单次提交场景。
+//
+// 示例：
+//
+//	p, idx, err := async.Submit(ctx, func(ctx context.Context) (string, error) {
+//	    return processData(ctx)
+//	})
+//	defer p.Close()
+//	results := p.Wait()
+func Submit[T any](ctx context.Context, fn func(context.Context) (T, error)) (*Pool[T], int, error) {
+	return pool.Submit(ctx, fn)
+}
+
+// SubmitN 创建默认协程池并重复提交同一个任务 n 次。
+//
+// 示例：
+//
+//	// 并发执行 100 次相同的处理逻辑
+//	p, results, err := async.SubmitN(ctx, fn, 100)
+//	defer p.Close()
+//	for _, r := range results {
+//	    if r.Err != nil {
+//	        log.Printf("提交失败 index=%d: %v", r.Index, r.Err)
+//	    }
+//	}
+func SubmitN[T any](ctx context.Context, fn func(context.Context) (T, error), n int) (*Pool[T], []SubmitResult, error) {
+	return pool.SubmitN(ctx, fn, n)
+}
+
+// SubmitSafeN 创建默认协程池并重复提交同一个任务 n 次，提交失败直接 panic。
+// 适用于初始化阶段必须成功的批量提交。
+//
+// 示例：
+//
+//	// 初始化阶段：必须全部提交成功
+//	p, results := async.SubmitSafeN(ctx, initFn, 50)
+//	defer p.Close()
+func SubmitSafeN[T any](ctx context.Context, fn func(context.Context) (T, error), n int) (*Pool[T], []SubmitResult) {
+	return pool.SubmitSafeN(ctx, fn, n)
+}
+
+// SubmitBatch 创建默认协程池并对切片中每个元素提交独立任务。
+//
+// 示例：
+//
+//	users := []string{"alice", "bob", "charlie"}
+//	p, results, err := async.SubmitBatch(ctx, users, func(ctx context.Context, name string) (*User, error) {
+//	    return db.QueryUser(ctx, name)
+//	})
+//	defer p.Close()
+//	for _, r := range results {
+//	    fmt.Printf("index=%d err=%v\n", r.Index, r.Err)
+//	}
+func SubmitBatch[T any, S ~[]E, E any](ctx context.Context, items S, fn func(context.Context, E) (T, error)) (*Pool[T], []SubmitResult, error) {
+	return pool.SubmitBatch(ctx, items, fn)
+}
+
+// MapPool 为切片每个元素创建协程池任务，等价于 Pool 版本的 Map。
+// 返回池和结果切片，结果顺序与输入一致。
+//
+// 示例：
+//
+//	urls := []string{"url1", "url2", "url3"}
+//	p, results, err := async.MapPool(ctx, urls, func(ctx context.Context, url string) (*Response, error) {
+//	    return httpGet(ctx, url)
+//	}, async.IO())
+//	// p 已自动 Close，结果在 results 中
+//	for _, r := range results {
+//	    if r.Ok() {
+//	        fmt.Println(r.Value)
+//	    }
+//	}
+func MapPool[T any, R any](ctx context.Context, items []T, fn func(context.Context, T) (R, error), concurrency int) (*Pool[R], []core.Result[R], error) {
+	return pool.MapPool(ctx, items, fn, concurrency)
+}
+
+// ForEachPool 为切片每个元素创建协程池任务，只关心错误。
+// 等价于 Pool 版本的 ForEach。
+//
+// 示例：
+//
+//	files := []string{"f1.txt", "f2.txt", "f3.txt"}
+//	_, err := async.ForEachPool(ctx, files, func(ctx context.Context, path string) error {
+//	    return os.Remove(path)
+//	}, async.IO())
+//	if err != nil {
+//	    log.Printf("删除失败: %v", err)
+//	}
+func ForEachPool[T any](ctx context.Context, items []T, fn func(context.Context, T) error, concurrency int) (*NoResultPool, error) {
+	return pool.ForEachPool(ctx, items, fn, concurrency)
+}
+
+// ──────────────────────────── 通用工具函数 ────────────────────────────
+
+// Must 提取值，如果 err != nil 则 panic。
+// 适用于初始化阶段或测试代码中确保操作必然成功。
+//
+// 示例：
+//
+//	// 初始化时确保配置加载成功
+//	cfg := async.Must(loadConfig("config.yaml"))
+//
+//	// 测试代码
+//	val := async.Must(someFn(ctx, input))
+func Must[T any](val T, err error) T {
+	if err != nil {
+		panic(err)
+	}
+	return val
 }

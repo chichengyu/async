@@ -11,6 +11,7 @@
 - [并发度控制](#并发度控制)
 - [TraceID 管理](#traceid-管理)
 - [安全调用](#安全调用)
+- [通用工具](#通用工具)
 
 ---
 
@@ -217,6 +218,24 @@ if err != nil && async.IsPanicError(err) {
     }
 }
 ```
+}
+
+## 通用工具
+
+### Must - err!=nil 则 panic
+
+适用于初始化阶段或测试代码中确保操作必然成功：
+
+```go
+// 初始化时确保配置加载成功
+cfg := async.Must(loadConfig("config.yaml"))
+
+// 测试代码中直接提取值
+val := async.Must(someFn(ctx, input))
+// 等价于：
+// val, err := someFn(ctx, input)
+// if err != nil { panic(err) }
+```
 
 ---
 
@@ -278,4 +297,10 @@ if err != nil && async.IsPanicError(err) {
 | `SafeCall[T, R](ctx, input, fn)` | 安全调用（有返回值，捕获 panic） |
 | `SafeCallVoid[T](ctx, input, fn)` | 安全调用（无返回值，捕获 panic） |
 | `IsPanicError(err)` | 检查是否为 PanicError |
-| `NewPanicError(r)` | 创建 PanicError
+| `NewPanicError(r)` | 创建 PanicError |
+
+### 通用工具
+
+| 函数 | 说明 |
+|------|------|
+| `Must[T](val, err)` | 提取值，err!=nil 时 panic |

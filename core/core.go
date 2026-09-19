@@ -87,6 +87,9 @@ var (
 // 超时后，清理 goroutine 会在经过此时间后强制退出，避免 goroutine 泄漏。
 // 设为 0 表示无限等待。
 //
+// 参数：
+//   - d：最大存活时间，0 表示无限等待
+//
 // 使用示例：
 //
 //	// 设置清理 goroutine 最多存活 5 分钟
@@ -103,6 +106,9 @@ func GetMaxCleanupDuration() time.Duration {
 // SetDefaultTimeout 设置全局默认超时时间，影响后续创建的 Group 和 Pool。
 // 当 Group/Pool 未通过 WithTimeout 单独设置时，使用此全局默认值。
 // 设为 0 可关闭默认超时。
+//
+// 参数：
+//   - d：默认超时时间，0 表示无超时限制
 //
 // 使用示例：
 //
@@ -123,6 +129,9 @@ func GetDefaultTimeout() time.Duration {
 // SetSubmitTimeout 设置 Pool.Submit 等待 worker 空闲的超时时间，默认 5 秒。
 // 当所有 worker 都在忙且任务队列满时，Submit 会阻塞等待，超过此时间返回 ErrSubmitTimeout。
 // d 必须大于 0，否则不生效。
+//
+// 参数：
+//   - d：提交超时时间，必须 > 0
 //
 // 使用示例：
 //
@@ -197,6 +206,9 @@ const (
 // SetTaskFailLogLevel 设置任务失败时的日志级别。
 // 默认为 LogLevelError，可设置为 LogLevelSilent 关闭失败日志。
 //
+// 参数：
+//   - level：日志级别（LogLevelError/Warn/Info/Debug/Silent）
+//
 // 使用示例：
 //
 //	// 任务失败只打印 Warn 级别日志
@@ -217,6 +229,9 @@ func GetTaskFailLogLevel() TaskLogLevel {
 // 启用时，每次 EnsureTraceID 都会将 trace_id 注入到 logger 上下文中。
 // 默认为启用状态。
 //
+// 参数：
+//   - enabled：true=启用，false=禁用
+//
 // 使用示例：
 //
 //	// 禁用 Trace 日志
@@ -235,6 +250,11 @@ func GetTraceLogEnabled() bool {
 }
 
 // LogTaskFail 记录任务失败日志（使用当前全局日志级别）。
+//
+// 参数：
+//   - ctx：上下文（用于获取 trace_id）
+//   - err：失败错误
+//   - msg：日志消息
 func LogTaskFail(ctx context.Context, err error, msg string) {
 	LogTaskFailCtx(ctx, msg, Err(err))
 }
@@ -328,6 +348,9 @@ func (e *PanicError) Format(s fmt.State, verb rune) {
 }
 
 // NewPanicError 创建 PanicError，捕获 panic 值和当前调用栈。
+//
+// 参数：
+//   - r：recover() 捕获的 panic 原始值
 func NewPanicError(r any) *PanicError {
 	return &PanicError{
 		Value: r,
@@ -338,6 +361,10 @@ func NewPanicError(r any) *PanicError {
 // ──────────────────────────── mergeCancel ────────────────────────────
 
 // MergeCancel 合并两个 CancelFunc，调用时依次执行新旧 cancel。
+//
+// 参数：
+//   - oldCancel：旧的 CancelFunc（可能为 nil）
+//   - newCancel：新的 CancelFunc
 func MergeCancel(oldCancel, newCancel context.CancelFunc) context.CancelFunc {
 	if oldCancel != nil {
 		return func() {
@@ -556,7 +583,9 @@ func IO() int {
 }
 
 // IOMulti 返回自定义倍数的 IO 密集型并发度，等于 runtime.NumCPU() * multiplier。
-// multiplier 必须大于 0，否则默认使用 2。
+//
+// 参数：
+//   - multiplier：CPU 核数的倍数，<= 0 时默认使用 2
 //
 // 使用示例：
 //
@@ -571,6 +600,9 @@ func IOMulti(multiplier int) int {
 
 // WithConfig 如果 configured > 0 则返回 configured，否则返回 IO()。
 // 用于统一处理用户指定的并发度：传 0 或不传时自动使用合理默认值。
+//
+// 参数：
+//   - configured：用户指定的并发度，0 表示使用默认 IO()
 //
 // 使用示例：
 //
@@ -595,6 +627,9 @@ var traceIDFallbackCounter atomic.Int64
 // EnsureTraceID 确保 ctx 中有 trace_id，没有则自动生成并注入。
 // 如果启用了 TraceLog，会将 trace_id 注入到 logger 上下文中。
 //
+// 参数：
+//   - ctx：原始上下文
+//
 // 使用示例：
 //
 //	ctx := core.EnsureTraceID(context.Background())
@@ -614,6 +649,9 @@ func EnsureTraceID(ctx context.Context) context.Context {
 }
 
 // GetTraceID 从 ctx 中提取 trace_id，不存在则返回空字符串。
+//
+// 参数：
+//   - ctx：上下文
 func GetTraceID(ctx context.Context) string {
 	if v := ctx.Value(TraceIDKey); v != nil {
 		return v.(string)
@@ -624,6 +662,10 @@ func GetTraceID(ctx context.Context) string {
 // WithTraceID 设置指定的 trace_id 到 ctx 中。
 // 如果 id 为空字符串，则等同于 EnsureTraceID（自动生成）。
 // 如果启用了 TraceLog，会将 trace_id 注入到 logger 上下文中。
+//
+// 参数：
+//   - ctx：原始上下文
+//   - id：要设置的 trace_id，空字符串时自动生成
 //
 // 使用示例：
 //
@@ -668,6 +710,11 @@ func NewTraceID() string {
 // SafeCall 安全调用 fn，自动捕获 panic 并包装为 PanicError。
 // 用于串行执行路径的 panic 保护。
 //
+// 参数：
+//   - ctx：上下文
+//   - item：传递给 fn 的参数
+//   - fn：要安全执行的函数，接收 ctx 和 item
+//
 // 使用示例：
 //
 //	// 安全的串行调用
@@ -686,6 +733,11 @@ func SafeCall[T any, R any](ctx context.Context, item T, fn func(ctx context.Con
 }
 
 // SafeCallVoid 安全调用无返回值的 fn，自动捕获 panic。
+//
+// 参数：
+//   - ctx：上下文
+//   - item：传递给 fn 的参数
+//   - fn：要安全执行的函数，接收 ctx 和 item，只返回 error
 //
 // 使用示例：
 //

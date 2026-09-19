@@ -35,6 +35,10 @@ import (
 
 // Stage 定义管道中的一个处理阶段。
 //
+// 字段：
+//   - Name：阶段名称（可用于日志和 ExecuteWithMeta 中的标识）
+//   - Concurrency：该阶段的并发度（<=0 时使用默认 IO 并发度）
+//
 // 使用示例：
 //
 //	stages := []pipeline.Stage[int]{
@@ -136,6 +140,12 @@ func Execute[T any](
 // ExecuteWithMeta 和 Execute 类似，但返回带 stage 信息的 ResultWithMeta。
 // 每个阶段处理后的每个元素都会生成一个 ResultWithMeta 记录，便于追踪每项在哪一阶段产生。
 //
+// 参数：
+//   - ctx：上下文
+//   - stages：阶段定义列表
+//   - initialItems：初始数据
+//   - fn：处理函数，接收 ctx、阶段名和当前元素，返回处理后的元素
+//
 // 使用示例：
 //
 //	// 追踪每个元素在各阶段的处理情况
@@ -201,6 +211,12 @@ func ExecuteWithMeta[T any](
 
 // ExecuteWithGroup 使用 Group 执行所有项，支持错误聚合（通过 Group.Errors/FirstError）。
 // 适合需要在阶段间关心每个元素状态的场景。
+//
+// 参数：
+//   - ctx：上下文，控制全局取消
+//   - items：待处理的元素列表
+//   - fn：处理函数，接收 ctx 和元素，返回处理结果
+//   - concurrency：并发度
 //
 // 使用示例：
 //

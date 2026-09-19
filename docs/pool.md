@@ -16,7 +16,7 @@
 - [NoResultPool](#noresultpool)
 - [便捷函数](#便捷函数)
 - [完整示例](#完整示例)
-- [方法速查表](#pool-方法速查表)
+- [方法速查表](#方法速查表)
 
 ---
 
@@ -565,17 +565,6 @@ if err == nil {
 }
 ```
 
-### SubmitFunc - 提交任意函数
-
-```go
-// f() 返回 Pool 的索引和错误
-p, idx, err := async.SubmitFunc(ctx, func() (func(context.Context) (int, error), int, error) {
-    fn := func(ctx context.Context) (int, error) { return 42, nil }
-    return fn, 0, nil
-})
-defer p.Close()
-```
-
 ### MapPool - 池化 Map
 
 使用 Pool 执行并发 Map（可获取池实例进行进一步控制）：
@@ -820,6 +809,14 @@ func batchSendEmails(users []string) {
 | `SubmitN(ctx, fn, n)` | 提交 N 个相同任务 |
 | `SubmitSafeN(ctx, fn, n)` | 提交 N 个（忽略失败） |
 | `SubmitBatch(ctx, items, fn)` | 批量提交切片元素 |
-| `SubmitFunc(ctx, fn)` | 提交函数 |
 | `MapPool(ctx, items, fn, c)` | 池化 Map |
 | `ForEachPool(ctx, items, fn, c)` | 池化 ForEach |
+
+### 类型
+
+| 类型 | 说明 |
+|------|------|
+| `Pool[T]` | 泛型协程池 |
+| `NoResultPool` | 无返回值协程池 |
+| `PoolStats` | 统计信息结构体 |
+| `SubmitResult` | 提交结果（包含 Index 和 Err） |

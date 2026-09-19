@@ -8,6 +8,7 @@
 - [指数退避重试](#指数退避重试)
 - [线性退避重试](#线性退避重试)
 - [带每次调用超时的重试](#带每次调用超时的重试)
+- [Result\[T\] 返回值便捷重试](#resultt-返回值便捷重试)
 - [简单函数式重试](#简单函数式重试)
 - [超时与截止时间包装](#超时与截止时间包装)
 - [Worker 绑定重试](#worker-绑定重试)
@@ -99,6 +100,36 @@ if err != nil {
 ```
 
 **重要**：`RetryWithConfig` 会区分 `context.DeadlineExceeded` 和 `context.Canceled` 错误，这两种错误**不会触发重试**。
+
+---
+
+## Result[T] 返回值便捷重试
+
+当不需要区分 `context.DeadlineExceeded` / `context.Canceled` 时，使用返回 `Result[T]` 的便捷方法更简洁：
+
+```go
+// RetryWithBackoffResult：指数退避，返回 Result[T]
+r := async.RetryWithBackoffResult(ctx, func(ctx context.Context) (*Data, error) {
+    return fetchData(ctx, id)
+}, 3, 100*time.Millisecond, 5*time.Second)
+
+if r.Ok() {
+    fmt.Println(r.Value)
+} else {
+    log.Printf("重试失败: %v", r.Err)
+}
+
+// RetryWithLinearBackoffResult：线性退避，返回 Result[T]
+r := async.RetryWithLinearBackoffResult(ctx, func(ctx context.Context) (string, error) {
+    return callService(ctx)
+}, 5, 1*time.Second)
+
+if !r.Ok() {
+    log.Printf("服务调用失败: %v", r.Err)
+}
+```
+
+> `Result[T]` 提供 `Ok()`、`IsPanic()` 等方法链式处理结果，适合在中间件或管道中使用。
 
 ---
 
@@ -232,10 +263,12 @@ func callWithRetry(ctx context.Context, url string) (string, error) {
 | 函数 | 退避策略 | 说明 |
 |------|---------|------|
 | `Retry(ctx, maxRetries, fn)` | 无 | 立即重试 |
-| `RetryWithBackoff(ctx, max, backoff, fn)` | 指数 | 指数退避重试 |
-| `RetryWithLinearBackoff(ctx, max, backoff, fn)` | 线性 | 等间隔重试 |
+| `RetryWithBackoff(ctx, max, backoff, fn)` | 指数 | 指数退避重试（无返回值） |
+| `RetryWithLinearBackoff(ctx, max, backoff, fn)` | 线性 | 等间隔重试（无返回值） |
 | `RetryWithConfig[T](ctx, fn, max, init, max, opts)` | 指数 | 带每次调用超时（有返回值） |
 | `RetryWithConfigVoid(ctx, fn, max, init, max, opts)` | 指数 | 带每次调用超时（无返回值） |
+| `RetryWithBackoffResult[T](ctx, fn, max, init, max)` | 指数 | 指数退避，返回 `Result[T]` |
+| `RetryWithLinearBackoffResult[T](ctx, fn, max, backoff)` | 线性 | 等间隔重试，返回 `Result[T]` |
 
 ### 超时/截止时间包装
 

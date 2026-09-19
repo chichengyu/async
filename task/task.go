@@ -159,6 +159,9 @@ func (ar *AsyncResult[T]) IsPanic() bool {
 
 // WaitTimeout 带超时等待，返回 (值, 错误, 是否在超时前完成)。
 //
+// 参数：
+//   - timeout：最长等待时间
+//
 // 使用示例：
 //
 //	ar := task.Go(ctx, fn)
@@ -183,6 +186,10 @@ func (ar *AsyncResult[T]) WaitTimeout(timeout time.Duration) (T, error, bool) {
 // Go 启动一个异步任务，返回 AsyncResult[T]。
 // 自动捕获 panic 并包装为 PanicError。
 // ctx 会自动注入 trace_id（通过 EnsureTraceID）。
+//
+// 参数：
+//   - ctx：上下文，自动注入 trace_id
+//   - fn：异步执行的函数
 //
 // 使用示例：
 //
@@ -214,6 +221,10 @@ func Go[T any](ctx context.Context, fn func(context.Context) (T, error)) *AsyncR
 
 // GoResult 启动一个可取消的异步任务，返回 Task[T]。
 // 与 Go 的区别：返回 Task 包含 Cancel 方法，可主动取消。
+//
+// 参数：
+//   - ctx：上下文，自动注入 trace_id
+//   - fn：异步执行的函数
 //
 // 使用示例：
 //
@@ -262,6 +273,10 @@ type AsyncResultNoResult = AsyncResult[NoResult]
 
 // GoAction 启动一个无返回值的异步任务，返回 AsyncResult[NoResult]。
 //
+// 参数：
+//   - ctx：上下文，自动注入 trace_id
+//   - fn：异步执行的函数，只返回 error
+//
 // 使用示例：
 //
 //	ar := task.GoAction(ctx, func(ctx context.Context) error {
@@ -287,6 +302,20 @@ func GoAction(ctx context.Context, fn func(context.Context) error) *AsyncResult[
 }
 
 // GoResultAction 启动一个无返回值的可取消异步任务，返回 Task[NoResult]。
+//
+// 参数：
+//   - ctx：上下文，自动注入 trace_id
+//   - fn：异步执行的函数，只返回 error
+//
+// 使用示例：
+//
+//	// 启动可取消的后台任务
+//	t := task.GoResultAction(ctx, func(ctx context.Context) error {
+//	    return uploadFile(ctx, filepath)
+//	})
+//	// 可随时取消
+//	time.AfterFunc(10*time.Second, t.Cancel)
+//	_, err := t.Result()
 func GoResultAction(ctx context.Context, fn func(context.Context) error) Task[NoResult] {
 	ctx = core.EnsureTraceID(ctx)
 	ctx, cancel := context.WithCancel(ctx)
@@ -335,6 +364,9 @@ type Mu[T any] struct {
 }
 
 // Append 线程安全地追加元素。add 函数在锁内执行，保证原子性。
+//
+// 参数：
+//   - add：生成要追加元素的函数，在锁内执行
 //
 // 使用示例：
 //

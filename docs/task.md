@@ -9,7 +9,9 @@
 - [带返回值异步任务 (GoResult)](#带返回值异步任务-goresult)
 - [AsyncResult 等待模式](#asyncresult-等待模式)
 - [Task 可取消任务](#task-可取消任务)
+- [Mu\[T\] 线程安全切片](#mut-线程安全切片)
 - [完整示例](#完整示例)
+- [方法速查表](#方法速查表)
 
 ---
 
@@ -202,6 +204,42 @@ t.Ctx  // 任务上下文
 
 ---
 
+## Mu[T] 线程安全切片
+
+`async.Mu[T]` 是线程安全的切片容器，支持并发安全的 `Append` 和 `Snapshot`。适用于多个 goroutine 需要安全收集结果的场景。
+
+### 基本用法
+
+```go
+var mu async.Mu[int]
+var wg sync.WaitGroup
+
+for i := 0; i < 100; i++ {
+    wg.Add(1)
+    go func(val int) {
+        defer wg.Done()
+        mu.Append(func() int { return val })
+    }(i)
+}
+
+wg.Wait()
+
+// 获取所有结果的副本（线程安全）
+all := mu.Snapshot()
+fmt.Printf("收集到 %d 个结果\n", len(all))
+```
+
+### 方法速查
+
+| 方法 | 说明 |
+|------|------|
+| `Append(fn)` | 线程安全地追加元素（fn 在锁内执行） |
+| `Snapshot()` | 返回所有元素的副本 |
+
+> `Append` 接收一个返回值的函数而非直接传值，保证值计算和追加的原子性。
+
+---
+
 ## 完整示例
 
 ```go
@@ -297,3 +335,19 @@ func main() {
 | `Wait()` | 阻塞等待，返回 error |
 | `Ok()` | 阻塞等待并返回是否成功 |
 | `IsPanic()` | 阻塞等待并返回是否 panic |
+
+### Mu[T] 线程安全切片
+
+| 方法 | 说明 |
+|------|------|
+| `Append(fn)` | 线程安全追加元素 |
+| `Snapshot()` | 返回所有元素副本 |
+
+### 类型
+
+| 类型 | 说明 |
+|------|------|
+| `TaskVoid` | 无返回值异步任务句柄 |
+| `AsyncResult[T]` | 带返回值异步结果句柄 |
+| `Task[T]` | 可取消的异步任务 |
+| `Mu[T]` | 线程安全切片容器 |

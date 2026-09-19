@@ -9,6 +9,7 @@
 - [Reduce - 并发聚合](#reduce---并发聚合)
 - [Chunk - 分块处理](#chunk---分块处理)
 - [Result 辅助函数](#result-辅助函数)
+- [Must - err!=nil 则 panic](#must---errnil-则-panic)
 - [完整示例](#完整示例)
 
 ---
@@ -335,6 +336,18 @@ for _, e := range errors {
 }
 ```
 
+### Must - err!=nil 则 panic
+
+适用于初始化或测试代码中直接提取值，避免重复的 `if err != nil`：
+
+```go
+// 初始化阶段
+config := async.Must(loadConfig("config.json"))
+
+// 测试代码
+val := async.Must(async.Map(ctx, items, async.IO(), fn)).Values()
+```
+
 ---
 
 ## 完整示例
@@ -475,3 +488,11 @@ func main() {
 | `AnyError(results)` | 是否存在任何错误 |
 | `Partition(results)` | 分离值和错误 |
 | `OnlyErrors(results)` | 提取错误（跳过 nil） |
+
+### 通用工具
+
+| 函数 | 说明 |
+|------|------|
+| `Must[T](val, err)` | 提取值，err!=nil 时 panic |
+| `SafeCall[T,R](ctx, item, fn)` | 安全调用单个元素，捕获 panic |
+| `SafeCallVoid[T](ctx, item, fn)` | 无返回值安全调用，捕获 panic |
