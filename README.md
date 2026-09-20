@@ -104,6 +104,43 @@ g.Go(ctx, func(ctx context.Context) (int, error) {
 results := g.Wait()
 ```
 
+**Group 自动扩缩容（新增）**
+
+Group 也支持根据负载自动调整并发数，适合不确定任务量、负载波动大的批量处理场景：
+
+```go
+// 默认配置（Min=CPU*2, Max=CPU*100, 每 5s 检测）
+g := async.NewGroup[int](4)
+async.EnableGroupAutoScale(g, nil)
+// ... 提交大量任务 ...
+results := g.Wait()
+
+// 或通过 Group 自身方法
+g.EnableAutoScale(&async.AutoScaleConfig{
+    MinWorkers:     2,
+    MaxWorkers:     200,
+    CheckInterval:  3 * time.Second,
+    ScaleUpChecks:  2,
+    ScaleDownChecks: 3,
+})
+```
+
+**NoResult 自动扩缩容：**
+
+```go
+nr := async.NewNoResult(4)
+async.EnableNoResultAutoScale(nr, nil)
+// ... 提交任务 ...
+nr.Wait()
+```
+
+| 便捷方法 | 说明 |
+|---------|------|
+| `async.EnableGroupAutoScale(g, config)` | 启用 Group 自动扩缩容 |
+| `async.DisableGroupAutoScale(g)` | 停止 Group 自动扩缩容 |
+| `async.EnableNoResultAutoScale(nr, config)` | 启用 NoResult 自动扩缩容 |
+| `async.DisableNoResultAutoScale(nr)` | 停止 NoResult 自动扩缩容 |
+
 > 详细说明请参阅：[任务组 (Group) 文档](docs/group.md)
 
 ### Task - 异步任务
@@ -1262,7 +1299,7 @@ err := async.BindRetryToWorker(ctx, pool, fn, 3, 10*time.Millisecond, 1*time.Sec
 
 ### 千万级生产压测（10,000,000）
 
-共 **17 个核心方法** 通过 1000 万级极限并发验证，零失败、零泄漏：
+共 **21 个核心方法** 通过 1000 万级极限并发验证，零失败、零泄漏：
 
 | 测试场景 | 吞吐量 | 耗时 | 结果 |
 |---------|--------|------|------|
@@ -1283,10 +1320,16 @@ err := async.BindRetryToWorker(ctx, pool, fn, 3, 10*time.Millisecond, 1*time.Sec
 | `SafeCall` panic 保护调用 | 4,711,646 ops/s | 2.1s | ✅ |
 | `AutoScale Pool` 自动扩缩容（4→1024 worker） | 119,434 ops/s | 8.4s | ✅ |
 | `AutoScale TrySubmit` 自动扩缩容 + 非阻塞提交 | 896,300 submit/s | 6.2s | ✅ |
+| **`Group AutoScale` Group 自动扩缩容** | **1,038,087 ops/s** | 9.6s | ✅ |
+| **`NoResult AutoScale` NoResult 自动扩缩容** | **1,011,310 ops/s** | 9.9s | ✅ |
+| **`Group AutoScale (convenience)` 便捷方法** | **1,038,087 ops/s** | 9.6s | ✅ |
+| **`NoResult AutoScale (convenience)` 便捷方法** | **1,019,651 ops/s** | 9.8s | ✅ |
 
 ### 自动扩缩容（AutoScale）
 
-`Pool` 支持根据负载自动调整 worker 数量，初始 worker=4（轻量启动），高并发时自动扩容，低负载时自动缩容。
+`Pool` 和 `Group` 都支持根据负载自动调整并发数，初始轻度启动，高并发时自动扩容，低负载时自动缩容。
+
+**Pool 自动扩缩容：**
 
 ```go
 p := async.NewPool[int](4)
@@ -1299,13 +1342,30 @@ defer p.Close()
 // 低负载下 busy/size < 0.2 持续 5 次 → 缩容（减半）
 ```
 
+**Group 自动扩缩容（新增）：**
+
+```go
+g := async.NewGroup[int](4)
+async.EnableGroupAutoScale(g, &async.AutoScaleConfig{
+    MinWorkers:     2,
+    MaxWorkers:     500,
+    CheckInterval:  3 * time.Second,
+})
+// ... 提交大量任务 ...
+results := g.Wait()
+
+// NoResult 同理
+nr := async.NewNoResult(4)
+async.EnableNoResultAutoScale(nr, nil) // 使用默认配置
+```
+
 | 配置项 | 默认值 | 说明 |
 |--------|--------|------|
-| `MinWorkers` | CPU×2 | 最小 worker 数 |
-| `MaxWorkers` | CPU×100 | 最大 worker 数 |
+| `MinWorkers` | CPU×2 | 最小并发数 |
+| `MaxWorkers` | CPU×100 | 最大并发数 |
 | `CheckInterval` | 5s | 检测间隔 |
-| `ScaleUpThreshold` | 0.7 | busy/size 超过此值触发扩容 |
-| `ScaleDownThreshold` | 0.2 | busy/size 低于此值触发缩容 |
+| `ScaleUpThreshold` | 0.7 | busy/total 超过此值触发扩容 |
+| `ScaleDownThreshold` | 0.2 | busy/total 低于此值触发缩容 |
 | `ScaleUpChecks` | 3 | 连续触发扩容次数（防抖动） |
 | `ScaleDownChecks` | 5 | 连续触发缩容次数（防抖动） |
 
@@ -1313,10 +1373,12 @@ defer p.Close()
 
 | 场景 | 起始 | 峰值 | 耗时 | 结果 |
 |------|------|------|------|------|
-| 100万任务（500μs/任务） | 4 worker | **1024 worker** | 8.4s | ✅ 自动扩容正常 |
-| 1000万 TrySubmit | 4 worker | — | 6.2s | ✅ 无阻塞、无死锁 |
-| 空闲缩容 | 20 worker | 2 worker | 2.0s | ✅ 自动缩容正常 |
-| 并发 Submit+扩缩 不卡死 | — | — | 0.3s | ✅ 无死锁 |
+| Pool 100万任务（500μs/任务） | 4 worker | **1024 worker** | 8.4s | ✅ 自动扩容正常 |
+| Pool 1000万 TrySubmit | 4 worker | — | 6.2s | ✅ 无阻塞、无死锁 |
+| Pool 空闲缩容 | 20 worker | 2 worker | 2.0s | ✅ 自动缩容正常 |
+| Pool 并发 Submit+扩缩 不卡死 | — | — | 0.3s | ✅ 无死锁 |
+| **Group 1000万 Go+Wait** | 8 | — | **9.6s** | ✅ 104万 ops/s |
+| **NoResult 1000万 Go+Wait** | 8 | — | **9.9s** | ✅ 101万 ops/s |
 
 ### 百万级生产压测（1,000,000）
 

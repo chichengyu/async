@@ -18,8 +18,8 @@ var errTest = errors.New("test error")
 
 func TestNewGroup_Defaults(t *testing.T) {
 	g := NewGroup[int](5)
-	if g.concurrency != 5 {
-		t.Fatalf("expected concurrency 5, got %d", g.concurrency)
+	if g.Concurrency() != 5 {
+		t.Fatalf("expected concurrency 5, got %d", g.Concurrency())
 	}
 	if g.timeout != core.GetDefaultTimeout() {
 		t.Fatalf("expected default timeout, got %v", g.timeout)
@@ -28,15 +28,15 @@ func TestNewGroup_Defaults(t *testing.T) {
 
 func TestNewGroup_ZeroConcurrency(t *testing.T) {
 	g := NewGroup[int](0)
-	if g.concurrency != 1 {
-		t.Fatalf("expected concurrency 1 for zero input, got %d", g.concurrency)
+	if g.Concurrency() != 1 {
+		t.Fatalf("expected concurrency 1 for zero input, got %d", g.Concurrency())
 	}
 }
 
 func TestNewGroup_NegativeConcurrency(t *testing.T) {
 	g := NewGroup[int](-5)
-	if g.concurrency != 1 {
-		t.Fatalf("expected concurrency 1 for negative input, got %d", g.concurrency)
+	if g.Concurrency() != 1 {
+		t.Fatalf("expected concurrency 1 for negative input, got %d", g.Concurrency())
 	}
 }
 

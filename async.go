@@ -390,6 +390,54 @@ func DefaultNoResult() *NoResult {
 	return group.DefaultNoResult()
 }
 
+// ──────────────────────────── Group 自动扩缩容 ────────────────────────────
+
+// EnableGroupAutoScale 为任务组启用自动扩缩容，适用于不确定任务量的场景。
+// 后台会根据 busy/concurrency 比率周期性检测负载，自动调整并发数。
+//
+// config 为 nil 时使用 DefaultAutoScaleConfig()（CPU*2 ~ CPU*100，每 5s 检测）。
+//
+// 示例：
+//
+//	// 默认配置
+//	g := async.NewGroup[int](4)
+//	async.EnableGroupAutoScale(g, nil)
+//
+//	// 自定义配置
+//	async.EnableGroupAutoScale(g, &async.AutoScaleConfig{
+//	    MinWorkers:     2,
+//	    MaxWorkers:     200,
+//	    CheckInterval:  3 * time.Second,
+//	    ScaleUpChecks:  2,
+//	    ScaleDownChecks: 3,
+//	})
+func EnableGroupAutoScale[T any](g *Group[T], config *AutoScaleConfig) {
+	g.EnableAutoScale(config)
+}
+
+// DisableGroupAutoScale 停止任务组的自动扩缩容，并发数恢复到 MinWorkers。
+func DisableGroupAutoScale[T any](g *Group[T]) {
+	g.DisableAutoScale()
+}
+
+// EnableNoResultAutoScale 为无返回值任务组启用自动扩缩容。
+//
+// 示例：
+//
+//	nr := async.NewNoResult(4)
+//	async.EnableNoResultAutoScale(nr, nil)           // 默认配置
+//	async.EnableNoResultAutoScale(nr, &async.AutoScaleConfig{
+//	    MinWorkers: 2, MaxWorkers: 100,
+//	}) // 自定义配置
+func EnableNoResultAutoScale(nr *NoResult, config *AutoScaleConfig) {
+	nr.EnableAutoScale(config)
+}
+
+// DisableNoResultAutoScale 停止无返回值任务组的自动扩缩容。
+func DisableNoResultAutoScale(nr *NoResult) {
+	nr.DisableAutoScale()
+}
+
 // ──────────────────────────── Pool 协程池 ────────────────────────────
 
 // Pool[T] 泛型协程池，复用 goroutine 处理高频并发任务。

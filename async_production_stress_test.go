@@ -3005,3 +3005,687 @@ func TestProduction_10M_AutoScale_TrySubmit(t *testing.T) {
 
 	printMemStats("10M-AutoTry-end")
 }
+
+// ============================================================================
+// Group / NoResult 自动扩缩容测试
+// ============================================================================
+
+// TestProduction_Group_AutoScale_EnableDisable 启停自动扩缩容
+func TestProduction_Group_AutoScale_EnableDisable(t *testing.T) {
+	g := NewGroup[int](4)
+
+	if g.IsAutoScaleEnabled() {
+		t.Fatal("should not be enabled before EnableAutoScale")
+	}
+
+	g.EnableAutoScale(nil)
+	if !g.IsAutoScaleEnabled() {
+		t.Fatal("should be enabled after EnableAutoScale")
+	}
+
+	// 重复调用幂等
+	g.EnableAutoScale(nil)
+	if !g.IsAutoScaleEnabled() {
+		t.Fatal("should still be enabled after duplicate EnableAutoScale")
+	}
+
+	g.DisableAutoScale()
+	if g.IsAutoScaleEnabled() {
+		t.Fatal("should be disabled after DisableAutoScale")
+	}
+
+	// 重复调用无影响
+	g.DisableAutoScale()
+
+	t.Log("Group EnableAutoScale/DisableAutoScale: OK")
+}
+
+// TestProduction_Group_AutoScale_CustomConfig 自定义扩缩容配置
+func TestProduction_Group_AutoScale_CustomConfig(t *testing.T) {
+	g := NewGroup[int](4)
+	g.EnableAutoScale(&AutoScaleConfig{
+		MinWorkers:      2,
+		MaxWorkers:      50,
+		CheckInterval:   100 * time.Millisecond,
+		ScaleUpChecks:   2,
+		ScaleDownChecks: 2,
+	})
+
+	if g.Concurrency() != 4 {
+		t.Fatalf("initial concurrency should be 4, got %d", g.Concurrency())
+	}
+
+	ctx := context.Background()
+
+	// 提交持续高负载任务触发扩容
+	var wg sync.WaitGroup
+	var stop atomic.Bool
+	for i := 0; i < 100; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for !stop.Load() {
+				g.Go(ctx, func(ctx context.Context) (int, error) {
+					time.Sleep(50 * time.Millisecond)
+					return 1, nil
+				})
+			}
+		}()
+	}
+
+	time.Sleep(500 * time.Millisecond)
+	cur := g.Concurrency()
+	t.Logf("concurrency after scale-up: %d (initial=4)", cur)
+
+	stop.Store(true)
+	results := g.Wait()
+
+	successCount := 0
+	for _, r := range results {
+		if r.Ok() {
+			successCount++
+		}
+	}
+	t.Logf("Group AutoScale custom config: concurrency=%d success=%d/%d", cur, successCount, len(results))
+
+	g.DisableAutoScale()
+	if g.Concurrency() != 2 {
+		t.Fatalf("after DisableAutoScale, concurrency should be MinWorkers=2, got %d", g.Concurrency())
+	}
+}
+
+// TestProduction_Group_AutoScale_Race_EnableGoWait 竞态：同时 EnableAutoScale + Go + Wait
+func TestProduction_Group_AutoScale_Race_EnableGoWait(t *testing.T) {
+	printMemStats("G-AutoRace-start")
+	n := 10_000
+
+	var wg sync.WaitGroup
+	wg.Add(3)
+
+	go func() {
+		defer wg.Done()
+		for i := 0; i < n; i++ {
+			g := NewGroup[int](4)
+			g.EnableAutoScale(&AutoScaleConfig{
+				MinWorkers:      2,
+				MaxWorkers:      20,
+				CheckInterval:   200 * time.Millisecond,
+				ScaleUpChecks:   1,
+				ScaleDownChecks: 2,
+			})
+			ctx := context.Background()
+			for j := 0; j < 50; j++ {
+				g.Go(ctx, func(ctx context.Context) (int, error) {
+					return j, nil
+				})
+			}
+			results := g.Wait()
+			if len(results) != 50 {
+				t.Errorf("expected 50 results, got %d", len(results))
+			}
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		for i := 0; i < n; i++ {
+			g := NewGroup[string](8)
+			g.EnableAutoScale(nil)
+			ctx := context.Background()
+			for j := 0; j < 30; j++ {
+				g.Go(ctx, func(ctx context.Context) (string, error) {
+					return "ok", nil
+				})
+			}
+			g.Wait()
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		for i := 0; i < n; i++ {
+			nr := NewNoResult(4)
+			nr.EnableAutoScale(&AutoScaleConfig{
+				MinWorkers: 2,
+				MaxWorkers: 16,
+			})
+			if !nr.IsAutoScaleEnabled() {
+				t.Error("NoResult auto-scale should be enabled")
+			}
+			ctx := context.Background()
+			for j := 0; j < 30; j++ {
+				nr.Go(ctx, func(ctx context.Context) error {
+					return nil
+				})
+			}
+			nr.Wait()
+			nr.DisableAutoScale()
+		}
+	}()
+
+	wg.Wait()
+	t.Logf("10K concurrent Group EnableAutoScale+Go+Wait cycles: OK")
+	printMemStats("G-AutoRace-end")
+}
+
+// TestProduction_Group_AutoScale_Resize_UnderLoad 负载下自动扩缩容竞态
+func TestProduction_Group_AutoScale_Resize_UnderLoad(t *testing.T) {
+	g := NewGroup[int](4)
+	g.EnableAutoScale(&AutoScaleConfig{
+		MinWorkers:      2,
+		MaxWorkers:      30,
+		CheckInterval:   100 * time.Millisecond,
+		ScaleUpChecks:   1,
+		ScaleDownChecks: 3,
+	})
+
+	ctx := context.Background()
+
+	var submitted atomic.Int64
+	var wg sync.WaitGroup
+	var stop atomic.Bool
+
+	// 持续从多个 goroutine 提交艰难任务（持续高负载）
+	for w := 0; w < 8; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for !stop.Load() {
+				g.Go(ctx, func(ctx context.Context) (int, error) {
+					time.Sleep(1 * time.Millisecond)
+					return 1, nil
+				})
+				submitted.Add(1)
+			}
+		}()
+	}
+
+	time.Sleep(2 * time.Second)
+	stop.Store(true)
+	wg.Wait()
+
+	results := g.Wait()
+
+	successCount := 0
+	for _, r := range results {
+		if r.Ok() {
+			successCount++
+		}
+	}
+	totalSubmitted := int(submitted.Load())
+
+	t.Logf("Group AutoScale under load: concurrency=%d submitted=%d success=%d",
+		g.Concurrency(), totalSubmitted, successCount)
+
+	if g.Concurrency() < 8 {
+		t.Logf("concurrency did not scale up beyond %d (might be too fast)", g.Concurrency())
+	}
+}
+
+// TestProduction_Group_AutoScale_Race_ResizeGo 极端竞态：扩容+缩容交替 + 并发Go
+func TestProduction_Group_AutoScale_Race_ResizeGo(t *testing.T) {
+	g := NewGroup[int](4)
+	g.EnableAutoScale(&AutoScaleConfig{
+		MinWorkers:      2,
+		MaxWorkers:      32,
+		CheckInterval:   50 * time.Millisecond,
+		ScaleUpChecks:   1,
+		ScaleDownChecks: 3,
+	})
+
+	ctx := context.Background()
+
+	var submitted atomic.Int64
+	var wg sync.WaitGroup
+	var stop atomic.Bool
+
+	// 间歇高负载 → 触发扩缩容交替
+	for w := 0; w < 4; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for !stop.Load() {
+				g.Go(ctx, func(ctx context.Context) (int, error) {
+					return 1, nil
+				})
+				submitted.Add(1)
+				time.Sleep(5 * time.Millisecond)
+			}
+		}()
+	}
+
+	time.Sleep(3 * time.Second)
+	stop.Store(true)
+	wg.Wait()
+
+	results := g.Wait()
+
+	successCount := 0
+	for _, r := range results {
+		if r.Ok() {
+			successCount++
+		}
+	}
+	totalSubmitted := int(submitted.Load())
+
+	t.Logf("Group AutoScale resize race: concurrency=%d submitted=%d success=%d",
+		g.Concurrency(), totalSubmitted, successCount)
+
+	if totalSubmitted < 500 {
+		t.Fatalf("submitted too few: %d", totalSubmitted)
+	}
+}
+
+// TestProduction_Group_AutoScale_Million_Level 百万级 Group 自动扩缩容
+func TestProduction_Group_AutoScale_Million_Level(t *testing.T) {
+	printMemStats("G-AutoMillion-start")
+	g := NewGroup[int](8)
+	g.EnableAutoScale(&AutoScaleConfig{
+		MinWorkers:      4,
+		MaxWorkers:      200,
+		CheckInterval:   200 * time.Millisecond,
+		ScaleUpChecks:   2,
+		ScaleDownChecks: 3,
+	})
+
+	ctx := context.Background()
+	n := 200_000
+
+	start := time.Now()
+	for i := 0; i < n; i++ {
+		idx := i
+		g.Go(ctx, func(ctx context.Context) (int, error) {
+			return idx * 2, nil
+		})
+	}
+
+	results := g.Wait()
+	elapsed := time.Since(start)
+
+	if len(results) != n {
+		t.Fatalf("expected %d results, got %d", n, len(results))
+	}
+
+	failures := 0
+	for _, r := range results {
+		if r.Err != nil {
+			failures++
+		}
+	}
+	if failures > 0 {
+		t.Fatalf("%d tasks failed", failures)
+	}
+
+	opsPerSec := float64(n) / elapsed.Seconds()
+	t.Logf("200K Group AutoScale: concurrency=%d tasks=%d in %v (%.0f ops/s) failures=%d",
+		g.Concurrency(), n, elapsed, opsPerSec, failures)
+	printMemStats("G-AutoMillion-end")
+}
+
+// TestProduction_NoResult_AutoScale_200K NoResult 自动扩缩容 20万
+func TestProduction_NoResult_AutoScale_200K(t *testing.T) {
+	printMemStats("NR-Auto-start")
+	nr := NewNoResult(4)
+	nr.EnableAutoScale(&AutoScaleConfig{
+		MinWorkers:      2,
+		MaxWorkers:      100,
+		CheckInterval:   200 * time.Millisecond,
+		ScaleUpChecks:   1,
+		ScaleDownChecks: 3,
+	})
+
+	ctx := context.Background()
+	n := 200_000
+	var counter atomic.Int64
+
+	start := time.Now()
+	for i := 0; i < n; i++ {
+		nr.Go(ctx, func(ctx context.Context) error {
+			counter.Add(1)
+			return nil
+		})
+	}
+
+	nr.Wait()
+	elapsed := time.Since(start)
+
+	if nr.FailCount() > 0 {
+		t.Fatalf("failures: %d", nr.FailCount())
+	}
+	if counter.Load() != int64(n) {
+		t.Fatalf("expected counter=%d, got %d", n, counter.Load())
+	}
+
+	opsPerSec := float64(n) / elapsed.Seconds()
+	t.Logf("200K NoResult AutoScale: concurrency=%d tasks=%d in %v (%.0f ops/s) success=%d",
+		nr.Concurrency(), n, elapsed, opsPerSec, nr.SuccessCount())
+	printMemStats("NR-Auto-end")
+}
+
+// TestProduction_Group_AutoScale_DisableMidRun 运行中禁用扩缩容
+func TestProduction_Group_AutoScale_DisableMidRun(t *testing.T) {
+	g := NewGroup[int](4)
+	g.EnableAutoScale(&AutoScaleConfig{
+		MinWorkers:      2,
+		MaxWorkers:      30,
+		CheckInterval:   100 * time.Millisecond,
+		ScaleUpChecks:   1,
+		ScaleDownChecks: 3,
+	})
+
+	ctx := context.Background()
+	var stop atomic.Bool
+
+	// 持续提交触发扩容
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for !stop.Load() {
+			g.Go(ctx, func(ctx context.Context) (int, error) {
+				time.Sleep(10 * time.Millisecond)
+				return 1, nil
+			})
+		}
+	}()
+
+	time.Sleep(500 * time.Millisecond)
+	curBeforeStop := g.Concurrency()
+	t.Logf("concurrency before disable: %d", curBeforeStop)
+
+	// 运行中禁用
+	g.DisableAutoScale()
+	if g.IsAutoScaleEnabled() {
+		t.Fatal("should be disabled")
+	}
+
+	curAfterStop := g.Concurrency()
+	t.Logf("concurrency after disable: %d (expected MinWorkers=2)", curAfterStop)
+
+	stop.Store(true)
+	wg.Wait()
+
+	results := g.Wait()
+	t.Logf("Group AutoScale DisableMidRun: results=%d concurrency=%d->%d",
+		len(results), curBeforeStop, curAfterStop)
+}
+
+// TestProduction_Group_AutoScale_Race_GoResetAutoScale 竞态：Go+Reset+AutoScale 交替
+func TestProduction_Group_AutoScale_Race_GoResetAutoScale(t *testing.T) {
+	n := 5_000
+
+	var wg sync.WaitGroup
+	wg.Add(3)
+
+	go func() {
+		defer wg.Done()
+		for i := 0; i < n; i++ {
+			g := NewGroup[int](4)
+			g.EnableAutoScale(nil)
+			ctx := context.Background()
+			for j := 0; j < 100; j++ {
+				g.Go(ctx, func(ctx context.Context) (int, error) {
+					return j, nil
+				})
+			}
+			g.Wait()
+			g.Reset()
+			g.EnableAutoScale(nil)
+			for j := 0; j < 100; j++ {
+				g.Go(ctx, func(ctx context.Context) (int, error) {
+					return j, nil
+				})
+			}
+			g.Wait()
+			g.DisableAutoScale()
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		for i := 0; i < n; i++ {
+			nr := NewNoResult(4)
+			nr.EnableAutoScale(nil)
+			ctx := context.Background()
+			for j := 0; j < 100; j++ {
+				nr.Go(ctx, func(ctx context.Context) error {
+					return nil
+				})
+			}
+			nr.Wait()
+			nr.Reset()
+			nr.EnableAutoScale(nil)
+			for j := 0; j < 100; j++ {
+				nr.Go(ctx, func(ctx context.Context) error {
+					return nil
+				})
+			}
+			nr.Wait()
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		for i := 0; i < n; i++ {
+			g := NewGroup[string](8)
+			g.EnableAutoScale(&AutoScaleConfig{
+				MinWorkers: 2,
+				MaxWorkers: 20,
+			})
+			ctx := context.Background()
+			for j := 0; j < 60; j++ {
+				g.Go(ctx, func(ctx context.Context) (string, error) {
+					return "ok", nil
+				})
+			}
+			g.Wait()
+		}
+	}()
+
+	wg.Wait()
+	t.Logf("5K concurrent Go+Reset+AutoScale cycles: OK")
+}
+
+// TestProduction_NoResult_AutoScale_Million_Level NoResult 百万级自动扩缩容
+func TestProduction_NoResult_AutoScale_Million_Level(t *testing.T) {
+	printMemStats("NR-AutoMillion-start")
+	nr := NewNoResult(4)
+	nr.EnableAutoScale(&AutoScaleConfig{
+		MinWorkers:      2,
+		MaxWorkers:      250,
+		CheckInterval:   200 * time.Millisecond,
+		ScaleUpChecks:   1,
+		ScaleDownChecks: 3,
+	})
+
+	ctx := context.Background()
+	n := 300_000
+	var counter atomic.Int64
+
+	start := time.Now()
+	for i := 0; i < n; i++ {
+		nr.Go(ctx, func(ctx context.Context) error {
+			counter.Add(1)
+			return nil
+		})
+	}
+
+	nr.Wait()
+	elapsed := time.Since(start)
+
+	if counter.Load() != int64(n) {
+		t.Fatalf("expected counter=%d, got %d", n, counter.Load())
+	}
+
+	opsPerSec := float64(n) / elapsed.Seconds()
+	t.Logf("300K NoResult AutoScale: concurrency=%d tasks=%d in %v (%.0f ops/s) success=%d",
+		nr.Concurrency(), n, elapsed, opsPerSec, nr.SuccessCount())
+	printMemStats("NR-AutoMillion-end")
+}
+
+// ============================================================================
+// Group / NoResult 自动扩缩容 — 千万级 (10M) 极限测试
+// ============================================================================
+
+// TestProduction_10M_Group_AutoScale 1000万 Group 自动扩缩容
+func TestProduction_10M_Group_AutoScale(t *testing.T) {
+	printMemStats("10M-GA-start")
+	n := 10_000_000
+	g := NewGroup[int](8)
+	g.EnableAutoScale(&AutoScaleConfig{
+		MinWorkers:      4,
+		MaxWorkers:      500,
+		CheckInterval:   500 * time.Millisecond,
+		ScaleUpChecks:   2,
+		ScaleDownChecks: 5,
+	})
+
+	ctx := context.Background()
+
+	start := time.Now()
+	for i := 0; i < n; i++ {
+		idx := i
+		g.Go(ctx, func(ctx context.Context) (int, error) {
+			return idx, nil
+		})
+	}
+
+	results := g.Wait()
+	elapsed := time.Since(start)
+
+	if len(results) != n {
+		t.Fatalf("expected %d results, got %d", n, len(results))
+	}
+
+	failures := 0
+	for _, r := range results {
+		if r.Err != nil {
+			failures++
+		}
+	}
+	if failures > 0 {
+		t.Fatalf("%d tasks failed", failures)
+	}
+
+	opsPerSec := float64(n) / elapsed.Seconds()
+	finalConcurrency := g.Concurrency()
+	t.Logf("[10M] Group AutoScale: concurrency=%d tasks=%d in %v (%.0f ops/s) failures=%d",
+		finalConcurrency, n, elapsed, opsPerSec, failures)
+	printMemStats("10M-GA-end")
+}
+
+// TestProduction_10M_NoResult_AutoScale 1000万 NoResult 自动扩缩容
+func TestProduction_10M_NoResult_AutoScale(t *testing.T) {
+	printMemStats("10M-NRA-start")
+	n := 10_000_000
+
+	nr := NewNoResult(8)
+	nr.EnableAutoScale(&AutoScaleConfig{
+		MinWorkers:      4,
+		MaxWorkers:      500,
+		CheckInterval:   500 * time.Millisecond,
+		ScaleUpChecks:   2,
+		ScaleDownChecks: 5,
+	})
+
+	ctx := context.Background()
+	var counter atomic.Int64
+
+	start := time.Now()
+	for i := 0; i < n; i++ {
+		nr.Go(ctx, func(ctx context.Context) error {
+			counter.Add(1)
+			return nil
+		})
+	}
+
+	nr.Wait()
+	elapsed := time.Since(start)
+
+	if counter.Load() != int64(n) {
+		t.Fatalf("expected counter=%d, got %d", n, counter.Load())
+	}
+	if nr.FailCount() > 0 {
+		t.Fatalf("failures: %d", nr.FailCount())
+	}
+
+	opsPerSec := float64(n) / elapsed.Seconds()
+	finalConcurrency := nr.Concurrency()
+	t.Logf("[10M] NoResult AutoScale: concurrency=%d tasks=%d in %v (%.0f ops/s) success=%d",
+		finalConcurrency, n, elapsed, opsPerSec, nr.SuccessCount())
+	printMemStats("10M-NRA-end")
+}
+
+// TestProduction_10M_Group_AutoScale_Convenience 1000万 Group 通过顶层便捷方法
+func TestProduction_10M_Group_AutoScale_Convenience(t *testing.T) {
+	printMemStats("10M-GAC-start")
+	n := 10_000_000
+	g := NewGroup[int](8)
+	EnableGroupAutoScale(g, &AutoScaleConfig{
+		MinWorkers:      4,
+		MaxWorkers:      500,
+		CheckInterval:   500 * time.Millisecond,
+		ScaleUpChecks:   2,
+		ScaleDownChecks: 5,
+	})
+
+	ctx := context.Background()
+
+	start := time.Now()
+	for i := 0; i < n; i++ {
+		idx := i
+		g.Go(ctx, func(ctx context.Context) (int, error) {
+			return idx, nil
+		})
+	}
+
+	results := g.Wait()
+	elapsed := time.Since(start)
+
+	if len(results) != n {
+		t.Fatalf("expected %d results, got %d", n, len(results))
+	}
+
+	opsPerSec := float64(n) / elapsed.Seconds()
+	t.Logf("[10M] Group AutoScale (convenience): concurrency=%d tasks=%d in %v (%.0f ops/s)",
+		g.Concurrency(), n, elapsed, opsPerSec)
+	printMemStats("10M-GAC-end")
+}
+
+// TestProduction_10M_NoResult_AutoScale_Convenience 1000万 NoResult 通过顶层便捷方法
+func TestProduction_10M_NoResult_AutoScale_Convenience(t *testing.T) {
+	printMemStats("10M-NRAC-start")
+	n := 10_000_000
+
+	nr := NewNoResult(8)
+	EnableNoResultAutoScale(nr, &AutoScaleConfig{
+		MinWorkers:      4,
+		MaxWorkers:      500,
+		CheckInterval:   500 * time.Millisecond,
+		ScaleUpChecks:   2,
+		ScaleDownChecks: 5,
+	})
+
+	ctx := context.Background()
+	var counter atomic.Int64
+
+	start := time.Now()
+	for i := 0; i < n; i++ {
+		nr.Go(ctx, func(ctx context.Context) error {
+			counter.Add(1)
+			return nil
+		})
+	}
+
+	nr.Wait()
+	elapsed := time.Since(start)
+
+	if counter.Load() != int64(n) {
+		t.Fatalf("expected counter=%d, got %d", n, counter.Load())
+	}
+
+	opsPerSec := float64(n) / elapsed.Seconds()
+	t.Logf("[10M] NoResult AutoScale (convenience): concurrency=%d tasks=%d in %v (%.0f ops/s)",
+		nr.Concurrency(), n, elapsed, opsPerSec)
+	printMemStats("10M-NRAC-end")
+}
