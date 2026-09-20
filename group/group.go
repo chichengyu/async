@@ -385,6 +385,17 @@ func (g *Group[T]) groupAcquireSlot(ctx context.Context, taskCtx context.Context
 		}
 	}
 
+	// 快速路径：非阻塞获取槽位，避免每次 Go 都创建 Timer
+	select {
+	case g.limit <- struct{}{}:
+		return nil
+	case <-taskCtx.Done():
+		g.discardTask(record, taskCancel, taskCtx.Err())
+		return taskCtx.Err()
+	default:
+	}
+
+	// 慢路径：槽位满，分配 Timer 阻塞等待
 	timer := time.NewTimer(core.SlotAcquireWarnTimeout)
 	defer timer.Stop()
 

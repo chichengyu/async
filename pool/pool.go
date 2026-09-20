@@ -748,6 +748,24 @@ func (p *Pool[T]) enqueueTask(ctx context.Context, taskCtx context.Context, task
 		return err
 	}
 
+	// 快速路径：先检查 done/taskCtx，再非阻塞发送（trySend 内置 recover 防 close panic）
+	select {
+	case <-p.done:
+		p.discardTask(record, idx, taskCancel, core.ErrPoolClosed)
+		return core.ErrPoolClosed
+	case <-taskCtx.Done():
+		p.discardTask(record, idx, taskCancel, taskCtx.Err())
+		return taskCtx.Err()
+	default:
+	}
+	if sent, err := p.trySend(task); sent {
+		return nil
+	} else if err != nil {
+		p.discardTask(record, idx, taskCancel, err)
+		return err
+	}
+
+	// 慢路径：channel 满，分配 Timer 阻塞等待
 	timer := time.NewTimer(core.SlotAcquireWarnTimeout)
 	defer timer.Stop()
 
