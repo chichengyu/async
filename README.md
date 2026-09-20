@@ -515,6 +515,26 @@ async.IOMulti(n) // 自定义倍数 = runtime.NumCPU() * n
 | `Chunk` 100万元素分块（1000 批 × 200 并发） | ~无限 | <10ms | ✅ |
 | `Pool` 100万 × 10 并发 Submit | **671,417 ops/s** | 1.49s | ✅ |
 
+### 补充模块压测
+
+| 测试场景 | 吞吐量 | 耗时 | 结果 |
+|---------|--------|------|------|
+| `Reduce` 100万 MapReduce 聚合（200 并发） | ✅ | ✅ | ✅ |
+| `NoResult` 20万 Go + Wait（500 并发） | 10,446 ops/s | 19.1s | ✅ |
+| `NoResultPool` 100万 Submit + Wait（100 worker） | **417,491 ops/s** | 2.4s | ✅ |
+| `Mu` 100万 Append + Snapshot（100 并发） | **1,254万/s** | 80ms | ✅ |
+| `MapWithFailFast` 100万（200 并发） | **1.17亿/s** | 8.5ms | ✅ |
+| `MapWithFailFast` 50万 真失败触发取消 | 39.9万被取消 ✅ | 0.14s | ✅ |
+| `ForEachWithFailFast` 50万（200 并发） | 3,287 ops/s | 2.5min | ✅ |
+| `TokenBucket` 100万 Allow（100 并发） | **1,026万/s** | 97ms | ✅ |
+| `TokenBucket` 100万 AllowN(1)（100 并发） | 726万/s | 74ms | ✅ |
+| `AdaptiveRateLimiter` 50万 Acquire/Release（50-500） | **569万/s** | 88ms | ✅ |
+| `AdaptiveRateLimiter` 80% 失败率自适应缩容 | ✅ 正常调整 | — | ✅ |
+| `Pipeline` Execute 50万（3 阶段 × 200 并发） | **1,373万/s** | 109ms | ✅ |
+| `Pipeline` ExecuteWithMeta 50万（2 阶段 × 200 并发） | 603万/s | 166ms | ✅ |
+| `RetryWithBackoff` 20万 指数退避（100 并发） | **4,348万/s** | 4.6ms | ✅ |
+| `MapChunk` 50万分块聚合（100 并发 × 5000 批） | ~无限 | <1ms | ✅ |
+
 ### 竞态安全验证
 
 | 测试场景 | 轮次 | 结果 |

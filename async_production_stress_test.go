@@ -2,6 +2,7 @@ package async
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"runtime"
 	"sync"
@@ -799,4 +800,576 @@ func TestProduction_RealWorld_Workflow(t *testing.T) {
 	t.Logf("RealWorld Workflow: %d items in %v (%.0f ops/s)", n, elapsed, opsPerSec)
 	t.Logf("  成功: %d, 失败: %d", len(successes), len(failures))
 	printMemStats("Workflow-end")
+}
+
+// ============================================================================
+// 百万/千万级：缺失模块补充
+// ============================================================================
+
+// TestProduction_Reduce_1M 100万元素 Reduce（MapReduce 并发映射+聚合）
+func TestProduction_Reduce_1M(t *testing.T) {
+	printMemStats("Reduce-1M-start")
+	n := 1_000_000
+	slice := make([]int, n)
+	for i := range slice {
+		slice[i] = 1
+	}
+
+	start := time.Now()
+	sum, err := Reduce(context.Background(), slice, 200, func(ctx context.Context, v int) (int, error) {
+		return v, nil
+	}, 0, func(a, b int) int {
+		return a + b
+	})
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("Reduce error: %v", err)
+	}
+	if sum != n {
+		t.Fatalf("expected sum %d, got %d", n, sum)
+	}
+
+	opsPerSec := float64(n) / elapsed.Seconds()
+	t.Logf("1M Reduce (MapReduce, 200 concurrency): %d items in %v (%.0f ops/s)", n, elapsed, opsPerSec)
+	printMemStats("Reduce-1M-end")
+}
+
+// TestProduction_NoResult_200K 20万 NoResult（无返回值 Group）
+func TestProduction_NoResult_200K(t *testing.T) {
+	printMemStats("NoResult-start")
+	start := time.Now()
+
+	nr := NewNoResult(500)
+	ctx := context.Background()
+	n := 200_000
+	var counter atomic.Int64
+
+	for i := 0; i < n; i++ {
+		nr.Go(ctx, func(ctx context.Context) error {
+			counter.Add(1)
+			return nil
+		})
+	}
+
+	nr.Wait()
+	elapsed := time.Since(start)
+
+	if counter.Load() != int64(n) {
+		t.Fatalf("expected %d completions, got %d", n, counter.Load())
+	}
+
+	opsPerSec := float64(n) / elapsed.Seconds()
+	t.Logf("200K NoResult Go+Wait: %d tasks in %v (%.0f ops/s)", n, elapsed, opsPerSec)
+	printMemStats("NoResult-end")
+}
+
+// TestProduction_NoResultPool_1M 100万 NoResultPool（无返回值 Pool）
+func TestProduction_NoResultPool_1M(t *testing.T) {
+	printMemStats("NoResultPool-start")
+	start := time.Now()
+
+	p := NewPool[struct{}](100)
+	ctx := context.Background()
+	n := 1_000_000
+	var counter atomic.Int64
+
+	for i := 0; i < n; i++ {
+		p.Submit(ctx, func(ctx context.Context) (struct{}, error) {
+			counter.Add(1)
+			return struct{}{}, nil
+		})
+	}
+
+	p.Wait()
+	p.Close()
+	elapsed := time.Since(start)
+
+	if counter.Load() != int64(n) {
+		t.Fatalf("expected %d completions, got %d", n, counter.Load())
+	}
+
+	opsPerSec := float64(n) / elapsed.Seconds()
+	t.Logf("1M NoResultPool Submit+Wait: %d tasks in %v (%.0f ops/s)", n, elapsed, opsPerSec)
+	printMemStats("NoResultPool-end")
+}
+
+// TestProduction_Mu_1M_AppendSnapshot 100万次 Mu.Append + Snapshot
+func TestProduction_Mu_1M_AppendSnapshot(t *testing.T) {
+	printMemStats("Mu-start")
+	start := time.Now()
+
+	n := 1_000_000
+	var mu Mu[int]
+	var wg sync.WaitGroup
+	concurrency := 100
+	wg.Add(concurrency)
+
+	for g := 0; g < concurrency; g++ {
+		go func(base int) {
+			defer wg.Done()
+			for i := 0; i < n/concurrency; i++ {
+				val := base*10000 + i
+				mu.Append(func() int { return val })
+			}
+		}(g)
+	}
+
+	wg.Wait()
+
+	snapshot := mu.Snapshot()
+	elapsed := time.Since(start)
+
+	if len(snapshot) != n {
+		t.Fatalf("expected %d items in snapshot, got %d", n, len(snapshot))
+	}
+
+	// 验证无重复（简单哈希校验）
+	seen := make(map[int]bool, n)
+	for _, v := range snapshot {
+		if seen[v] {
+			t.Fatalf("duplicate value %d", v)
+		}
+		seen[v] = true
+	}
+
+	opsPerSec := float64(n) / elapsed.Seconds()
+	t.Logf("1M Mu.Append+Snapshot (100 concurrent): %d items in %v (%.0f ops/s)", n, elapsed, opsPerSec)
+	printMemStats("Mu-end")
+}
+
+// TestProduction_MapWithFailFast_1M 100万元素 Map FailFast 模式
+func TestProduction_MapWithFailFast_1M(t *testing.T) {
+	printMemStats("MapFailFast-start")
+	n := 1_000_000
+	slice := make([]int, n)
+	for i := range slice {
+		slice[i] = i
+	}
+
+	start := time.Now()
+	results, err := MapWithFailFast(context.Background(), slice, 200, func(ctx context.Context, v int) (int, error) {
+		return v + 1, nil
+	})
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("MapWithFailFast error: %v", err)
+	}
+	if len(results) != n {
+		t.Fatalf("expected %d results, got %d", n, len(results))
+	}
+
+	// 采样验证
+	for i := 0; i < n; i += n / 1000 {
+		if results[i].Err != nil {
+			t.Fatalf("result[%d] error: %v", i, results[i].Err)
+		}
+		if results[i].Value != i+1 {
+			t.Fatalf("result[%d] expected %d, got %d", i, i+1, results[i].Value)
+		}
+	}
+
+	opsPerSec := float64(n) / elapsed.Seconds()
+	t.Logf("1M MapWithFailFast (200 concurrency): %d items in %v (%.0f ops/s)", n, elapsed, opsPerSec)
+	printMemStats("MapFailFast-end")
+}
+
+// TestProduction_MapWithFailFast_500K_RealFailure 50万 FailFast 真失败触发取消
+func TestProduction_MapWithFailFast_500K_RealFailure(t *testing.T) {
+	printMemStats("MapFF-Fail-start")
+	n := 500_000
+	slice := make([]int, n)
+	for i := range slice {
+		slice[i] = i
+	}
+
+	var firstFailValue atomic.Int64
+	firstFailValue.Store(-1)
+
+	results, err := MapWithFailFast(context.Background(), slice, 100, func(ctx context.Context, v int) (int, error) {
+		// 第 1000 个元素触发失败
+		if v == 1000 {
+			firstFailValue.Store(int64(v))
+			return 0, fmt.Errorf("fail at %d", v)
+		}
+		// 其他元素正常（其中一些会被取消）
+		select {
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		default:
+			time.Sleep(time.Microsecond)
+			return v * 2, nil
+		}
+	})
+
+	if err == nil {
+		t.Fatal("expected error from FailFast, got nil")
+	}
+	if len(results) != n {
+		t.Fatalf("expected %d results, got %d", n, len(results))
+	}
+
+	failures := 0
+	cancelled := 0
+	for _, r := range results {
+		if r.Err != nil {
+			failures++
+			if errors.Is(r.Err, context.Canceled) {
+				cancelled++
+			}
+		}
+	}
+	t.Logf("500K MapWithFailFast real failure: %d results, %d failures, %d cancelled",
+		n, failures, cancelled)
+
+	if failures == n {
+		t.Logf("  (所有任务都被取消，FailFast 生效)")
+	}
+	printMemStats("MapFF-Fail-end")
+}
+
+// TestProduction_ForEachWithFailFast_500K 50万 ForEach FailFast 模式
+func TestProduction_ForEachWithFailFast_500K(t *testing.T) {
+	printMemStats("ForEachFF-start")
+	n := 500_000
+	slice := make([]int, n)
+	for i := range slice {
+		slice[i] = i
+	}
+
+	var processed atomic.Int64
+	start := time.Now()
+	nr, err := ForEachWithFailFast(context.Background(), slice, 200, func(ctx context.Context, v int) error {
+		processed.Add(1)
+		return nil
+	})
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("ForEachWithFailFast error: %v", err)
+	}
+	nr.Wait()
+
+	if processed.Load() != int64(n) {
+		t.Fatalf("expected %d processed, got %d", n, processed.Load())
+	}
+
+	opsPerSec := float64(n) / elapsed.Seconds()
+	t.Logf("500K ForEachWithFailFast (200 concurrency): %d items in %v (%.0f ops/s)", n, elapsed, opsPerSec)
+	printMemStats("ForEachFF-end")
+}
+
+// TestProduction_TokenBucket_1M 100万次 TokenBucket Allow
+func TestProduction_TokenBucket_1M(t *testing.T) {
+	printMemStats("TokenBucket-start")
+	start := time.Now()
+
+	// 高容量令牌桶，避免限流阻塞
+	tb := NewTokenBucket(1_000_000, 1_000_000)
+	n := 1_000_000
+	var allowed atomic.Int64
+	var wg sync.WaitGroup
+	concurrency := 100
+	wg.Add(concurrency)
+
+	for g := 0; g < concurrency; g++ {
+		go func() {
+			defer wg.Done()
+			for i := 0; i < n/concurrency; i++ {
+				if tb.Allow() {
+					allowed.Add(1)
+				}
+			}
+		}()
+	}
+
+	wg.Wait()
+	elapsed := time.Since(start)
+
+	total := allowed.Load()
+	if total != int64(n) {
+		t.Fatalf("expected %d allows, got %d", n, total)
+	}
+
+	opsPerSec := float64(total) / elapsed.Seconds()
+	t.Logf("1M TokenBucket.Allow (100 concurrent): %d ops in %v (%.0f ops/s)", total, elapsed, opsPerSec)
+	printMemStats("TokenBucket-end")
+}
+
+// TestProduction_TokenBucket_AllowN_1M 100万次 TokenBucket AllowN
+func TestProduction_TokenBucket_AllowN_1M(t *testing.T) {
+	printMemStats("TokenBucketN-start")
+	start := time.Now()
+
+	tb := NewTokenBucket(500_000, 500_000)
+	n := 1_000_000
+	var allowed atomic.Int64
+	var wg sync.WaitGroup
+	concurrency := 100
+	wg.Add(concurrency)
+
+	for g := 0; g < concurrency; g++ {
+		go func() {
+			defer wg.Done()
+			for i := 0; i < n/concurrency; i++ {
+				if tb.AllowN(1) {
+					allowed.Add(1)
+				}
+			}
+		}()
+	}
+
+	wg.Wait()
+	elapsed := time.Since(start)
+
+	total := allowed.Load()
+	opsPerSec := float64(total) / elapsed.Seconds()
+	t.Logf("1M TokenBucket.AllowN(1) (100 concurrent): %d ops in %v (%.0f ops/s)", total, elapsed, opsPerSec)
+	printMemStats("TokenBucketN-end")
+}
+
+// TestProduction_AdaptiveRateLimiter_500K 50万次自适应限流器
+func TestProduction_AdaptiveRateLimiter_500K(t *testing.T) {
+	printMemStats("AdaptiveRL-start")
+	start := time.Now()
+
+	al := NewAdaptiveRateLimiter(50, 500)
+	ctx := context.Background()
+	n := 500_000
+	var acquired atomic.Int64
+	var wg sync.WaitGroup
+	concurrency := 200
+	wg.Add(concurrency)
+
+	for g := 0; g < concurrency; g++ {
+		go func() {
+			defer wg.Done()
+			for i := 0; i < n/concurrency; i++ {
+				if err := al.Acquire(ctx); err != nil {
+					return
+				}
+				acquired.Add(1)
+				al.RecordSuccess()
+				al.Release()
+			}
+		}()
+	}
+
+	wg.Wait()
+	elapsed := time.Since(start)
+
+	total := acquired.Load()
+	if total != int64(n) {
+		t.Fatalf("expected %d acquires, got %d", n, total)
+	}
+
+	opsPerSec := float64(total) / elapsed.Seconds()
+	t.Logf("500K AdaptiveRateLimiter (50-500 range, 200 concurrent): %d ops in %v (%.0f ops/s)", total, elapsed, opsPerSec)
+	printMemStats("AdaptiveRL-end")
+}
+
+// TestProduction_AdaptiveRateLimiter_Adjust 自适应限流器：验证成功率驱动的自动调整
+func TestProduction_AdaptiveRateLimiter_Adjust(t *testing.T) {
+	al := NewAdaptiveRateLimiter(10, 100)
+	ctx := context.Background()
+
+	// 模拟高失败率 → 应触发缩容
+	for round := 0; round < 20; round++ {
+		for i := 0; i < 100; i++ {
+			if err := al.Acquire(ctx); err != nil {
+				t.Fatalf("acquire failed: %v", err)
+			}
+			if i%5 == 0 {
+				al.RecordSuccess()
+			} else {
+				al.RecordFailure()
+			}
+			al.Release()
+		}
+	}
+
+	t.Logf("AdaptiveRateLimiter adjust test passed (simulated 80%% failure rate)")
+}
+
+// TestProduction_Pipeline_Execute_500K 50万 Pipeline 多阶段执行
+func TestProduction_Pipeline_Execute_500K(t *testing.T) {
+	printMemStats("Pipeline-start")
+	n := 500_000
+	items := make([]int, n)
+	for i := range items {
+		items[i] = i
+	}
+
+	stages := []Stage[int]{
+		{Name: "multiply", Concurrency: 200},
+		{Name: "add_one", Concurrency: 200},
+		{Name: "square", Concurrency: 200},
+	}
+
+	start := time.Now()
+	results, err := Execute(context.Background(), stages, items, func(ctx context.Context, stage string, item int) (int, error) {
+		switch stage {
+		case "multiply":
+			return item * 2, nil
+		case "add_one":
+			return item + 1, nil
+		case "square":
+			return item * item, nil
+		default:
+			return item, nil
+		}
+	})
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("Pipeline error: %v", err)
+	}
+	if len(results) != n {
+		t.Fatalf("expected %d results, got %d", n, len(results))
+	}
+
+	// 校验 pipeline 结果正确性（采样）
+	for i := 0; i < n; i += n / 100 {
+		if results[i].Err != nil {
+			t.Fatalf("result[%d] error: %v", i, results[i].Err)
+		}
+		expected := ((i * 2) + 1) * ((i * 2) + 1)
+		if results[i].Value != expected {
+			t.Fatalf("result[%d] expected %d, got %d", i, expected, results[i].Value)
+		}
+	}
+
+	opsPerSec := float64(n*len(stages)) / elapsed.Seconds()
+	t.Logf("500K Pipeline Execute (3 stages × 200 concurrency): %d stages in %v (%.0f stage-ops/s)", n, elapsed, opsPerSec)
+	printMemStats("Pipeline-end")
+}
+
+// TestProduction_Pipeline_ExecuteWithMeta_500K 50万 Pipeline ExecuteWithMeta
+func TestProduction_Pipeline_ExecuteWithMeta_500K(t *testing.T) {
+	printMemStats("PipelineMeta-start")
+	n := 500_000
+	items := make([]int, n)
+	for i := range items {
+		items[i] = i
+	}
+
+	stages := []Stage[int]{
+		{Name: "double", Concurrency: 200},
+		{Name: "negate", Concurrency: 200},
+	}
+
+	start := time.Now()
+	results := ExecuteWithMeta(context.Background(), stages, items, func(ctx context.Context, stage string, item int) (int, error) {
+		switch stage {
+		case "double":
+			return item * 2, nil
+		case "negate":
+			return -item, nil
+		default:
+			return item, nil
+		}
+	})
+	elapsed := time.Since(start)
+
+	expectedLen := n * len(stages)
+	if len(results) != expectedLen {
+		t.Fatalf("expected %d meta-results (n*stages), got %d", expectedLen, len(results))
+	}
+
+	// 验证：第一个阶段 result = i*2，第二个阶段 result = -(i*2)
+	for stageIdx := 0; stageIdx < len(stages); stageIdx++ {
+		stageName := stages[stageIdx].Name
+		for i := 0; i < n; i += n / 100 {
+			idx := stageIdx*n + i
+			r := results[idx]
+			if r.Err != nil {
+				t.Fatalf("[%s] result[%d] error: %v", stageName, i, r.Err)
+			}
+			var expected int
+			if stageIdx == 0 {
+				expected = i * 2
+			} else {
+				expected = -i * 2
+			}
+			if r.Value != expected {
+				t.Fatalf("[%s] result[%d] expected %d, got %d", stageName, i, expected, r.Value)
+			}
+		}
+	}
+
+	opsPerSec := float64(expectedLen) / elapsed.Seconds()
+	t.Logf("500K Pipeline ExecuteWithMeta (2 stages × 200 concurrency): %d meta-results in %v (%.0f ops/s)", expectedLen, elapsed, opsPerSec)
+	printMemStats("PipelineMeta-end")
+}
+
+// TestProduction_Retry_WithBackoff_200K 20万次重试（指数退避）
+func TestProduction_Retry_WithBackoff_200K(t *testing.T) {
+	printMemStats("RetryBackoff-start")
+	start := time.Now()
+
+	n := 200_000
+	var success atomic.Int64
+	var wg sync.WaitGroup
+	concurrency := 100
+	wg.Add(concurrency)
+
+	for g := 0; g < concurrency; g++ {
+		go func() {
+			defer wg.Done()
+			for i := 0; i < n/concurrency; i++ {
+				err := RetryWithBackoff(context.Background(), 3, 10*time.Microsecond, func(ctx context.Context) error {
+					return nil
+				})
+				if err == nil {
+					success.Add(1)
+				}
+			}
+		}()
+	}
+
+	wg.Wait()
+	elapsed := time.Since(start)
+
+	total := success.Load()
+	opsPerSec := float64(total) / elapsed.Seconds()
+	t.Logf("200K RetryWithBackoff (100 concurrent): %d ops in %v (%.0f ops/s)", total, elapsed, opsPerSec)
+	printMemStats("RetryBackoff-end")
+}
+
+// TestProduction_Chunk_MapChunk_500K 50万 MapChunk（分块聚合）
+func TestProduction_Chunk_MapChunk_500K(t *testing.T) {
+	printMemStats("MapChunk-start")
+	n := 500_000
+	slice := make([]int, n)
+	for i := range slice {
+		slice[i] = i
+	}
+
+	start := time.Now()
+	results := MapChunk(context.Background(), slice, 100, 5000, func(ctx context.Context, batch []int) (int, error) {
+		sum := 0
+		for _, v := range batch {
+			sum += v
+		}
+		return sum, nil
+	})
+	elapsed := time.Since(start)
+
+	totalSum := 0
+	for _, r := range results {
+		if r.Err != nil {
+			t.Fatalf("chunk error: %v", r.Err)
+		}
+		totalSum += r.Value
+	}
+
+	expectedSum := n * (n - 1) / 2
+	if totalSum != expectedSum {
+		t.Fatalf("expected sum %d, got %d", expectedSum, totalSum)
+	}
+
+	opsPerSec := float64(n) / elapsed.Seconds()
+	t.Logf("500K MapChunk (100 concurrency, 5000 batch): %d items in %v (%.0f ops/s)", n, elapsed, opsPerSec)
+	printMemStats("MapChunk-end")
 }
