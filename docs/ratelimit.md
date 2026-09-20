@@ -41,13 +41,32 @@
 // 每秒最多 100 个请求
 rl := async.NewRateLimiter(100, time.Second)
 defer rl.Close()
+```
 
+**`NewRateLimiter` 参数：**
+
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `rate` | `int` | **IO()**（CPU 核数×2，rate≤0 时） | 每个 `perDuration` 补充的令牌数 |
+| `perDuration` | `time.Duration` | 无（必传） | 令牌补充间隔 |
+| 默认策略 | — | **Block**（阻塞等待） | 令牌不足时阻塞直到 ctx 取消 |
+| 初始令牌 | — | **0**（由 refill goroutine 逐步补充） | refill 间隔为 `perDuration/rate` |
+
+```go
 // 支持突发容量：每秒 50 个，最多突发 200 个
 rl := async.NewRateLimiterWithBurst(50, time.Second, 200)
 defer rl.Close()
 ```
 
-### 获取令牌
+**`NewRateLimiterWithBurst` 参数：**
+
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `rate` | `int` | **IO()**（rate≤0 时） | 每 `perDuration` 补充的令牌数 |
+| `perDuration` | `time.Duration` | 无（必传） | 令牌补充间隔 |
+| `burst` | `int` | **max(rate, burst)**（burst<rate 时至少取 rate） | 突发容量，令牌池最多缓存的令牌数 |
+
+### 使用获取令牌
 
 ```go
 rl := async.NewRateLimiter(10, time.Second)
@@ -83,7 +102,7 @@ rl.Release() // 归还令牌（手动方式，Token 方式不需要）
 ### 动态调整和查询
 
 ```go
-// 动态调整速率
+// 动态调整速率（newRate <= 0 时忽略，不变更）
 rl.Resize(200) // 调整到每秒 200 个
 
 // 查询当前大小
@@ -115,7 +134,16 @@ rl.WithStrategy(async.BlockForce)
 ```go
 // 每 10 秒最多 100 次
 sw := async.NewSlidingWindowRateLimiter(100, 10*time.Second)
+```
 
+**`NewSlidingWindowRateLimiter` 参数：**
+
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `limit` | `int` | 无（必传） | 窗口内最大请求数 |
+| `window` | `time.Duration` | 无（必传） | 滑动窗口时间长度 |
+
+```go
 // 检查是否允许
 if sw.Allow() {
     doRequest()
@@ -123,7 +151,7 @@ if sw.Allow() {
     http.Error(w, "rate limit exceeded", 429)
 }
 
-// 批量检查（n 个请求）
+// 批量检查 n 个请求（n <= 0 时始终返回 true）
 if sw.AllowN(5) {
     batchProcess(5)
 }
@@ -138,12 +166,21 @@ if sw.AllowN(5) {
 ```go
 // 每秒生成 10 个令牌，最多存储 20 个
 tb := async.NewTokenBucket(10, 20)
+```
 
+**`NewTokenBucket` 参数：**
+
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `rate` | `float64` | 无（必传） | 每秒生成令牌数（支持浮点） |
+| `capacity` | `float64` | 无（必传） | 令牌桶最大容量，初始令牌数为 capacity |
+
+```go
 if tb.Allow() {
     doRequest()
 }
 
-// 批量消费 n 个令牌
+// 批量消费 n 个令牌（n <= 0 时始终返回 true）
 if tb.AllowN(3) {
     batchProcess(3)
 }
@@ -158,7 +195,20 @@ if tb.AllowN(3) {
 ```go
 // 并发度范围 5-100，初始值为中点 52
 al := async.NewAdaptiveRateLimiter(5, 100)
+```
 
+**`NewAdaptiveRateLimiter` 参数与默认值：**
+
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `minRate` | `int` | **1**（minRate≤0 时） | 最小并发度（下限） |
+| `maxRate` | `int` | **minRate**（maxRate≤minRate 时） | 最大并发度（上限） |
+| 初始并发度 | `int` | **(minRate+maxRate)/2** | 首次运行时使用的并发度 |
+| 上调阈值 | `float64` | **0.2** | 失败率 ≤20% 时按 1 递增 |
+| 下调阈值 | `float64` | **0.5** | 失败率 >20% 时乘 `(1-0.5)` 递减 |
+| 最少样本数 | `int` | **10** | 至少积累 10 次调用后才开始自动调整 |
+
+```go
 // 获取许可
 if err := al.Acquire(ctx); err != nil {
     return err

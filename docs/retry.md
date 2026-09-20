@@ -46,22 +46,60 @@ err := async.Retry(ctx, 4, func(ctx context.Context) error {
 })
 ```
 
-### RetryWithBackoff
+**`Retry` 参数：**
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `ctx` | `context.Context` | 上下文（取消即停止重试） |
+| `maxRetries` | `int` | 最大重试次数（不含首次调用） |
+| `fn` | `func(context.Context) error` | 要重试的函数 |
+
+### RetryWithBackoff（默认配置）
 
 ```go
-// 最多重试 3 次，初始退避 100ms
-// 退避序列: 100ms → 200ms → 400ms
+// 最多重试 3 次，初始退避 100ms（最大退避默认 30s）
+// 退避序列: 100ms → 200ms → 400ms → ... → 上限 30s
 err := async.RetryWithBackoff(ctx, 3, 100*time.Millisecond, func(ctx context.Context) error {
     return callExternalAPI(ctx, request)
 })
 
-// 设置最大退避上限 5 秒
-err := async.RetryWithBackoff(ctx, 5, 100*time.Millisecond, func(ctx context.Context) error {
-    return callExternalAPI(ctx, request)
+// 重试 5 次，初始退避 1s
+err := async.RetryWithBackoff(ctx, 5, 1*time.Second, func(ctx context.Context) error {
+    return callSlowAPI(ctx, request)
 })
 ```
 
-> `RetryWithBackoff` 的第三个参数是 `maxBackoff`。当设为 `0` 时不设上限，退避会无限翻倍。
+**`RetryWithBackoff` 参数：**
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `ctx` | `context.Context` | 上下文 |
+| `maxRetries` | `int` | 最大重试次数 |
+| `backoff` | `time.Duration` | 初始退避时间（每次翻倍） |
+| `fn` | `func(context.Context) error` | 要重试的函数 |
+
+> 默认最大退避上限：**30 秒**（内部固定，不需要传参）。退避公式：`min(backoff × 2^attempt, 30s)`
+
+### RetryWithConfig（完整自定义配置）
+
+```go
+err := async.RetryWithConfig(ctx, &async.RetryConfig{
+    MaxRetries:   3,
+    InitialDelay: 200 * time.Millisecond, // 初始退避
+    MaxDelay:     5 * time.Second,        // 最大退避上限
+    Factor:       2.5,                     // 乘数因子
+}, func(ctx context.Context) error {
+    return callAPI(ctx)
+})
+```
+
+**`RetryConfig` 结构：**
+| 字段 | 类型 | 默认 | 说明 |
+|------|------|------|------|
+| `MaxRetries` | `int` | 0 (无默认) | 最大重试次数 |
+| `InitialDelay` | `time.Duration` | 100ms | 初始退避时间 |
+| `MaxDelay` | `time.Duration` | 0（无上限） | 退避最大上限 |
+| `Factor` | `float64` | 2.0 | 指数乘数因子 |
 
 ---
 
@@ -75,6 +113,15 @@ err := async.RetryWithLinearBackoff(ctx, 5, 1*time.Second, func(ctx context.Cont
     return callSlowService(ctx, data)
 })
 ```
+
+**`RetryWithLinearBackoff` 参数：**
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `ctx` | `context.Context` | 上下文 |
+| `maxRetries` | `int` | 最大重试次数 |
+| `backoff` | `time.Duration` | 每次重试固定等待时间 |
+| `fn` | `func(context.Context) error` | 要重试的函数 |
 
 ---
 
@@ -99,6 +146,14 @@ if err != nil {
 }
 ```
 
+**`RetryWithConfig` 参数：**
+- `ctx` — 上下文
+- `fn` — `func(context.Context) (T, error)`
+- `retries` — 最大重试次数
+- `initialDelay` — 初始退避
+- `maxDelay` — 最大退避上限
+- `opts` — `TimeoutOpt{PerCallTimeout}` 超时配置
+
 **重要**：`RetryWithConfig` 会区分 `context.DeadlineExceeded` 和 `context.Canceled` 错误，这两种错误**不会触发重试**。
 
 ---
@@ -113,25 +168,58 @@ r := async.RetryWithBackoffResult(ctx, func(ctx context.Context) (*Data, error) 
     return fetchData(ctx, id)
 }, 3, 100*time.Millisecond, 5*time.Second)
 
-if r.Ok() {
-    fmt.Println(r.Value)
-} else {
-    log.Printf("重试失败: %v", r.Err)
-}
-
 // RetryWithLinearBackoffResult：线性退避，返回 Result[T]
 r := async.RetryWithLinearBackoffResult(ctx, func(ctx context.Context) (string, error) {
     return callService(ctx)
 }, 5, 1*time.Second)
-
-if !r.Ok() {
-    log.Printf("服务调用失败: %v", r.Err)
-}
 ```
 
-> `Result[T]` 提供 `Ok()`、`IsPanic()` 等方法链式处理结果，适合在中间件或管道中使用。
+**便捷函数参数（均与对应非 Result 版本一致）：**
+- `RetryWithBackoffResult(ctx, fn, retries, maxBackoff)` → `Result[T]`
+- `RetryWithLinearBackoffResult(ctx, fn, retries, interval)` → `Result[T]`
 
----
+### retry 子包 Void 便捷函数
+
+当只关心 error 不需要返回值时，`retry` 子包提供无返回值的便捷版本：
+
+```go
+// retry.RetryWithBackoffVoid — 指数退避，只返回 error
+err := retry.RetryWithBackoffVoid(ctx, func(ctx context.Context) error {
+    return sendRequest(ctx, payload)
+}, 3, 100*time.Millisecond, 30*time.Second)
+
+// retry.RetryWithLinearBackoffVoid — 线性退避，只返回 error
+err := retry.RetryWithLinearBackoffVoid(ctx, func(ctx context.Context) error {
+    return pollStatus(ctx, jobID)
+}, 5, 2*time.Second)
+```
+
+| 函数 | 签名 | 说明 |
+|------|------|------|
+| `retry.RetryWithBackoffVoid` | `(ctx, fn, maxRetries, initialBackoff, maxBackoff) error` | 指数退避，fn 签名 `func(ctx) error` |
+| `retry.RetryWithLinearBackoffVoid` | `(ctx, fn, maxRetries, backoff) error` | 线性退避，fn 签名 `func(ctx) error` |
+
+**`RetryWithBackoffVoid` 参数：**
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `ctx` | `context.Context` | 上下文 |
+| `fn` | `func(context.Context) error` | 要重试的函数 |
+| `maxRetries` | `int` | 最大重试次数 |
+| `initialBackoff` | `time.Duration` | 初始退避时间 |
+| `maxBackoff` | `time.Duration` | 最大退避时间上限 |
+
+**`RetryWithLinearBackoffVoid` 参数：**
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `ctx` | `context.Context` | 上下文 |
+| `fn` | `func(context.Context) error` | 要重试的函数 |
+| `maxRetries` | `int` | 最大重试次数 |
+| `backoff` | `time.Duration` | 每次重试的固定等待时间 |
+
+> **说明：** 这两个函数在 `retry` 子包中导出，同时被顶层的 `RetryWithBackoff` / `RetryWithLinearBackoff` 内部调用。用户如果已经在使用 `import "..." retry` 可以直接使用 Void 版本。
+
 
 ## 简单函数式重试
 
@@ -148,6 +236,10 @@ err := async.RetryFn(func() error {
     return riskyOperation()
 }).WithRetry(2)
 ```
+
+**`RetryFn` 用法：**
+- `async.RetryFn(func() error)` — 包装函数，返回 `RetryFnWrapper`
+- `.WithRetry(n)` — 设置最大重试次数并执行
 
 ---
 
@@ -168,6 +260,13 @@ err := async.WithTimeoutVoid(ctx, 5*time.Second, func(ctx context.Context) error
 })
 ```
 
+**`WithTimeout` 参数：**
+- `ctx` — 上下文
+- `timeout` — 超时时间
+- `fn` — `func(context.Context) (T, error)`
+
+**`WithTimeoutVoid` 参数：** 同上，但 fn 签名为 `func(context.Context) error`
+
 ### WithDeadline
 
 给单个函数调用加上截止时间：
@@ -184,6 +283,11 @@ err := async.WithDeadlineVoid(ctx, deadline, func(ctx context.Context) error {
 })
 ```
 
+**`WithDeadline` 参数：**
+- `ctx` — 上下文
+- `deadline` — 截止时间点 `time.Time`
+- `fn` — `func(context.Context) (T, error)`
+
 ---
 
 ## Worker 绑定重试
@@ -197,7 +301,13 @@ err := async.BindRetryToWorker(ctx, pool, func(ctx context.Context) error {
 }, 3, 10*time.Millisecond, 1*time.Second)
 ```
 
-> 适用于高负载场景下提交任务时池满需要重试的情况。
+**`BindRetryToWorker` 参数：**
+- `ctx` — 上下文
+- `backend` — 实现了 `WorkerPoolBackend` 接口（`Submit(ctx, fn) error`）的池
+- `fn` — `func(context.Context) error`
+- `maxRetries` — 最大重试次数
+- `initialBackoff` — 初始退避时间
+- `maxBackoff` — 最大退避上限
 
 ---
 
@@ -283,6 +393,8 @@ func callWithRetry(ctx context.Context, url string) (string, error) {
 
 | 函数/类型 | 说明 |
 |-----------|------|
+| `retry.RetryWithBackoffVoid(ctx, fn, max, init, max)` | 指数退避（retry 子包 Void 版本） |
+| `retry.RetryWithLinearBackoffVoid(ctx, fn, max, backoff)` | 线性退避（retry 子包 Void 版本） |
 | `RetryFn(fn).WithRetry(n)` | 简单函数式重试 |
 | `BindRetryToWorker(ctx, pool, fn, max, init, max)` | Worker 提交重试 |
 | `TimeoutOpt{PerCallTimeout: d}` | 每次调用超时配置 |

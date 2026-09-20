@@ -19,12 +19,14 @@
 
 设置 Group 和 Pool 的全局默认超时时间，当未通过 `WithTimeout` 单独设置时生效。
 
-```go
-// 设置全局默认超时为 30 秒
-async.SetDefaultTimeout(30 * time.Second)
+> **不设置时默认值为 30 秒**，即每个任务最多执行 30 秒后超时取消。
 
-// 获取当前全局默认超时
-d := async.GetDefaultTimeout()
+```go
+// 获取当前默认超时（初始值 30s）
+d := async.GetDefaultTimeout() // → 30s
+
+// 自定义全局默认超时
+async.SetDefaultTimeout(10 * time.Second)
 
 // 设为 0 则关闭默认超时（任务无超时限制）
 async.SetDefaultTimeout(0)
@@ -52,15 +54,17 @@ d := async.GetSubmitTimeout()
 
 `WaitTimeout` 或 `WaitContext` 超时后，后台清理 goroutine 的最大存活时间。超过此时间后日志级别从 Warn 升级为 Error。
 
+> **不设置时默认值为 30 分钟**。设为 0 表示无限等待（清理 goroutine 永不强制退出）。
+
 ```go
+// 获取当前值（初始值 30 分钟）
+d := async.GetMaxCleanupDuration()
+
 // 超时后清理 goroutine 最多再等 5 分钟
 async.SetMaxCleanupDuration(5 * time.Minute)
 
 // 设为 0 表示无限等待
 async.SetMaxCleanupDuration(0)
-
-// 获取当前值
-d := async.GetMaxCleanupDuration()
 ```
 
 ---
@@ -71,8 +75,13 @@ d := async.GetMaxCleanupDuration()
 
 ### 设置失败日志级别
 
+> **不设置时默认值为 `LogLevelError`**，失败任务以 Error 级别输出日志。
+
 ```go
-// 任务失败只打印 Warn（默认 Error）
+// 获取当前级别（初始值 LogLevelError）
+lvl := async.GetTaskFailLogLevel()
+
+// 失败只打印 Warn
 async.SetTaskFailLogLevel(async.LogLevelWarn)
 
 // 关闭所有失败日志
@@ -256,11 +265,28 @@ val := async.Must(someFn(ctx, input))
 
 | 方法 | 说明 |
 |------|------|
+| `SetLogger(logger)` | 注入自定义日志实现（如 zerolog、zap） |
+| `GetLogger()` | 获取当前日志器 |
 | `SetTaskFailLogLevel(level)` | 设置失败日志级别 |
 | `GetTaskFailLogLevel()` | 获取失败日志级别 |
 | `SetTraceLogEnabled(bool)` | 开关 Trace 日志 |
 | `GetTraceLogEnabled()` | 获取 Trace 日志状态 |
-| `SetLogger(logger)` | 注入自定义 Logger |
+
+### MergeCancel
+
+合并两个 `CancelFunc`，调用时依次执行新旧 cancel：
+
+```go
+// 场景：包装一个已有 cancel 的 context
+newCtx, newCancel := context.WithCancel(oldCtx)
+mergedCancel := async.MergeCancel(oldCancel, newCancel)
+// 调用 mergedCancel 时，会依次执行 newCancel 和 oldCancel
+defer mergedCancel()
+```
+
+| 函数 | 签名 |
+|------|------|
+| `async.MergeCancel(old, new)` | `(oldCancel, newCancel CancelFunc) → CancelFunc` |
 
 ### 日志级别
 
@@ -271,6 +297,63 @@ val := async.Must(someFn(ctx, input))
 | `LogLevelInfo` | 信息 |
 | `LogLevelDebug` | 调试 |
 | `LogLevelSilent` | 静默 |
+
+### 配置常量
+
+| 常量 | 说明 |
+|------|------|
+| `async.DefaultSubmitTimeout` | Submit 等待空闲 worker 的默认超时（5 秒） |
+| `async.WaitContextCleanupWarn` | 超时清理 goroutine 发出警告的间隔（5 分钟） |
+| `async.WaitContextCleanupError` | 超时清理 goroutine 发出错误的阈值（30 分钟） |
+| `async.SlotAcquireWarnTimeout` | 等待并发槽位时发出警告的阈值（30 秒） |
+
+**所有配置常量都可通过 `async.SetDefaultTimeout`、`async.SetSubmitTimeout` 等方法动态修改。**
+
+### 哨兵错误
+
+库中所有可预见的错误都通过哨兵错误常量暴露，方便统一判断：
+
+```go
+// 提交超时
+if errors.Is(err, async.ErrSubmitTimeout) {
+    // 池已满，无法在超时内提交
+}
+
+// 池已关闭
+if errors.Is(err, async.ErrPoolClosed) {
+    // 池已关闭，不能再提交
+}
+
+// 池已 Wait（不能写入新任务）
+if errors.Is(err, async.ErrPoolWaited) {
+    // Wait 之后不能再提交
+}
+
+// FailFast 跳过
+if errors.Is(err, async.ErrSkipped) {
+    // 任务被跳过因为有其他任务已失败
+}
+
+// 限流器已停止
+if errors.Is(err, async.ErrRateLimiterStopped) {
+    // 限流器已停止
+}
+
+// 操作超时
+if errors.Is(err, async.ErrTimeout) {
+    // 通用超时错误
+}
+```
+
+| 错误常量 | 触发场景 |
+|---------|---------|
+| `async.ErrSubmitTimeout` | 提交任务时超过 `DefaultSubmitTimeout` 或 `WithSubmitTimeout` 设置的超时 |
+| `async.ErrPoolClosed` | 向已关闭的 Pool 提交任务 |
+| `async.ErrPoolWaited` | Pool 已调用 `Wait` 后继续 `Submit` |
+| `async.ErrGroupWaited` | Group 已调用 `Wait` 后继续 `Go` |
+| `async.ErrSkipped` | FailFast 模式下因已有任务失败而跳过 |
+| `async.ErrRateLimiterStopped` | 限流器已停止时尝试获取令牌 |
+| `async.ErrTimeout` | 通用超时（如 `WaitTimeout` / `WithTimeout`） |
 
 ### 并发度
 

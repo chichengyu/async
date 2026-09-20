@@ -59,6 +59,15 @@ defer nrp.Close()
 
 > **注意**：`NewPool` 会**立即启动** worker goroutine，创建后务必 `defer p.Close()`。
 
+**默认行为：**
+
+| 默认项 | 默认值 | 说明 |
+|--------|--------|------|
+| 任务超时 | **30s**（全局默认值） | 每个任务最多执行 30s 后超时取消，可通过 `WithTimeout` 覆盖 |
+| 提交超时 | **无限等待** | Submit 阻塞等待，不设硬超时；每 30s 输出一次警告 |
+| `size <= 0` | **IO()**（CPU 核数×2） | 自动使用 IO 并发度 |
+| 任务队列容量 | **size × 2** | 缓冲通道可缓存的待处理任务数 |
+
 ---
 
 ## 提交任务
@@ -97,6 +106,11 @@ if errors.Is(err, async.ErrSubmitTimeout) {
 }
 ```
 
+**参数：**
+- `ctx` — 上下文
+- `fn` — `func(context.Context) (T, error)`
+- 返回：提交错误（nil=成功，`ErrSubmitTimeout`=池满，`ErrPoolClosed`=池已关闭）
+
 ### SubmitAt - 指定位置阻塞提交
 
 指定结果数组的索引位置，保证与输入顺序一致：
@@ -115,6 +129,11 @@ results := p.Wait()
 // ...
 ```
 
+**参数：**
+- `index` — 结果数组的目标位置 `int`
+- `ctx` — 上下文
+- `fn` — `func(context.Context) (T, error)`
+
 ### TrySubmitAt - 指定位置非阻塞提交
 
 ```go
@@ -125,6 +144,8 @@ if err != nil {
     log.Printf("位置 3 提交失败: %v", err)
 }
 ```
+
+**参数：** 同 SubmitAt + 返回提交错误
 
 ---
 
@@ -236,10 +257,10 @@ p.CloseByIdle(0)
 ### 超时控制
 
 ```go
-// 设置单个任务的超时（覆盖全局默认值）
+// 设置单个任务的超时（不设置时默认 30 秒，来自全局默认值）
 p.WithTimeout(10 * time.Second)
 
-// 设置 Submit 等待空闲 worker 的超时
+// 设置 Submit 等待空闲 worker 的超时（不设置时默认无限等待）
 p.WithSubmitTimeout(3 * time.Second)
 ```
 
@@ -449,20 +470,26 @@ p.EnableAutoScale(&async.AutoScaleConfig{
 
 ### 默认配置
 
+| 配置项 | 默认值 | 说明 |
+|--------|--------|------|
+| `MinWorkers` | **CPU × 2** | 最小 worker 数，缩容不低于此值 |
+| `MaxWorkers` | **CPU × 100** | 最大 worker 数，扩容不超此值 |
+| `CheckInterval` | **5s** | 后台检测间隔 |
+| `ScaleUpThreshold` | **0.7** | busy/total 超过此比例触发扩容计数 |
+| `ScaleDownThreshold` | **0.2** | busy/total 低于此比例触发缩容计数 |
+| `ScaleUpChecks` | **3** | 连续触发扩容次数（防抖动） |
+| `ScaleDownChecks` | **5** | 连续触发缩容次数（防抖动） |
+
 ```go
-// DefaultAutoScaleConfig 返回：
-// MinWorkers=CPU×2, MaxWorkers=CPU×100, CheckInterval=5s
-// ScaleUpThreshold=0.7, ScaleDownThreshold=0.2
-// ScaleUpChecks=3, ScaleDownChecks=5
+// 传 nil 使用默认配置
+p.EnableAutoScale(nil)
+
+// 获取默认配置
 config := async.DefaultAutoScaleConfig()
 ```
 
-### DisableAutoScale - 禁用自动扩缩容
-
-```go
-p.DisableAutoScale()
-// 禁用后 worker 数恢复为 MinWorkers
-```
+**扩容规则**：busy/size 比率超过 `ScaleUpThreshold` 持续 `ScaleUpChecks` 次 → worker 翻倍（上限 MaxWorkers）  
+**缩容规则**：busy/size 比率低于 `ScaleDownThreshold` 持续 `ScaleDownChecks` 次 → worker 减半（下限 MinWorkers）
 
 ### IsAutoScaleEnabled - 检查状态
 
@@ -475,7 +502,7 @@ if p.IsAutoScaleEnabled() {
 ### NewAutoScalePool - 快捷创建
 
 ```go
-// 创建初始 4 worker、自动扩缩容的池
+// 创建初始 4 worker、自动扩缩容的池（config 为 nil 时使用默认配置）
 p := async.NewAutoScalePool[int](4, nil)
 defer p.Close()
 
@@ -485,6 +512,8 @@ p2 := async.NewAutoScalePool[int](4, &async.AutoScaleConfig{
     MaxWorkers: 500,
 })
 ```
+
+> `config` 为 `nil` 时使用 `DefaultAutoScaleConfig()`，详见上方默认配置表格。
 
 ### 线程安全
 
@@ -576,13 +605,26 @@ if p.HasError() {
 fmt.Printf("成功: %d, 失败: %d\n", p.SuccessCount(), p.FailCount())
 ```
 
----
+**NoResultPool 辅助函数参数速查：**
+
+| 函数 | 参数 | 说明 |
+|------|------|------|
+| `SubmitAction(p, ctx, fn)` | `p *NoResultPool`, `ctx`, `fn func(ctx) error` | 阻塞提交，队列满时阻塞等待 |
+| `TrySubmitAction(p, ctx, fn)` | 同上 | 非阻塞提交，队列满返回 ErrSubmitTimeout |
+| `SubmitAtAction(p, idx, ctx, fn)` | `p`, `idx int`, `ctx`, `fn` | 指定结果数组索引位置阻塞提交 |
+| `TrySubmitAtAction(p, idx, ctx, fn)` | 同上 | 指定位置非阻塞提交 |
+| `GoAction(p, ctx, fn)` | `p`, `ctx`, `fn` | 非阻塞提交，失败时 panic |
+| `SubmitActionWithTimeout(p, ctx, d, fn)` | `p`, `ctx`, `d time.Duration`, `fn` | 带超时的阻塞提交 |
+| `SubmitAtActionWithTimeout(p, idx, ctx, d, fn)` | `p`, `idx`, `ctx`, `d`, `fn` | 指定位置带超时提交 |
+| `GoActionWithTimeout(p, ctx, d, fn)` | `p`, `ctx`, `d`, `fn` | 带超时提交，失败 panic |
 
 ## 便捷函数
 
 一行代码快速创建池并提交任务：
 
 ### Submit - 快速创建池提交单个任务
+
+创建 `Pool[T]` 并提交一个任务，返回池实例、任务索引和错误：
 
 ```go
 p, idx, err := async.Submit(ctx, func(ctx context.Context) (string, error) {
@@ -593,15 +635,28 @@ if err != nil {
 }
 defer p.Close()
 results := p.Wait()
+fmt.Printf("任务在位置 %d, 结果: %v\n", idx, results[idx].Value)
 ```
 
+**参数：**
+- `ctx` — 上下文
+- `fn` — 任务函数 `func(context.Context) (T, error)`
+
+**返回：**
+- `*Pool[T]` — 新创建的池（需手动 `Close()`）
+- `int` — 任务在结果数组中的索引
+- `error` — 提交错误
+
 ### SubmitN - 快速提交 N 个相同任务
+
+创建池并提交 N 个相同函数（每个独立执行）：
 
 ```go
 p, results, err := async.SubmitN(ctx, func(ctx context.Context) (int, error) {
     return rand.Intn(100), nil
 }, 10) // 提交 10 个任务
 defer p.Close()
+
 for _, r := range results {
     if r.Err != nil {
         log.Printf("任务 %d 提交失败: %v", r.Index, r.Err)
@@ -610,16 +665,41 @@ for _, r := range results {
 waitResults := p.Wait()
 ```
 
+**参数：**
+- `ctx` — 上下文
+- `fn` — 任务函数
+- `n` — 提交数量
+
+**返回：**
+- `*Pool[T]` — 池实例
+- `[]SubmitResult` — 每个提交的结果（Index + Err）
+- `error` — 整体错误（预留）
+
 ### SubmitSafeN - 提交 N 个（忽略提交失败）
 
+与 `SubmitN` 类似，但不返回 error，内部自动忽略提交失败：
+
 ```go
-// 不返回 error，内部自动处理
 p, results := async.SubmitSafeN(ctx, fn, 10)
 defer p.Close()
+
+for _, r := range results {
+    if r.Err != nil {
+        // 某些提交可能失败，但不会打断整体流程
+        log.Printf("索引 %d 提交失败: %v", r.Index, r.Err)
+    }
+}
 waitResults := p.Wait()
 ```
 
+**参数：**
+- `ctx` — 上下文
+- `fn` — 任务函数
+- `n` — 提交数量
+
 ### SubmitBatch - 批量提交切片元素
+
+对切片每个元素提交一个任务，适合数据驱动的批处理：
 
 ```go
 items := []string{"url1", "url2", "url3", "url4"}
@@ -628,36 +708,70 @@ p, results, err := async.SubmitBatch(ctx, items, func(ctx context.Context, url s
     return httpGet(ctx, url)
 })
 defer p.Close()
-if err == nil {
-    waitResults := p.Wait()
-    for _, r := range waitResults {
-        if r.Ok() {
-            fmt.Println(r.Value)
-        }
+
+if err != nil {
+    log.Printf("批量提交失败: %v", err)
+}
+
+waitResults := p.Wait()
+for _, r := range waitResults {
+    if r.Ok() {
+        fmt.Println(r.Value)
     }
 }
 ```
 
+**参数：**
+- `ctx` — 上下文
+- `items` — 输入切片 `~[]E`（支持任何底层为切片的类型）
+- `fn` — 处理函数 `func(context.Context, E) (T, error)`
+
 ### MapPool - 池化 Map
 
-使用 Pool 执行并发 Map（可获取池实例进行进一步控制）：
+使用 Pool 执行并发 Map，可获取池实例进行统计：
 
 ```go
 p, results, err := async.MapPool(ctx, urls, func(ctx context.Context, url string) (string, error) {
     return httpGet(ctx, url)
 }, async.IO())
 // p 已自动 Wait + Close
-fmt.Printf("总数: %d, 失败: %d\n", p.TotalCount(), p.FailCount())
+
+fmt.Printf("总数: %d, 成功: %d, 失败: %d\n",
+    p.TotalCount(), p.SuccessCount(), p.FailCount())
 ```
 
+**参数：**
+- `ctx` — 上下文
+- `items` — 输入切片
+- `fn` — 转换函数
+- `concurrency` — 并发度
+
 ### ForEachPool - 池化 ForEach
+
+使用 NoResultPool 执行并发遍历：
 
 ```go
 p, err := async.ForEachPool(ctx, users, func(ctx context.Context, user string) error {
     return sendNotification(ctx, user)
 }, async.IO())
 // p 已自动 Wait + Close
-fmt.Printf("成功: %d, 失败: %d\n", p.SuccessCount(), p.FailCount())
+
+fmt.Printf("推送完成: 成功=%d 失败=%d\n", p.SuccessCount(), p.FailCount())
+```
+
+**参数：**
+- `ctx` — 上下文
+- `items` — 输入切片
+- `fn` — 操作函数
+- `concurrency` — 并发度
+
+**SubmitResult 类型：**
+
+```go
+type SubmitResult struct {
+    Index int   // 任务在结果数组中的位置
+    Err   error // 提交错误（nil = 成功）
+}
 ```
 
 ---

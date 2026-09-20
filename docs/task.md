@@ -58,23 +58,34 @@ if err := task.Wait(); err != nil {
 }
 ```
 
+**`Go` 参数：**
+- `ctx` — 上下文
+- `fn` — 任务函数 `func(context.Context)`（无返回值）
+
+**返回：** `*TaskVoid` — 异步任务句柄
+
 ### 带超时
 
 ```go
 // 最多执行 3 秒
-async.GoWithTimeout(ctx, 3*time.Second, func(ctx context.Context) {
+task := async.GoWithTimeout(ctx, 3*time.Second, func(ctx context.Context) {
     slowCleanup(ctx)
 })
 ```
+
+**`GoWithTimeout` 参数：**
+- `ctx` — 上下文
+- `timeout` — 超时时间
+- `fn` — 任务函数 `func(context.Context)`
 
 ### TaskVoid 方法
 
 ```go
 task := async.Go(ctx, fn)
 
-err := task.Wait()    // 阻塞等待完成
-ok := task.Ok()       // 阻塞等待并返回是否成功
-panic := task.IsPanic() // 阻塞等待并返回是否由 panic 导致
+err := task.Wait()       // 阻塞等待完成，返回 error
+ok := task.Ok()          // 阻塞等待并返回是否成功（nil error）
+panic := task.IsPanic()  // 阻塞等待并返回是否由 panic 导致
 ```
 
 ---
@@ -82,6 +93,8 @@ panic := task.IsPanic() // 阻塞等待并返回是否由 panic 导致
 ## 带返回值异步任务 (GoResult)
 
 适合**并发执行多个独立任务并获取各自结果**的场景。
+
+### 基础用法
 
 ```go
 // 并发查询多个数据源
@@ -104,6 +117,12 @@ if err2 != nil {
 }
 ```
 
+**`GoResult` 参数：**
+- `ctx` — 上下文
+- `fn` — `func(context.Context) (T, error)` 
+
+**返回：** `*AsyncResult[T]` — 结果句柄
+
 ### 带超时
 
 ```go
@@ -113,6 +132,11 @@ ar := async.GoResultWithTimeout(ctx, 5*time.Second, func(ctx context.Context) (*
 
 val, err := ar.Wait()
 ```
+
+**`GoResultWithTimeout` 参数：**
+- `ctx` — 上下文
+- `timeout` — 超时时间
+- `fn` — `func(context.Context) (T, error)`
 
 ---
 
@@ -124,7 +148,7 @@ val, err := ar.Wait()
 
 ```go
 ar := async.GoResult(ctx, fn)
-value, err := ar.Wait()
+value, err := ar.Wait()  // 返回 (T, error)
 if err != nil {
     log.Printf("任务失败: %v", err)
 }
@@ -134,7 +158,7 @@ if err != nil {
 ### WaitTimeout（带超时等待）
 
 ```go
-val, err, ok := ar.WaitTimeout(3 * time.Second)
+val, err, ok := ar.WaitTimeout(3 * time.Second)  // 返回 (T, error, bool)
 if !ok {
     fmt.Println("任务超时，已丢弃结果")
     return
@@ -145,7 +169,7 @@ if !ok {
 
 ```go
 select {
-case r := <-ar.WaitCh():
+case r := <-ar.WaitCh():  // <-chan Result[T]
     fmt.Println("任务完成:", r.Value)
 case <-ctx.Done():
     fmt.Println("上下文取消")
@@ -165,10 +189,10 @@ if val, err := ar.Cancel(); err != nil {
 ### Ok / IsPanic（状态查询）
 
 ```go
-if ar.Ok() {
+if ar.Ok() {        // 阻塞等待并返回是否成功
     fmt.Println("任务成功")
 }
-if ar.IsPanic() {
+if ar.IsPanic() {   // 阻塞等待并返回是否 panic
     fmt.Println("任务 panic 了")
 }
 ```
@@ -201,6 +225,67 @@ t.Ctx  // 任务上下文
 | `t.Ctx` | 任务上下文 |
 | `t.Cancel()` | 取消任务 |
 | `t.Result()` | 获取结果 |
+
+### GoAction / GoResultAction（task 子包）
+
+`task` 包还提供了无需自己处理泛型的便捷函数：
+
+```go
+// GoAction: 无返回值 → AsyncResult[NoResult]，只需关心 error
+ar := task.GoAction(ctx, func(ctx context.Context) error {
+    return sendNotification(ctx, userID, msg)
+})
+_, err := ar.Wait() // 忽略 NoResult 值
+
+// GoResultAction: 无返回值 → Task[NoResult]，可主动 Cancel
+t := task.GoResultAction(ctx, func(ctx context.Context) error {
+    return slowWork(ctx)
+})
+t.Cancel()
+result := t.Result()
+```
+
+| 函数 | 签名 | 返回类型 | 特点 |
+|------|------|---------|------|
+| `task.Go(ctx, fn)` | `func(ctx) (T, error)` | `*AsyncResult[T]` | 标准泛型 |
+| `task.GoResult(ctx, fn)` | `func(ctx) (T, error)` | `Task[T]` | 可主动 Cancel |
+| `task.GoAction(ctx, fn)` | `func(ctx) error` | `*AsyncResult[NoResult]` | 无返回值便捷版 |
+| `task.GoResultAction(ctx, fn)` | `func(ctx) error` | `Task[NoResult]` | 无返回值 + 可 Cancel |
+
+---
+
+## SafeCall - Panic 保护
+
+`SafeCall` 和 `SafeCallVoid` 在执行函数时自动捕获 panic 并转换为 error：
+
+```go
+// 带返回值，panic 转为 error
+val, err := async.SafeCall(ctx, rawData, func(ctx context.Context, data string) (Parsed, error) {
+    return parse(data) // panic 被捕获并转为 error
+})
+if err != nil {
+    log.Printf("解析失败或 panic: %v", err)
+}
+
+// 无返回值版本
+err := async.SafeCallVoid(ctx, record, func(ctx context.Context, r Record) error {
+    // 即使这里 panic，也会被转为 error 返回
+    validate(r)
+    return nil
+})
+```
+
+**`SafeCall` 参数：**
+- `ctx` — 上下文
+- `item` — 输入值 `T`
+- `fn` — `func(context.Context, T) (R, error)` — 自动捕获 panic 的函数
+
+**`SafeCallVoid` 参数：**
+- `ctx` — 上下文
+- `item` — 输入值 `T`
+- `fn` — `func(context.Context, T) error` — 自动捕获 panic 的无返回值函数
+
+> 通常配合 `Map`/`ForEach` 内部使用，确保单个元素的 panic 不影响整体流程。本身不创建 goroutine，需调用方并发使用。
 
 ---
 

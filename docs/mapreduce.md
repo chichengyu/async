@@ -8,6 +8,7 @@
 - [ForEach - 并发遍历](#foreach---并发遍历)
 - [Reduce - 并发聚合](#reduce---并发聚合)
 - [Chunk - 分块处理](#chunk---分块处理)
+- [MapPool / ForEachPool - 池化处理](#mappool--foreachpool---池化处理)
 - [Result 辅助函数](#result-辅助函数)
 - [Must - err!=nil 则 panic](#must---errnil-则-panic)
 - [完整示例](#完整示例)
@@ -41,7 +42,7 @@ for i, r := range results {
 |------|------|
 | `ctx` | 上下文（控制取消和超时） |
 | `items` | 输入元素切片 |
-| `concurrency` | 并发度（建议用 `async.IO()` 或 `async.CPU()`） |
+| `concurrency` | 并发度（建议用 `async.IO()` 或 `async.CPU()`；**≤0 时默认 IO()**） |
 | `fn` | 处理函数：接收 ctx 和元素，返回处理结果 |
 
 > **安全性**：并发的 Map 阶段内置 panic recovery，单个元素的 panic 不会导致整个操作崩溃，会包装为 `PanicError` 返回。
@@ -90,6 +91,30 @@ results := async.MapWithTimeout(ctx, items, async.IO(), 10*time.Second, fn)
 // 串行处理：数据量小或需要严格顺序
 results := async.MapSerial(ctx, items, fn)
 ```
+
+### Default 变体 — 省略并发度参数
+
+所有 `Default*` 变体省略了 `concurrency` 参数，自动使用 `IO()` 并发度：
+
+```go
+// 带并发度的完整版
+results := async.Map(ctx, items, async.IO(), fn)
+
+// Default 快捷版（等价）
+results := async.DefaultMap(ctx, items, fn)
+
+// 其他 Default 变体：
+results, err := async.DefaultMapWithFailFast(ctx, items, fn)
+results := async.DefaultMapWithTimeout(ctx, items, 10*time.Second, fn)
+results, err := async.DefaultMapWithFFTimeout(ctx, items, 10*time.Second, fn)
+```
+
+| 完整版 | Default 快捷版 | 说明 |
+|--------|---------------|------|
+| `Map(ctx, items, c, fn)` | `DefaultMap(ctx, items, fn)` | 基础映射 |
+| `MapWithFailFast(ctx, items, c, fn)` | `DefaultMapWithFailFast(ctx, items, fn)` | FailFast |
+| `MapWithTimeout(ctx, items, c, d, fn)` | `DefaultMapWithTimeout(ctx, items, d, fn)` | 超时 |
+| `MapWithFFTimeout(ctx, items, c, d, fn)` | `DefaultMapWithFFTimeout(ctx, items, d, fn)` | FF+超时 |
 
 ---
 
@@ -143,6 +168,19 @@ nr, err := async.ForEachWithFailFast(ctx, records, async.IO(), func(ctx context.
 if err != nil {
     log.Printf("写入失败，后续记录已取消: %v", err)
 }
+```
+
+### Default 变体
+
+```go
+// 带并发度
+nr, err := async.ForEach(ctx, items, async.IO(), fn)
+
+// Default 快捷版
+nr, err := async.DefaultForEach(ctx, items, fn)
+nr, err := async.DefaultForEachWithFailFast(ctx, items, fn)
+nr, err := async.DefaultForEachWithTimeout(ctx, items, 10*time.Second, fn)
+nr, err := async.DefaultForEachWithFFTimeout(ctx, items, 10*time.Second, fn)
 ```
 
 ---
@@ -220,6 +258,19 @@ urls, err := async.Reduce(ctx, paths, async.IO(),
 )
 ```
 
+### Default 变体
+
+```go
+// 带并发度
+total, err := async.Reduce(ctx, items, async.IO(), mapFn, 0, reduceFn)
+
+// Default 快捷版
+total, err := async.DefaultReduce(ctx, items, mapFn, 0, reduceFn)
+total, err := async.DefaultReduceWithFailFast(ctx, items, mapFn, 0, reduceFn)
+total, err := async.DefaultReduceWithTimeout(ctx, items, 10*time.Second, mapFn, 0, reduceFn)
+total, err := async.DefaultReduceWithFFTimeout(ctx, items, 10*time.Second, mapFn, 0, reduceFn)
+```
+
 ---
 
 ## Chunk - 分块处理
@@ -240,6 +291,14 @@ for _, chunk := range chunks {
 // 按数量均分
 chunks := async.ChunkN(items, 5) // 均分为 5 个批次
 ```
+
+**参数：**
+
+| 参数 | 类型 | 默认行为 | 说明 |
+|------|------|----------|------|
+| `items` | `[]T` | — | 输入切片 |
+| `batchSize`（Chunk） | `int` | **≤0 返回 nil** | 每批最大元素数 |
+| `n`（ChunkN） | `int` | **≤0 返回 nil** | 批次数（均分，最后一组可能略小） |
 
 ### MapChunk（分块并发 Map）
 
@@ -265,11 +324,31 @@ results := async.MapChunked(ctx, items, async.IO(), 100, func(ctx context.Contex
 
 两种函数都有完整的变体矩阵：
 
-- `MapChunk` / `DefaultMapChunk`
-- `MapChunkWithFailFast` / `DefaultMapChunkWithFailFast`
-- `MapChunkWithTimeout` / `DefaultMapChunkWithTimeout`
-- `MapChunkWithFFTimeout` / `DefaultMapChunkWithFFTimeout`
-- `MapChunked` / ...（同上）
+```go
+// MapChunk（fn 接收整个 chunk []T）
+results := async.MapChunk(ctx, items, 4, 100, fn)
+results, err := async.MapChunkWithFailFast(ctx, items, 4, 100, fn)
+results := async.MapChunkWithTimeout(ctx, items, 4, 100, 10*time.Second, fn)
+results, err := async.MapChunkWithFFTimeout(ctx, items, 4, 100, 10*time.Second, fn)
+
+// MapChunked（内部自动分块，fn 接收单个元素 T）
+results := async.MapChunked(ctx, items, 4, 100, fn)
+results, err := async.MapChunkedWithFailFast(ctx, items, 4, 100, fn)
+results := async.MapChunkedWithTimeout(ctx, items, 4, 100, 10*time.Second, fn)
+results, err := async.MapChunkedWithFFTimeout(ctx, items, 4, 100, 10*time.Second, fn)
+
+// Default* 快捷版（省略 concurrency 参数）
+results := async.DefaultMapChunk(ctx, items, 100, fn)
+results, err := async.DefaultMapChunkWithFailFast(ctx, items, 100, fn)
+results := async.DefaultMapChunkWithTimeout(ctx, items, 100, 10*time.Second, fn)
+results, err := async.DefaultMapChunkWithFFTimeout(ctx, items, 100, 10*time.Second, fn)
+
+// MapChunked Default* 快捷版（内部自动分块，省略 concurrency 参数）
+results := async.DefaultMapChunked(ctx, items, 100, fn)
+results, err := async.DefaultMapChunkedWithFailFast(ctx, items, 100, fn)
+results := async.DefaultMapChunkedWithTimeout(ctx, items, 100, 10*time.Second, fn)
+results, err := async.DefaultMapChunkedWithFFTimeout(ctx, items, 100, 10*time.Second, fn)
+```
 
 ### ForEachChunk（分块并发遍历）
 
@@ -278,9 +357,125 @@ results := async.MapChunked(ctx, items, async.IO(), 100, func(ctx context.Contex
 nr, err := async.ForEachChunk(ctx, users, async.IO(), 50, func(ctx context.Context, batch []User) error {
     return pushService.BatchSend(ctx, batch, notification)
 })
+
+// ForEachChunked（fn 接收单元素，内部自动分块）
+nr, err := async.ForEachChunked(ctx, users, async.IO(), 50, func(ctx context.Context, user User) error {
+    return sendOne(ctx, user)
+})
+
+// ── ForEachChunk 完整变体矩阵 ──
+
+// FailFast：首个失败立即停止
+nr, err := async.ForEachChunkWithFailFast(ctx, items, c, 100, fn)
+nr, err := async.ForEachChunkedWithFailFast(ctx, items, c, 100, fn)
+
+// Timeout：指定总超时
+nr := async.ForEachChunkWithTimeout(ctx, items, c, 100, 30*time.Second, fn)
+nr := async.ForEachChunkedWithTimeout(ctx, items, c, 100, 30*time.Second, fn)
+
+// FailFast + Timeout
+nr, err := async.ForEachChunkWithFFTimeout(ctx, items, c, 100, 30*time.Second, fn)
+nr, err := async.ForEachChunkedWithFFTimeout(ctx, items, c, 100, 30*time.Second, fn)
+
+// ── Default* 快捷版（省略 concurrency 参数）──
+
+// ForEachChunk Default
+nr, err := async.DefaultForEachChunk(ctx, items, 100, fn)
+nr, err := async.DefaultForEachChunkWithFailFast(ctx, items, 100, fn)
+nr := async.DefaultForEachChunkWithTimeout(ctx, items, 100, 30*time.Second, fn)
+nr, err := async.DefaultForEachChunkWithFFTimeout(ctx, items, 100, 30*time.Second, fn)
+
+// ForEachChunked Default
+nr, err := async.DefaultForEachChunked(ctx, items, 100, fn)
+nr, err := async.DefaultForEachChunkedWithFailFast(ctx, items, 100, fn)
+nr := async.DefaultForEachChunkedWithTimeout(ctx, items, 100, 30*time.Second, fn)
+nr, err := async.DefaultForEachChunkedWithFFTimeout(ctx, items, 100, 30*time.Second, fn)
 ```
 
-> ForEachChunk / ForEachChunked 同样有完整的 FailFast / Timeout / Default 变体矩阵。
+---
+
+## MapPool / ForEachPool - 池化处理
+
+`MapPool` 返回一个 `Pool` 用于后续复用，`ForEachPool` 返回一个 `NoResultPool`。与普通 Map/ForEach 不同的是，**返回值包含池对象**，适合需要多次提交额外任务的场景。
+
+### MapPool — 返回 Pool[R]
+
+```go
+records := []string{"a", "b", "c"}
+
+// 提交切片元素，返回 Pool 和首批结果
+p, results, err := async.MapPool(ctx, records, func(ctx context.Context, s string) (Processed, error) {
+    return process(ctx, s)
+}, async.IO())
+
+// Pool 仍然可用，可以继续提交新任务
+if err == nil {
+    go func() {
+        for _, r := range results {
+            if r.Ok() {
+                fmt.Println(r.Value)
+            }
+        }
+    }()
+    _ = p.Submit(ctx, func(ctx context.Context) (Processed, error) {
+        return process(ctx, "extra task")
+    })
+}
+
+// 用完记得关闭
+defer p.Close()
+```
+
+**参数：**
+- `ctx` — 上下文
+- `items` — 输入切片 `[]T`
+- `fn` — 处理函数 `func(context.Context, T) (R, error)`
+- `concurrency` — 并发度
+
+**返回：**
+- `*Pool[R]` — 仍可复用的池（需手动 `Close()`）
+- `[]core.Result[R]` — items 对应的结果
+- `error` — 整体提交错误
+
+### ForEachPool — 返回 NoResultPool
+
+```go
+files := []string{"f1.txt", "f2.txt", "f3.txt"}
+
+p, err := async.ForEachPool(ctx, files, func(ctx context.Context, path string) error {
+    return os.Remove(path)
+}, async.IO())
+
+if err != nil {
+    log.Printf("删除失败: %v", err)
+}
+
+// Pool 仍可用，可以继续提交
+_ = p.SubmitAction(ctx, func(ctx context.Context) error {
+    return os.Remove("extra.txt")
+})
+defer p.Close()
+```
+
+**参数：**
+- `ctx` — 上下文
+- `items` — 输入切片 `[]T`
+- `fn` — 处理函数 `func(context.Context, T) error`
+- `concurrency` — 并发度
+
+**返回：**
+- `*NoResultPool` — 仍可复用的池（需手动 `Close()`）
+- `error` — 整体提交错误
+
+### 与 Map/ForEach 的区别
+
+| 特性 | Map/ForEach | MapPool/ForEachPool |
+|------|-------------|---------------------|
+| 返回 pool 对象 | ❌ | ✅（可复用） |
+| 适合批量一次性 | ✅ | ❌ |
+| 适合动态追加任务 | ❌ | ✅ |
+| 需手动 Close | ❌ | ✅ |
+| Wait 自动触发 | ✅ | ❌ |
 
 ---
 
@@ -305,23 +500,26 @@ errs := async.ResultErrors(results)
 if len(errs) > 0 {
     log.Printf("有 %d 个任务失败", len(errs))
 }
+
+// OnlyErrors: 与 ResultErrors 等价，更简洁的命名
+errs := async.OnlyErrors(results)
+
+// 同时获取值和错误（两个切片按结果对应）
+values, errs := async.Partition(results)
 ```
 
-### 条件判断
-
-```go
-if async.Every(results) {
-    fmt.Println("全部成功")
-}
-
-if async.Some(results) {
-    fmt.Println("至少有一个成功")
-}
-
-if async.AnyError(results) {
-    fmt.Println("存在失败的任务")
-}
-```
+**辅助函数参数：**
+| 函数 | 签名 | 返回格式 |
+|------|------|----------|
+| `ResultValues(results)` | `[]Result[T] → []T` | 成功值（跳过失败项） |
+| `ResultErrors(results)` | `[]Result[T] → []error` | 非 nil 错误（跳过 nil） |
+| `OnlyErrors(results)` | `[]Result[T] → []error` | 同上，更简洁命名 |
+| `Flat(results)` | `[]Result[T] → []T` | 全部值（失败项为零值） |
+| `Partition(results)` | `[]Result[T] → ([]T, []error)` | 同时分离值和错误 |
+| `Every(results)` | `[]Result[T] → bool` | 是否全部成功 |
+| `Some(results)` | `[]Result[T] → bool` | 是否至少一个成功 |
+| `AnyError(results)` | `[]Result[T] → bool` | 是否存在失败任务 |
+| `Must(results)` | `[]Result[T] → T` | 取出值，err != nil 时 panic |
 
 ### 分区
 
@@ -424,6 +622,10 @@ func main() {
 | `MapWithFFTimeout(ctx, items, c, d, fn)` | FailFast + 超时映射 |
 | `MapSerial(ctx, items, fn)` | 串行映射 |
 | `MapSerialFailFast(ctx, items, fn)` | 串行 FailFast 映射 |
+| `DefaultMap(ctx, items, fn)` | 默认并发度映射 |
+| `DefaultMapWithFailFast(ctx, items, fn)` | 默认 + FailFast |
+| `DefaultMapWithTimeout(ctx, items, d, fn)` | 默认 + 超时 |
+| `DefaultMapWithFFTimeout(ctx, items, d, fn)` | 默认 + FF + 超时 |
 
 ### ForEach 系列
 
@@ -435,15 +637,23 @@ func main() {
 | `ForEachWithFFTimeout(ctx, items, c, d, fn)` | FailFast + 超时遍历 |
 | `ForEachSerial(ctx, items, fn)` | 串行遍历 |
 | `ForEachSerialFailFast(ctx, items, fn)` | 串行 FailFast 遍历 |
+| `DefaultForEach(ctx, items, fn)` | 默认并发度遍历 |
+| `DefaultForEachWithFailFast(ctx, items, fn)` | 默认 + FailFast |
+| `DefaultForEachWithTimeout(ctx, items, d, fn)` | 默认 + 超时 |
+| `DefaultForEachWithFFTimeout(ctx, items, d, fn)` | 默认 + FF + 超时 |
 
 ### Reduce 系列
 
 | 函数 | 说明 |
 |------|------|
 | `Reduce(ctx, items, c, mapFn, init, reduceFn)` | 并发聚合 |
-| `ReduceWithFailFast(...)` | FailFast 聚合 |
-| `ReduceWithTimeout(...)` | 带超时聚合 |
-| `ReduceWithFFTimeout(...)` | FailFast + 超时聚合 |
+| `ReduceWithFailFast(ctx, items, c, mapFn, init, reduceFn)` | FailFast 聚合 |
+| `ReduceWithTimeout(ctx, items, c, d, mapFn, init, reduceFn)` | 带超时聚合 |
+| `ReduceWithFFTimeout(ctx, items, c, d, mapFn, init, reduceFn)` | FailFast + 超时聚合 |
+| `DefaultReduce(ctx, items, mapFn, init, reduceFn)` | 默认并发度聚合 |
+| `DefaultReduceWithFailFast(ctx, items, mapFn, init, reduceFn)` | 默认 + FailFast |
+| `DefaultReduceWithTimeout(ctx, items, d, mapFn, init, reduceFn)` | 默认 + 超时 |
+| `DefaultReduceWithFFTimeout(ctx, items, d, mapFn, init, reduceFn)` | 默认 + FF + 超时 |
 
 ### Chunk 系列
 
@@ -452,31 +662,64 @@ func main() {
 | `Chunk(items, batchSize)` | 按大小分块 |
 | `ChunkN(items, n)` | 按数量均分 |
 
-### MapChunk 系列（fn 接收 chunk）
+### MapChunk 系列（fn 接收整个 chunk，适合批量 INSERT）
 
 | 函数 | 说明 |
 |------|------|
 | `MapChunk(ctx, items, c, batch, fn)` | 分块并发映射 |
-| `MapChunkWithFailFast(...)` | FailFast 分块 |
-| `MapChunkWithTimeout(...)` | 带超时分块 |
-| `MapChunkWithFFTimeout(...)` | FailFast + 超时分块 |
+| `MapChunkWithFailFast(ctx, items, c, batch, fn)` | FailFast 分块 |
+| `MapChunkWithTimeout(ctx, items, c, batch, d, fn)` | 带超时分块 |
+| `MapChunkWithFFTimeout(ctx, items, c, batch, d, fn)` | FailFast + 超时分块 |
+| `DefaultMapChunk(ctx, items, batch, fn)` | 默认并发度分块 |
+| `DefaultMapChunkWithFailFast(ctx, items, batch, fn)` | 默认 + FailFast |
+| `DefaultMapChunkWithTimeout(ctx, items, batch, d, fn)` | 默认 + 超时 |
+| `DefaultMapChunkWithFFTimeout(ctx, items, batch, d, fn)` | 默认 + FF + 超时 |
 
-### MapChunked 系列（fn 接收单元素）
+### MapChunked 系列（fn 接收单元素，内部自动分块）
 
 | 函数 | 说明 |
 |------|------|
 | `MapChunked(ctx, items, c, batch, fn)` | 分块元素映射 |
-| `MapChunkedWithFailFast(...)` | FailFast 分块元素 |
-| `MapChunkedWithTimeout(...)` | 带超时分块元素 |
-| `MapChunkedWithFFTimeout(...)` | FailFast + 超时分块元素 |
+| `MapChunkedWithFailFast(ctx, items, c, batch, fn)` | FailFast 分块元素 |
+| `MapChunkedWithTimeout(ctx, items, c, batch, d, fn)` | 带超时分块元素 |
+| `MapChunkedWithFFTimeout(ctx, items, c, batch, d, fn)` | FailFast + 超时分块 |
+| `DefaultMapChunked(ctx, items, batch, fn)` | 默认并发度分块 |
+| `DefaultMapChunkedWithFailFast(ctx, items, batch, fn)` | 默认 + FailFast |
+| `DefaultMapChunkedWithTimeout(ctx, items, batch, d, fn)` | 默认 + 超时 |
+| `DefaultMapChunkedWithFFTimeout(ctx, items, batch, d, fn)` | 默认 + FF + 超时 |
 
-### ForEachChunk / ForEachChunked 系列
+### ForEachChunk 系列（fn 接收整个 chunk）
 
 | 函数 | 说明 |
 |------|------|
-| `ForEachChunk(ctx, items, c, batch, fn)` | 分块遍历（fn 接收 chunk） |
-| `ForEachChunked(ctx, items, c, batch, fn)` | 分块遍历（fn 接收单元素） |
-| 及其 FailFast / Timeout / Default 变体 | |
+| `ForEachChunk(ctx, items, c, batch, fn)` | 分块并发遍历 |
+| `ForEachChunkWithFailFast(ctx, items, c, batch, fn)` | FailFast 分块遍历 |
+| `ForEachChunkWithTimeout(ctx, items, c, batch, d, fn)` | 带超时分块遍历 |
+| `ForEachChunkWithFFTimeout(ctx, items, c, batch, d, fn)` | FailFast + 超时分块 |
+| `DefaultForEachChunk(ctx, items, batch, fn)` | 默认并发度分块 |
+| `DefaultForEachChunkWithFailFast(ctx, items, batch, fn)` | 默认 + FailFast |
+| `DefaultForEachChunkWithTimeout(ctx, items, batch, d, fn)` | 默认 + 超时 |
+| `DefaultForEachChunkWithFFTimeout(ctx, items, batch, d, fn)` | 默认 + FF + 超时 |
+
+### ForEachChunked 系列（fn 接收单元素）
+
+| 函数 | 说明 |
+|------|------|
+| `ForEachChunked(ctx, items, c, batch, fn)` | 分块遍历（单元素） |
+| `ForEachChunkedWithFailFast(ctx, items, c, batch, fn)` | FailFast 分块遍历 |
+| `ForEachChunkedWithTimeout(ctx, items, c, batch, d, fn)` | 带超时分块遍历 |
+| `ForEachChunkedWithFFTimeout(ctx, items, c, batch, d, fn)` | FailFast + 超时分块 |
+| `DefaultForEachChunked(ctx, items, batch, fn)` | 默认并发度分块 |
+| `DefaultForEachChunkedWithFailFast(ctx, items, batch, fn)` | 默认 + FailFast |
+| `DefaultForEachChunkedWithTimeout(ctx, items, batch, d, fn)` | 默认 + 超时 |
+| `DefaultForEachChunkedWithFFTimeout(ctx, items, batch, d, fn)` | 默认 + FF + 超时 |
+
+### MapPool / ForEachPool 系列
+
+| 函数 | 说明 |
+|------|------|
+| `MapPool(ctx, items, fn, c)` | 返回 `*Pool[R]`，可复用 |
+| `ForEachPool(ctx, items, fn, c)` | 返回 `*NoResultPool`，可复用 |
 
 ### Result 辅助函数
 

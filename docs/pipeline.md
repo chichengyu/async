@@ -55,6 +55,8 @@ stages := []async.Stage[Record]{
 
 ### 执行管道
 
+`Execute` 使用分块并发执行每个阶段：
+
 ```go
 results, err := async.Execute(ctx, stages, rawRecords, func(ctx context.Context, stage string, r Record) (Record, error) {
     switch stage {
@@ -77,6 +79,16 @@ for _, r := range results {
     }
 }
 ```
+
+**参数：**
+- `ctx` — 上下文（控制取消和超时）
+- `stages` — 阶段定义切片 `[]Stage[T]`
+- `items` — 输入数据切片 `[]T`
+- `fn` — 处理函数 `func(context.Context, string, T) (T, error)`（stage 参数为当前阶段名）
+
+**返回：**
+- `[]Result[T]` — 最后一个阶段的全部结果
+- `error` — 整体错误
 
 > **注意**：处理函数 `fn` 接收 `stage` 参数，需要在函数内部根据阶段名分发逻辑。
 
@@ -103,11 +115,15 @@ for _, mr := range metaResults {
 }
 ```
 
+**参数：** 同 `Execute`。
+
+**返回：** `[]ResultWithMeta[T]` — 每个阶段每个元素一条记录。
+
 `ResultWithMeta[T]` 结构：
 
 ```go
 type ResultWithMeta[T] struct {
-    Result[T]           // 嵌入标准 Result
+    Result[T]           // 嵌入标准 Result，包含 Value/Err/Ok/IsPanic
     Stage     string    // 产生此结果的阶段名称
 }
 ```
@@ -116,15 +132,27 @@ type ResultWithMeta[T] struct {
 
 ## 使用 Group 的管道 (ExecuteWithGroup)
 
-`ExecuteWithGroup` 使用 Group 执行单阶段并发处理，支持错误聚合：
+`ExecuteWithGroup` 使用 Group 执行单阶段并发处理，支持错误聚合。相当于自动扩缩容的 Map：
 
 ```go
 results, err := async.ExecuteWithGroup(ctx, items, func(ctx context.Context, item Item) (Item, error) {
     return processItem(ctx, item)
 }, async.IO())
 
-// 等价于 Map，但使用 Group 实现
+fmt.Printf("处理完成: %d 个结果\n", len(results))
 ```
+
+**参数：**
+- `ctx` — 上下文
+- `items` — 输入切片 `[]T`
+- `fn` — 处理函数 `func(context.Context, T) (T, error)`
+- `concurrency` — 并发度
+
+**返回：**
+- `[]core.Result[T]` — 所有元素的结果
+- `error` — 整体错误
+
+> 内部实现：创建 `Group[T]` → `GoAt` 逐元素提交 → `Wait`。先 FailFast Map，如果有元素失败则回退到非 FailFast 重跑失败元素。
 
 ---
 
@@ -132,25 +160,36 @@ results, err := async.ExecuteWithGroup(ctx, items, func(ctx context.Context, ite
 
 `Pipeline` 是串行管道，每个阶段串行处理单个元素，适合阶段间有严格依赖关系的场景。
 
+### 创建与执行
+
 ```go
-// 创建管道：乘以 2 → 加 1
+// 创建管道：乘以 2 → 加 1 → 转为字符串
 p := async.NewPipeline[int](ctx,
     func(ctx context.Context, n int) (int, error) { return n * 2, nil },
     func(ctx context.Context, n int) (int, error) { return n + 1, nil },
 )
 
-// 执行
+// 执行单个输入
 result, err := p.Run(5)
 fmt.Println(result) // 11 = (5*2)+1
+```
 
-// 设置 TraceID
+**`NewPipeline` 参数：**
+- `ctx` — 上下文
+- `stages` — 变长阶段函数 `func(context.Context, T) (T, error)`
+
+**`Run` 参数：**
+- `input` — 输入值 `T`
+- 返回 `(T, error)` — 最终结果
+
+### 管道方法
+
+```go
+// 设置 TraceID（影响后续 Run 调用）
 p.WithTraceID(tracedCtx)
 
 // 查看阶段数量
-fmt.Println(p.Stages()) // 2
-```
-
-> **注意**：`Pipeline` 是串行的，如需并发处理请使用 `Execute`。
+fmt.Println(p.Stages()) // 返回 int
 
 ---
 
