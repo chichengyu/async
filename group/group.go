@@ -32,8 +32,9 @@ type Group[T any] struct {
 	concurrency   int                  // 最大并发数
 	wg            sync.WaitGroup       // 等待所有任务完成
 	addMu         sync.Mutex           // 保护 wg.Add 和 Wait 的竞态，避免 data race
-	mu            sync.Mutex           // 保护 results/cancels/waited
+	mu            sync.Mutex           // 保护 results/cancels/waited/freeIndices
 	results       []core.Result[T]     // 任务结果切片（按提交顺序）
+	freeIndices   []int                // 空闲索引栈（GoAt 扩容产生的空洞），LIFO 实现 O(1) addResult
 	cancels       []context.CancelFunc // 所有任务的取消函数（Wait 后批量调用）
 	errCnt        int64                // 失败任务计数（atomic 原子操作）
 	active        atomic.Int32         // 当前活跃任务数
@@ -332,6 +333,7 @@ func (g *Group[T]) groupPrecheck(ctx context.Context, record GroupRecordFunc[T],
 	}
 	if index >= 0 {
 		for len(g.results) <= index {
+			g.freeIndices = append(g.freeIndices, len(g.results))
 			g.results = append(g.results, core.Result[T]{})
 		}
 	}
@@ -566,12 +568,12 @@ func (g *Group[T]) runTaskImpl(taskCtx context.Context, taskCancel context.Cance
 func (g *Group[T]) addResult(r core.Result[T]) {
 	r.Occupied = true
 	g.mu.Lock()
-	for i := range g.results {
-		if !g.results[i].Occupied {
-			g.results[i] = r
-			g.mu.Unlock()
-			return
-		}
+	if last := len(g.freeIndices) - 1; last >= 0 {
+		idx := g.freeIndices[last]
+		g.freeIndices = g.freeIndices[:last]
+		g.results[idx] = r
+		g.mu.Unlock()
+		return
 	}
 	g.results = append(g.results, r)
 	g.mu.Unlock()
@@ -616,16 +618,22 @@ func (g *Group[T]) setResultAt(index int, r core.Result[T]) {
 	if g.results[index].Occupied {
 		existing := g.results[index]
 		g.results[index] = r
-		for i := range g.results {
-			if !g.results[i].Occupied {
-				g.results[i] = existing
-				g.mu.Unlock()
-				return
-			}
+		if last := len(g.freeIndices) - 1; last >= 0 {
+			freeIdx := g.freeIndices[last]
+			g.freeIndices = g.freeIndices[:last]
+			g.results[freeIdx] = existing
+			g.mu.Unlock()
+			return
 		}
 		g.results = append(g.results, existing)
 	} else {
 		g.results[index] = r
+		for i := len(g.freeIndices) - 1; i >= 0; i-- {
+			if g.freeIndices[i] == index {
+				g.freeIndices = append(g.freeIndices[:i], g.freeIndices[i+1:]...)
+				break
+			}
+		}
 	}
 	g.mu.Unlock()
 }
