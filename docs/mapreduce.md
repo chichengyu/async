@@ -44,6 +44,8 @@ for i, r := range results {
 | `concurrency` | 并发度（建议用 `async.IO()` 或 `async.CPU()`） |
 | `fn` | 处理函数：接收 ctx 和元素，返回处理结果 |
 
+> **安全性**：并发的 Map 阶段内置 panic recovery，单个元素的 panic 不会导致整个操作崩溃，会包装为 `PanicError` 返回。
+
 ### 变体一览
 
 | 函数 | FailFast | 超时 | 说明 |

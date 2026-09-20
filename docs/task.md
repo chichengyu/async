@@ -237,6 +237,8 @@ fmt.Printf("收集到 %d 个结果\n", len(all))
 | `Snapshot()` | 返回所有元素的副本 |
 
 > `Append` 接收一个返回值的函数而非直接传值，保证值计算和追加的原子性。
+>
+> `Snapshot()` 在 `nil` receiver 上调用安全，返回 `nil`。
 
 ---
 

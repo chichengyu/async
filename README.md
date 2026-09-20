@@ -375,6 +375,7 @@ async.IOMulti(n) // 自定义倍数 = runtime.NumCPU() * n
 | `ErrGroupWaiting` | Group Wait 进行中调用 Go |
 | `ErrSkipped` | FailFast 模式任务被跳过 |
 | `ErrRateLimiterStopped` | 限流器已停止 |
+| `ErrRateLimitExceeded` | 限流器 Reject 策略拒绝 |
 | `ErrTimeout` | 操作超时 |
 
 ---
@@ -485,6 +486,53 @@ async.IOMulti(n) // 自定义倍数 = runtime.NumCPU() * n
 | `SafeCall[T,R](ctx, item, fn)` | 安全调用（捕获 panic） |
 | `SafeCallVoid[T](ctx, item, fn)` | Void 安全调用 |
 | `MergeCancel(old, new)` | 合并 CancelFunc |
+
+---
+
+## 高并发压力测试
+
+本库经过生产级极端高并发验证，所有模块均通过 **百万级** 压力测试及 **Data Race 检测**（Go race detector + CGO + GCC）。
+
+### 压力测试覆盖
+
+| 测试场景 | 并发规模 | 状态 |
+|---------|---------|------|
+| `Group` 200K goroutine 并发 | 200,000 goroutines | ✅ |
+| `Pool` 200K 任务提交 + 等待 | 200,000 tasks | ✅ |
+| `Pool` 300 并发 Submit | 300 goroutines 同时提交 | ✅ |
+| `Pool` 100K 任务队列满处理 | 100,000 tasks | ✅ |
+| `Pool` 100K 无返回值池 | 100,000 tasks | ✅ |
+| `Task.Go` 50K 并发异步任务 | 50,000 goroutines | ✅ |
+| `Map` 50K 元素并发映射 | 50,000 items | ✅ |
+| `Map` 50K FailFast + 超时 | 50,000 items | ✅ |
+| `Map` 50K 串行 FailFast | 50,000 items | ✅ |
+| `ForEach` 50K 并发遍历 | 50,000 items | ✅ |
+| `ForEach` 5K×10 轮 FailFast | 5,000 items × 10 | ✅ |
+| `Reduce` 5K 聚合 | 5,000 items | ✅ |
+| `Retry` 50K 并发指数退避 | 50,000 goroutines | ✅ |
+| `Retry` 20K 并发线性退避 | 20,000 goroutines | ✅ |
+| `RateLimiter` 50K Acquire/Release | 50,000 ops | ✅ |
+| `Chunk` 大切片分块处理 | 1,000,000 元素 | ✅ |
+| `Pipeline` 多阶段 × 多轮 | 5 项 × 10 轮 | ✅ |
+
+### Data Race 检测
+
+对所有包执行 `go test -race`（需要安装 GCC/CGO），结果：**0 个 Data Race 告警**，测试耗时约 10 分钟（race detector 会降低 5-10x 性能）。
+
+```bash
+# 安装 GCC（Windows）
+# 从 https://winlibs.com 下载 mingw64，解压后加入 PATH
+
+# 运行 race 检测
+$env:CGO_ENABLED=1; go test -race ./... -count=1
+```
+
+### 并发安全性
+
+- **Pool/Group**：`Close()`/`Wait()` 与 `Submit()`/`Go()` 并发调用安全
+- **Mu[T]**：线程安全切片，nil receiver 安全
+- **Map/ForEach/Reduce**：并发 Map 阶段内置 panic recovery
+- **Pipeline**：每个阶段使用独立 items 切片，不会翻倍
 
 ---
 

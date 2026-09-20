@@ -188,7 +188,7 @@ al.Release()
 | 策略 | 常量 | 行为 |
 |------|------|------|
 | 阻塞等待 | `async.Block` | 令牌不足时阻塞，ctx 取消时返回错误 |
-| 立即拒绝 | `async.Reject` | 令牌不足时立即返回 `ErrRateLimiterStopped` |
+| 立即拒绝 | `async.Reject` | 令牌不足时立即返回 `ErrRateLimitExceeded` |
 | 强制阻塞 | `async.BlockForce` | 令牌不足时阻塞，忽略 ctx 取消信号 |
 
 ---

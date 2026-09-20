@@ -84,7 +84,7 @@ for _, r := range results {
 
 ## 带元信息的管道 (ExecuteWithMeta)
 
-`ExecuteWithMeta` 返回每个阶段、每个元素的处理结果，便于追踪和调试：
+`ExecuteWithMeta` 返回每个阶段、每个元素的处理结果，便于追踪和调试。**前一阶段的所有输出作为后一阶段的输入**（不累积旧数据）：
 
 ```go
 metaResults := async.ExecuteWithMeta(ctx, stages, items, func(ctx context.Context, stage string, item string) (string, error) {
@@ -97,7 +97,7 @@ metaResults := async.ExecuteWithMeta(ctx, stages, items, func(ctx context.Contex
     return item, nil
 })
 
-// 每个元素在每个阶段都会产生一条记录
+// 每个元素在每个阶段都会产生一条记录，结果数 = len(items) × len(stages)
 for _, mr := range metaResults {
     fmt.Printf("[%s] %v (err=%v)\n", mr.Stage, mr.Value, mr.Err)
 }
