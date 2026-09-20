@@ -551,7 +551,6 @@ func TestMap_RandomConcurrency_10K(t *testing.T) {
 	for i := range input {
 		input[i] = i
 	}
-	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
 	var wg sync.WaitGroup
 	n := 50
 	var failure atomic.Int64
@@ -559,7 +558,7 @@ func TestMap_RandomConcurrency_10K(t *testing.T) {
 	for i := 0; i < n; i++ {
 		go func() {
 			defer wg.Done()
-			concurrency := rng.Intn(16) + 1
+			concurrency := rand.Intn(16) + 1
 			results, err := Map(ctx, input, func(ctx context.Context, v int) (int, error) {
 				return v, nil
 			}, concurrency)

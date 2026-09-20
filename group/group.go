@@ -31,6 +31,7 @@ type Group[T any] struct {
 	limit         chan struct{}        // 并发控制信号量
 	concurrency   int                  // 最大并发数
 	wg            sync.WaitGroup       // 等待所有任务完成
+	addMu         sync.Mutex           // 保护 wg.Add 和 Wait 的竞态，避免 data race
 	mu            sync.Mutex           // 保护 results/cancels/waited
 	results       []core.Result[T]     // 任务结果切片（按提交顺序）
 	cancels       []context.CancelFunc // 所有任务的取消函数（Wait 后批量调用）
@@ -313,13 +314,6 @@ func (g *Group[T]) WithCtxSubmitTOTraceID(ctx context.Context, submitTimeout tim
 // ──────────────────────────── Group 内部方法 ────────────────────────────
 
 func (g *Group[T]) groupPrecheck(ctx context.Context, record GroupRecordFunc[T], index int, caller string) (context.Context, context.CancelFunc, error) {
-	if g.waiting.Load() {
-		core.LogCtxError(ctx, fmt.Sprintf("async: Group.%s called while Group.Wait is in progress, task discarded", caller))
-		record(core.Result[T]{Err: core.ErrGroupWaiting})
-		atomic.AddInt64(&g.errCnt, 1)
-		var cancel context.CancelFunc
-		return ctx, cancel, core.ErrGroupWaiting
-	}
 	g.mu.Lock()
 	if g.waited {
 		if index >= 0 {
@@ -356,7 +350,17 @@ func (g *Group[T]) groupPrecheck(ctx context.Context, record GroupRecordFunc[T],
 	default:
 	}
 
+	g.addMu.Lock()
+	if g.waiting.Load() {
+		g.addMu.Unlock()
+		core.LogCtxError(ctx, fmt.Sprintf("async: Group.%s called while Group.Wait is in progress, task discarded", caller))
+		record(core.Result[T]{Err: core.ErrGroupWaiting})
+		atomic.AddInt64(&g.errCnt, 1)
+		var cancel context.CancelFunc
+		return ctx, cancel, core.ErrGroupWaiting
+	}
 	g.wg.Add(1)
+	g.addMu.Unlock()
 	g.active.Add(1)
 	taskCtx, taskCancel := context.WithCancel(ctx)
 
@@ -627,7 +631,9 @@ func (g *Group[T]) setResultAt(index int, r core.Result[T]) {
 //	    }
 //	}
 func (g *Group[T]) Wait() []core.Result[T] {
+	g.addMu.Lock()
 	g.waiting.Store(true)
+	g.addMu.Unlock()
 	g.wg.Wait()
 	g.mu.Lock()
 	g.waited = true

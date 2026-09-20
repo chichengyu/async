@@ -53,6 +53,7 @@ type Pool[T any] struct {
 	timeout       time.Duration         // 全局任务超时时间（0=无限制）
 	submitTimeout time.Duration         // 任务提交超时时间
 	closed        atomic.Bool           // 是否已关闭
+	done          chan struct{}         // 关闭广播信号
 	size          atomic.Int32          // worker 数量
 	active        atomic.Int32          // 当前活跃任务数
 	busy          atomic.Int32          // 当前忙碌任务数
@@ -100,6 +101,7 @@ func NewPool[T any](size int) *Pool[T] {
 		taskCh:  make(chan core.PoolTask[T], size*2),
 		timeout: core.GetDefaultTimeout(),
 		ctx:     context.Background(),
+		done:    make(chan struct{}),
 	}
 	p.size.Store(int32(size))
 	p.workerWg.Add(size)
@@ -345,21 +347,45 @@ func (p *Pool[T]) WithCtxSubmitTOTraceID(ctx context.Context, submitTimeout time
 
 func (p *Pool[T]) worker() {
 	defer p.workerWg.Done()
-	for task := range p.taskCh {
-		if task.Quit {
-			p.quitting.Add(-1)
-			return
-		}
-		p.active.Add(1)
-		p.processTask(task)
-		p.active.Add(-1)
-		if p.quitting.Load() > 0 {
-			for {
-				v := p.quitting.Load()
-				if v <= 0 {
-					break
+	for {
+		select {
+		case task, ok := <-p.taskCh:
+			if !ok {
+				return
+			}
+			if task.Quit {
+				p.quitting.Add(-1)
+				return
+			}
+			p.active.Add(1)
+			p.processTask(task)
+			p.active.Add(-1)
+			if p.quitting.Load() > 0 {
+				for {
+					v := p.quitting.Load()
+					if v <= 0 {
+						break
+					}
+					if p.quitting.CompareAndSwap(v, v-1) {
+						return
+					}
 				}
-				if p.quitting.CompareAndSwap(v, v-1) {
+			}
+		case <-p.done:
+			for {
+				select {
+				case task, ok := <-p.taskCh:
+					if !ok {
+						return
+					}
+					if task.Quit {
+						p.quitting.Add(-1)
+						continue
+					}
+					p.active.Add(1)
+					p.processTask(task)
+					p.active.Add(-1)
+				default:
 					return
 				}
 			}
@@ -756,6 +782,8 @@ func (p *Pool[T]) blockSend(task core.PoolTask[T], taskCtx context.Context, time
 	select {
 	case p.taskCh <- task:
 		return true, nil
+	case <-p.done:
+		return false, core.ErrPoolClosed
 	case <-taskCtx.Done():
 		return false, taskCtx.Err()
 	case <-timer.C:
@@ -849,9 +877,10 @@ func (p *Pool[T]) Close() {
 		p.mu.Unlock()
 		return
 	}
-	close(p.taskCh)
+	close(p.done)
 	p.mu.Unlock()
 	p.workerWg.Wait()
+	close(p.taskCh)
 }
 
 // CloseAndWait 关闭池并等待所有任务完成。

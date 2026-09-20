@@ -347,13 +347,12 @@ func TestRetryWithConfig_Concurrent_10K(t *testing.T) {
 	var wg sync.WaitGroup
 	n := 10000
 	wg.Add(n)
-	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
 	for i := 0; i < n; i++ {
 		go func() {
 			defer wg.Done()
 			ctx := context.Background()
-			backoff := time.Duration(rng.Intn(20)+1) * time.Millisecond
-			maxBackoff := time.Duration(rng.Intn(100)+10) * time.Millisecond
+			backoff := time.Duration(rand.Intn(20)+1) * time.Millisecond
+			maxBackoff := time.Duration(rand.Intn(100)+10) * time.Millisecond
 			_, _ = RetryWithConfig(ctx, func(ctx context.Context) (int, error) {
 				return 1, nil
 			}, 2, backoff, maxBackoff)

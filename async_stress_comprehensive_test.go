@@ -3568,7 +3568,7 @@ func TestStress_Pipeline_ExecuteWithMeta(t *testing.T) {
 		}
 	})
 
-	// 多阶段（ExecuteWithMeta 会将每个阶段的结果追加到 items，因此结果数会递增）
+	// 多阶段：每个阶段的结果作为下一阶段的输入，结果等量累积
 	t.Run("MultiStage", func(t *testing.T) {
 		for round := 0; round < 10; round++ {
 			stages := []Stage[int]{
@@ -3589,10 +3589,10 @@ func TestStress_Pipeline_ExecuteWithMeta(t *testing.T) {
 					return v, nil
 				}
 			})
-			// 每阶段结果会累积：stage1=5, stage2=10, stage3=20 => 35 total
-			expectedLen := 35
+			// 每阶段 5 个结果，累计：stage1=5, stage2=5, stage3=5 => 15 total
+			expectedLen := 15
 			if len(results) != expectedLen {
-				t.Fatalf("round %d: expected %d results (5+10+20), got %d", round, expectedLen, len(results))
+				t.Fatalf("round %d: expected %d results (5+5+5), got %d", round, expectedLen, len(results))
 			}
 			stageCounts := make(map[string]int)
 			for _, r := range results {
@@ -3601,11 +3601,11 @@ func TestStress_Pipeline_ExecuteWithMeta(t *testing.T) {
 			if stageCounts["add_10"] != 5 {
 				t.Fatalf("round %d: add_10: expected 5, got %d", round, stageCounts["add_10"])
 			}
-			if stageCounts["multiply_2"] != 10 {
-				t.Fatalf("round %d: multiply_2: expected 10, got %d", round, stageCounts["multiply_2"])
+			if stageCounts["multiply_2"] != 5 {
+				t.Fatalf("round %d: multiply_2: expected 5, got %d", round, stageCounts["multiply_2"])
 			}
-			if stageCounts["subtract_5"] != 20 {
-				t.Fatalf("round %d: subtract_5: expected 20, got %d", round, stageCounts["subtract_5"])
+			if stageCounts["subtract_5"] != 5 {
+				t.Fatalf("round %d: subtract_5: expected 5, got %d", round, stageCounts["subtract_5"])
 			}
 		}
 	})
