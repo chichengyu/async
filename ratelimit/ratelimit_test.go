@@ -2,10 +2,13 @@ package ratelimit
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/chichengyu/async/core"
 )
 
 // ==================== RateLimiter 基础测试 ====================
@@ -85,7 +88,27 @@ func TestRateLimiter_BlockStrategy(t *testing.T) {
 }
 
 func TestRateLimiter_RejectStrategy(t *testing.T) {
-	t.Skip("skipping: Reject strategy returns ErrRateLimiterStopped instead of a distinct rejection error (library bug)")
+	rl := newRateLimiterSimple(2)
+	defer rl.Close()
+	rl.WithStrategy(Reject)
+	ctx := context.Background()
+
+	if err := rl.Acquire(ctx); err != nil {
+		t.Fatalf("first acquire failed: %v", err)
+	}
+	if err := rl.Acquire(ctx); err != nil {
+		t.Fatalf("second acquire failed: %v", err)
+	}
+	if err := rl.Acquire(ctx); err == nil {
+		t.Fatal("third acquire should be rejected (no tokens left)")
+	} else if !errors.Is(err, core.ErrRateLimitExceeded) {
+		t.Fatalf("expected ErrRateLimitExceeded, got: %v", err)
+	}
+	rl.Release()
+	if err := rl.Acquire(ctx); err != nil {
+		t.Fatalf("acquire after release should succeed, got: %v", err)
+	}
+	t.Log("Reject strategy correctly returns ErrRateLimitExceeded")
 }
 
 func TestRateLimiter_Resize(t *testing.T) {
@@ -191,11 +214,39 @@ func TestSlidingWindowRateLimiter_AllowN(t *testing.T) {
 // ==================== AdaptiveRateLimiter 测试 ====================
 
 func TestAdaptiveRateLimiter_Basic(t *testing.T) {
-	t.Skip("skipping: newRateLimiterSimple does not pre-fill tokens channel, so Acquire blocks indefinitely (library bug)")
+	al := NewAdaptiveRateLimiter(5, 5)
+	ctx := context.Background()
+
+	for i := 0; i < 5; i++ {
+		if err := al.Acquire(ctx); err != nil {
+			t.Fatalf("acquire %d failed: %v", i, err)
+		}
+	}
+	ctx2, cancel := context.WithTimeout(ctx, 10*time.Millisecond)
+	defer cancel()
+	if err := al.Acquire(ctx2); err == nil {
+		al.Release()
+		t.Fatal("6th acquire should timeout when all tokens taken (AdaptiveRateLimiter with 5 limit)")
+	}
+	t.Log("AdaptiveRateLimiter basic test passed")
 }
 
 func TestAdaptiveRateLimiter_RecordSuccess(t *testing.T) {
-	t.Skip("skipping: newRateLimiterSimple does not pre-fill tokens channel (library bug)")
+	al := NewAdaptiveRateLimiter(10, 100)
+	ctx := context.Background()
+
+	if err := al.Acquire(ctx); err != nil {
+		t.Fatalf("acquire failed: %v", err)
+	}
+	al.RecordSuccess()
+	al.Release()
+
+	if err := al.Acquire(ctx); err != nil {
+		t.Fatalf("acquire after success failed: %v", err)
+	}
+	al.RecordSuccess()
+	al.Release()
+	t.Log("AdaptiveRateLimiter RecordSuccess test passed")
 }
 
 // ==================== 高并发极限压力测试 ====================
@@ -261,7 +312,27 @@ func TestSlidingWindow_50K(t *testing.T) {
 }
 
 func TestAdaptiveRateLimiter_50K_Concurrent(t *testing.T) {
-	t.Skip("skipping: newRateLimiterSimple does not pre-fill tokens channel (library bug)")
+	al := NewAdaptiveRateLimiter(200, 100)
+	var wg sync.WaitGroup
+	n := 50000
+	var success, fail atomic.Int64
+	ctx := context.Background()
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func() {
+			defer wg.Done()
+			if err := al.Acquire(ctx); err == nil {
+				success.Add(1)
+				time.Sleep(time.Microsecond)
+				al.RecordSuccess()
+				al.Release()
+			} else {
+				fail.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+	t.Logf("AdaptiveRateLimiter 50K: success=%d, fail=%d", success.Load(), fail.Load())
 }
 
 func TestRateLimiter_TokenStress_10K(t *testing.T) {

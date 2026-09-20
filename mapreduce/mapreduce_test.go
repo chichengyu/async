@@ -133,7 +133,33 @@ func TestMap_ContextCancellation(t *testing.T) {
 }
 
 func TestMap_PanicRecovery(t *testing.T) {
-	t.Skip("skipping: mapParallel has no panic recovery (potential library bug)")
+	ctx := context.Background()
+	input := make([]int, 100)
+	for i := range input {
+		input[i] = i
+	}
+	results, err := Map(ctx, input, func(ctx context.Context, v int) (int, error) {
+		if v == 42 {
+			panic("map panic at 42")
+		}
+		return v, nil
+	}, 4)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) != 100 {
+		t.Fatalf("expected 100 results, got %d", len(results))
+	}
+	panicCount := 0
+	for _, r := range results {
+		if r.IsPanic() {
+			panicCount++
+		}
+	}
+	if panicCount == 0 {
+		t.Fatal("expected at least one panic result")
+	}
+	t.Logf("panic recovery: %d panic results", panicCount)
 }
 
 func TestMap_ConcurrencyOne(t *testing.T) {

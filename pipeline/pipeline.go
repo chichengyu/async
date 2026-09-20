@@ -200,10 +200,12 @@ func ExecuteWithMeta[T any](
 			}(start, end)
 		}
 		wg.Wait()
+		nextItems := make([]T, 0, len(stageResults))
 		for _, r := range stageResults {
 			results = append(results, ResultWithMeta[T]{Result: r, Stage: stage.Name})
-			items = append(items, r.Value)
+			nextItems = append(nextItems, r.Value)
 		}
+		items = nextItems
 	}
 
 	return results

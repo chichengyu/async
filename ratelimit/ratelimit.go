@@ -143,6 +143,9 @@ func newRateLimiterSimple(rate int) *RateLimiter {
 		ctx:    context.Background(),
 	}
 	rl.strat.Store(Block)
+	for i := 0; i < rate; i++ {
+		rl.tokens <- struct{}{}
+	}
 	return rl
 }
 
@@ -243,7 +246,7 @@ func (rl *RateLimiter) Acquire(ctx context.Context) error {
 			}
 			return nil
 		default:
-			return core.ErrRateLimiterStopped
+			return core.ErrRateLimitExceeded
 		}
 	case BlockForce:
 		for {

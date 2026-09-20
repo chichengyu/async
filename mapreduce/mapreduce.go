@@ -139,6 +139,13 @@ func mapParallel[T any, R any](ctx context.Context, items []T, fn func(context.C
 		w.Add(1)
 		go func(start, end int) {
 			defer w.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					for j := start; j < end; j++ {
+						results[j] = core.Result[R]{Err: core.NewPanicError(r)}
+					}
+				}
+			}()
 			for j := start; j < end; j++ {
 				val, err := fn(ctx, items[j])
 				results[j] = core.Result[R]{Value: val, Err: err}

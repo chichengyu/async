@@ -388,6 +388,9 @@ func (m *Mu[T]) Append(add func() T) {
 //	    fmt.Println(item)
 //	}
 func (m *Mu[T]) Snapshot() []T {
+	if m == nil {
+		return nil
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	out := make([]T, len(m.ts))

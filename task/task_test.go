@@ -533,5 +533,17 @@ func TestMu_ConcurrentAppend_100K(t *testing.T) {
 }
 
 func TestMu_Nil(t *testing.T) {
-	t.Skip("skipping: Mu.Snapshot does not handle nil receiver (library bug)")
+	var mu *Mu[int]
+	result := mu.Snapshot()
+	if result != nil {
+		t.Fatal("expected nil from nil receiver")
+	}
+	mu = &Mu[int]{}
+	result = mu.Snapshot()
+	if result == nil {
+		t.Fatal("expected empty slice from non-nil receiver")
+	}
+	if len(result) != 0 {
+		t.Fatalf("expected 0, got %d", len(result))
+	}
 }

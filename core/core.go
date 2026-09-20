@@ -178,6 +178,9 @@ var (
 	// ErrRateLimiterStopped 表示限流器已停止。
 	ErrRateLimiterStopped = errors.New("async: rate limiter stopped")
 
+	// ErrRateLimitExceeded 表示限流器已满，请求被拒绝（Reject 策略）。
+	ErrRateLimitExceeded = errors.New("async: rate limit exceeded")
+
 	// ErrTimeout 表示操作超时。
 	ErrTimeout = errors.New("async: operation timed out")
 

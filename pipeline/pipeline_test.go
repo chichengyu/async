@@ -179,10 +179,13 @@ func TestExecuteWithMeta(t *testing.T) {
 			secondCount++
 		}
 	}
-	if len(results) == 0 {
-		t.Fatal("expected non-empty results")
+	if firstCount != 2 || secondCount != 2 {
+		t.Fatalf("expected 2 results per stage, got first=%d second=%d (total=%d)", firstCount, secondCount, len(results))
 	}
-	t.Logf("ExecuteWithMeta: %d total results (first=%d, second=%d). Note: items slice doubles each stage (library bug)", len(results), firstCount, secondCount)
+	if len(results) != 4 {
+		t.Fatalf("expected 4 total results (2 items × 2 stages), got %d", len(results))
+	}
+	t.Logf("ExecuteWithMeta: %d total results across %d stages", len(results), len(stages))
 }
 
 // ==================== ExecuteWithGroup 测试 ====================
