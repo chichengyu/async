@@ -390,6 +390,7 @@ async.IOMulti(n) // 自定义倍数 = runtime.NumCPU() * n
 | `DefaultPool[T]()` | 创建 IO 并发度协程池 |
 | `NewNoResultPool(size)` | 创建无返回值协程池 |
 | `DefaultNoResultPool()` | 创建 IO 并发度无返回值池 |
+| `NewAutoScalePool[T](size, config)` | 创建带自动扩缩容的协程池 |
 | `NewGroup[T](concurrency)` | 创建任务组 |
 | `DefaultGroup[T]()` | 创建 IO 并发度任务组 |
 | `NewNoResult(concurrency)` | 创建无返回值任务组 |
@@ -401,6 +402,7 @@ async.IOMulti(n) // 自定义倍数 = runtime.NumCPU() * n
 | `NewAdaptiveRateLimiter(min, max)` | 创建自适应限流器 |
 | `NewPipeline[T](ctx, stages...)` | 创建串行管道 |
 | `NewPanicError(r any)` | 创建 panic 包装错误 |
+| `DefaultAutoScaleConfig()` | 返回默认自动扩缩容配置 |
 
 ### 协程池辅助函数
 
@@ -469,6 +471,8 @@ async.IOMulti(n) // 自定义倍数 = runtime.NumCPU() * n
 | `Retry(ctx, n, fn)` | 简单重试 |
 | `RetryWithBackoff(ctx, n, d, fn)` | 指数退避重试 |
 | `RetryWithLinearBackoff(ctx, n, d, fn)` | 线性退避重试 |
+| `RetryWithBackoffResult[T](ctx, fn, n, ib, mb)` | 返回 Result 的指数退避重试 |
+| `RetryWithLinearBackoffResult[T](ctx, fn, n, d)` | 返回 Result 的线性退避重试 |
 | `RetryWithConfig[T](ctx, fn, n, ib, mb, opts)` | 完整配置重试 |
 | `RetryWithConfigVoid(ctx, fn, n, ib, mb, opts)` | Void 版完整配置重试 |
 | `WithTimeout[T](ctx, d, fn)` | 单次调用超时包装 |
@@ -483,9 +487,772 @@ async.IOMulti(n) // 自定义倍数 = runtime.NumCPU() * n
 | `Some(results)` | 至少一个成功？ |
 | `AnyError(results)` | 存在错误？ |
 | `Partition(results)` | 分离值和错误 |
+| `Flat[T](results)` | 扁平提取成功值 |
+| `OnlyErrors[T](results)` | 只提取错误 |
 | `SafeCall[T,R](ctx, item, fn)` | 安全调用（捕获 panic） |
 | `SafeCallVoid[T](ctx, item, fn)` | Void 安全调用 |
+| `Must[T](val, err)` | 提取值，err!=nil 则 panic |
 | `MergeCancel(old, new)` | 合并 CancelFunc |
+
+---
+
+## 默认便捷方法速查
+
+所有 `Default*` 开头的函数自动使用 `async.IO()` 作为并发度，简化调用：
+
+### Default Map
+
+```go
+// 相当于 Map(ctx, items, async.IO(), fn)
+results := async.DefaultMap(ctx, items, fn)
+
+// FailFast + IO 并发度
+results, err := async.DefaultMapWithFailFast(ctx, items, fn)
+
+// Timeout + IO 并发度
+results := async.DefaultMapWithTimeout(ctx, items, 5*time.Second, fn)
+
+// FailFast + Timeout + IO 并发度
+results, err := async.DefaultMapWithFFTimeout(ctx, items, 5*time.Second, fn)
+```
+
+### Default ForEach
+
+```go
+// 相当于 ForEach(ctx, items, async.IO(), fn)
+nr, err := async.DefaultForEach(ctx, items, fn)
+
+// FailFast + IO 并发度
+nr, err := async.DefaultForEachWithFailFast(ctx, items, fn)
+
+// Timeout + IO 并发度
+nr, err := async.DefaultForEachWithTimeout(ctx, items, 5*time.Second, fn)
+
+// FailFast + Timeout + IO 并发度
+nr, err := async.DefaultForEachWithFFTimeout(ctx, items, 5*time.Second, fn)
+```
+
+### Default Reduce
+
+```go
+// 使用 IO 并发度的 Reduce
+val, err := async.DefaultReduce(ctx, items, mapFn, initial, reduceFn)
+
+// IO 并发度的 FailFast Reduce
+val, err := async.DefaultReduceWithFailFast(ctx, items, mapFn, initial, reduceFn)
+
+// IO 并发度的 Timeout Reduce
+val, err := async.DefaultReduceWithTimeout(ctx, items, 5*time.Second, mapFn, initial, reduceFn)
+
+// IO 并发度的 FailFast + Timeout Reduce
+val, err := async.DefaultReduceWithFFTimeout(ctx, items, 5*time.Second, mapFn, initial, reduceFn)
+```
+
+### Default MapChunk / MapChunked
+
+```go
+// 分块 Map（fn 接收 chunk），IO 并发度
+results := async.DefaultMapChunk(ctx, items, 100, fn)
+results, err := async.DefaultMapChunkWithFailFast(ctx, items, 100, fn)
+results := async.DefaultMapChunkWithTimeout(ctx, items, 100, 10*time.Second, fn)
+results, err := async.DefaultMapChunkWithFFTimeout(ctx, items, 100, 10*time.Second, fn)
+
+// 分块元素 Map（fn 接收单个元素），IO 并发度
+results := async.DefaultMapChunked(ctx, items, 100, fn)
+results, err := async.DefaultMapChunkedWithFailFast(ctx, items, 100, fn)
+results := async.DefaultMapChunkedWithTimeout(ctx, items, 100, 10*time.Second, fn)
+results, err := async.DefaultMapChunkedWithFFTimeout(ctx, items, 100, 10*time.Second, fn)
+```
+
+### Default ForEachChunk / ForEachChunked
+
+```go
+// 分块 ForEach（fn 接收 chunk），IO 并发度
+nr, err := async.DefaultForEachChunk(ctx, items, 50, fn)
+nr, err := async.DefaultForEachChunkWithFailFast(ctx, items, 50, fn)
+nr, err := async.DefaultForEachChunkWithTimeout(ctx, items, 50, 5*time.Second, fn)
+nr, err := async.DefaultForEachChunkWithFFTimeout(ctx, items, 50, 5*time.Second, fn)
+
+// 分块元素 ForEach（fn 接收单个元素），IO 并发度
+nr, err := async.DefaultForEachChunked(ctx, items, 50, fn)
+nr, err := async.DefaultForEachChunkedWithFailFast(ctx, items, 50, fn)
+nr, err := async.DefaultForEachChunkedWithTimeout(ctx, items, 50, 5*time.Second, fn)
+nr, err := async.DefaultForEachChunkedWithFFTimeout(ctx, items, 50, 5*time.Second, fn)
+```
+
+### Default Pool / Group
+
+```go
+// IO 并发度协程池
+p := async.DefaultPool[string]()
+defer p.Close()
+
+// IO 并发度无返回值池
+np := async.DefaultNoResultPool()
+defer np.Close()
+
+// IO 并发度任务组
+g := async.DefaultGroup[int]()
+results := g.Wait()
+
+// IO 并发度无返回值任务组
+nr := async.DefaultNoResult()
+nr.Wait()
+```
+
+---
+
+## Pool 方法详解
+
+`Pool[T]` 是泛型协程池，复用 goroutine，适合长期运行、反复提交任务的场景。
+
+### 生命周期管理
+
+```go
+p := async.NewPool[string](10)
+defer p.Close()
+
+// Submit 提交任务（可能阻塞等待空闲 worker）
+err := p.Submit(ctx, func(ctx context.Context) (string, error) {
+    return process(ctx), nil
+})
+
+// TrySubmit 非阻塞提交，worker 满时立即返回 ErrSubmitTimeout
+err := p.TrySubmit(ctx, fn)
+
+// SubmitAt 提交到指定位置（结果保持索引顺序）
+err := p.SubmitAt(5, ctx, fn)
+
+// Resize 调整 worker 数量（阻塞直到 worker 数稳定）
+newSize := p.Resize(50)
+
+// Wait 等待所有已提交任务完成，返回结果切片
+results := p.Wait()
+
+// WaitAndClose 等待完成并关闭池（不再接受新任务）
+results := p.WaitAndClose()
+
+// Close 停止所有 worker，丢弃未执行的任务
+p.Close()
+
+// CloseAndWait 关闭并等待所有 worker 退出
+p.CloseAndWait()
+
+// CloseAndWaitTimeout 带超时关闭
+ok, doneCh := p.CloseAndWaitTimeout(10 * time.Second)
+
+// CloseByIdle 在空闲指定时间后自动关闭
+p.CloseByIdle(5 * time.Minute)
+
+// Reset 关闭旧池，创建同等大小的新池（复用变量）
+newPool, err := p.Reset()
+```
+
+### 超时与上下文
+
+```go
+// 设置任务总超时
+p.WithTimeout(30 * time.Second)
+
+// 带超时等待
+results, ok := p.WaitTimeout(5 * time.Second)
+if !ok {
+    log.Println("等待超时")
+}
+
+// 通过 context 等待
+results, ok := p.WaitContext(ctx)
+
+// FailFast 模式：第一个失败立即取消其他任务
+p2, ffCtx := p.WithFailFast(ctx)
+```
+
+### 状态查询
+
+```go
+size := p.Size()            // worker 总数
+active := p.Active()        // 当前活跃的 worker 数
+busy := p.Busy()            // 当前忙碌的 worker 数
+pending := p.Pending()      // 排队等待的任务数
+stats := p.Stats()          // 完整统计信息（PoolStats）
+success := p.SuccessCount() // 成功任务数
+fail := p.FailCount()       // 失败任务数
+total := p.TotalCount()     // 总任务数
+hasErr := p.HasError()      // 是否有任务失败
+```
+
+### 错误提取
+
+```go
+// 获取所有错误（nil 跳过）
+errs := p.Errors()
+
+// 获取第一个错误
+firstErr := p.FirstError()
+
+// 将所有错误合并为一个 error（用 "; " 分隔）
+joinedErr := p.JoinErrors()
+
+// 提取所有成功的值
+values := p.Values()
+```
+
+### 自动扩缩容
+
+```go
+p := async.NewPool[int](4)
+
+// 启用自动扩缩容（默认配置）
+p.EnableAutoScale(nil)
+
+// 或使用快捷创建
+p := async.NewAutoScalePool[int](4, nil)
+
+// 自定义配置
+p.EnableAutoScale(&async.AutoScaleConfig{
+    MinWorkers:       2,
+    MaxWorkers:       500,
+    CheckInterval:    3 * time.Second,
+    ScaleUpThreshold: 0.6,
+})
+
+// 查询扩缩容状态
+enabled := p.IsAutoScaleEnabled()
+
+// 禁用自动扩缩容
+p.DisableAutoScale()
+```
+
+---
+
+## Group / NoResult 方法详解
+
+`Group[T]` 适合一次性批量并发任务，每次 `Go()` 新建 goroutine，用完即销毁。
+
+### Group[T] 方法
+
+```go
+g := async.NewGroup[int](8) // 最多 8 并发
+
+// Go 提交任务，阻塞直到有空闲槽位
+err := g.Go(ctx, func(ctx context.Context) (int, error) {
+    return fetchNumber(ctx), nil
+})
+
+// GoWithTimeout 带任务超时提交
+err := g.GoWithTimeout(ctx, 5*time.Second, fn)
+
+// GoAt 提交到指定索引位置（结果保持索引顺序）
+err := g.GoAt(3, ctx, fn)
+
+// GoAtWithTimeout 带超时提交到指定索引
+err := g.GoAtWithTimeout(3, ctx, 5*time.Second, fn)
+
+// Wait 等待所有任务完成，返回结果切片
+results := g.Wait()
+
+// WaitTimeout 带超时等待
+results, ok := g.WaitTimeout(5 * time.Second)
+
+// WaitContext 通过 context 等待
+results, ok := g.WaitContext(ctx)
+
+// 状态查询（同 Pool）
+stats := g.Stats()
+active := g.Active()
+busy := g.Busy()
+concurrency := g.Concurrency()
+success := g.SuccessCount()
+fail := g.FailCount()
+hasErr := g.HasError()
+total := g.TotalCount()
+
+// 错误提取
+errs := g.Errors()
+firstErr := g.FirstError()
+joinedErr := g.JoinErrors()
+values := g.Values()
+
+// 重新设置并发度
+g.WithTimeout(30 * time.Second)
+
+// FailFast 模式
+g2, ffCtx := g.WithFailFast(ctx)
+
+// Reset 重置（关闭旧组，创建新组）
+newG, err := g.Reset()
+```
+
+### NoResult 方法
+
+`NoResult` 是无返回值任务组（`Group[struct{}]`），适合只关心 error 的批量操作。
+
+```go
+nr := async.NewNoResult(16)
+
+// Go 提交无返回值任务
+err := nr.Go(ctx, func(ctx context.Context) error {
+    return db.Insert(ctx, record)
+})
+
+// GoWithTimeout 带超时
+err := nr.GoWithTimeout(ctx, 3*time.Second, fn)
+
+// GoAt 指定索引位置
+err := nr.GoAt(i, ctx, fn)
+
+// GoAtWithTimeout 指定索引带超时
+err := nr.GoAtWithTimeout(i, ctx, 3*time.Second, fn)
+
+// Wait 等待所有任务完成（无返回值）
+nr.Wait()
+
+// WaitTimeout 带超时等待
+completed, ok := nr.WaitTimeout(5 * time.Second)
+
+// WaitContext 通过 context 等待
+completed, ok := nr.WaitContext(ctx)
+
+// 状态查询
+success := nr.SuccessCount()
+fail := nr.FailCount()
+hasErr := nr.HasError()
+total := nr.TotalCount()
+concurrency := nr.Concurrency()
+active := nr.Active()
+busy := nr.Busy()
+stats := nr.Stats()
+
+// 错误提取
+errs := nr.Errors()
+firstErr := nr.FirstError()
+joinedErr := nr.JoinErrors()
+
+// 设置超时 / FailFast
+nr.WithTimeout(30 * time.Second)
+nr2, ffCtx := nr.WithFailFast(ctx)
+
+// Reset 重置
+newNR, err := nr.Reset()
+```
+
+---
+
+## NoResultPool 辅助函数详解
+
+这些函数封装了 `NoResultPool` 的常见操作模式：
+
+```go
+p := async.NewNoResultPool(10)
+defer p.Close()
+
+// 提交动作（阻塞直到有空闲 worker）
+async.SubmitAction(p, ctx, func(ctx context.Context) error {
+    return processItem(ctx)
+})
+
+// 非阻塞提交，worker 满时返回 ErrSubmitTimeout
+async.TrySubmitAction(p, ctx, fn)
+
+// 提交到指定索引位置
+async.SubmitAtAction(p, 5, ctx, fn)
+
+// 指定索引非阻塞提交
+async.TrySubmitAtAction(p, 5, ctx, fn)
+
+// 提交并断言成功（失败则 panic），适合初始化阶段
+async.GoAction(p, ctx, fn)
+
+// 带超时提交
+async.SubmitActionWithTimeout(p, ctx, 3*time.Second, fn)
+
+// 指定索引带超时提交
+async.SubmitAtActionWithTimeout(p, 5, ctx, 3*time.Second, fn)
+
+// 带超时提交并断言成功
+async.GoActionWithTimeout(p, ctx, 3*time.Second, fn)
+```
+
+---
+
+## Pool 便捷函数详解
+
+快速创建池并提交任务的单次操作：
+
+```go
+// 创建默认池并提交单个任务
+p, idx, err := async.Submit(ctx, fn)
+defer p.Close()
+results := p.Wait()
+
+// 提交 N 个相同任务
+p, submitResults, err := async.SubmitN(ctx, fn, 100)
+defer p.Close()
+
+// 提交 N 个任务（失败 panic）
+p, submitResults := async.SubmitSafeN(ctx, fn, 50)
+defer p.Close()
+
+// 对切片批量提交
+users := []string{"alice", "bob", "charlie"}
+p, results, err := async.SubmitBatch(ctx, users, func(ctx context.Context, name string) (*User, error) {
+    return db.QueryUser(ctx, name)
+})
+defer p.Close()
+
+// Pool 版 Map（结果顺序与输入一致）
+p, results, err := async.MapPool(ctx, items, fn, async.IO())
+
+// Pool 版 ForEach
+_, err := async.ForEachPool(ctx, items, fn, async.IO())
+```
+
+---
+
+## RateLimiter 方法详解
+
+### RateLimiter（定时补充令牌桶）
+
+```go
+// 每秒 100 个令牌
+rl := async.NewRateLimiter(100, time.Second)
+defer rl.Close()
+
+// 创建带突发容量的限流器（最多突发 200 个）
+rl := async.NewRateLimiterWithBurst(50, time.Second, 200)
+
+// Wait 阻塞等待一个令牌
+rl.Wait(ctx)
+
+// Acquire 获取令牌（支持策略切换）
+rl.WithStrategy(async.Reject) // 满时拒绝
+rl.Acquire(ctx)                // 按当前策略获取
+
+// Release 释放令牌（操作完成后必须调用）
+rl.Release()
+
+// Token 获取令牌包装器，配合 defer 使用
+token, err := rl.Token(ctx)
+defer token.Release()
+
+// Resize 调整速率
+rl.Resize(200) // 改为每秒 200
+
+// 状态查询
+size := rl.Size()        // 当前令牌数
+avail := rl.Available()  // 可用令牌数
+
+// 停止补充（优雅关闭前调用）
+rl.Stop()
+
+// Close 关闭限流器
+rl.Close()
+```
+
+**使用模式：**
+
+```go
+// 模式一：Wait/Release（推荐）
+rl.Wait(ctx)
+doRequest()
+rl.Release()
+
+// 模式二：Token defer（最安全）
+token, err := rl.Token(ctx)
+if err != nil { return }
+defer token.Release()
+doRequest()
+
+// 模式三：策略切换
+rl.WithStrategy(async.BlockForce).Acquire(ctx) // 强制阻塞忽略 ctx 取消
+rl.WithStrategy(async.Block).Acquire(ctx)       // 阻塞等待
+rl.WithStrategy(async.Reject).Acquire(ctx)       // 满时拒绝
+```
+
+### TokenBucket（经典令牌桶）
+
+```go
+// 每秒生成 10 个令牌，最多存储 20 个
+tb := async.NewTokenBucket(10, 20)
+
+// Allow 消耗一个令牌
+if tb.Allow() {
+    doRequest()
+}
+
+// AllowN 消耗 N 个令牌
+if tb.AllowN(5) {
+    doBatchRequest()
+}
+```
+
+### SlidingWindowRateLimiter（滑动窗口）
+
+```go
+// 每 10 秒最多 100 次
+sw := async.NewSlidingWindowRateLimiter(100, 10*time.Second)
+
+// Allow 检查是否允许一次请求
+if sw.Allow() {
+    doRequest()
+}
+
+// AllowN 检查是否允许 N 次请求
+if sw.AllowN(10) {
+    doBatchRequest()
+}
+```
+
+### AdaptiveRateLimiter（自适应限流）
+
+根据成功率自动调整并发度：
+
+```go
+// 并发度范围 5-100，初始为 (min+max)/2
+al := async.NewAdaptiveRateLimiter(5, 100)
+
+// 获取执行槽位
+al.Acquire(ctx)
+
+// 执行任务
+if err := doRequest(); err == nil {
+    al.RecordSuccess()  // 成功 → 可能自动扩容
+} else {
+    al.RecordFailure()  // 失败 → 可能自动缩容
+}
+
+// 释放槽位
+al.Release()
+```
+
+---
+
+## AsyncResult / Task 方法详解
+
+### AsyncResult[T]（带返回值异步结果）
+
+```go
+// 启动异步任务
+ar := async.GoResult(ctx, func(ctx context.Context) (*Data, error) {
+    return fetchFromDB(ctx, id)
+})
+
+// Wait 阻塞等待结果
+data, err := ar.Wait()
+
+// WaitTimeout 带超时等待
+data, err, ok := ar.WaitTimeout(3 * time.Second)
+if !ok {
+    log.Println("异步任务超时")
+}
+
+// WaitCh 返回结果 channel，可选择监听
+ch := ar.WaitCh()
+
+// Cancel 取消任务
+data, err := ar.Cancel()
+
+// Ok 阻塞等待并检查是否成功
+if ar.Ok() {
+    fmt.Println("任务成功")
+}
+
+// IsPanic 检查是否因 panic 失败
+if ar.IsPanic() {
+    log.Println("任务panic")
+}
+```
+
+### TaskVoid（无返回值异步结果）
+
+```go
+// 启动 fire-and-forget 任务
+task := async.Go(ctx, func(ctx context.Context) {
+    metrics.Record(ctx, "count", 1)
+})
+
+// 带超时启动
+task := async.GoWithTimeout(ctx, 3*time.Second, func(ctx context.Context) {
+    slowCleanup(ctx)
+})
+
+// Wait 等待完成
+err := task.Wait()
+
+// Ok 检查是否成功
+if task.Ok() { /* ... */ }
+
+// IsPanic 检查是否 panic
+if task.IsPanic() { /* ... */ }
+```
+
+### GoResultWithTimeout（带返回值 + 超时）
+
+```go
+// 启动带超时的异步任务
+ar := async.GoResultWithTimeout(ctx, 5*time.Second, func(ctx context.Context) (*Order, error) {
+    return paymentService.Process(ctx, orderID)
+})
+order, err := ar.Wait()
+```
+
+---
+
+## Mu[T] 方法详解
+
+`Mu[T]` 是线程安全的切片容器，nil receiver 安全。
+
+```go
+var mu async.Mu[int]
+
+// 并发追加（多 goroutine 安全）
+var wg sync.WaitGroup
+for i := 0; i < 100; i++ {
+    wg.Add(1)
+    go func(val int) {
+        defer wg.Done()
+        mu.Append(func() int { return val })
+    }(i)
+}
+wg.Wait()
+
+// Snapshot 获取快照
+all := mu.Snapshot()
+fmt.Println(len(all)) // 100
+```
+
+---
+
+## Pipeline 方法详解
+
+### 多阶段管道（Execute / ExecuteWithMeta）
+
+```go
+stages := []async.Stage[Data]{
+    {Name: "parse", Concurrency: 4},
+    {Name: "enrich", Concurrency: 8},
+    {Name: "validate", Concurrency: 2},
+}
+
+// Execute 执行多阶段管道
+results, err := async.Execute(ctx, stages, items, func(ctx context.Context, stage string, d Data) (Data, error) {
+    switch stage {
+    case "parse":    return parseStage(ctx, d)
+    case "enrich":   return enrichStage(ctx, d)
+    case "validate": return validateStage(ctx, d)
+    }
+    return d, nil
+})
+
+// ExecuteWithMeta 返回带阶段元信息的结果
+metaResults := async.ExecuteWithMeta(ctx, stages, items, fn)
+for _, mr := range metaResults {
+    fmt.Printf("阶段=%s 值=%v\n", mr.Stage, mr.Value)
+}
+
+// ExecuteWithGroup 使用 Group 执行
+results, err := async.ExecuteWithGroup(ctx, items, fn, 200)
+```
+
+### 串行管道（Pipeline）
+
+```go
+// NewPipeline 创建串行管道
+p := async.NewPipeline[int](ctx,
+    func(ctx context.Context, n int) (int, error) { return n * 2, nil },
+    func(ctx context.Context, n int) (int, error) { return n + 1, nil },
+)
+
+// Run 串行执行所有阶段
+result, err := p.Run(5) // 结果: 11 = (5*2)+1
+
+// Stages 返回阶段数
+count := p.Stages()
+
+// WithTraceID 替换 context
+p.WithTraceID(newCtx)
+```
+
+---
+
+## Retry 方法详解
+
+### 简单重试
+
+```go
+// 最多重试 3 次（共 4 次尝试），无退避
+err := async.Retry(ctx, 3, func(ctx context.Context) error {
+    return db.Ping(ctx)
+})
+```
+
+### 指数退避重试
+
+```go
+// 退避序列: 100ms → 200ms → 400ms（最大 30s）
+err := async.RetryWithBackoff(ctx, 3, 100*time.Millisecond, func(ctx context.Context) error {
+    return callAPI(ctx, req)
+})
+
+// 带返回值 + 自定义最大退避
+r := async.RetryWithBackoffResult(ctx, func(ctx context.Context) (*Data, error) {
+    return fetchData(ctx, id)
+}, 3, 100*time.Millisecond, 5*time.Second)
+if r.Ok() {
+    fmt.Println(r.Value)
+}
+```
+
+### 线性退避重试
+
+```go
+// 每次失败等 1 秒，最多重试 5 次
+err := async.RetryWithLinearBackoff(ctx, 5, 1*time.Second, fn)
+
+// 带返回值
+r := async.RetryWithLinearBackoffResult(ctx, fn, 5, 1*time.Second)
+```
+
+### 完整配置重试
+
+```go
+// 支持每次调用超时
+result, err := async.RetryWithConfig(ctx, fn, 3, 100*time.Millisecond, 5*time.Second,
+    async.TimeoutOpt{PerCallTimeout: 2 * time.Second})
+
+// Void 版
+err := async.RetryWithConfigVoid(ctx, fn, 3, 100*time.Millisecond, 5*time.Second,
+    async.TimeoutOpt{PerCallTimeout: 2 * time.Second})
+```
+
+### 单次超时 / 截止时间包装
+
+```go
+// 3 秒超时
+val, err := async.WithTimeout(ctx, 3*time.Second, fn)
+
+// 截止时间
+deadline := time.Now().Add(10 * time.Second)
+val, err := async.WithDeadline(ctx, deadline, fn)
+
+// Void 版
+async.WithTimeoutVoid(ctx, 3*time.Second, fn)
+async.WithDeadlineVoid(ctx, deadline, fn)
+```
+
+### 函数式重试
+
+```go
+// RetryFn 链式调用
+err := async.RetryFn(func() error { return doSomething() }).WithRetry(3)
+```
+
+### Worker 绑定重试
+
+```go
+// 向池提交任务，提交失败时自动退避重试
+err := async.BindRetryToWorker(ctx, pool, fn, 3, 10*time.Millisecond, 1*time.Second)
+```
 
 ---
 
