@@ -495,11 +495,61 @@ async.IOMulti(n) // 自定义倍数 = runtime.NumCPU() * n
 
 ### 千万级生产压测（10,000,000）
 
+共 **17 个核心方法** 通过 1000 万级极限并发验证，零失败、零泄漏：
+
 | 测试场景 | 吞吐量 | 耗时 | 结果 |
 |---------|--------|------|------|
-| `Pool` 1000万 Submit + Wait（200 worker） | **456,514 ops/s** | 21.9s | ✅ |
-| `Map` 1000万元素并发映射（500 并发） | **1.85亿/s** | 53ms | ✅ |
-| `Go` 1000万 fire-and-forget（分批 10 万） | **925,100 ops/s** | 10.8s | ✅ |
+| `Pool` Submit + Wait（200 worker） | 456,746 ops/s | 21.9s | ✅ |
+| `Map` 并发映射（500 并发） | **1.90 亿/s** | 53ms | ✅ |
+| `Go` fire-and-forget（分批 10 万） | 926,770 ops/s | 10.8s | ✅ |
+| `Chunk` 分块（1000 一批） | +Inf | <0.03s | ✅ |
+| `ChunkN` 均分（200 片） | — | <0.03s | ✅ |
+| `MapWithFailFast` 并发映射 + 快速失败（500 并发） | **7,241 万/s** | 0.14s | ✅ |
+| `MapWithTimeout` 并发映射 + 超时（500 并发） | 984,982 ops/s | 10.2s | ✅ |
+| `MapWithFFTimeout` FailFast + Timeout（500 并发） | 843,749 ops/s | 11.9s | ✅ |
+| `GoWithTimeout` 带超时 fire-and-forget | 629,585 ops/s | 15.9s | ✅ |
+| `GoResult` 有返回值异步任务 | 10M 成功 / 0 失败 | 10.3s | ✅ |
+| `TokenBucket.Allow` 令牌桶限流 | 2,147,829 ops/s | 4.7s | ✅ |
+| `TokenBucket.AllowN(1)` 取 N 个令牌 | 2,347,124 ops/s | 4.3s | ✅ |
+| `SlidingWindow.Allow` 滑动窗口限流 | 2,153,610 ops/s | 4.6s | ✅ |
+| `Pipeline.Run` 串行管道（2 阶段） | **1.20 亿/s** | 0.08s | ✅ |
+| `SafeCall` panic 保护调用 | 4,711,646 ops/s | 2.1s | ✅ |
+| `AutoScale Pool` 自动扩缩容（4→1024 worker） | 119,434 ops/s | 8.4s | ✅ |
+| `AutoScale TrySubmit` 自动扩缩容 + 非阻塞提交 | 896,300 submit/s | 6.2s | ✅ |
+
+### 自动扩缩容（AutoScale）
+
+`Pool` 支持根据负载自动调整 worker 数量，初始 worker=4（轻量启动），高并发时自动扩容，低负载时自动缩容。
+
+```go
+p := async.NewPool[int](4)
+// 启用自动扩缩容（使用默认配置）
+p.EnableAutoScale(nil)
+defer p.Close()
+
+// 默认配置：MinWorkers=CPU×2, MaxWorkers=CPU×100, 每 5s 检测
+// 高负载下 busy/size > 0.7 持续 3 次 → 扩容（翻倍）
+// 低负载下 busy/size < 0.2 持续 5 次 → 缩容（减半）
+```
+
+| 配置项 | 默认值 | 说明 |
+|--------|--------|------|
+| `MinWorkers` | CPU×2 | 最小 worker 数 |
+| `MaxWorkers` | CPU×100 | 最大 worker 数 |
+| `CheckInterval` | 5s | 检测间隔 |
+| `ScaleUpThreshold` | 0.7 | busy/size 超过此值触发扩容 |
+| `ScaleDownThreshold` | 0.2 | busy/size 低于此值触发缩容 |
+| `ScaleUpChecks` | 3 | 连续触发扩容次数（防抖动） |
+| `ScaleDownChecks` | 5 | 连续触发缩容次数（防抖动） |
+
+**千万级自动扩缩容验证：**
+
+| 场景 | 起始 | 峰值 | 耗时 | 结果 |
+|------|------|------|------|------|
+| 100万任务（500μs/任务） | 4 worker | **1024 worker** | 8.4s | ✅ 自动扩容正常 |
+| 1000万 TrySubmit | 4 worker | — | 6.2s | ✅ 无阻塞、无死锁 |
+| 空闲缩容 | 20 worker | 2 worker | 2.0s | ✅ 自动缩容正常 |
+| 并发 Submit+扩缩 不卡死 | — | — | 0.3s | ✅ 无死锁 |
 
 ### 百万级生产压测（1,000,000）
 
@@ -515,7 +565,7 @@ async.IOMulti(n) // 自定义倍数 = runtime.NumCPU() * n
 | `Chunk` 100万元素分块（1000 批 × 200 并发） | ~无限 | <10ms | ✅ |
 | `Pool` 100万 × 10 并发 Submit | **671,417 ops/s** | 1.49s | ✅ |
 
-### 补充模块压测
+### 百万级 / 50万级补测（全部方法覆盖）
 
 | 测试场景 | 吞吐量 | 耗时 | 结果 |
 |---------|--------|------|------|
@@ -523,17 +573,42 @@ async.IOMulti(n) // 自定义倍数 = runtime.NumCPU() * n
 | `NoResult` 20万 Go + Wait（500 并发） | 10,446 ops/s | 19.1s | ✅ |
 | `NoResultPool` 100万 Submit + Wait（100 worker） | **417,491 ops/s** | 2.4s | ✅ |
 | `Mu` 100万 Append + Snapshot（100 并发） | **1,254万/s** | 80ms | ✅ |
-| `MapWithFailFast` 100万（200 并发） | **1.17亿/s** | 8.5ms | ✅ |
-| `MapWithFailFast` 50万 真失败触发取消 | 39.9万被取消 ✅ | 0.14s | ✅ |
 | `ForEachWithFailFast` 50万（200 并发） | 3,287 ops/s | 2.5min | ✅ |
-| `TokenBucket` 100万 Allow（100 并发） | **1,026万/s** | 97ms | ✅ |
-| `TokenBucket` 100万 AllowN(1)（100 并发） | 726万/s | 74ms | ✅ |
+| `ForEachWithTimeout` 10万（200 并发） | ✅ | ✅ | ✅ |
+| `ForEachWithFFTimeout` 10万（200 并发） | ✅ | ✅ | ✅ |
+| `ForEachSerial` 5万 串行遍历 | ✅ | ✅ | ✅ |
+| `ForEachChunk` 10万 分块遍历（100 并发） | ✅ | ✅ | ✅ |
+| `ForEachChunked` 10万 Chunked 遍历（100 并发） | ✅ | ✅ | ✅ |
+| `MapSerial` 10万 串行映射 | ✅ | ✅ | ✅ |
+| `MapSerialFailFast` 10万 串行 + FailFast | ✅ | ✅ | ✅ |
+| `MapChunk` 50万 分块聚合（100 并发 × 5000 批） | ~无限 | <1ms | ✅ |
+| `MapChunkWithFailFast` 20万（200 并发） | ✅ | ✅ | ✅ |
+| `MapChunkWithTimeout` 20万（200 并发） | ✅ | ✅ | ✅ |
+| `MapChunked` 20万 Chunked 聚合（200 并发） | ✅ | ✅ | ✅ |
+| `MapChunkedWithFailFast` 20万（200 并发） | ✅ | ✅ | ✅ |
+| `ReduceWithFailFast` 10万（200 并发） | ✅ | ✅ | ✅ |
+| `ReduceWithTimeout` 10万（200 并发） | ✅ | ✅ | ✅ |
+| `RetryWithBackoff` 20万 指数退避（100 并发） | **4,348万/s** | 4.6ms | ✅ |
+| `RetryWithBackoffResult` 20万 带结果重试（100 并发） | ✅ | ✅ | ✅ |
+| `RetryWithLinearBackoffResult` 20万 线性退避（100 并发） | ✅ | ✅ | ✅ |
+| `WithTimeout` 20万 超时重试（100 并发） | ✅ | ✅ | ✅ |
+| `WithDeadline` 20万 截止时间重试（100 并发） | ✅ | ✅ | ✅ |
 | `AdaptiveRateLimiter` 50万 Acquire/Release（50-500） | **569万/s** | 88ms | ✅ |
 | `AdaptiveRateLimiter` 80% 失败率自适应缩容 | ✅ 正常调整 | — | ✅ |
-| `Pipeline` Execute 50万（3 阶段 × 200 并发） | **1,373万/s** | 109ms | ✅ |
-| `Pipeline` ExecuteWithMeta 50万（2 阶段 × 200 并发） | 603万/s | 166ms | ✅ |
-| `RetryWithBackoff` 20万 指数退避（100 并发） | **4,348万/s** | 4.6ms | ✅ |
-| `MapChunk` 50万分块聚合（100 并发 × 5000 批） | ~无限 | <1ms | ✅ |
+| `RateLimiter.Token` 50万 手动令牌 | ✅ | ✅ | ✅ |
+| `RateLimiter.BlockForce` 50万 阻塞策略 | ✅ | ✅ | ✅ |
+| `Pool.TrySubmit` 100万 非阻塞提交 | ✅ | ✅ | ✅ |
+| `Pool.WaitTimeout` 50万 超时等待 | ✅ | ✅ | ✅ |
+| `Pool.Reset` 50万 多轮 Resize | ✅ | ✅ | ✅ |
+| `Group.GoWithTimeout` 10万（200 并发） | ✅ | ✅ | ✅ |
+| `Group.WaitTimeout` 10万 | ✅ | ✅ | ✅ |
+| `Group.GoAt` 10万 索引任务 | ✅ | ✅ | ✅ |
+| `Pipeline.Execute` 50万（3 阶段 × 200 并发） | **1,373万/s** | 109ms | ✅ |
+| `Pipeline.ExecuteWithMeta` 50万（2 阶段 × 200 并发） | 603万/s | 166ms | ✅ |
+| `ExecuteWithGroup` 50万 管道 + Group 组合（200 并发） | 2,361 ops/s | 3.5min | ✅ |
+| `NoResultPool.SubmitAction` 100万 Submit + Action | **370,883 ops/s** | 2.7s | ✅ |
+| `NoResultPool.TrySubmitAction` 100万 非阻塞 Action | ✅ | ✅ | ✅ |
+| `SafeCallVoid` 50万 panic 保护（100 并发） | ✅ | ✅ | ✅ |
 
 ### 竞态安全验证
 
@@ -572,11 +647,17 @@ $env:CGO_ENABLED=1; go test -race ./... -count=1
 ### 运行压测
 
 ```bash
-# 百万级压测（约 15 分钟）
-go test -run "^TestProduction_.*_1M_" -v -count=1 -timeout 20m .
+# 百万级 / 50万级压测（约 15 分钟）
+go test -run "^TestProduction_.*_1M|^TestProduction_.*_500K|TestProduction_ForEach|TestProduction_MapSerial|TestProduction_Reduce|TestProduction_Retry|TestProduction_Adaptive|TestProduction_Execute|TestProduction_Chunk" -v -count=1 -timeout 25m .
 
-# 千万级压测（约 1 分钟）
-go test -run "^TestProduction_.*_10M" -v -count=1 -timeout 10m .
+# 千万级压测（17 个方法，约 1.5 分钟）
+go test -run "^TestProduction_10M" -v -count=1 -timeout 5m .
+
+# 自动扩缩容压测
+go test -run "^TestProduction_10M_AutoScale|^TestAutoScale" -v -count=1 -timeout 5m .
+
+# 全部极限压测（百万级 + 千万级，约 17 分钟）
+go test -run "^TestProduction_" -v -count=1 -timeout 30m .
 
 # 竞态 + 稳定性压测
 go test -run "^TestProduction_(CloseRace|CloseWaitRace|GoroutineLeak|RealWorld)" -v -count=1 -timeout 5m .

@@ -62,6 +62,11 @@ type Pool[T any] struct {
 	waited        bool                  // 是否已完成 Wait
 	quitting      atomic.Int32          // 是否正在退出中
 	ctx           context.Context       // 池级别的上下文
+
+	// ──────── 自动扩缩容（可选，默认关闭）────────
+	autoScale        *core.AutoScaleConfig // 扩缩容配置（nil=未启用）
+	autoScaleStop    chan struct{}         // 停止扩缩容 goroutine
+	autoScaleEnabled atomic.Bool           // 是否已启用自动扩缩容
 }
 
 // SubmitResult 封装 Submit 便捷函数的返回结果，包含提交索引和可能发生的错误。
@@ -1400,6 +1405,9 @@ func (p *Pool[T]) Reset() (*Pool[T], error) {
 
 	close(oldTaskCh)
 
+	// 等待旧 worker 全部退出后再替换 taskCh，避免新旧 worker 竞争
+	p.workerWg.Wait()
+
 	newTaskCh := make(chan core.PoolTask[T], newSize*2)
 	p.mu.Lock()
 	p.taskCh = newTaskCh
@@ -1412,4 +1420,126 @@ func (p *Pool[T]) Reset() (*Pool[T], error) {
 		go p.worker()
 	}
 	return p, nil
+}
+
+// ──────────────────────────── 自动扩缩容 ────────────────────────────
+
+// EnableAutoScale 启用自动扩缩容。基于 busy/size 比率周期性检测负载：
+// - busy/size > ScaleUpThreshold 持续 ScaleUpChecks 次 → 扩容（翻倍，上限 MaxWorkers）
+// - busy/size < ScaleDownThreshold 持续 ScaleDownChecks 次 → 缩容（减半，下限 MinWorkers）
+//
+// config 为 nil 时使用 DefaultAutoScaleConfig()（CPU*2 ~ CPU*100，每 5s 检测）。
+//
+// 重复调用是安全的（幂等）。调用后启动后台 goroutine 进行负载检测。
+//
+// 示例：
+//
+//	// 使用默认配置
+//	p.EnableAutoScale(nil)
+//
+//	// 自定义配置：10~500 worker，每 3 秒检测
+//	p.EnableAutoScale(&core.AutoScaleConfig{
+//	    MinWorkers: 10,
+//	    MaxWorkers: 500,
+//	    CheckInterval: 3 * time.Second,
+//	})
+func (p *Pool[T]) EnableAutoScale(config *core.AutoScaleConfig) {
+	if config == nil {
+		config = core.DefaultAutoScaleConfig()
+	}
+	config.Normalize()
+
+	p.autoScale = config
+	if p.autoScaleEnabled.CompareAndSwap(false, true) {
+		p.autoScaleStop = make(chan struct{})
+		go func() {
+			p.autoScaleLoop(config)
+		}()
+	}
+}
+
+// DisableAutoScale 停止自动扩缩容，将 worker 数量恢复到初始值。
+//
+// 停止后仍可通过 Resize 手动调整。如果自动扩缩容未启用，调用无效果。
+func (p *Pool[T]) DisableAutoScale() {
+	if p.autoScaleEnabled.CompareAndSwap(true, false) {
+		close(p.autoScaleStop)
+
+		if p.autoScale != nil {
+			minWorkers := p.autoScale.MinWorkers
+			if minWorkers > 0 && p.Size() != minWorkers {
+				p.Resize(minWorkers)
+			}
+		}
+	}
+}
+
+// IsAutoScaleEnabled 返回是否已启用自动扩缩容。
+func (p *Pool[T]) IsAutoScaleEnabled() bool {
+	return p.autoScaleEnabled.Load()
+}
+
+// autoScaleLoop 自动扩缩容后台检测循环。
+func (p *Pool[T]) autoScaleLoop(config *core.AutoScaleConfig) {
+	ticker := time.NewTicker(config.CheckInterval)
+	defer ticker.Stop()
+
+	var scaleUpCount, scaleDownCount int
+
+	for {
+		select {
+		case <-p.done:
+			return
+		case <-p.autoScaleStop:
+			return
+		case <-ticker.C:
+			p.performAutoScaleCheck(config, &scaleUpCount, &scaleDownCount)
+		}
+	}
+}
+
+// performAutoScaleCheck 执行一次扩缩容检测。
+func (p *Pool[T]) performAutoScaleCheck(config *core.AutoScaleConfig, scaleUpCount, scaleDownCount *int) {
+	if p.closed.Load() || p.waiting.Load() {
+		return
+	}
+
+	size := p.Size()
+	busy := p.Busy()
+	if size == 0 {
+		return
+	}
+
+	busyRatio := float64(busy) / float64(size)
+
+	if busyRatio > config.ScaleUpThreshold {
+		*scaleDownCount = 0
+		*scaleUpCount++
+		if *scaleUpCount >= config.ScaleUpChecks {
+			newSize := size * 2
+			if newSize > config.MaxWorkers {
+				newSize = config.MaxWorkers
+			}
+			if newSize > size {
+				p.Resize(newSize)
+			}
+			*scaleUpCount = 0
+		}
+	} else if busyRatio < config.ScaleDownThreshold {
+		*scaleUpCount = 0
+		*scaleDownCount++
+		if *scaleDownCount >= config.ScaleDownChecks {
+			newSize := size / 2
+			if newSize < config.MinWorkers {
+				newSize = config.MinWorkers
+			}
+			if newSize < size {
+				p.Resize(newSize)
+			}
+			*scaleDownCount = 0
+		}
+	} else {
+		*scaleUpCount = 0
+		*scaleDownCount = 0
+	}
 }

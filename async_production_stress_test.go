@@ -1373,3 +1373,1635 @@ func TestProduction_Chunk_MapChunk_500K(t *testing.T) {
 	t.Logf("500K MapChunk (100 concurrency, 5000 batch): %d items in %v (%.0f ops/s)", n, elapsed, opsPerSec)
 	printMemStats("MapChunk-end")
 }
+
+// ============================================================================
+// Map 超时 / 串行 / FailFast-TimeOut 变体补充
+// ============================================================================
+
+// TestProduction_MapWithTimeout_500K 50万 Map 带 per-item 超时
+func TestProduction_MapWithTimeout_500K(t *testing.T) {
+	printMemStats("MapWithTimeout-start")
+	n := 500_000
+	items := make([]int, n)
+	for i := range items {
+		items[i] = i
+	}
+
+	start := time.Now()
+	results := MapWithTimeout(context.Background(), items, 200, 30*time.Second, func(ctx context.Context, v int) (int, error) {
+		return v * 2, nil
+	})
+	elapsed := time.Since(start)
+
+	if len(results) != n {
+		t.Fatalf("expected %d results, got %d", n, len(results))
+	}
+	for i := 0; i < n; i += n / 100 {
+		if results[i].Err != nil {
+			t.Fatalf("result[%d] error: %v", i, results[i].Err)
+		}
+		if results[i].Value != i*2 {
+			t.Fatalf("result[%d] expected %d, got %d", i, i*2, results[i].Value)
+		}
+	}
+	opsPerSec := float64(n) / elapsed.Seconds()
+	t.Logf("500K MapWithTimeout (200 concurrency): %d items in %v (%.0f ops/s)", n, elapsed, opsPerSec)
+	printMemStats("MapWithTimeout-end")
+}
+
+// TestProduction_MapWithFFTimeout_500K 50万 Map FailFast + Timeout
+func TestProduction_MapWithFFTimeout_500K(t *testing.T) {
+	printMemStats("MapFFTimeout-start")
+	n := 500_000
+	items := make([]int, n)
+	for i := range items {
+		items[i] = i
+	}
+
+	start := time.Now()
+	results, err := MapWithFFTimeout(context.Background(), items, 200, 30*time.Second, func(ctx context.Context, v int) (int, error) {
+		return v * 2, nil
+	})
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("MapFFTimeout error: %v", err)
+	}
+	if len(results) != n {
+		t.Fatalf("expected %d results, got %d", n, len(results))
+	}
+	opsPerSec := float64(n) / elapsed.Seconds()
+	t.Logf("500K MapWithFFTimeout (200 concurrency): %d items in %v (%.0f ops/s)", n, elapsed, opsPerSec)
+	printMemStats("MapFFTimeout-end")
+}
+
+// TestProduction_MapSerial_100K 10万串行 Map
+func TestProduction_MapSerial_100K(t *testing.T) {
+	printMemStats("MapSerial-start")
+	n := 100_000
+	items := make([]int, n)
+	for i := range items {
+		items[i] = i
+	}
+
+	start := time.Now()
+	results := MapSerial(context.Background(), items, func(ctx context.Context, v int) (int, error) {
+		return v * 2, nil
+	})
+	elapsed := time.Since(start)
+
+	if len(results) != n {
+		t.Fatalf("expected %d results, got %d", n, len(results))
+	}
+	opsPerSec := float64(n) / elapsed.Seconds()
+	t.Logf("100K MapSerial: %d items in %v (%.0f ops/s)", n, elapsed, opsPerSec)
+	printMemStats("MapSerial-end")
+}
+
+// TestProduction_MapSerialFailFast_100K 10万串行 FailFast Map
+func TestProduction_MapSerialFailFast_100K(t *testing.T) {
+	printMemStats("MapSerialFF-start")
+	n := 100_000
+	items := make([]int, n)
+	for i := range items {
+		items[i] = i
+	}
+
+	start := time.Now()
+	results, err := MapSerialFailFast(context.Background(), items, func(ctx context.Context, v int) (int, error) {
+		return v * 2, nil
+	})
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("MapSerialFailFast error: %v", err)
+	}
+	if len(results) != n {
+		t.Fatalf("expected %d results, got %d", n, len(results))
+	}
+	opsPerSec := float64(n) / elapsed.Seconds()
+	t.Logf("100K MapSerialFailFast: %d items in %v (%.0f ops/s)", n, elapsed, opsPerSec)
+	printMemStats("MapSerialFF-end")
+}
+
+// ============================================================================
+// ForEach 超时 / 串行 变体补充
+// ============================================================================
+
+// TestProduction_ForEachWithTimeout_500K 50万 ForEach 带超时
+func TestProduction_ForEachWithTimeout_500K(t *testing.T) {
+	printMemStats("ForEachTimeout-start")
+	n := 100_000
+	items := make([]int, n)
+	for i := range items {
+		items[i] = i
+	}
+
+	start := time.Now()
+	nr, err := ForEachWithTimeout(context.Background(), items, 200, 30*time.Second, func(ctx context.Context, v int) error {
+		return nil
+	})
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("ForEachWithTimeout error: %v", err)
+	}
+	if nr.SuccessCount() != int64(n) {
+		t.Fatalf("expected %d success, got %d", n, nr.SuccessCount())
+	}
+
+	opsPerSec := float64(n) / elapsed.Seconds()
+	t.Logf("100K ForEachWithTimeout (200 concurrency): %d items in %v (%.0f ops/s)", n, elapsed, opsPerSec)
+	printMemStats("ForEachTimeout-end")
+}
+
+// TestProduction_ForEachWithFFTimeout_500K 50万 ForEach FailFast + Timeout
+func TestProduction_ForEachWithFFTimeout_500K(t *testing.T) {
+	printMemStats("ForEachFFTimeout-start")
+	n := 100_000
+	items := make([]int, n)
+	for i := range items {
+		items[i] = i
+	}
+
+	start := time.Now()
+	nr, err := ForEachWithFFTimeout(context.Background(), items, 200, 30*time.Second, func(ctx context.Context, v int) error {
+		return nil
+	})
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("ForEachWithFFTimeout error: %v", err)
+	}
+	if nr.SuccessCount() != int64(n) {
+		t.Fatalf("expected %d success, got %d", n, nr.SuccessCount())
+	}
+
+	opsPerSec := float64(n) / elapsed.Seconds()
+	t.Logf("100K ForEachWithFFTimeout (200 concurrency): %d items in %v (%.0f ops/s)", n, elapsed, opsPerSec)
+	printMemStats("ForEachFFTimeout-end")
+}
+
+// TestProduction_ForEachSerial_50K 5万串行 ForEach
+func TestProduction_ForEachSerial_50K(t *testing.T) {
+	printMemStats("ForEachSerial-start")
+	n := 50_000
+	items := make([]int, n)
+	for i := range items {
+		items[i] = i
+	}
+
+	start := time.Now()
+	nr, err := ForEachSerial(context.Background(), items, func(ctx context.Context, v int) error {
+		return nil
+	})
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("ForEachSerial error: %v", err)
+	}
+	if nr.SuccessCount() != int64(n) {
+		t.Fatalf("expected %d success, got %d", n, nr.SuccessCount())
+	}
+
+	opsPerSec := float64(n) / elapsed.Seconds()
+	t.Logf("50K ForEachSerial: %d items in %v (%.0f ops/s)", n, elapsed, opsPerSec)
+	printMemStats("ForEachSerial-end")
+}
+
+// ============================================================================
+// Task: GoWithTimeout / GoResult / GoResultWithTimeout
+// ============================================================================
+
+// TestProduction_GoWithTimeout_500K 50万 Go 带超时 fire-and-forget
+func TestProduction_GoWithTimeout_500K(t *testing.T) {
+	printMemStats("GoWithTimeout-start")
+	n := 500_000
+	var counter int64
+	batchSize := 50_000
+
+	start := time.Now()
+	for i := 0; i < n; i += batchSize {
+		for j := 0; j < batchSize; j++ {
+			GoWithTimeout(context.Background(), 30*time.Second, func(ctx context.Context) {
+				atomic.AddInt64(&counter, 1)
+			})
+		}
+	}
+	elapsed := time.Since(start)
+
+	time.Sleep(200 * time.Millisecond)
+
+	final := atomic.LoadInt64(&counter)
+	opsPerSec := float64(n) / elapsed.Seconds()
+	t.Logf("500K GoWithTimeout: %d launched in %v (%.0f ops/s), completed=%d", n, elapsed, opsPerSec, final)
+	printMemStats("GoWithTimeout-end")
+}
+
+// TestProduction_GoResult_500K 50万 GoResult 有返回值
+func TestProduction_GoResult_500K(t *testing.T) {
+	printMemStats("GoResult-start")
+	n := 500_000
+	results := make([]*AsyncResult[int], n)
+
+	start := time.Now()
+	for i := 0; i < n; i++ {
+		v := i
+		results[i] = GoResult(context.Background(), func(ctx context.Context) (int, error) {
+			return v * 2, nil
+		})
+	}
+	elapsed := time.Since(start)
+
+	var success, fail int64
+	for _, r := range results {
+		if r.Ok() {
+			success++
+		} else {
+			fail++
+		}
+	}
+
+	t.Logf("500K GoResult: %d launched in %v, success=%d fail=%d", n, elapsed, success, fail)
+	if fail > 0 {
+		t.Fatalf("expected 0 failures, got %d", fail)
+	}
+	printMemStats("GoResult-end")
+}
+
+// ============================================================================
+// ChunkN 分块
+// ============================================================================
+
+// TestProduction_ChunkN_1M 100万 ChunkN 均分
+func TestProduction_ChunkN_1M(t *testing.T) {
+	printMemStats("ChunkN-start")
+	n := 1_000_000
+	items := make([]int, n)
+	for i := range items {
+		items[i] = i
+	}
+
+	start := time.Now()
+	chunks := ChunkN(items, 100)
+	elapsed := time.Since(start)
+
+	totalElements := 0
+	for _, c := range chunks {
+		totalElements += len(c)
+	}
+	if totalElements != n {
+		t.Fatalf("expected %d elements, got %d", n, totalElements)
+	}
+	if len(chunks) != 100 {
+		t.Fatalf("expected 100 chunks, got %d", len(chunks))
+	}
+	t.Logf("1M ChunkN(100): %d items → %d chunks in %v", n, len(chunks), elapsed)
+	printMemStats("ChunkN-end")
+}
+
+// ============================================================================
+// MapChunk 系列变体
+// ============================================================================
+
+// TestProduction_MapChunkWithFailFast_200K 20万分块 Map FailFast
+func TestProduction_MapChunkWithFailFast_200K(t *testing.T) {
+	printMemStats("MapChunkFF-start")
+	n := 200_000
+	items := make([]int, n)
+	for i := range items {
+		items[i] = i
+	}
+
+	start := time.Now()
+	results, err := MapChunkWithFailFast(context.Background(), items, 100, 5000, func(ctx context.Context, batch []int) (int, error) {
+		return len(batch), nil
+	})
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("MapChunkWithFailFast error: %v", err)
+	}
+	if len(results) != n/5000 {
+		t.Fatalf("expected %d chunks, got %d", n/5000, len(results))
+	}
+	t.Logf("200K MapChunkWithFailFast (100 concurrency, 5000 batch): %d chunks in %v", len(results), elapsed)
+	printMemStats("MapChunkFF-end")
+}
+
+// TestProduction_MapChunkWithTimeout_200K 20万分块 Map Timeout
+func TestProduction_MapChunkWithTimeout_200K(t *testing.T) {
+	printMemStats("MapChunkTO-start")
+	n := 200_000
+	items := make([]int, n)
+	for i := range items {
+		items[i] = i
+	}
+
+	start := time.Now()
+	results := MapChunkWithTimeout(context.Background(), items, 100, 5000, 30*time.Second, func(ctx context.Context, batch []int) (int, error) {
+		return len(batch), nil
+	})
+	elapsed := time.Since(start)
+
+	if len(results) != n/5000 {
+		t.Fatalf("expected %d chunks, got %d", n/5000, len(results))
+	}
+	t.Logf("200K MapChunkWithTimeout: %d chunks in %v", len(results), elapsed)
+	printMemStats("MapChunkTO-end")
+}
+
+// TestProduction_MapChunked_200K 20万分块元素级 Map
+func TestProduction_MapChunked_200K(t *testing.T) {
+	printMemStats("MapChunked-start")
+	n := 200_000
+	items := make([]int, n)
+	for i := range items {
+		items[i] = i
+	}
+
+	start := time.Now()
+	results := MapChunked(context.Background(), items, 100, 5000, func(ctx context.Context, v int) (int, error) {
+		return v * 2, nil
+	})
+	elapsed := time.Since(start)
+
+	if len(results) != n {
+		t.Fatalf("expected %d results, got %d", n, len(results))
+	}
+	opsPerSec := float64(n) / elapsed.Seconds()
+	t.Logf("200K MapChunked (100 concurrency, 5000 batch): %d items in %v (%.0f ops/s)", n, elapsed, opsPerSec)
+	printMemStats("MapChunked-end")
+}
+
+// TestProduction_MapChunkedWithFailFast_200K 20万分块元素级 Map FF
+func TestProduction_MapChunkedWithFailFast_200K(t *testing.T) {
+	n := 200_000
+	items := make([]int, n)
+	for i := range items {
+		items[i] = i
+	}
+
+	start := time.Now()
+	results, err := MapChunkedWithFailFast(context.Background(), items, 100, 5000, func(ctx context.Context, v int) (int, error) {
+		return v * 2, nil
+	})
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	if len(results) != n {
+		t.Fatalf("expected %d, got %d", n, len(results))
+	}
+	t.Logf("200K MapChunkedWithFailFast: %d items in %v", n, elapsed)
+}
+
+// ============================================================================
+// ForEachChunk 系列
+// ============================================================================
+
+// TestProduction_ForEachChunk_100K 10万分块 ForEach
+func TestProduction_ForEachChunk_100K(t *testing.T) {
+	printMemStats("ForEachChunk-start")
+	n := 100_000
+	items := make([]int, n)
+	for i := range items {
+		items[i] = i
+	}
+
+	start := time.Now()
+	nr, err := ForEachChunk(context.Background(), items, 50, 5000, func(ctx context.Context, batch []int) error {
+		return nil
+	})
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	if nr.SuccessCount() != int64(n/5000) {
+		t.Fatalf("expected %d chunks, got %d", n/5000, nr.SuccessCount())
+	}
+	t.Logf("100K ForEachChunk (50 concurrency, 5000 batch): %d chunks in %v", n/5000, elapsed)
+	printMemStats("ForEachChunk-end")
+}
+
+// TestProduction_ForEachChunked_100K 10万分块元素级 ForEach
+func TestProduction_ForEachChunked_100K(t *testing.T) {
+	n := 100_000
+	items := make([]int, n)
+	for i := range items {
+		items[i] = i
+	}
+
+	start := time.Now()
+	nr, err := ForEachChunked(context.Background(), items, 50, 5000, func(ctx context.Context, v int) error {
+		return nil
+	})
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	if nr.SuccessCount() != int64(n) {
+		t.Fatalf("expected %d, got %d", n, nr.SuccessCount())
+	}
+	t.Logf("100K ForEachChunked: %d items in %v", n, elapsed)
+}
+
+// ============================================================================
+// Reduce 系列变体
+// ============================================================================
+
+// TestProduction_ReduceWithFailFast_100K 10万 Reduce FailFast
+func TestProduction_ReduceWithFailFast_100K(t *testing.T) {
+	n := 100_000
+	items := make([]int, n)
+	for i := range items {
+		items[i] = 1
+	}
+
+	start := time.Now()
+	sum, err := ReduceWithFailFast(context.Background(), items, 200, func(ctx context.Context, v int) (int, error) {
+		return v, nil
+	}, 0, func(a, b int) int {
+		return a + b
+	})
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	if sum != n {
+		t.Fatalf("expected %d, got %d", n, sum)
+	}
+	t.Logf("100K ReduceWithFailFast: sum=%d in %v", sum, elapsed)
+}
+
+// TestProduction_ReduceWithTimeout_100K 10万 Reduce Timeout
+func TestProduction_ReduceWithTimeout_100K(t *testing.T) {
+	n := 100_000
+	items := make([]int, n)
+	for i := range items {
+		items[i] = 1
+	}
+
+	start := time.Now()
+	sum, err := ReduceWithTimeout(context.Background(), items, 200, 30*time.Second, func(ctx context.Context, v int) (int, error) {
+		return v, nil
+	}, 0, func(a, b int) int {
+		return a + b
+	})
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	if sum != n {
+		t.Fatalf("expected %d, got %d", n, sum)
+	}
+	t.Logf("100K ReduceWithTimeout: sum=%d in %v", sum, elapsed)
+}
+
+// ============================================================================
+// Retry 系列变体
+// ============================================================================
+
+// TestProduction_RetryWithBackoffResult_200K 20万 Retry Result 类型
+func TestProduction_RetryWithBackoffResult_200K(t *testing.T) {
+	n := 200_000
+
+	begin := time.Now()
+	fn := func(ctx context.Context) (int, error) {
+		return 42, nil
+	}
+
+	var success int64
+	var fail int64
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func() {
+			defer wg.Done()
+			r := RetryWithBackoffResult(context.Background(), fn, 0, 0, 0)
+			if r.Ok() {
+				atomic.AddInt64(&success, 1)
+			} else {
+				atomic.AddInt64(&fail, 1)
+			}
+		}()
+	}
+	wg.Wait()
+	elapsed := time.Since(begin)
+
+	opsPerSec := float64(n) / elapsed.Seconds()
+	t.Logf("200K RetryWithBackoffResult: success=%d fail=%d in %v (%.0f ops/s)", success, fail, elapsed, opsPerSec)
+
+	if fail > 0 {
+		t.Fatalf("expected 0 failures, got %d", fail)
+	}
+}
+
+// TestProduction_RetryWithLinearBackoffResult_200K 20万 Retry Linear Result
+func TestProduction_RetryWithLinearBackoffResult_200K(t *testing.T) {
+	n := 200_000
+	fn := func(ctx context.Context) (int, error) {
+		return 42, nil
+	}
+
+	var success int64
+	var fail int64
+	var wg sync.WaitGroup
+	wg.Add(n)
+	begin := time.Now()
+	for i := 0; i < n; i++ {
+		go func() {
+			defer wg.Done()
+			r := RetryWithLinearBackoffResult(context.Background(), fn, 0, 0)
+			if r.Ok() {
+				atomic.AddInt64(&success, 1)
+			} else {
+				atomic.AddInt64(&fail, 1)
+			}
+		}()
+	}
+	wg.Wait()
+	elapsed := time.Since(begin)
+
+	opsPerSec := float64(n) / elapsed.Seconds()
+	t.Logf("200K RetryWithLinearBackoffResult: success=%d fail=%d in %v (%.0f ops/s)", success, fail, elapsed, opsPerSec)
+
+	if fail > 0 {
+		t.Fatalf("expected 0 failures, got %d", fail)
+	}
+}
+
+// TestProduction_WithTimeout_200K 20万 WithTimeout 包装
+func TestProduction_WithTimeout_200K(t *testing.T) {
+	n := 200_000
+	fn := func(ctx context.Context) (int, error) {
+		return 42, nil
+	}
+
+	var success int64
+	var fail int64
+	var wg sync.WaitGroup
+	wg.Add(n)
+	begin := time.Now()
+	for i := 0; i < n; i++ {
+		go func() {
+			defer wg.Done()
+			val, err := WithTimeout(context.Background(), 5*time.Second, fn)
+			if err == nil && val == 42 {
+				atomic.AddInt64(&success, 1)
+			} else {
+				atomic.AddInt64(&fail, 1)
+			}
+		}()
+	}
+	wg.Wait()
+	elapsed := time.Since(begin)
+
+	opsPerSec := float64(n) / elapsed.Seconds()
+	t.Logf("200K WithTimeout: success=%d fail=%d in %v (%.0f ops/s)", success, fail, elapsed, opsPerSec)
+
+	if fail > 0 {
+		t.Fatalf("expected 0 failures, got %d", fail)
+	}
+}
+
+// TestProduction_WithDeadline_200K 20万 WithDeadline
+func TestProduction_WithDeadline_200K(t *testing.T) {
+	n := 200_000
+	fn := func(ctx context.Context) (int, error) {
+		return 42, nil
+	}
+
+	var success int64
+	var fail int64
+	var wg sync.WaitGroup
+	wg.Add(n)
+	deadline := time.Now().Add(5 * time.Second)
+	begin := time.Now()
+	for i := 0; i < n; i++ {
+		go func() {
+			defer wg.Done()
+			val, err := WithDeadline(context.Background(), deadline, fn)
+			if err == nil && val == 42 {
+				atomic.AddInt64(&success, 1)
+			} else {
+				atomic.AddInt64(&fail, 1)
+			}
+		}()
+	}
+	wg.Wait()
+	elapsed := time.Since(begin)
+
+	opsPerSec := float64(n) / elapsed.Seconds()
+	t.Logf("200K WithDeadline: success=%d fail=%d in %v (%.0f ops/s)", success, fail, elapsed, opsPerSec)
+
+	if fail > 0 {
+		t.Fatalf("expected 0 failures, got %d", fail)
+	}
+}
+
+// ============================================================================
+// RateLimiter: SlidingWindow / Burst / Token / BlockForce
+// ============================================================================
+
+// TestProduction_SlidingWindowRateLimiter_1M 100万滑动窗口
+func TestProduction_SlidingWindowRateLimiter_1M(t *testing.T) {
+	printMemStats("SlidingWindow-start")
+	n := 1_000_000
+	sw := NewSlidingWindowRateLimiter(n, time.Second)
+
+	start := time.Now()
+	var allowed int64
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func() {
+			defer wg.Done()
+			if sw.Allow() {
+				atomic.AddInt64(&allowed, 1)
+			}
+		}()
+	}
+	wg.Wait()
+	elapsed := time.Since(start)
+
+	total := atomic.LoadInt64(&allowed)
+	opsPerSec := float64(n) / elapsed.Seconds()
+	t.Logf("1M SlidingWindowRateLimiter.Allow: %d/%d allowed in %v (%.0f ops/s)", total, n, elapsed, opsPerSec)
+	printMemStats("SlidingWindow-end")
+}
+
+// TestProduction_SlidingWindowRateLimiter_AllowN_1M 100万滑动窗口 AllowN
+func TestProduction_SlidingWindowRateLimiter_AllowN_1M(t *testing.T) {
+	n := 1_000_000
+	sw := NewSlidingWindowRateLimiter(n, time.Second)
+
+	var allowed int64
+	var wg sync.WaitGroup
+	wg.Add(n)
+	start := time.Now()
+	for i := 0; i < n; i++ {
+		go func() {
+			defer wg.Done()
+			if sw.AllowN(1) {
+				atomic.AddInt64(&allowed, 1)
+			}
+		}()
+	}
+	wg.Wait()
+	elapsed := time.Since(start)
+
+	total := atomic.LoadInt64(&allowed)
+	opsPerSec := float64(n) / elapsed.Seconds()
+	t.Logf("1M SlidingWindowRateLimiter.AllowN(1): %d/%d allowed in %v (%.0f ops/s)", total, n, elapsed, opsPerSec)
+}
+
+// TestProduction_RateLimiterWithBurst_1M 100万带突发容量的RateLimiter
+func TestProduction_RateLimiterWithBurst_1M(t *testing.T) {
+	printMemStats("RLBurst-start")
+	n := 1_000_000
+	rl := NewRateLimiterWithBurst(500000, time.Second, 1000000)
+
+	var acquired int64
+	var wg sync.WaitGroup
+	wg.Add(n)
+	start := time.Now()
+	for i := 0; i < n; i++ {
+		go func() {
+			defer wg.Done()
+			if err := rl.Acquire(context.Background()); err == nil {
+				atomic.AddInt64(&acquired, 1)
+				rl.Release()
+			}
+		}()
+	}
+	wg.Wait()
+	elapsed := time.Since(start)
+
+	total := atomic.LoadInt64(&acquired)
+	opsPerSec := float64(total) / elapsed.Seconds()
+	t.Logf("1M RateLimiter Burst (500K/s, 1M capacity): %d/%d in %v (%.0f ops/s)", total, n, elapsed, opsPerSec)
+	printMemStats("RLBurst-end")
+}
+
+// TestProduction_RateLimiter_Token_500K 50万手动Token模式
+func TestProduction_RateLimiter_Token_500K(t *testing.T) {
+	printMemStats("RLToken-start")
+	n := 500_000
+	rl := NewRateLimiter(n, time.Second)
+
+	var acquired int64
+	var wg sync.WaitGroup
+	wg.Add(n)
+	start := time.Now()
+	for i := 0; i < n; i++ {
+		go func() {
+			defer wg.Done()
+			tok, err := rl.Token(context.Background())
+			if err == nil {
+				atomic.AddInt64(&acquired, 1)
+				tok.Release()
+			}
+		}()
+	}
+	wg.Wait()
+	elapsed := time.Since(start)
+
+	total := atomic.LoadInt64(&acquired)
+	opsPerSec := float64(total) / elapsed.Seconds()
+	t.Logf("500K RateLimiter.Token: %d/%d in %v (%.0f ops/s)", total, n, elapsed, opsPerSec)
+	printMemStats("RLToken-end")
+}
+
+// TestProduction_RateLimiter_BlockForce_500K 50万 BlockForce 策略
+func TestProduction_RateLimiter_BlockForce_500K(t *testing.T) {
+	printMemStats("RLBlockForce-start")
+	n := 500_000
+	rl := NewRateLimiter(100000, time.Second)
+
+	var acquired int64
+	var wg sync.WaitGroup
+	wg.Add(n)
+	blockCtx, blockCancel := context.WithCancel(context.Background())
+	_ = blockCancel // 不会被 cancel 中断
+
+	start := time.Now()
+	for i := 0; i < n; i++ {
+		go func() {
+			defer wg.Done()
+			if err := rl.WithStrategy(BlockForce).Acquire(blockCtx); err == nil {
+				atomic.AddInt64(&acquired, 1)
+				rl.Release()
+			}
+		}()
+	}
+	wg.Wait()
+	elapsed := time.Since(start)
+
+	total := atomic.LoadInt64(&acquired)
+	opsPerSec := float64(total) / elapsed.Seconds()
+	t.Logf("500K RateLimiter BlockForce (100K/s rate): %d/%d in %v (%.0f ops/s)", total, n, elapsed, opsPerSec)
+	printMemStats("RLBlockForce-end")
+}
+
+// ============================================================================
+// Pool: TrySubmit / WaitTimeout
+// ============================================================================
+
+// TestProduction_Pool_TrySubmit_1M 100万非阻塞提交
+func TestProduction_Pool_TrySubmit_1M(t *testing.T) {
+	printMemStats("TrySubmit-start")
+	n := 1_000_000
+
+	p := NewPool[int](500)
+	var submitted int64
+	var rejected int64
+
+	start := time.Now()
+	for i := 0; i < n; i++ {
+		v := i
+		if err := p.TrySubmit(context.Background(), func(ctx context.Context) (int, error) {
+			return v * 2, nil
+		}); err == nil {
+			atomic.AddInt64(&submitted, 1)
+		} else {
+			atomic.AddInt64(&rejected, 1)
+		}
+	}
+	results := p.WaitAndClose()
+	elapsed := time.Since(start)
+
+	t.Logf("1M Pool.TrySubmit: %d submitted, %d rejected, %d results in %v (ok)", atomic.LoadInt64(&submitted), atomic.LoadInt64(&rejected), len(results), elapsed)
+	printMemStats("TrySubmit-end")
+}
+
+// TestProduction_Pool_WaitTimeout_500K 50万 WaitTimeout
+func TestProduction_Pool_WaitTimeout_500K(t *testing.T) {
+	printMemStats("WaitTimeout-start")
+	n := 500_000
+
+	p := NewPool[int](200)
+	for i := 0; i < n; i++ {
+		v := i
+		p.Submit(context.Background(), func(ctx context.Context) (int, error) {
+			return v * 2, nil
+		})
+	}
+
+	start := time.Now()
+	results, ok := p.WaitTimeout(30 * time.Second)
+	elapsed := time.Since(start)
+	p.Close()
+
+	if !ok {
+		t.Fatalf("WaitTimeout returned false")
+	}
+	if len(results) != n {
+		t.Fatalf("expected %d results, got %d", n, len(results))
+	}
+	t.Logf("500K Pool.WaitTimeout: %d results in %v", n, elapsed)
+	printMemStats("WaitTimeout-end")
+}
+
+// TestProduction_Pool_Reset_500K 50万 Reset后复用
+func TestProduction_Pool_Reset_500K(t *testing.T) {
+	p := NewPool[int](200)
+
+	for round := 0; round < 3; round++ {
+		n := 200_000
+		for i := 0; i < n; i++ {
+			v := i
+			p.Submit(context.Background(), func(ctx context.Context) (int, error) {
+				return v * 2, nil
+			})
+		}
+		results := p.Wait()
+		if len(results) != n {
+			t.Fatalf("round %d: expected %d results, got %d", round, n, len(results))
+		}
+		for _, r := range results {
+			if r.Err != nil {
+				t.Fatalf("round %d result error: %v", round, r.Err)
+			}
+		}
+
+		_, err := p.Reset()
+		if err != nil {
+			t.Fatalf("round %d Reset error: %v", round, err)
+		}
+	}
+	p.Close()
+	t.Logf("Pool.Reset ×3 rounds (200K each) passed")
+}
+
+// ============================================================================
+// Group: GoWithTimeout / WaitTimeout / GoAt
+// ============================================================================
+
+// TestProduction_Group_GoWithTimeout_100K 10万 Group GoWithTimeout
+func TestProduction_Group_GoWithTimeout_100K(t *testing.T) {
+	printMemStats("GroupGoTO-start")
+	n := 100_000
+	g := NewGroup[int](200)
+	for i := 0; i < n; i++ {
+		v := i
+		g.GoWithTimeout(context.Background(), 30*time.Second, func(ctx context.Context) (int, error) {
+			return v * 2, nil
+		})
+	}
+
+	start := time.Now()
+	results := g.Wait()
+	elapsed := time.Since(start)
+
+	if len(results) != n {
+		t.Fatalf("expected %d results, got %d", n, len(results))
+	}
+	for i := 0; i < n; i += n / 100 {
+		if results[i].Err != nil {
+			t.Fatalf("result[%d] error: %v", i, results[i].Err)
+		}
+	}
+	opsPerSec := float64(n) / elapsed.Seconds()
+	t.Logf("100K Group.GoWithTimeout (200 concurrency): %d items in %v (%.0f ops/s)", n, elapsed, opsPerSec)
+	printMemStats("GroupGoTO-end")
+}
+
+// TestProduction_Group_WaitTimeout_100K 10万 Group WaitTimeout
+func TestProduction_Group_WaitTimeout_100K(t *testing.T) {
+	n := 100_000
+	g := NewGroup[int](200)
+	for i := 0; i < n; i++ {
+		v := i
+		g.Go(context.Background(), func(ctx context.Context) (int, error) {
+			return v * 2, nil
+		})
+	}
+
+	start := time.Now()
+	results, ok := g.WaitTimeout(30 * time.Second)
+	elapsed := time.Since(start)
+
+	if !ok {
+		t.Fatalf("WaitTimeout returned false")
+	}
+	if len(results) != n {
+		t.Fatalf("expected %d, got %d", n, len(results))
+	}
+	t.Logf("100K Group.WaitTimeout: %d results in %v", n, elapsed)
+}
+
+// TestProduction_Group_GoAt_100K 10万 Group 索引提交
+func TestProduction_Group_GoAt_100K(t *testing.T) {
+	n := 100_000
+	g := NewGroup[int](200)
+	for i := 0; i < n; i++ {
+		v := i
+		g.GoAt(i, context.Background(), func(ctx context.Context) (int, error) {
+			return v * 2, nil
+		})
+	}
+
+	start := time.Now()
+	results := g.Wait()
+	elapsed := time.Since(start)
+
+	if len(results) != n {
+		t.Fatalf("expected %d, got %d", n, len(results))
+	}
+	opsPerSec := float64(n) / elapsed.Seconds()
+	t.Logf("100K Group.GoAt: %d items in %v (%.0f ops/s)", n, elapsed, opsPerSec)
+}
+
+// ============================================================================
+// Pipeline: ExecuteWithGroup / NewPipeline.Run
+// ============================================================================
+
+// TestProduction_ExecuteWithGroup_500K 50万 ExecuteWithGroup
+func TestProduction_ExecuteWithGroup_500K(t *testing.T) {
+	printMemStats("ExecGroup-start")
+	n := 500_000
+	items := make([]int, n)
+	for i := range items {
+		items[i] = i
+	}
+
+	start := time.Now()
+	results, err := ExecuteWithGroup(context.Background(), items, func(ctx context.Context, v int) (int, error) {
+		return v * 2, nil
+	}, 200)
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	if len(results) != n {
+		t.Fatalf("expected %d, got %d", n, len(results))
+	}
+	opsPerSec := float64(n) / elapsed.Seconds()
+	t.Logf("500K ExecuteWithGroup (200 concurrency): %d items in %v (%.0f ops/s)", n, elapsed, opsPerSec)
+	printMemStats("ExecGroup-end")
+}
+
+// TestProduction_NewPipeline_Run_500K 50万串行 Pipeline
+func TestProduction_NewPipeline_Run_500K(t *testing.T) {
+	n := 500_000
+
+	p := NewPipeline[int](context.Background(),
+		func(ctx context.Context, n int) (int, error) { return n * 2, nil },
+		func(ctx context.Context, n int) (int, error) { return n + 1, nil },
+	)
+
+	start := time.Now()
+	for i := 0; i < n; i++ {
+		result, err := p.Run(i)
+		if err != nil {
+			t.Fatalf("Run(%d) error: %v", i, err)
+		}
+		if result != i*2+1 {
+			t.Fatalf("Run(%d) expected %d, got %d", i, i*2+1, result)
+		}
+	}
+	elapsed := time.Since(start)
+
+	opsPerSec := float64(n) / elapsed.Seconds()
+	t.Logf("500K NewPipeline.Run (2 stages): %d items in %v (%.0f ops/s)", n, elapsed, opsPerSec)
+}
+
+// ============================================================================
+// NoResultPool 辅助: SubmitAction / TrySubmitAction
+// ============================================================================
+
+// TestProduction_SubmitAction_1M 100万 SubmitAction
+func TestProduction_SubmitAction_1M(t *testing.T) {
+	printMemStats("SubmitAction-start")
+	n := 1_000_000
+
+	p := DefaultNoResultPool()
+	var counter int64
+
+	start := time.Now()
+	for i := 0; i < n; i++ {
+		if err := SubmitAction(p, context.Background(), func(ctx context.Context) error {
+			atomic.AddInt64(&counter, 1)
+			return nil
+		}); err != nil {
+			t.Fatalf("SubmitAction error: %v", err)
+		}
+	}
+	p.Wait()
+	p.Close()
+	elapsed := time.Since(start)
+
+	opsPerSec := float64(n) / elapsed.Seconds()
+	t.Logf("1M SubmitAction (NoResultPool): %d tasks in %v (%.0f ops/s), completed=%d", n, elapsed, opsPerSec, atomic.LoadInt64(&counter))
+	printMemStats("SubmitAction-end")
+}
+
+// TestProduction_TrySubmitAction_1M 100万 TrySubmitAction 非阻塞
+func TestProduction_TrySubmitAction_1M(t *testing.T) {
+	printMemStats("TrySubmitAction-start")
+	n := 1_000_000
+
+	p := DefaultNoResultPool()
+	var submitted int64
+
+	start := time.Now()
+	for i := 0; i < n; i++ {
+		if err := TrySubmitAction(p, context.Background(), func(ctx context.Context) error {
+			return nil
+		}); err == nil {
+			atomic.AddInt64(&submitted, 1)
+		}
+	}
+	p.Wait()
+	p.Close()
+	elapsed := time.Since(start)
+
+	totalSubmitted := atomic.LoadInt64(&submitted)
+	t.Logf("1M TrySubmitAction: %d/%d submitted in %v", totalSubmitted, n, elapsed)
+	printMemStats("TrySubmitAction-end")
+}
+
+// ============================================================================
+// SafeCall
+// ============================================================================
+
+// TestProduction_SafeCall_500K 50万 SafeCall
+func TestProduction_SafeCall_500K(t *testing.T) {
+	n := 500_000
+
+	var success int64
+	var wg sync.WaitGroup
+	wg.Add(n)
+
+	start := time.Now()
+	for i := 0; i < n; i++ {
+		v := i
+		go func() {
+			defer wg.Done()
+			result, err := SafeCall(context.Background(), v, func(ctx context.Context, item int) (int, error) {
+				return item * 2, nil
+			})
+			if err == nil && result == v*2 {
+				atomic.AddInt64(&success, 1)
+			}
+		}()
+	}
+	wg.Wait()
+	elapsed := time.Since(start)
+
+	opsPerSec := float64(n) / elapsed.Seconds()
+	t.Logf("500K SafeCall (100 concurrent goroutines): success=%d in %v (%.0f ops/s)", atomic.LoadInt64(&success), elapsed, opsPerSec)
+	if atomic.LoadInt64(&success) != int64(n) {
+		t.Fatalf("expected %d success, got %d", n, atomic.LoadInt64(&success))
+	}
+}
+
+// TestProduction_SafeCallVoid_500K 50万 SafeCallVoid
+func TestProduction_SafeCallVoid_500K(t *testing.T) {
+	n := 500_000
+
+	var success int64
+	var wg sync.WaitGroup
+	wg.Add(n)
+
+	start := time.Now()
+	for i := 0; i < n; i++ {
+		v := i
+		go func() {
+			defer wg.Done()
+			err := SafeCallVoid(context.Background(), v, func(ctx context.Context, item int) error {
+				return nil
+			})
+			if err == nil {
+				atomic.AddInt64(&success, 1)
+			}
+		}()
+	}
+	wg.Wait()
+	elapsed := time.Since(start)
+
+	opsPerSec := float64(n) / elapsed.Seconds()
+	t.Logf("500K SafeCallVoid: success=%d in %v (%.0f ops/s)", atomic.LoadInt64(&success), elapsed, opsPerSec)
+	if atomic.LoadInt64(&success) != int64(n) {
+		t.Fatalf("expected %d success, got %d", n, atomic.LoadInt64(&success))
+	}
+}
+
+// ============================================================================
+// 千万级 (10,000,000) 补充压测 — 11 个快速方法
+//
+// 运行方式：
+//   go test -run "TestProduction_10M" -v -count=1 -timeout 30m .
+// ============================================================================
+
+// TestProduction_10M_Chunk 1000万分块
+func TestProduction_10M_Chunk(t *testing.T) {
+	printMemStats("10M-Chunk-start")
+	n := 10_000_000
+	items := make([]int, n)
+	for i := range items {
+		items[i] = i
+	}
+
+	start := time.Now()
+	chunks := Chunk(items, 1000)
+	elapsed := time.Since(start)
+
+	totalElements := 0
+	for _, c := range chunks {
+		totalElements += len(c)
+	}
+	if totalElements != n {
+		t.Fatalf("expected %d elements, got %d", n, totalElements)
+	}
+	opsPerSec := float64(n) / elapsed.Seconds()
+	t.Logf("[10M] Chunk(1000): %d items → %d chunks in %v (%.0f ops/s)", n, len(chunks), elapsed, opsPerSec)
+	printMemStats("10M-Chunk-end")
+}
+
+// TestProduction_10M_ChunkN 1000万 ChunkN 均分
+func TestProduction_10M_ChunkN(t *testing.T) {
+	printMemStats("10M-ChunkN-start")
+	n := 10_000_000
+	items := make([]int, n)
+	for i := range items {
+		items[i] = i
+	}
+
+	start := time.Now()
+	chunks := ChunkN(items, 200)
+	elapsed := time.Since(start)
+
+	totalElements := 0
+	for _, c := range chunks {
+		totalElements += len(c)
+	}
+	if totalElements != n {
+		t.Fatalf("expected %d elements, got %d", n, totalElements)
+	}
+	if len(chunks) != 200 {
+		t.Fatalf("expected 200 chunks, got %d", len(chunks))
+	}
+	t.Logf("[10M] ChunkN(200): %d items → %d chunks in %v", n, len(chunks), elapsed)
+	printMemStats("10M-ChunkN-end")
+}
+
+// TestProduction_10M_MapWithFailFast 1000万 Map FailFast
+func TestProduction_10M_MapWithFailFast(t *testing.T) {
+	printMemStats("10M-MapFF-start")
+	n := 10_000_000
+	items := make([]int, n)
+	for i := range items {
+		items[i] = i
+	}
+
+	start := time.Now()
+	results, err := MapWithFailFast(context.Background(), items, 500, func(ctx context.Context, v int) (int, error) {
+		return v * 2, nil
+	})
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("MapWithFailFast error: %v", err)
+	}
+	if len(results) != n {
+		t.Fatalf("expected %d results, got %d", n, len(results))
+	}
+	for i := 0; i < n; i += n / 100 {
+		if results[i].Err != nil {
+			t.Fatalf("result[%d] error: %v", i, results[i].Err)
+		}
+		if results[i].Value != i*2 {
+			t.Fatalf("result[%d] expected %d, got %d", i, i*2, results[i].Value)
+		}
+	}
+	opsPerSec := float64(n) / elapsed.Seconds()
+	t.Logf("[10M] MapWithFailFast (500 concurrency): %d items in %v (%.0f ops/s)", n, elapsed, opsPerSec)
+	printMemStats("10M-MapFF-end")
+}
+
+// TestProduction_10M_MapWithTimeout 1000万 Map Timeout
+func TestProduction_10M_MapWithTimeout(t *testing.T) {
+	printMemStats("10M-MapTO-start")
+	n := 10_000_000
+	items := make([]int, n)
+	for i := range items {
+		items[i] = i
+	}
+
+	start := time.Now()
+	results := MapWithTimeout(context.Background(), items, 500, 60*time.Second, func(ctx context.Context, v int) (int, error) {
+		return v * 2, nil
+	})
+	elapsed := time.Since(start)
+
+	if len(results) != n {
+		t.Fatalf("expected %d results, got %d", n, len(results))
+	}
+	for i := 0; i < n; i += n / 100 {
+		if results[i].Err != nil {
+			t.Fatalf("result[%d] error: %v", i, results[i].Err)
+		}
+	}
+	opsPerSec := float64(n) / elapsed.Seconds()
+	t.Logf("[10M] MapWithTimeout (500 concurrency): %d items in %v (%.0f ops/s)", n, elapsed, opsPerSec)
+	printMemStats("10M-MapTO-end")
+}
+
+// TestProduction_10M_MapWithFFTimeout 1000万 Map FF+Timeout
+func TestProduction_10M_MapWithFFTimeout(t *testing.T) {
+	printMemStats("10M-MapFFTO-start")
+	n := 10_000_000
+	items := make([]int, n)
+	for i := range items {
+		items[i] = i
+	}
+
+	start := time.Now()
+	results, err := MapWithFFTimeout(context.Background(), items, 500, 60*time.Second, func(ctx context.Context, v int) (int, error) {
+		return v * 2, nil
+	})
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("MapFFTimeout error: %v", err)
+	}
+	if len(results) != n {
+		t.Fatalf("expected %d results, got %d", n, len(results))
+	}
+	opsPerSec := float64(n) / elapsed.Seconds()
+	t.Logf("[10M] MapWithFFTimeout (500 concurrency): %d items in %v (%.0f ops/s)", n, elapsed, opsPerSec)
+	printMemStats("10M-MapFFTO-end")
+}
+
+// TestProduction_10M_GoWithTimeout 1000万 Go 带超时
+func TestProduction_10M_GoWithTimeout(t *testing.T) {
+	printMemStats("10M-GoTO-start")
+	n := 10_000_000
+	var counter int64
+	batchSize := 50_000
+
+	start := time.Now()
+	for i := 0; i < n; i += batchSize {
+		for j := 0; j < batchSize; j++ {
+			GoWithTimeout(context.Background(), 60*time.Second, func(ctx context.Context) {
+				atomic.AddInt64(&counter, 1)
+			})
+		}
+	}
+	elapsed := time.Since(start)
+	time.Sleep(500 * time.Millisecond)
+
+	final := atomic.LoadInt64(&counter)
+	opsPerSec := float64(n) / elapsed.Seconds()
+	t.Logf("[10M] GoWithTimeout: %d launched in %v (%.0f ops/s), completed=%d", n, elapsed, opsPerSec, final)
+	printMemStats("10M-GoTO-end")
+}
+
+// TestProduction_10M_GoResult 1000万 GoResult 有返回值
+func TestProduction_10M_GoResult(t *testing.T) {
+	printMemStats("10M-GoResult-start")
+	n := 10_000_000
+	results := make([]*AsyncResult[int], n)
+
+	start := time.Now()
+	for i := 0; i < n; i++ {
+		v := i
+		results[i] = GoResult(context.Background(), func(ctx context.Context) (int, error) {
+			return v * 2, nil
+		})
+	}
+	elapsed := time.Since(start)
+
+	var success, fail int64
+	for _, r := range results {
+		if r.Ok() {
+			success++
+		} else {
+			fail++
+		}
+	}
+
+	t.Logf("[10M] GoResult: %d launched in %v, success=%d fail=%d", n, elapsed, success, fail)
+	if fail > 0 {
+		t.Fatalf("expected 0 failures, got %d", fail)
+	}
+	printMemStats("10M-GoResult-end")
+}
+
+// TestProduction_10M_TokenBucket 1000万令牌桶 Allow
+func TestProduction_10M_TokenBucket(t *testing.T) {
+	printMemStats("10M-TokenBucket-start")
+	n := 10_000_000
+	capacity := float64(n)
+	tb := NewTokenBucket(capacity, capacity)
+	concurrency := 2000
+	batchSize := 5000
+
+	var allowed int64
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, concurrency)
+
+	start := time.Now()
+	for i := 0; i < n; i += batchSize {
+		wg.Add(batchSize)
+		for j := 0; j < batchSize; j++ {
+			sem <- struct{}{}
+			go func() {
+				defer func() { wg.Done(); <-sem }()
+				if tb.Allow() {
+					atomic.AddInt64(&allowed, 1)
+				}
+			}()
+		}
+	}
+	wg.Wait()
+	elapsed := time.Since(start)
+
+	total := atomic.LoadInt64(&allowed)
+	opsPerSec := float64(total) / elapsed.Seconds()
+	t.Logf("[10M] TokenBucket.Allow: %d/%d allowed in %v (%.0f ops/s)", total, n, elapsed, opsPerSec)
+	printMemStats("10M-TokenBucket-end")
+}
+
+// TestProduction_10M_TokenBucket_AllowN 1000万令牌桶 AllowN
+func TestProduction_10M_TokenBucket_AllowN(t *testing.T) {
+	printMemStats("10M-TBN-start")
+	n := 10_000_000
+	capacity := float64(n)
+	tb := NewTokenBucket(capacity, capacity)
+	concurrency := 2000
+	batchSize := 5000
+
+	var allowed int64
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, concurrency)
+
+	start := time.Now()
+	for i := 0; i < n; i += batchSize {
+		wg.Add(batchSize)
+		for j := 0; j < batchSize; j++ {
+			sem <- struct{}{}
+			go func() {
+				defer func() { wg.Done(); <-sem }()
+				if tb.AllowN(1) {
+					atomic.AddInt64(&allowed, 1)
+				}
+			}()
+		}
+	}
+	wg.Wait()
+	elapsed := time.Since(start)
+
+	total := atomic.LoadInt64(&allowed)
+	opsPerSec := float64(total) / elapsed.Seconds()
+	t.Logf("[10M] TokenBucket.AllowN(1): %d/%d allowed in %v (%.0f ops/s)", total, n, elapsed, opsPerSec)
+	printMemStats("10M-TBN-end")
+}
+
+// TestProduction_10M_SlidingWindow 1000万滑动窗口
+func TestProduction_10M_SlidingWindow(t *testing.T) {
+	printMemStats("10M-SW-start")
+	n := 10_000_000
+	sw := NewSlidingWindowRateLimiter(n, 2*time.Second)
+	concurrency := 2000
+	batchSize := 5000
+
+	var allowed int64
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, concurrency)
+
+	start := time.Now()
+	for i := 0; i < n; i += batchSize {
+		wg.Add(batchSize)
+		for j := 0; j < batchSize; j++ {
+			sem <- struct{}{}
+			go func() {
+				defer func() { wg.Done(); <-sem }()
+				if sw.Allow() {
+					atomic.AddInt64(&allowed, 1)
+				}
+			}()
+		}
+	}
+	wg.Wait()
+	elapsed := time.Since(start)
+
+	total := atomic.LoadInt64(&allowed)
+	opsPerSec := float64(total) / elapsed.Seconds()
+	t.Logf("[10M] SlidingWindow.Allow: %d/%d allowed in %v (%.0f ops/s)", total, n, elapsed, opsPerSec)
+	printMemStats("10M-SW-end")
+}
+
+// TestProduction_10M_NewPipeline_Run 1000万串行 Pipeline
+func TestProduction_10M_NewPipeline_Run(t *testing.T) {
+	printMemStats("10M-Pipeline-start")
+	n := 10_000_000
+
+	p := NewPipeline[int](context.Background(),
+		func(ctx context.Context, n int) (int, error) { return n * 2, nil },
+		func(ctx context.Context, n int) (int, error) { return n + 1, nil },
+	)
+
+	start := time.Now()
+	for i := 0; i < n; i++ {
+		result, err := p.Run(i)
+		if err != nil {
+			t.Fatalf("Run(%d) error: %v", i, err)
+		}
+		if result != i*2+1 {
+			t.Fatalf("Run(%d) expected %d, got %d", i, i*2+1, result)
+		}
+	}
+	elapsed := time.Since(start)
+
+	opsPerSec := float64(n) / elapsed.Seconds()
+	t.Logf("[10M] NewPipeline.Run (2 stages): %d items in %v (%.0f ops/s)", n, elapsed, opsPerSec)
+	printMemStats("10M-Pipeline-end")
+}
+
+// TestProduction_10M_SafeCall 1000万 SafeCall
+func TestProduction_10M_SafeCall(t *testing.T) {
+	printMemStats("10M-SafeCall-start")
+	n := 10_000_000
+
+	var success int64
+	var wg sync.WaitGroup
+	wg.Add(n)
+
+	start := time.Now()
+	for i := 0; i < n; i++ {
+		v := i
+		go func() {
+			defer wg.Done()
+			result, err := SafeCall(context.Background(), v, func(ctx context.Context, item int) (int, error) {
+				return item * 2, nil
+			})
+			if err == nil && result == v*2 {
+				atomic.AddInt64(&success, 1)
+			}
+		}()
+	}
+	wg.Wait()
+	elapsed := time.Since(start)
+
+	opsPerSec := float64(n) / elapsed.Seconds()
+	t.Logf("[10M] SafeCall: success=%d in %v (%.0f ops/s)", atomic.LoadInt64(&success), elapsed, opsPerSec)
+	if atomic.LoadInt64(&success) != int64(n) {
+		t.Fatalf("expected %d success, got %d", n, atomic.LoadInt64(&success))
+	}
+	printMemStats("10M-SafeCall-end")
+}
+
+// ============================================================================
+// 千万级自动扩缩容压测
+// ============================================================================
+
+// TestProduction_10M_AutoScalePool 1000万自动扩缩容 Pool Submit（模拟真实 IO 耗时触发扩容）
+func TestProduction_10M_AutoScalePool(t *testing.T) {
+	printMemStats("10M-AutoScale-start")
+	n := 1_000_000
+
+	p := NewPool[int](4)
+	p.EnableAutoScale(&core.AutoScaleConfig{
+		MinWorkers:         4,
+		MaxWorkers:         2000,
+		CheckInterval:      500 * time.Millisecond,
+		ScaleUpThreshold:   0.4,
+		ScaleDownThreshold: 0.1,
+		ScaleUpChecks:      2,
+		ScaleDownChecks:    5,
+	})
+
+	start := time.Now()
+	peakSize := int32(4)
+	var submitted int64
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 1500)
+
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		v := i
+		sem <- struct{}{}
+		go func() {
+			defer func() { wg.Done(); <-sem }()
+			if err := p.Submit(context.Background(), func(ctx context.Context) (int, error) {
+				time.Sleep(500 * time.Microsecond)
+				cs := p.Size()
+				for {
+					old := atomic.LoadInt32(&peakSize)
+					if int32(cs) <= old {
+						break
+					}
+					if atomic.CompareAndSwapInt32(&peakSize, old, int32(cs)) {
+						break
+					}
+				}
+				return v * 2, nil
+			}); err == nil {
+				atomic.AddInt64(&submitted, 1)
+			}
+		}()
+	}
+
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+loop:
+	for {
+		select {
+		case <-done:
+			break loop
+		case <-ticker.C:
+			s := p.Size()
+			t.Logf("  auto-scale: size=%d busy=%d active=%d pending=%d submitted=%d",
+				s, p.Busy(), p.Active(), p.Pending(), atomic.LoadInt64(&submitted))
+		}
+	}
+
+	results := p.WaitAndClose()
+	elapsed := time.Since(start)
+
+	peakS := atomic.LoadInt32(&peakSize)
+	finalSize := p.Size()
+	totalSubmitted := atomic.LoadInt64(&submitted)
+	opsPerSec := float64(totalSubmitted) / elapsed.Seconds()
+
+	var failCount int64
+	for _, r := range results {
+		if r.Err != nil {
+			failCount++
+		}
+	}
+
+	t.Logf("[AutoScale] 1M Pool: peak=%d final=%d %d submitted %d results %d errors in %v (%.0f ops/s)",
+		peakS, finalSize, totalSubmitted, len(results), failCount, elapsed, opsPerSec)
+
+	if failCount > int64(float64(n)*0.01) {
+		t.Fatalf("too many errors: %d / %d (%.2f%%)", failCount, n, float64(failCount)/float64(n)*100)
+	}
+
+	printMemStats("10M-AutoScale-end")
+}
+
+// TestProduction_10M_AutoScale_TrySubmit 1000万自动扩缩容 TrySubmit
+func TestProduction_10M_AutoScale_TrySubmit(t *testing.T) {
+	printMemStats("10M-AutoTry-start")
+	n := 10_000_000
+
+	p := NewPool[int](4)
+	p.EnableAutoScale(&core.AutoScaleConfig{
+		MinWorkers:         4,
+		MaxWorkers:         2000,
+		CheckInterval:      500 * time.Millisecond,
+		ScaleUpThreshold:   0.5,
+		ScaleDownThreshold: 0.1,
+		ScaleUpChecks:      2,
+		ScaleDownChecks:    5,
+	})
+
+	start := time.Now()
+	var submitted, rejected int64
+
+	for i := 0; i < n; i++ {
+		v := i
+		if err := p.TrySubmit(context.Background(), func(ctx context.Context) (int, error) {
+			return v * 2, nil
+		}); err == nil {
+			atomic.AddInt64(&submitted, 1)
+		} else {
+			atomic.AddInt64(&rejected, 1)
+		}
+	}
+
+	elapsed := time.Since(start)
+
+	_ = p.WaitAndClose()
+	finalSize := p.Size()
+
+	totalSubmitted := atomic.LoadInt64(&submitted)
+	totalRejected := atomic.LoadInt64(&rejected)
+	submitRate := float64(totalSubmitted) / elapsed.Seconds()
+
+	t.Logf("[10M] AutoScale TrySubmit: %d submitted %d rejected finalSize=%d in %v (%.0f submit/s)",
+		totalSubmitted, totalRejected, finalSize, elapsed, submitRate)
+
+	if totalSubmitted < int64(float64(n)*0.5) {
+		t.Fatalf("submitted too few: %d / %d", totalSubmitted, n)
+	}
+
+	printMemStats("10M-AutoTry-end")
+}

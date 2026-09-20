@@ -470,6 +470,30 @@ func DefaultNoResultPool() *NoResultPool {
 	return pool.DefaultPool[struct{}]()
 }
 
+// AutoScaleConfig 协程池自动扩缩容配置。
+type AutoScaleConfig = core.AutoScaleConfig
+
+// NewAutoScalePool 创建带自动扩缩容的协程池，初始 worker 数为 initialSize。
+// 池会根据负载自动调整 worker 数量（上限 MaxWorkers，下限 MinWorkers）。
+//
+// config 为 nil 时使用 DefaultAutoScaleConfig()（CPU*2 ~ CPU*100，每 5s 检测）。
+//
+// 示例：
+//
+//	p := async.NewAutoScalePool[int](4, nil) // 默认自动扩缩容
+//	defer p.Close()
+//
+//	p.EnableAutoScale(&async.AutoScaleConfig{  // 自定义配置
+//	    MinWorkers: 2,
+//	    MaxWorkers: 200,
+//	    CheckInterval: 3 * time.Second,
+//	})
+func NewAutoScalePool[T any](initialSize int, config *core.AutoScaleConfig) *Pool[T] {
+	p := pool.NewPool[T](initialSize)
+	p.EnableAutoScale(config)
+	return p
+}
+
 // ──────────────────────────── Task 异步任务 ────────────────────────────
 
 // Task[T] 可取消的异步任务，提供 Ctx、Cancel、Result。

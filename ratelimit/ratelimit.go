@@ -584,7 +584,7 @@ type AdaptiveRateLimiter struct {
 	failure    int64        // 失败计数（用于自适应调整）
 	adjustUp   float64      // 上调阈值（成功率超此值则增加并发）
 	adjustDown float64      // 下调阈值（失败率超此值则减少并发）
-	mu         sync.Mutex   // 保护调整参数的互斥锁
+	mu         sync.RWMutex // 保护 Resize 与并发 Acquire 的读写锁
 }
 
 // NewAdaptiveRateLimiter 创建自适应限流器。
@@ -622,11 +622,15 @@ func NewAdaptiveRateLimiter(minRate, maxRate int) *AdaptiveRateLimiter {
 // 参数：
 //   - ctx：上下文，取消后返回 ctx.Err()
 func (a *AdaptiveRateLimiter) Acquire(ctx context.Context) error {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
 	return a.base.Acquire(ctx)
 }
 
 // Release 释放一个并发槽位。
 func (a *AdaptiveRateLimiter) Release() {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
 	a.base.Release()
 }
 

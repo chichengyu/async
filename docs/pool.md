@@ -419,6 +419,79 @@ p.ResizeAndWaitTimeout(5, 10*time.Second)
 
 ---
 
+## 自动扩缩容 (AutoScale)
+
+Pool 支持根据负载**自动调整 worker 数量**。初始 worker 数可以很小（如 4），高并发时自动扩容，低负载时自动缩容。**默认不启用**，需显式调用 `EnableAutoScale`。
+
+### EnableAutoScale - 启用自动扩缩容
+
+```go
+p := async.NewPool[int](4)
+defer p.Close()
+
+// 方式一：使用默认配置启用
+p.EnableAutoScale(nil)
+
+// 方式二：自定义配置
+p.EnableAutoScale(&async.AutoScaleConfig{
+    MinWorkers:       4,
+    MaxWorkers:       2000,
+    CheckInterval:    5 * time.Second,
+    ScaleUpThreshold: 0.7,   // busy/size > 0.7 触发扩容
+    ScaleDownThreshold: 0.2, // busy/size < 0.2 触发缩容
+    ScaleUpChecks:    3,     // 连续 3 次满足条件才扩容（防抖动）
+    ScaleDownChecks:  5,     // 连续 5 次满足条件才缩容（防抖动）
+})
+```
+
+**扩容规则**：busy/size 比率超过 `ScaleUpThreshold` 持续 `ScaleUpChecks` 次 → worker 翻倍（上限 MaxWorkers）  
+**缩容规则**：busy/size 比率低于 `ScaleDownThreshold` 持续 `ScaleDownChecks` 次 → worker 减半（下限 MinWorkers）
+
+### 默认配置
+
+```go
+// DefaultAutoScaleConfig 返回：
+// MinWorkers=CPU×2, MaxWorkers=CPU×100, CheckInterval=5s
+// ScaleUpThreshold=0.7, ScaleDownThreshold=0.2
+// ScaleUpChecks=3, ScaleDownChecks=5
+config := async.DefaultAutoScaleConfig()
+```
+
+### DisableAutoScale - 禁用自动扩缩容
+
+```go
+p.DisableAutoScale()
+// 禁用后 worker 数恢复为 MinWorkers
+```
+
+### IsAutoScaleEnabled - 检查状态
+
+```go
+if p.IsAutoScaleEnabled() {
+    fmt.Println("auto-scale is active")
+}
+```
+
+### NewAutoScalePool - 快捷创建
+
+```go
+// 创建初始 4 worker、自动扩缩容的池
+p := async.NewAutoScalePool[int](4, nil)
+defer p.Close()
+
+// 自定义配置
+p2 := async.NewAutoScalePool[int](4, &async.AutoScaleConfig{
+    MinWorkers: 2,
+    MaxWorkers: 500,
+})
+```
+
+### 线程安全
+
+`EnableAutoScale` 可重复调用（幂等），`Resize` 与自动扩缩容并发调用安全，`Close` 自动停止后台检测 goroutine。
+
+---
+
 ## 重置
 
 ### Reset - 关闭旧池创建新池
