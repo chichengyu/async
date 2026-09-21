@@ -16,6 +16,7 @@
 - [带超时提交](#带超时提交)
 - [Reset 重置](#reset-重置)
 - [NoResult 无返回值任务组](#noresult-无返回值任务组)
+- [流式结果消费](#流式结果消费)
 - [Group/NoResult 对比 Pool](#groupnoresult-对比-pool)
 - [完整示例](#完整示例)
 - [方法速查表](#group-方法速查表)
@@ -238,7 +239,7 @@ g.Go(ffCtx, anotherTask)
 
 ## 查询 Group 状态
 
-### Concurrency / Active / Idle / Busy
+### Concurrency / Active / Busy
 
 ```go
 // 并发度
@@ -246,9 +247,6 @@ fmt.Printf("并发度: %d\n", g.Concurrency())
 
 // 活跃任务数
 fmt.Printf("活跃任务: %d\n", g.Active())
-
-// 空闲槽位数
-fmt.Printf("空闲槽位: %d\n", g.Idle())
 
 // 繁忙槽位数
 fmt.Printf("繁忙槽位: %d\n", g.Busy())
@@ -565,6 +563,129 @@ nr, ffCtx := nr.WithFFTimeoutSubmitTOTraceID(ctx, 10*time.Second, 3*time.Second)
 | `WaitTimeout(d)` | 带超时等待 |
 | `WaitContext(ctx)` | Context 控制等待 |
 | `Reset()` | 重置 |
+
+---
+
+## 流式结果消费
+
+Group 也支持流式消费，在任务执行过程中实时推送每个完成的结果，无需等待全部完成。
+
+### WithStreaming — 启用流式 channel
+
+```go
+g := async.NewGroup[string](4)
+
+// 启用流式消费，bufSize=0 自动使用 Concurrency() * 2
+g.WithStreaming(128)
+
+// 启动消费者
+go func() {
+    for r := range g.StreamResults() {
+        if r.Ok() {
+            fmt.Println("实时结果:", r.Value)
+        } else {
+            log.Printf("任务失败: %v", r.Err)
+        }
+    }
+    fmt.Println("所有流式结果消费完毕")
+}()
+
+// 提交任务
+for i := 0; i < 100; i++ {
+    g.Go(ctx, fn)
+}
+
+// Wait 会等待所有任务完成后关闭 streamCh
+g.Wait()
+```
+
+**`WithStreaming` 参数：**
+
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `bufSize` | `int` | **Concurrency() × 2**（≤0 时） | channel 缓冲区大小 |
+
+**返回：** `*Group[T]` — 支持链式调用
+
+### WithResultCallback — 回调消费
+
+```go
+g := async.NewGroup[int](8)
+g.WithResultCallback(func(r core.Result[int]) {
+    if r.Ok() {
+        metrics.Record(r.Value)
+    } else {
+        log.Printf("任务失败: %v", r.Err)
+    }
+})
+
+for i := 0; i < 1000; i++ {
+    g.Go(ctx, fn)
+}
+g.Wait()
+```
+
+**`WithResultCallback` 参数：**
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `fn` | `func(core.Result[T])` | 回调函数（每个任务完成时同步调用） |
+
+> ⚠️ 回调在任务 goroutine 中同步执行，应尽量轻量，避免阻塞。
+
+### StreamResults — 获取流式 channel
+
+```go
+ch := g.StreamResults() // <-chan core.Result[T]
+
+select {
+case r := <-ch:
+    handleResult(r)
+case <-ctx.Done():
+    log.Println("上下文取消")
+}
+```
+
+**返回：** `<-chan core.Result[T]` — 只读结果 channel（未启用流式消费时返回 nil）
+
+> streamCh 在 `Wait()` / `WaitTimeout()` / `WaitContext()` 时关闭（Group 无 Close 方法，生命周期随 Wait 结束）。
+
+### 流式消费完整示例
+
+```go
+func processWithStreaming(ctx context.Context, items []string) {
+    g := async.NewGroup[string](8)
+    g.WithStreaming(256)
+
+    // 启动消费者：实时写入数据库
+    var wg sync.WaitGroup
+    wg.Add(1)
+    go func() {
+        defer wg.Done()
+        for r := range g.StreamResults() {
+            if r.Ok() {
+                db.Insert(ctx, r.Value)
+            }
+        }
+    }()
+
+    // 提交任务
+    for _, item := range items {
+        it := item
+        g.Go(ctx, func(ctx context.Context) (string, error) {
+            return processItem(ctx, it)
+        })
+    }
+
+    // Wait 关闭 streamCh，等待消费者完成
+    g.Wait()
+    wg.Wait()
+
+    // 统计
+    fmt.Printf("处理完成: success=%d fail=%d\n",
+        g.SuccessCount(), g.FailCount())
+}
+```
 
 ---
 

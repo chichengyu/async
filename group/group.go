@@ -1113,9 +1113,10 @@ func (g *Group[T]) EnableAutoScale(config *core.AutoScaleConfig) {
 
 	g.autoScale = config
 	if g.autoScaleEnabled.CompareAndSwap(false, true) {
-		g.autoScaleStop = make(chan struct{})
+		stopCh := make(chan struct{})
+		g.autoScaleStop = stopCh
 		go func() {
-			g.autoScaleLoop(config)
+			g.autoScaleLoop(config, stopCh)
 		}()
 	}
 }
@@ -1153,7 +1154,7 @@ func (g *Group[T]) resizeLimit(newSize int) {
 }
 
 // autoScaleLoop 自动扩缩容后台检测循环。
-func (g *Group[T]) autoScaleLoop(config *core.AutoScaleConfig) {
+func (g *Group[T]) autoScaleLoop(config *core.AutoScaleConfig, stopCh chan struct{}) {
 	ticker := time.NewTicker(config.CheckInterval)
 	defer ticker.Stop()
 
@@ -1161,7 +1162,7 @@ func (g *Group[T]) autoScaleLoop(config *core.AutoScaleConfig) {
 
 	for {
 		select {
-		case <-g.autoScaleStop:
+		case <-stopCh:
 			return
 		case <-ticker.C:
 			if !g.autoScaleEnabled.Load() {

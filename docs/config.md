@@ -100,17 +100,63 @@ async.SetTaskFailLogLevel(async.LogLevelSilent)
 
 ### Trace 日志开关
 
+**`SetTraceLogEnabled`** — 开关 Trace 级别日志
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `enabled` | `bool` | `true` 开启 Trace 日志，`false` 关闭 |
+
 ```go
-// 关闭 Trace 日志（默认开启）
+// 关闭 Trace 日志（生产环境建议关闭降低 IO 占用）
 async.SetTraceLogEnabled(false)
 
-// 查询是否开启
+// 开启 Trace 日志（开发调试用）
+async.SetTraceLogEnabled(true)
+```
+
+**`GetTraceLogEnabled`** — 查询 Trace 日志是否开启
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| （无参数） | — | — |
+
+| 返回值 | 类型 | 说明 |
+|--------|------|------|
+| `bool` | `bool` | 当前 Trace 日志开关状态 |
+
+```go
 enabled := async.GetTraceLogEnabled()
 ```
 
 ### 注入自定义 Logger
 
-实现 `async.Logger` 接口后注入：
+实现 `async.Logger` 接口后通过 **`SetLogger`** 注入：
+
+**`SetLogger`** — 注入自定义日志实现
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `logger` | `Logger` | 实现了 `Logger` 接口的自定义日志器（传 nil 恢复默认静默日志） |
+
+```go
+async.SetLogger(myLogger)
+```
+
+**`GetLogger`** — 获取当前日志器
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| （无参数） | — | — |
+
+| 返回值 | 类型 | 说明 |
+|--------|------|------|
+| `Logger` | `Logger` | 当前注册的日志器（未注册时返回默认的静默实现） |
+
+```go
+logger := async.GetLogger()
+```
+
+**Logger 接口定义：**
 
 ```go
 type Logger interface {
@@ -198,42 +244,91 @@ newID := async.NewTraceID() // 32 位十六进制字符串
 
 `SafeCall` 和 `SafeCallVoid` 自动捕获 panic 并包装为 `PanicError`，避免单个任务崩溃导致整个程序退出。
 
+### SafeCall — 带返回值的安全调用
+
+**`SafeCall`** — 执行 fn，捕获 panic 并包装为错误返回
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `ctx` | `context.Context` | 上下文 |
+| `item` | `T` | 输入参数 |
+| `fn` | `func(context.Context, T) (R, error)` | 要安全执行的函数 |
+
+| 返回值 | 类型 | 说明 |
+|--------|------|------|
+| `R` | `R` | 正常执行时的返回值（panic 时为零值） |
+| `error` | `error` | 正常错误或 `(*PanicError)`（panic 时） |
+
 ```go
-// 带返回值的安全调用
-result, err := async.SafeCall(ctx, input, func(ctx context.Context, item MyType) (string, error) {
+val, err := async.SafeCall(ctx, input, func(ctx context.Context, item MyType) (string, error) {
     return item.Process(ctx)
 })
 if err != nil {
-    if async.IsPanicError(err) {
-        log.Printf("任务 panic: %v", err)
+    var pe *async.PanicError
+    if errors.As(err, &pe) {
+        log.Printf("任务 panic: %v", pe)
     }
 }
+```
 
-// 无返回值的安全调用
+### SafeCallVoid — 无返回值的安全调用
+
+**`SafeCallVoid`** — 执行无返回值 fn，捕获 panic 并包装为错误
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `ctx` | `context.Context` | 上下文 |
+| `item` | `T` | 输入参数 |
+| `fn` | `func(context.Context, T) error` | 要安全执行的函数 |
+
+| 返回值 | 类型 | 说明 |
+|--------|------|------|
+| `error` | `error` | 正常错误或 `(*PanicError)`（panic 时） |
+
+```go
 err := async.SafeCallVoid(ctx, input, func(ctx context.Context, item MyType) error {
     return item.DoSomething(ctx)
 })
+if err != nil {
+    var pe *async.PanicError
+    if errors.As(err, &pe) {
+        log.Printf("任务 panic: %v", pe)
+    }
+}
 ```
 
 ### 检查 PanicError
 
+使用 `errors.As` 判断是否为 panic 错误：
+
 ```go
 result, err := async.SafeCall(ctx, input, riskyFn)
-if err != nil && async.IsPanicError(err) {
-    // 区分 panic 错误和普通业务错误
+if err != nil {
     var pe *async.PanicError
     if errors.As(err, &pe) {
-        log.Printf("panic: %v at %s", pe.Cause, pe.Stack)
+        log.Printf("panic 值: %v\n调用栈: %s", pe.Cause, pe.Stack)
+    } else {
+        log.Printf("业务错误: %v", err)
     }
 }
 ```
-}
 
 ## 通用工具
 
 ### Must - err!=nil 则 panic
 
 适用于初始化阶段或测试代码中确保操作必然成功：
+
+**`Must`** — 提取值，err != nil 时 panic
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `val` | `T` | 函数返回值 |
+| `err` | `error` | 函数返回的错误 |
+
+| 返回值 | 类型 | 说明 |
+|--------|------|------|
+| `T` | `T` | err == nil 时返回 val，否则 panic(err) |
 
 ```go
 // 初始化时确保配置加载成功
@@ -274,9 +369,30 @@ val := async.Must(someFn(ctx, input))
 
 ### MergeCancel
 
-| 函数 | 完整签名 | 说明 |
-|------|---------|------|
-| `MergeCancel` | `func MergeCancel(oldCancel, newCancel context.CancelFunc) context.CancelFunc` | 合并两个 CancelFunc，调用返回的函数时依次执行 newCancel 和 oldCancel |
+**`MergeCancel`** — 合并两个 CancelFunc，使得调用返回的函数时依次执行 newCancel 和 oldCancel
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `oldCancel` | `context.CancelFunc` | 旧的取消函数 |
+| `newCancel` | `context.CancelFunc` | 新的取消函数 |
+
+| 返回值 | 类型 | 说明 |
+|--------|------|------|
+| `context.CancelFunc` | `context.CancelFunc` | 合并后的取消函数（先调 newCancel 再调 oldCancel） |
+
+```go
+oldCancel := context.WithCancel(ctx)
+
+// 包装旧的 cancel，确保新逻辑执行后再调用旧的
+newCancel := async.MergeCancel(oldCancel, func() {
+    log.Println("清理新资源")
+})
+
+// 调用 newCancel 时会先清理新资源，再触发 oldCancel
+defer newCancel()
+```
+
+> 主要用于 Pool/Group 内部，在创建新 context 的同时能保留上层取消链。
 
 ### 日志级别
 
@@ -308,6 +424,7 @@ val := async.Must(someFn(ctx, input))
 | `ErrSkipped` | FailFast 模式下因已有任务失败而跳过 |
 | `ErrRateLimiterStopped` | 限流器已停止时尝试获取令牌 |
 | `ErrTimeout` | 通用超时（如 `WaitTimeout` / `WithTimeout` 返回） |
+| `ErrQueueOverflow` | **新增** — 背压队列满，任务被拒绝（配合 `WithMaxPending` + `OverflowError`） |
 
 ### 并发度
 
@@ -331,8 +448,7 @@ val := async.Must(someFn(ctx, input))
 
 | 函数 | 完整签名 | 说明 |
 |------|---------|------|
-| `IsPanicError` | `func IsPanicError(err error) bool` | 检查 err 是否为 PanicError |
-| `NewPanicError` | `func NewPanicError(r interface{}) *PanicError` | 从 recover() 值创建 PanicError |
+| `NewPanicError` | `func NewPanicError(r interface{}) *PanicError` | 从 recover() 值创建 PanicError（通常由 SafeCall 内部使用） |
 
 ### 通用工具
 

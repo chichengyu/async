@@ -1169,6 +1169,8 @@ func (p *Pool[T]) Close() {
 	p.workerWg.Wait()
 
 	p.drainOrphanTasks()
+
+	p.drainStreaming()
 }
 
 // drainOrphanTasks 排空孤儿任务 —— 这些任务在 worker 退出后才被发送到 taskCh，
@@ -1761,9 +1763,10 @@ func (p *Pool[T]) EnableAutoScale(config *core.AutoScaleConfig) {
 
 	p.autoScale = config
 	if p.autoScaleEnabled.CompareAndSwap(false, true) {
-		p.autoScaleStop = make(chan struct{})
+		stopCh := make(chan struct{})
+		p.autoScaleStop = stopCh
 		go func() {
-			p.autoScaleLoop(config)
+			p.autoScaleLoop(config, stopCh)
 		}()
 	}
 }
@@ -1790,7 +1793,7 @@ func (p *Pool[T]) IsAutoScaleEnabled() bool {
 }
 
 // autoScaleLoop 自动扩缩容后台检测循环。
-func (p *Pool[T]) autoScaleLoop(config *core.AutoScaleConfig) {
+func (p *Pool[T]) autoScaleLoop(config *core.AutoScaleConfig, stopCh chan struct{}) {
 	ticker := time.NewTicker(config.CheckInterval)
 	defer ticker.Stop()
 
@@ -1800,7 +1803,7 @@ func (p *Pool[T]) autoScaleLoop(config *core.AutoScaleConfig) {
 		select {
 		case <-p.done:
 			return
-		case <-p.autoScaleStop:
+		case <-stopCh:
 			return
 		case <-ticker.C:
 			p.performAutoScaleCheck(config, &scaleUpCount, &scaleDownCount)

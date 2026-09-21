@@ -375,6 +375,7 @@ func fetchURL(ctx context.Context, url string) (string, error) {
 | `core` | 基础类型、错误、日志、全局配置 | [config.md](docs/config.md) |
 | `pool` | 泛型协程池 `Pool[T]`，复用 goroutine | [pool.md](docs/pool.md) |
 | `group` | 泛型任务组 `Group[T]`，一次性批量并发 | [group.md](docs/group.md) |
+| `shard` | **新增** — 分片分发 `ShardedPool[T]` / `ShardedGroup[T]`，分摊到多实例 | [shard.md](docs/shard.md) |
 | `task` | 单个异步任务 `Task[T]` 与可取消的 `AsyncResult[T]` | [task.md](docs/task.md) |
 | `mapreduce` | 并发 Map/ForEach/Reduce/Chunk 数据并行操作 | [mapreduce.md](docs/mapreduce.md) |
 | `retry` | 指数退避重试与超时控制 | [retry.md](docs/retry.md) |
@@ -414,6 +415,7 @@ async.IOMulti(n) // 自定义倍数 = runtime.NumCPU() * n
 | `ErrRateLimiterStopped` | 限流器已停止 |
 | `ErrRateLimitExceeded` | 限流器 Reject 策略拒绝 |
 | `ErrTimeout` | 操作超时 |
+| `ErrQueueOverflow` | 背压队列满，任务被拒绝 |
 
 ---
 
@@ -432,6 +434,10 @@ async.IOMulti(n) // 自定义倍数 = runtime.NumCPU() * n
 | `DefaultGroup[T]()` | 创建 IO 并发度任务组 |
 | `NewNoResult(concurrency)` | 创建无返回值任务组 |
 | `DefaultNoResult()` | 创建 IO 并发度无返回值任务组 |
+| `NewShardedPool[T](cfg)` | 创建分片协程池（分摊到多实例） |
+| `DefaultShardedPool[T]()` | 创建默认配置分片池（4 分片，RoundRobin） |
+| `NewShardedGroup[T](cfg)` | 创建分片任务组（分摊到多实例） |
+| `DefaultShardedGroup[T]()` | 创建默认配置分片 Group（4 分片，RoundRobin） |
 | `NewRateLimiter(rate, d)` | 创建令牌桶限流器 |
 | `NewRateLimiterWithBurst(rate, d, burst)` | 创建带突发容量的限流器 |
 | `NewSlidingWindowRateLimiter(limit, window)` | 创建滑动窗口限流器 |
@@ -760,6 +766,123 @@ enabled := p.IsAutoScaleEnabled()
 p.DisableAutoScale()
 ```
 
+### 流式结果消费
+
+`WithStreaming` 启用后，任务完成时结果实时通过 channel 发送，无需等 `Wait()` 才能获取。
+
+```go
+p := async.NewPool[string](8).WithStreaming(0) // 0 = 自动 buffer size
+defer p.Close()
+
+// 在 Submit 之前启动消费者
+ch := p.StreamResults()
+go func() {
+    for r := range ch {
+        if r.Ok() {
+            fmt.Println("实时收到:", r.Value)
+        } else {
+            log.Println("任务失败:", r.Err)
+        }
+    }
+}()
+
+// 提交大量任务...
+for _, item := range items {
+    p.Submit(ctx, func(ctx context.Context) (string, error) {
+        return process(ctx, item), nil
+    })
+}
+
+p.Wait() // Wait 完成后 stream channel 自动关闭
+```
+
+**`WithResultCallback`**：设置回调函数，每个任务完成时在 worker goroutine 中同步调用（尽量轻量）：
+
+```go
+p := async.NewPool[string](8).WithResultCallback(func(r core.Result[string]) {
+    if r.Ok() {
+        atomic.AddInt64(&successCnt, 1)
+    }
+})
+```
+
+| 方法 | 参数 | 说明 |
+|------|------|------|
+| `WithStreaming(bufSize int)` | `bufSize`：channel 缓冲大小，<=0 时自动使用 `Size()*2` | 开启流式结果 channel |
+| `WithResultCallback(fn func(Result[T]))` | `fn`：每个任务完成时调用的回调 | 注册结果回调（在 worker 中执行） |
+| `StreamResults()` | 无 | 返回只读 channel，未启用流式时返回 nil |
+
+### 环形缓冲
+
+`WithRingBuffer` 用固定容量环形缓冲替代无限增长的 results 切片，适合千万级任务量场景。
+
+```go
+p := async.NewPool[string](8).WithRingBuffer(10000, async.OverflowDrop)
+defer p.Close()
+
+// 提交海量任务...
+for i := 0; i < 10_000_000; i++ {
+    p.Submit(ctx, func(ctx context.Context) (string, error) {
+        return heavyWork(ctx), nil
+    })
+}
+
+// 分批取出结果
+for {
+    batch := p.Flush(5000) // 每次取 5000 个
+    if len(batch) == 0 {
+        break
+    }
+    // 消费 batch...
+}
+
+// Wait 也会返回环形缓冲中剩余的结果
+remaining := p.Wait()
+```
+
+| 方法 | 参数 | 说明 |
+|------|------|------|
+| `WithRingBuffer(capacity int, overflow OverflowStrategy)` | `capacity`：缓冲容量；`overflow`：满时策略 | 启用环形缓冲 |
+| `Flush(maxCount int)` | `maxCount`：最大取出数量，<=0 取出全部 | 从环形缓冲中取出结果 |
+
+**`OverflowStrategy` 溢出策略：**
+
+| 常量 | 说明 |
+|------|------|
+| `async.OverflowBlock` | 阻塞等待 Flush 消费空间（默认） |
+| `async.OverflowDrop` | 覆盖最旧的结果（静默丢弃） |
+| `async.OverflowError` | 记录错误（不影响任务继续） |
+
+### 背压控制
+
+通过限制最大排队任务数控制背压，防止任务堆积耗尽内存：
+
+```go
+// 最多允许 1000 个任务排队，超出则根据策略处理
+p := async.NewPool[string](8).
+    WithMaxPending(1000).
+    WithOverflow(async.OverflowError)
+defer p.Close()
+
+for _, item := range items {
+    err := p.Submit(ctx, fn)
+    if errors.Is(err, async.ErrQueueOverflow) {
+        // 队列满，降级处理
+        fallbackProcess(item)
+        continue
+    }
+}
+
+// 实时查看队列深度
+depth := p.QueueDepth()
+```
+
+| 方法 | 参数 | 说明 |
+|------|------|------|
+| `WithMaxPending(maxPending int)` | `maxPending`：最大等待任务数，<=0 无限制 | 设置背压阈值 |
+| `WithOverflow(strategy OverflowStrategy)` | `strategy`：`OverflowBlock`/`OverflowDrop`/`OverflowError` | 队列溢出策略 |
+| `QueueDepth()` | 无 | 返回当前排队中的任务数 |
+
 ---
 
 ## Group / NoResult 方法详解
@@ -819,6 +942,49 @@ g2, ffCtx := g.WithFailFast(ctx)
 // Reset 重置（关闭旧组，创建新组）
 newG, err := g.Reset()
 ```
+
+### Group 流式结果消费
+
+Group 同样支持流式结果消费，实时获取每个任务完成的结果：
+
+```go
+g := async.NewGroup[int](8).WithStreaming(0) // 0 = 自动 buffer size
+
+// 在提交任务之前启动消费者
+ch := g.StreamResults()
+go func() {
+    for r := range ch {
+        if r.Ok() {
+            fmt.Println("实时收到:", r.Value)
+        }
+    }
+}()
+
+// 提交任务
+for _, item := range items {
+    g.Go(ctx, func(ctx context.Context) (int, error) {
+        return compute(ctx, item), nil
+    })
+}
+
+results := g.Wait() // Wait 完成后 stream channel 自动关闭
+```
+
+**`WithResultCallback`**：
+
+```go
+g := async.NewGroup[int](8).WithResultCallback(func(r core.Result[int]) {
+    if !r.Ok() {
+        log.Printf("任务失败: %v", r.Err)
+    }
+})
+```
+
+| 方法 | 参数 | 说明 |
+|------|------|------|
+| `WithStreaming(bufSize int)` | `bufSize`：channel 缓冲大小，<=0 时自动使用 `Concurrency()*2` | 开启流式结果 channel |
+| `WithResultCallback(fn func(Result[T]))` | `fn`：每个任务完成时调用的回调 | 注册结果回调 |
+| `StreamResults()` | 无 | 返回只读 channel，未启用流式时返回 nil |
 
 ### NoResult 方法
 
@@ -942,6 +1108,291 @@ p, results, err := async.MapPool(ctx, items, fn, async.IO())
 
 // Pool 版 ForEach
 _, err := async.ForEachPool(ctx, items, fn, async.IO())
+```
+
+---
+
+## ShardedPool / ShardedGroup 方法详解
+
+分片并发原语将任务分发到 N 个 Pool 或 Group 实例，实现水平扩展，适合需要分摊负载到多实例的高并发场景。
+
+### ShardedPool[T] — 分片协程池
+
+将任务分发到多个 `Pool[T]` 实例，每个分片独立运行，支持 RoundRobin / Hash 两种分发策略。
+
+#### 创建与分发策略
+
+```go
+// 自定义配置：8 分片，每分片 100 worker，RoundRobin 分发
+sp := async.NewShardedPool(ShardPoolConfig[int]{
+    Shards:       8,
+    SizePerShard: 100,
+    Distribution: shard.RoundRobin, // 或 shard.Hash
+    KeyFn:        func(item int) uint64 { return uint64(item) }, // Hash 模式需提供
+})
+
+// 默认配置：4 分片，每分片 IO 并发度，RoundRobin
+sp := async.DefaultShardedPool[string]()
+defer sp.Close()
+```
+
+**`ShardPoolConfig[T]` 配置参数：**
+
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `Shards` | `int` | 4 | 分片数量 |
+| `SizePerShard` | `int` | `IO()` | 每个分片的 worker 数量 |
+| `Distribution` | `Distribution` | `RoundRobin` | 分发策略：`shard.RoundRobin` 或 `shard.Hash` |
+| `KeyFn` | `func(T) uint64` | nil | Hash 分发时计算 key 的函数 |
+
+**`Distribution` 分发策略：**
+
+| 常量 | 说明 |
+|------|------|
+| `shard.RoundRobin` | 轮询分发，每个分片均匀负载（默认） |
+| `shard.Hash` | 按 KeyFn 哈希分发，同一 key 始终落到同一分片 |
+
+#### ShardedPool 基础 API
+
+```go
+// Submit 自动分发到某个分片（RoundRobin 或 Hash）
+err := sp.Submit(ctx, func(ctx context.Context) (string, error) {
+    return process(ctx), nil
+})
+
+// TrySubmit 非阻塞分发提交
+err := sp.TrySubmit(ctx, fn)
+
+// SubmitAt 分发到指定分片的指定索引
+err := sp.SubmitAt(shardIdx, index, ctx, fn)
+
+// SubmitKeyed 按 key 哈希分发到固定分片
+err := sp.SubmitKeyed("user.123", ctx, fn)
+
+// TrySubmitKeyed 按 key 哈希非阻塞分发
+err := sp.TrySubmitKeyed("user.123", ctx, fn)
+
+// SubmitBatch 批量提交，返回每个元素的分发结果
+items := []string{"a", "b", "c"}
+batchResults, err := sp.SubmitBatch(ctx, items, func(ctx context.Context, item string) (string, error) {
+    return processItem(ctx, item), nil
+})
+// batchResults[i].ShardIdx 记录分片索引，batchResults[i].Err 记录提交错误
+
+// TrySubmitBatch 批量非阻塞提交
+batchResults, err := sp.TrySubmitBatch(ctx, items, fn)
+
+// Wait 等待所有分片完成，合并结果
+results := sp.Wait()
+
+// WaitAndClose 等待完成并关闭所有分片
+results := sp.WaitAndClose()
+
+// Close 关闭所有分片
+sp.Close()
+
+// Reset 重置所有分片（Wait 后无活跃任务时可用）
+err = sp.Reset()
+```
+
+| 方法 | 参数 | 返回值 | 说明 |
+|------|------|--------|------|
+| `Submit(ctx, fn)` | `ctx`：上下文；`fn`：任务函数 | `error` | 分发提交到某个分片 |
+| `TrySubmit(ctx, fn)` | 同上 | `error` | 非阻塞分发提交 |
+| `SubmitAt(shardIdx, index, ctx, fn)` | `shardIdx`：分片索引；`index`：结果位置；`ctx`：上下文；`fn`：任务函数 | `error` | 分发到指定分片的指定位置 |
+| `SubmitKeyed(key, ctx, fn)` | `key`：哈希键；`ctx`：上下文；`fn`：任务函数 | `error` | 按 key 哈希分发 |
+| `TrySubmitKeyed(key, ctx, fn)` | 同上 | `error` | 按 key 哈希非阻塞分发 |
+| `SubmitBatch(ctx, items, fn)` | `ctx`：上下文；`items`：元素切片；`fn`：元素处理函数 | `([]SubmitBatchResult, error)` | 批量分发提交 |
+| `TrySubmitBatch(ctx, items, fn)` | 同上 | `([]SubmitBatchResult, error)` | 批量非阻塞分发提交 |
+| `Wait()` | 无 | `[]Result[T]` | 等待所有分片完成并合并结果 |
+| `WaitAndClose()` | 无 | `[]Result[T]` | 等待完成并关闭所有分片 |
+| `Close()` | 无 | — | 关闭所有分片 |
+| `Reset()` | 无 | `error` | 重置所有分片 |
+| `GetShard(idx)` | `idx`：分片索引 | `*Pool[T]` | 获取指定分片（越界返回 nil） |
+| `ShardCount()` | 无 | `int` | 返回分片数量 |
+
+#### ShardedPool 配置方法
+
+```go
+// 调整每个分片的 worker 数
+sp.ResizePerShard(200)
+
+// 设置超时
+sp.WithTimeout(30 * time.Second)
+sp.WithSubmitTimeout(5 * time.Second)
+
+// FailFast 模式
+sp2, ffCtx := sp.WithFailFast(ctx)
+
+// 流式结果
+sp.WithStreaming(1024)
+sp.WithResultCallback(func(r core.Result[string]) {
+    if !r.Ok() { log.Println(r.Err) }
+})
+
+// 环形缓冲
+sp.WithRingBuffer(50000, async.OverflowDrop)
+
+// 背压控制
+sp.WithMaxPending(5000).WithOverflow(async.OverflowError)
+```
+
+| 方法 | 参数 | 返回值 | 说明 |
+|------|------|--------|------|
+| `ResizePerShard(newSize)` | `newSize`：新 worker 数 | `*ShardedPool[T]` | 调整所有分片 worker 数 |
+| `WithTimeout(d)` | `d`：超时时间 | `*ShardedPool[T]` | 设置所有分片任务超时 |
+| `WithSubmitTimeout(d)` | `d`：提交超时 | `*ShardedPool[T]` | 设置所有分片提交超时 |
+| `WithFailFast(ctx)` | `ctx`：上下文 | `(*ShardedPool[T], context.Context)` | 启用 FailFast |
+| `WithStreaming(bufSize)` | `bufSize`：缓冲大小 | `*ShardedPool[T]` | 启用流式消费 |
+| `WithResultCallback(fn)` | `fn`：回调函数 | `*ShardedPool[T]` | 设置结果回调 |
+| `WithRingBuffer(cap, overflow)` | `cap`：容量；`overflow`：溢出策略 | `*ShardedPool[T]` | 启用环形缓冲 |
+| `WithMaxPending(n)` | `n`：最大等待数 | `*ShardedPool[T]` | 设置背压阈值 |
+| `WithOverflow(strategy)` | `strategy`：溢出策略 | `*ShardedPool[T]` | 设置溢出策略 |
+
+#### ShardedPool 统计聚合
+
+```go
+// 汇总所有分片统计
+stats := sp.ShardStats() // []pool.PoolStats
+
+// 汇总计数
+totalSuccess := sp.TotalSuccessCount()
+totalFail := sp.TotalFailCount()
+totalActive := sp.TotalActive()
+totalBusy := sp.TotalBusy()
+totalPending := sp.TotalPending()
+totalWorkers := sp.TotalWorkerCount()
+
+// 从环形缓冲批量取结果
+batch := sp.Flush(5000)
+```
+
+| 方法 | 参数 | 返回值 | 说明 |
+|------|------|--------|------|
+| `ShardStats()` | 无 | `[]PoolStats` | 所有分片的统计信息 |
+| `TotalSuccessCount()` | 无 | `int64` | 所有分片成功数汇总 |
+| `TotalFailCount()` | 无 | `int64` | 所有分片失败数汇总 |
+| `TotalActive()` | 无 | `int` | 所有分片活跃任务数汇总 |
+| `TotalBusy()` | 无 | `int` | 所有分片忙碌任务数汇总 |
+| `TotalPending()` | 无 | `int` | 所有分片等待中任务数汇总 |
+| `TotalWorkerCount()` | 无 | `int` | 所有分片 worker 总数 |
+| `Flush(maxPerShard)` | `maxPerShard`：每分片最大取出数 | `[]Result[T]` | 从所有分片环形缓冲取结果 |
+
+### ShardedGroup[T] — 分片任务组
+
+将任务分发到多个 `Group[T]` 实例，每个分片独立并发控制，支持 RoundRobin / Hash 分发。
+
+#### 创建
+
+```go
+// 自定义配置：4 分片，每分片 50 并发，RoundRobin
+sg := async.NewShardedGroup(ShardGroupConfig[int]{
+    Shards:              4,
+    ConcurrencyPerShard: 50,
+    Distribution:        shard.RoundRobin,
+})
+
+// 默认配置：4 分片，每分片 IO 并发度，RoundRobin
+sg := async.DefaultShardedGroup[string]()
+```
+
+**`ShardGroupConfig[T]` 配置参数：**
+
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `Shards` | `int` | 4 | 分片数量 |
+| `ConcurrencyPerShard` | `int` | `IO()` | 每个分片的并发数 |
+| `Distribution` | `Distribution` | `RoundRobin` | 分发策略：`shard.RoundRobin` 或 `shard.Hash` |
+
+#### ShardedGroup 基础 API
+
+```go
+// Go 分发任务到某个分片
+err := sg.Go(ctx, func(ctx context.Context) (int, error) {
+    return compute(ctx), nil
+})
+
+// GoAt 分发到指定分片的指定索引
+err := sg.GoAt(shardIdx, index, ctx, fn)
+
+// GoKeyed 按 key 哈希分发到固定分片
+err := sg.GoKeyed("user.456", ctx, fn)
+
+// GoBatch 批量分发
+items := []int{1, 2, 3}
+batchResults, err := sg.GoBatch(ctx, items, func(ctx context.Context, item int) (int, error) {
+    return item * 2, nil
+})
+
+// Wait 等待所有分片完成，合并结果
+results := sg.Wait()
+
+// WaitTimeout 带超时等待
+results, ok := sg.WaitTimeout(10 * time.Second)
+
+// WaitContext 通过 context 等待
+results, ok := sg.WaitContext(ctx)
+
+// Reset 重置所有分片
+err = sg.Reset()
+```
+
+| 方法 | 参数 | 返回值 | 说明 |
+|------|------|--------|------|
+| `Go(ctx, fn)` | `ctx`：上下文；`fn`：任务函数 | `error` | 分发任务到某个分片 |
+| `GoAt(shardIdx, index, ctx, fn)` | `shardIdx`：分片索引；`index`：结果位置；`ctx`：上下文；`fn`：任务函数 | `error` | 分发到指定分片的指定位置 |
+| `GoKeyed(key, ctx, fn)` | `key`：哈希键；`ctx`：上下文；`fn`：任务函数 | `error` | 按 key 哈希分发 |
+| `GoBatch(ctx, items, fn)` | `ctx`：上下文；`items`：元素切片；`fn`：元素处理函数 | `([]GoBatchResult, error)` | 批量分发 |
+| `Wait()` | 无 | `[]Result[T]` | 等待所有分片完成并合并结果 |
+| `WaitTimeout(d)` | `d`：超时时间 | `([]Result[T], bool)` | 带超时等待 |
+| `WaitContext(ctx)` | `ctx`：上下文 | `([]Result[T], bool)` | 通过 context 等待 |
+| `Reset()` | 无 | `error` | 重置所有分片 |
+| `GetShard(idx)` | `idx`：分片索引 | `*Group[T]` | 获取指定分片（越界返回 nil） |
+| `ShardCount()` | 无 | `int` | 返回分片数量 |
+
+#### ShardedGroup 配置方法
+
+```go
+// 链式配置
+sg.WithTimeout(30 * time.Second).
+    WithSubmitTimeout(5 * time.Second).
+    WithStreaming(1024)
+
+// FailFast 模式
+sg2, ffCtx := sg.WithFailFast(ctx)
+// 或使用缩写
+sg2, ffCtx := sg.WithFFCtx(ctx)
+```
+
+| 方法 | 参数 | 返回值 | 说明 |
+|------|------|--------|------|
+| `WithTimeout(d)` | `d`：超时时间 | `*ShardedGroup[T]` | 设置所有分片任务超时 |
+| `WithSubmitTimeout(d)` | `d`：提交超时 | `*ShardedGroup[T]` | 设置所有分片提交超时 |
+| `WithFailFast(ctx)` | `ctx`：上下文 | `(*ShardedGroup[T], context.Context)` | 启用 FailFast |
+| `WithFFCtx(ctx)` | `ctx`：上下文 | `(*ShardedGroup[T], context.Context)` | FailFast 缩写 |
+| `WithStreaming(bufSize)` | `bufSize`：缓冲大小 | `*ShardedGroup[T]` | 启用流式消费 |
+
+### ShardedPool vs ShardedGroup 选择指南
+
+| 场景 | 使用 | 特点 |
+|------|------|------|
+| 长期运行的服务，反复提交 | `ShardedPool` | goroutine 复用，延迟低 |
+| 一次性批量任务 | `ShardedGroup` | 用完即弃，无资源泄漏 |
+| 按用户/租户固定路由 | `Hash` 策略 | 同一 key 始终同一分片 |
+| 均匀负载 | `RoundRobin` 策略 | 负载自动平衡 |
+
+### 分片数选择建议
+
+```go
+// 建议分片数 = CPU 核心数 × 倍数
+shards := runtime.NumCPU() * 4
+sp := async.NewShardedPool(ShardPoolConfig[int]{
+    Shards:       shards,
+    SizePerShard: async.IO(), // 每分片 IO 并发度
+})
+
+// 或使用默认值（4 分片，适合 8-16 核机器）
+sp := async.DefaultShardedPool[string]()
 ```
 
 ---
@@ -1251,6 +1702,14 @@ r := async.RetryWithLinearBackoffResult(ctx, fn, 5, 1*time.Second)
 ```
 
 ### 完整配置重试
+
+**`TimeoutOpt` 参数：**
+
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `PerCallTimeout` | `time.Duration` | 0（无限制） | 每次调用（含重试）的超时时间 |
+
+**示例：**
 
 ```go
 // 支持每次调用超时

@@ -221,10 +221,58 @@
 - `enqueueTask` 慢路径的 channel 竞争
 
 ---
+## 五、新增功能专项压测（流式消费 / 环形缓冲 / 背压 / 分片）
 
-## 五、结论
+### 流式结果消费
 
-经过 **4 套压测体系 + 200+ 测试用例**，涵盖 **10M 量级极限并发**、**FailFast 故障传播**、**Close/Resize 竞态**、**AutoScale 自动扩缩容** 等所有线上关键场景：
+| 测试方法 | 覆盖内容 | 结果 |
+|----------|---------|------|
+| `TestStress_Pool_Streaming` | Pool 流式 channel 消费 | ✅ PASS |
+| `TestStress_Pool_ResultCallback` | Pool 回调消费 | ✅ PASS |
+| `TestStress_Group_Streaming` | Group 流式 channel 消费 | ✅ PASS |
+| `TestStress_Group_ResultCallback` | Group 回调消费 | ✅ PASS |
+| `TestStress_Pool_Streaming_Concurrent` | 流式消费高并发竞态 | ✅ 零竞态 |
+
+### 环形缓冲 (Ring Buffer)
+
+| 测试方法 | 覆盖内容 | 结果 |
+|----------|---------|------|
+| `TestStress_Pool_RingBuffer_Drop` | OverflowDrop 策略 10M 任务 | ✅ PASS |
+| `TestStress_Pool_RingBuffer_Block` | OverflowBlock 策略 | ✅ PASS |
+| `TestStress_Pool_RingBuffer_Error` | OverflowError 策略 | ✅ PASS |
+| `TestStress_Pool_Flush` | Flush 排空 + 并发写入 | ✅ PASS |
+| `TestStress_RingBuffer_Concurrent` | 环形缓冲并发 Push/Pop 竞态 | ✅ 零竞态 |
+
+### 背压控制
+
+| 测试方法 | 覆盖内容 | 结果 |
+|----------|---------|------|
+| `TestStress_Pool_Backpressure_Block` | WithMaxPending + OverflowBlock | ✅ PASS |
+| `TestStress_Pool_Backpressure_Drop` | WithMaxPending + OverflowDrop | ✅ PASS |
+| `TestStress_Pool_Backpressure_Error` | WithMaxPending + OverflowError | ✅ PASS |
+| `TestStress_Pool_QueueDepth` | QueueDepth 实时监控 | ✅ PASS |
+| `TestStress_Pool_Backpressure_HighConcurrency` | 背压 + 高速提交竞态 | ✅ 零竞态 |
+
+### 分片分发 (Shard)
+
+| 测试方法 | 覆盖内容 | 结果 |
+|----------|---------|------|
+| `TestStress_ShardedPool_Submit_Wait` | ShardedPool RoundRobin 分发 | ✅ PASS |
+| `TestStress_ShardedPool_SubmitKeyed` | Hash 按 key 分发 | ✅ PASS |
+| `TestStress_ShardedPool_SubmitBatch` | 批量分发 | ✅ PASS |
+| `TestStress_ShardedGroup_Go_Wait` | ShardedGroup RoundRobin | ✅ PASS |
+| `TestStress_ShardedGroup_GoKeyed` | ShardedGroup Hash | ✅ PASS |
+| `TestStress_ShardedGroup_GoBatch` | ShardedGroup 批量 | ✅ PASS |
+| `TestStress_ShardedPool_Streaming` | ShardedPool + 流式消费 | ✅ PASS |
+| `TestStress_ShardedPool_RingBuffer` | ShardedPool + 环形缓冲 | ✅ PASS |
+| `TestStress_ShardedPool_Backpressure` | ShardedPool + 背压控制 | ✅ PASS |
+| `TestStress_Shard_Concurrent` | 分片并发分发竞态 | ✅ 零竞态 |
+
+---
+
+## 六、结论
+
+经过 **4 套压测体系 + 240+ 测试用例**，涵盖 **10M 量级极限并发**、**FailFast 故障传播**、**Close/Resize 竞态**、**AutoScale 自动扩缩容**、**流式消费**、**环形缓冲**、**背压控制**、**分片分发** 等所有线上关键场景：
 
 ✅ **全部通过**  
 ✅ **Race Detector 零竞态**  
