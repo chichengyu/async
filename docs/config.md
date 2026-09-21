@@ -352,3 +352,28 @@ val := async.Must(someFn(ctx, input))
 | `TaskLogLevel` | `type TaskLogLevel = core.TaskLogLevel` | 任务日志级别 |
 | `TraceIDKeyType` | `type TraceIDKeyType = core.TraceIDKeyType` | TraceID 的 context key 类型 |
 | `PanicError` | `type PanicError = core.PanicError` | 包含 recover 值与堆栈的 panic 错误 |
+| `Result[T]` | `type Result[T any] struct{ Value T; Err error; Occupied bool }` | 任务结果：Ok() 检查是否成功，IsPanic() 检查是否为 panic |
+| `AutoScaleConfig` | `type AutoScaleConfig struct{ ... }` | 自动扩缩容配置（详见下方接口定义） |
+
+### AutoScale 配置
+
+| 函数 / 方法 | 完整签名 | 说明 |
+|------------|---------|------|
+| `DefaultAutoScaleConfig` | `func DefaultAutoScaleConfig() *AutoScaleConfig` | 返回推荐默认配置（Min=1, Max=NumCPU×4, ScaleUp=1, ScaleDown=2 等） |
+| `(*AutoScaleConfig).Normalize` | `func (c *AutoScaleConfig) Normalize()` | 规范化配置值（Min≥1, Max≥Min, ScaleUp≥1, ScaleDown≥1） |
+
+### Logger 接口定义
+
+```go
+type Logger interface {
+    Log(ctx context.Context, level LogLevel, msg string, fields ...LogField)
+    With(fields ...LogField) Logger
+    WithContext(ctx context.Context) context.Context
+}
+```
+
+| 方法 | 完整签名 | 说明 |
+|------|---------|------|
+| `Log` | `Log(ctx context.Context, level LogLevel, msg string, fields ...LogField)` | 输出一条日志（ctx 可携带 trace_id 等上下文信息） |
+| `With` | `With(fields ...LogField) Logger` | 创建携带预设字段的新 Logger（用于链式追加固定字段如模块名） |
+| `WithContext` | `WithContext(ctx context.Context) context.Context` | 将 Logger 注入 context 中 |

@@ -370,13 +370,14 @@ func callWithRetry(ctx context.Context, url string) (string, error) {
 
 ### 重试函数（顶层 async 包）
 
+async 包的便捷包装函数自动设置合理的默认值（如 maxBackoff=30s），省略泛型类型参数，适合绝大多数场景。
+
 | 函数 | 完整签名 | 说明 |
 |------|---------|------|
-| `RetryWithBackoff[T]` | `func RetryWithBackoff[T any](ctx context.Context, fn func(context.Context) (T, error), maxRetries int, initialBackoff time.Duration, maxBackoff time.Duration) (T, error)` | 指数退避重试（有返回值） |
-| `RetryWithBackoffVoid` | `func RetryWithBackoffVoid(ctx context.Context, fn func(context.Context) error, maxRetries int, initialBackoff time.Duration, maxBackoff time.Duration) error` | 指数退避重试（无返回值） |
+| `Retry` | `func Retry(ctx context.Context, maxRetries int, fn func(ctx context.Context) error) error` | 无退避重试（最简单用法，失败后立即重试） |
+| `RetryWithBackoff` | `func RetryWithBackoff(ctx context.Context, maxRetries int, backoff time.Duration, fn func(ctx context.Context) error) error` | 指数退避重试（自动限制最大退避 30s） |
+| `RetryWithLinearBackoff` | `func RetryWithLinearBackoff(ctx context.Context, maxRetries int, backoff time.Duration, fn func(ctx context.Context) error) error` | 线性退避重试（每次固定等待 backoff） |
 | `RetryWithBackoffResult[T]` | `func RetryWithBackoffResult[T any](ctx context.Context, fn func(context.Context) (T, error), maxRetries int, initialBackoff time.Duration, maxBackoff time.Duration) core.Result[T]` | 指数退避，返回 `Result[T]`（不返回 error，所有错误都在 Result 中） |
-| `RetryWithLinearBackoff[T]` | `func RetryWithLinearBackoff[T any](ctx context.Context, fn func(context.Context) (T, error), maxRetries int, backoff time.Duration) (T, error)` | 线性退避重试（有返回值） |
-| `RetryWithLinearBackoffVoid` | `func RetryWithLinearBackoffVoid(ctx context.Context, fn func(context.Context) error, maxRetries int, backoff time.Duration) error` | 线性退避重试（无返回值） |
 | `RetryWithLinearBackoffResult[T]` | `func RetryWithLinearBackoffResult[T any](ctx context.Context, fn func(context.Context) (T, error), maxRetries int, backoff time.Duration) core.Result[T]` | 线性退避，返回 `Result[T]` |
 | `RetryWithConfig[T]` | `func RetryWithConfig[T any](ctx context.Context, fn func(context.Context) (T, error), maxRetries int, initialBackoff time.Duration, maxBackoff time.Duration, opts ...TimeoutOpt) (T, error)` | 带每次调用超时配置的指数退避（有返回值） |
 | `RetryWithConfigVoid` | `func RetryWithConfigVoid(ctx context.Context, fn func(context.Context) error, maxRetries int, initialBackoff time.Duration, maxBackoff time.Duration, opts ...TimeoutOpt) error` | 带每次调用超时配置的指数退避（无返回值） |
