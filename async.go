@@ -37,6 +37,7 @@ import (
 	"github.com/chichengyu/async/pool"
 	"github.com/chichengyu/async/ratelimit"
 	"github.com/chichengyu/async/retry"
+	"github.com/chichengyu/async/shard"
 	"github.com/chichengyu/async/task"
 )
 
@@ -113,9 +114,27 @@ var (
 	ErrRateLimiterStopped = core.ErrRateLimiterStopped
 	// ErrTimeout 操作超时
 	ErrTimeout = core.ErrTimeout
+	// ErrQueueOverflow 队列溢出，任务被拒绝
+	ErrQueueOverflow = core.ErrQueueOverflow
 	// TraceIDKey context 中 trace_id 的 key
 	TraceIDKey = core.TraceIDKey
 )
+
+// ── 溢出策略 ──
+
+// OverflowStrategy 队列溢出策略。
+type OverflowStrategy = core.OverflowStrategy
+
+const (
+	OverflowBlock = core.OverflowBlock
+	OverflowDrop  = core.OverflowDrop
+	OverflowError = core.OverflowError
+)
+
+// ── 环形缓冲 ──
+
+// RingBuffer 固定容量环形缓冲区。
+type RingBuffer[T any] = core.RingBuffer[T]
 
 // ── 全局配置函数 ──
 
@@ -468,6 +487,65 @@ type Pool[T any] = pool.Pool[T]
 
 // NoResultPool 无返回值协程池的别名。
 type NoResultPool = pool.Pool[struct{}]
+
+// ── 分片池（多实例水平扩展）──
+
+// ShardedPool 将任务分发到 N 个 Pool 实例的分片池。
+type ShardedPool[T any] = shard.ShardedPool[T]
+
+// ShardPoolConfig 分片池配置。
+type ShardPoolConfig[T any] = shard.ShardPoolConfig[T]
+
+// NewShardedPool 创建分片池。
+//
+// 示例：
+//
+//	p := async.NewShardedPool(async.ShardPoolConfig[int]{
+//	    Shards: 4,
+//	    SizePerShard: 8,
+//	    Distribution: async.RoundRobin,
+//	})
+//	defer p.Close()
+func NewShardedPool[T any](cfg ShardPoolConfig[T]) *ShardedPool[T] {
+	return shard.NewShardedPool(cfg)
+}
+
+// DefaultShardedPool 使用默认配置创建分片池（4 分片、IO 并发度、RoundRobin）。
+func DefaultShardedPool[T any]() *ShardedPool[T] {
+	return shard.DefaultShardedPool[T]()
+}
+
+// SubmitBatchResult 分片池批量提交的单条结果。
+type SubmitBatchResult = shard.SubmitBatchResult
+
+// ── 分片 Group（多实例水平扩展）──
+
+// ShardedGroup 将任务分发到 N 个 Group 实例的分片任务组。
+type ShardedGroup[T any] = shard.ShardedGroup[T]
+
+// ShardGroupConfig 分片 Group 配置。
+type ShardGroupConfig[T any] = shard.ShardGroupConfig[T]
+
+// NewShardedGroup 创建分片 Group。
+func NewShardedGroup[T any](cfg ShardGroupConfig[T]) *ShardedGroup[T] {
+	return shard.NewShardedGroup(cfg)
+}
+
+// DefaultShardedGroup 使用默认配置创建分片 Group（4 分片、IO 并发度、RoundRobin）。
+func DefaultShardedGroup[T any]() *ShardedGroup[T] {
+	return shard.DefaultShardedGroup[T]()
+}
+
+// GoBatchResult 分片 Group 批量分发结果。
+type GoBatchResult = shard.GoBatchResult
+
+// Distribution 分片分发策略。
+type Distribution = shard.Distribution
+
+const (
+	RoundRobin = shard.RoundRobin
+	Hash       = shard.Hash
+)
 
 // PoolStats 协程池的统计信息。
 type PoolStats = pool.PoolStats

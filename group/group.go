@@ -47,11 +47,17 @@ type Group[T any] struct {
 	waited        bool                          // 是否已完成 Wait
 	ctx           context.Context               // 组级别的上下文
 	done          atomic.Pointer[chan struct{}] // 组结束信号（Wait 后关闭）
+	doneSignalled atomic.Bool                   // 确保 done channel 只关闭一次
 
 	// ──────── 自动扩缩容（可选，默认关闭）────────
 	autoScale        *core.AutoScaleConfig // 扩缩容配置（nil=未启用）
 	autoScaleEnabled atomic.Bool           // 是否已启用自动扩缩容
 	autoScaleStop    chan struct{}         // 停止自动扩缩容的信号
+
+	// ──────── 结果流式消费 ────────
+	streamCh   chan core.Result[T]  // 流式结果 channel
+	streamOnce sync.Once            // 确保 streamCh 只关闭一次
+	resultCb   func(core.Result[T]) // 结果回调
 }
 
 // GroupRecordFunc 记录结果的函数类型，抽象 addResult（Go）和 setResultAt（GoAt）。
@@ -320,6 +326,52 @@ func (g *Group[T]) WithCtxSubmitTO(ctx context.Context, submitTimeout time.Durat
 func (g *Group[T]) WithCtxSubmitTOTraceID(ctx context.Context, submitTimeout time.Duration) (*Group[T], context.Context) {
 	g, ctx = g.WithCtxSubmitTO(ctx, submitTimeout)
 	return g.WithTraceID(ctx)
+}
+
+// ──────────────────────────── 流式消费 ────────────────────────────
+
+// WithStreaming 启用流式结果消费，结果通过 channel 实时发送。
+// bufSize 控制 channel 缓冲大小，0 使用 concurrency*2 的默认值。
+// 调用 StreamResults() 获取只读 channel，在 Wait() 后自动关闭。
+func (g *Group[T]) WithStreaming(bufSize int) *Group[T] {
+	if bufSize <= 0 {
+		bufSize = g.Concurrency() * 2
+	}
+	g.streamCh = make(chan core.Result[T], bufSize)
+	return g
+}
+
+// WithResultCallback 设置结果回调，每个任务完成时同步调用。
+// 回调在 worker goroutine 中执行，应尽量轻量。
+func (g *Group[T]) WithResultCallback(fn func(core.Result[T])) *Group[T] {
+	g.resultCb = fn
+	return g
+}
+
+// StreamResults 返回流式结果的只读 channel。
+// 必须在 WithStreaming 之后调用，否则返回 nil。
+func (g *Group[T]) StreamResults() <-chan core.Result[T] {
+	return g.streamCh
+}
+
+func (g *Group[T]) recordToStream(r core.Result[T]) {
+	if g.streamCh != nil {
+		select {
+		case g.streamCh <- r:
+		default:
+		}
+	}
+	if g.resultCb != nil {
+		g.resultCb(r)
+	}
+}
+
+func (g *Group[T]) drainStreaming() {
+	g.streamOnce.Do(func() {
+		if g.streamCh != nil {
+			close(g.streamCh)
+		}
+	})
 }
 
 // ──────────────────────────── Group 内部方法 ────────────────────────────
@@ -643,10 +695,12 @@ func (g *Group[T]) addResult(r core.Result[T]) {
 		g.freeIndices = g.freeIndices[:last]
 		g.results[idx] = r
 		g.mu.Unlock()
+		g.recordToStream(r)
 		return
 	}
 	g.results = append(g.results, r)
 	g.mu.Unlock()
+	g.recordToStream(r)
 }
 
 // GoAt 提交任务到指定索引位置，结果会写入 results[index]。
@@ -694,6 +748,7 @@ func (g *Group[T]) setResultAt(index int, r core.Result[T]) {
 			g.freeIndices = g.freeIndices[:last]
 			g.results[freeIdx] = existing
 			g.mu.Unlock()
+			g.recordToStream(r)
 			return
 		}
 		g.results = append(g.results, existing)
@@ -707,6 +762,7 @@ func (g *Group[T]) setResultAt(index int, r core.Result[T]) {
 		}
 	}
 	g.mu.Unlock()
+	g.recordToStream(r)
 }
 
 // Wait 等待所有任务完成并返回结果切片。调用后 Group 进入 waited 状态，不能再次提交任务。
@@ -737,16 +793,16 @@ func (g *Group[T]) Wait() []core.Result[T] {
 		cancel()
 	}
 	g.signalDone()
+	g.drainStreaming()
 	return results
 }
 
 func (g *Group[T]) signalDone() {
+	if !g.doneSignalled.CompareAndSwap(false, true) {
+		return
+	}
 	if ch := g.done.Load(); ch != nil {
-		select {
-		case <-*ch:
-		default:
-			close(*ch)
-		}
+		close(*ch)
 	}
 }
 
@@ -939,12 +995,20 @@ func (g *Group[T]) Reset() (*Group[T], error) {
 	savedTimeout := g.timeout
 	savedSubmitTimeout := g.submitTimeout
 	savedConcurrency := int(g.concurrency.Load())
+	savedStreamCh := g.streamCh
+	savedResultCb := g.resultCb
 	g.ctx = context.Background()
 	g.mu.Unlock()
 	atomic.StoreInt64(&g.errCnt, 0)
 	g.active.Store(0)
 	g.busy.Store(0)
 	g.waiting.Store(false)
+	g.doneSignalled.Store(false)
+	if savedStreamCh != nil {
+		g.streamOnce = sync.Once{}
+		g.streamCh = make(chan core.Result[T], cap(savedStreamCh))
+	}
+	g.resultCb = savedResultCb
 	g.limit.Store(nil)
 	ch := make(chan struct{}, savedConcurrency)
 	g.limit.Store(&ch)
@@ -976,13 +1040,16 @@ func (g *Group[T]) Reset() (*Group[T], error) {
 //	    log.Println("部分任务未完成")
 //	}
 func (g *Group[T]) WaitTimeout(d time.Duration) ([]core.Result[T], bool) {
+	g.addMu.Lock()
 	g.waiting.Store(true)
+	g.addMu.Unlock()
 	results, ok := core.WaitTimeoutImpl(d, &g.wg, g.cancel, &g.mu, &g.waited, &g.waiting, g.cancelAll, func() []core.Result[T] {
 		results := make([]core.Result[T], len(g.results))
 		copy(results, g.results)
 		return results
 	}, g.ctx)
 	g.signalDone()
+	g.drainStreaming()
 	return results, ok
 }
 
@@ -997,12 +1064,16 @@ func (g *Group[T]) WaitTimeout(d time.Duration) ([]core.Result[T], bool) {
 //	defer cancel()
 //	results, ok := g.WaitContext(ctx)
 func (g *Group[T]) WaitContext(ctx context.Context) ([]core.Result[T], bool) {
+	g.addMu.Lock()
+	g.waiting.Store(true)
+	g.addMu.Unlock()
 	results, ok := core.WaitContextImpl(ctx, &g.wg, g.cancel, &g.mu, &g.waited, &g.waiting, g.cancelAll, func() []core.Result[T] {
 		results := make([]core.Result[T], len(g.results))
 		copy(results, g.results)
 		return results
 	}, g.ctx, "Group")
 	g.signalDone()
+	g.drainStreaming()
 	return results, ok
 }
 

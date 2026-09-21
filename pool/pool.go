@@ -67,6 +67,17 @@ type Pool[T any] struct {
 	autoScale        *core.AutoScaleConfig // 扩缩容配置（nil=未启用）
 	autoScaleStop    chan struct{}         // 停止扩缩容 goroutine
 	autoScaleEnabled atomic.Bool           // 是否已启用自动扩缩容
+
+	// ──────── 结果流式消费 ────────
+	streamCh    chan core.Result[T]              // 流式结果 channel
+	streamOnce  sync.Once                        // 确保 streamCh 只关闭一次
+	resultCb    func(core.Result[T])             // 结果回调
+	ringBuf     *core.RingBuffer[core.Result[T]] // 环形缓冲（替代无限 results 切片）
+	ringBufFlag atomic.Bool                      // 是否启用环形缓冲
+
+	// ──────── 背压控制 ────────
+	maxPending    int32                 // 最大等待任务数（0=无限制）
+	overflowStrat core.OverflowStrategy // 溢出策略
 }
 
 // SubmitResult 封装 Submit 便捷函数的返回结果，包含提交索引和可能发生的错误。
@@ -350,6 +361,141 @@ func (p *Pool[T]) WithCtxSubmitTOTraceID(ctx context.Context, submitTimeout time
 	return p.WithTraceID(ctx)
 }
 
+// WithStreaming 启用流式结果消费，结果通过 channel 实时发送。
+// bufSize 控制 channel 缓冲大小，0 使用 size*2 的默认值。
+// 调用 StreamResults(ctx) 获取只读 channel，在 Wait() 后自动关闭。
+//
+// 示例：
+//
+//	p := pool.NewPool[string](8).WithStreaming(256)
+//	stream := p.StreamResults(ctx)
+//	go func() {
+//	    for r := range stream {
+//	        if r.Ok() {
+//	            fmt.Println(r.Value)
+//	        }
+//	    }
+//	}()
+//	// ... submit tasks ...
+//	p.Wait() // 关闭 stream channel
+func (p *Pool[T]) WithStreaming(bufSize int) *Pool[T] {
+	if bufSize <= 0 {
+		bufSize = p.Size() * 2
+	}
+	p.streamCh = make(chan core.Result[T], bufSize)
+	return p
+}
+
+// WithResultCallback 设置结果回调，每个任务完成时同步调用。
+// 回调在 worker goroutine 中执行，应尽量轻量。
+//
+// 示例：
+//
+//	p := pool.NewPool[string](8).WithResultCallback(func(r core.Result[string]) {
+//	    if r.Ok() {
+//	        metrics.RecordSuccess()
+//	    }
+//	})
+func (p *Pool[T]) WithResultCallback(fn func(core.Result[T])) *Pool[T] {
+	p.resultCb = fn
+	return p
+}
+
+// StreamResults 返回流式结果的只读 channel，必须在 WithStreaming 之后调用。
+// channel 在 Wait() 完成后自动关闭。
+// 不启用流式消费时返回 nil。
+func (p *Pool[T]) StreamResults() <-chan core.Result[T] {
+	return p.streamCh
+}
+
+// WithRingBuffer 启用环形缓冲区替代无限增长的 results 切片。
+// capacity 为缓冲区容量，overflow 为满时策略：
+//
+//	core.OverflowDrop：覆盖最旧结果
+//	core.OverflowBlock：阻塞等待 Flush
+//	core.OverflowError：记录失败
+//
+// 启用后结果不再写入 p.results 切片，需要通过 Flush() 或 Wait() 获取结果。
+//
+// 示例：
+//
+//	p := pool.NewPool[string](8).WithRingBuffer(10000, core.OverflowDrop)
+//	// 提交大量任务...
+//	batch := p.Flush(5000) // 取出一批结果
+func (p *Pool[T]) WithRingBuffer(capacity int, overflow core.OverflowStrategy) *Pool[T] {
+	p.ringBuf = core.NewRingBuffer[core.Result[T]](capacity, overflow)
+	p.ringBufFlag.Store(true)
+	return p
+}
+
+// Flush 从环形缓冲区中取出最多 maxCount 个结果。
+// 未启用环形缓冲时返回 nil。
+// maxCount <= 0 取出全部。
+func (p *Pool[T]) Flush(maxCount int) []core.Result[T] {
+	if p.ringBuf == nil {
+		return nil
+	}
+	return p.ringBuf.FlushN(maxCount)
+}
+
+// WithMaxPending 设置最大等待任务数，配合 WithOverflow 使用。
+// maxPending <= 0 表示无限制。
+// 当 Pending() >= maxPending 时，新提交根据溢出策略处理。
+//
+// 示例：
+//
+//	p := pool.NewPool[string](8).
+//	    WithMaxPending(1000).
+//	    WithOverflow(core.OverflowError)
+func (p *Pool[T]) WithMaxPending(maxPending int) *Pool[T] {
+	if maxPending > 0 {
+		p.maxPending = int32(maxPending)
+	}
+	return p
+}
+
+// WithOverflow 设置队列溢出策略。
+//
+//	core.OverflowBlock：阻塞等待（默认行为）
+//	core.OverflowDrop：静默丢弃
+//	core.OverflowError：返回 ErrQueueOverflow
+//
+// 示例：
+//
+//	p := pool.NewPool[string](8).
+//	    WithMaxPending(2000).
+//	    WithOverflow(core.OverflowDrop)
+func (p *Pool[T]) WithOverflow(strategy core.OverflowStrategy) *Pool[T] {
+	p.overflowStrat = strategy
+	return p
+}
+
+// QueueDepth 返回当前队列深度（等待中的任务数）。
+func (p *Pool[T]) QueueDepth() int {
+	return p.Pending()
+}
+
+func (p *Pool[T]) recordToStream(r core.Result[T]) {
+	if p.streamCh != nil {
+		select {
+		case p.streamCh <- r:
+		default:
+		}
+	}
+	if p.resultCb != nil {
+		p.resultCb(r)
+	}
+}
+
+// drainStreaming 在 Wait 后关闭流式 channel 并排空 ringBuf。
+func (p *Pool[T]) drainStreaming() {
+	p.streamOnce.Do(func() {
+		if p.streamCh != nil {
+			close(p.streamCh)
+		}
+	})
+}
+
 func (p *Pool[T]) worker() {
 	defer p.workerWg.Done()
 	for {
@@ -487,15 +633,16 @@ func (p *Pool[T]) poolPrecheck(ctx context.Context, caller string) error {
 	if p.closed.Load() {
 		return core.ErrPoolClosed
 	}
-	if p.waiting.Load() {
-		return core.ErrPoolWaiting
-	}
 	p.mu.Lock()
-	waited := p.waited
-	p.mu.Unlock()
-	if waited {
+	if p.waited {
+		p.mu.Unlock()
 		return core.ErrPoolWaited
 	}
+	if p.waiting.Load() {
+		p.mu.Unlock()
+		return core.ErrPoolWaiting
+	}
+	p.mu.Unlock()
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
@@ -543,6 +690,23 @@ func (p *Pool[T]) submitIndexed(ctx context.Context, fn func(context.Context) (T
 		p.mu.Unlock()
 		return -1, err
 	}
+
+	if mp := p.maxPending; mp > 0 && p.Pending() >= int(mp) {
+		switch p.overflowStrat {
+		case core.OverflowDrop:
+			p.mu.Lock()
+			p.results = append(p.results, core.Result[T]{Err: core.ErrQueueOverflow, Occupied: true})
+			atomic.AddInt64(&p.errCnt, 1)
+			p.mu.Unlock()
+			return -1, nil
+		case core.OverflowError:
+			p.mu.Lock()
+			p.results = append(p.results, core.Result[T]{Err: core.ErrQueueOverflow, Occupied: true})
+			atomic.AddInt64(&p.errCnt, 1)
+			p.mu.Unlock()
+			return -1, core.ErrQueueOverflow
+		}
+	}
 	taskCtx, taskCancel := context.WithCancel(ctx)
 
 	// 二次检查：防止 poolPrecheck 与这里之间 Close() 被调用导致 wg 泄漏
@@ -569,6 +733,10 @@ func (p *Pool[T]) submitIndexed(ctx context.Context, fn func(context.Context) (T
 			p.results[idx] = r
 		}
 		p.mu.Unlock()
+		p.recordToStream(r)
+		if p.ringBufFlag.Load() && p.ringBuf != nil {
+			p.ringBuf.Push(r)
+		}
 	}
 
 	task := core.PoolTask[T]{
@@ -633,6 +801,10 @@ func (p *Pool[T]) SubmitAt(index int, ctx context.Context, fn func(context.Conte
 			p.results[idx] = r
 		}
 		p.mu.Unlock()
+		p.recordToStream(r)
+		if p.ringBufFlag.Load() && p.ringBuf != nil {
+			p.ringBuf.Push(r)
+		}
 	}
 
 	task := core.PoolTask[T]{
@@ -664,9 +836,12 @@ func (p *Pool[T]) TrySubmit(ctx context.Context, fn func(context.Context) (T, er
 	if p.closed.Load() {
 		return core.ErrPoolClosed
 	}
+	p.mu.Lock()
 	if p.waiting.Load() || p.waited {
+		p.mu.Unlock()
 		return core.ErrPoolWaiting
 	}
+	p.mu.Unlock()
 	taskCtx, taskCancel := context.WithCancel(ctx)
 
 	// 二次检查：防止检查通过后 Close() 被调用导致 wg 泄漏
@@ -690,6 +865,10 @@ func (p *Pool[T]) TrySubmit(ctx context.Context, fn func(context.Context) (T, er
 			p.results[idx] = r
 		}
 		p.mu.Unlock()
+		p.recordToStream(r)
+		if p.ringBufFlag.Load() && p.ringBuf != nil {
+			p.ringBuf.Push(r)
+		}
 	}
 
 	task := core.PoolTask[T]{
@@ -939,7 +1118,9 @@ func (p *Pool[T]) discardTask(record core.PoolRecordFunc[T], idx int, taskCancel
 //	    }
 //	}
 func (p *Pool[T]) Wait() []core.Result[T] {
+	p.mu.Lock()
 	p.waiting.Store(true)
+	p.mu.Unlock()
 	p.wg.Wait()
 	p.mu.Lock()
 	p.waited = true
@@ -955,6 +1136,7 @@ func (p *Pool[T]) Wait() []core.Result[T] {
 	if cancel != nil {
 		cancel()
 	}
+	p.drainStreaming()
 	return results
 }
 
@@ -1238,7 +1420,9 @@ func (p *Pool[T]) JoinErrors() error {
 //	    log.Println("等待超时")
 //	}
 func (p *Pool[T]) WaitTimeout(d time.Duration) ([]core.Result[T], bool) {
+	p.mu.Lock()
 	p.waiting.Store(true)
+	p.mu.Unlock()
 	results, ok := core.WaitTimeoutImpl(d, &p.wg, p.cancel, &p.mu, &p.waited, &p.waiting, func() {
 		for _, c := range p.cancels {
 			c()
@@ -1263,6 +1447,9 @@ func (p *Pool[T]) WaitTimeout(d time.Duration) ([]core.Result[T], bool) {
 //	defer cancel()
 //	results, ok := p.WaitContext(ctx)
 func (p *Pool[T]) WaitContext(ctx context.Context) ([]core.Result[T], bool) {
+	p.mu.Lock()
+	p.waiting.Store(true)
+	p.mu.Unlock()
 	return core.WaitContextImpl(ctx, &p.wg, p.cancel, &p.mu, &p.waited, &p.waiting, func() {
 		for _, c := range p.cancels {
 			c()
@@ -1493,6 +1680,11 @@ func (p *Pool[T]) Reset() (*Pool[T], error) {
 	p.waited = false
 	savedTimeout := p.timeout
 	savedSubmitTimeout := p.submitTimeout
+	savedMaxPending := p.maxPending
+	savedOverflowStrat := p.overflowStrat
+	savedRingBuf := p.ringBuf
+	savedStreamCh := p.streamCh
+	savedResultCb := p.resultCb
 	p.ctx = context.Background()
 	p.errCnt = 0
 	p.failFast.Store(false)
@@ -1500,6 +1692,9 @@ func (p *Pool[T]) Reset() (*Pool[T], error) {
 	p.closed.Store(false)
 	p.waiting.Store(false)
 	p.quitting.Store(0)
+	if savedStreamCh != nil {
+		p.streamOnce = sync.Once{}
+	}
 	if p.Size() != int(p.size.Load()) {
 		p.size.Store(int32(p.Size()))
 	}
@@ -1516,6 +1711,18 @@ func (p *Pool[T]) Reset() (*Pool[T], error) {
 	p.taskCh = newTaskCh
 	p.timeout = savedTimeout
 	p.submitTimeout = savedSubmitTimeout
+	p.maxPending = savedMaxPending
+	p.overflowStrat = savedOverflowStrat
+	if savedStreamCh != nil {
+		p.streamCh = make(chan core.Result[T], cap(savedStreamCh))
+	}
+	p.resultCb = savedResultCb
+	if savedRingBuf != nil {
+		p.ringBuf = core.NewRingBuffer[core.Result[T]](savedRingBuf.Cap(), savedOverflowStrat)
+		p.ringBufFlag.Store(true)
+	} else {
+		p.ringBufFlag.Store(false)
+	}
 	p.mu.Unlock()
 
 	p.workerWg.Add(newSize)

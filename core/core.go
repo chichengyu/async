@@ -395,6 +395,8 @@ func WaitTimeoutImpl[T any](
 	timeoutCtx, timeoutCancel := context.WithTimeout(context.Background(), d)
 	defer timeoutCancel()
 
+	waiting.Store(true)
+
 	var cancelAllOnce sync.Once
 	safeCancelAll := func() {
 		cancelAllOnce.Do(func() {
