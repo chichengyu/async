@@ -35,6 +35,7 @@ package ratelimit
 import (
 	"context"
 	"math"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -53,12 +54,13 @@ const (
 
 // RateLimiter controls the concurrency rate.
 type RateLimiter struct {
-	tokens chan struct{}   // 令牌 channel（缓冲大小=并发度）
-	size   int32           // 并发度（atomic 原子操作，动态调整后同步）
-	strat  atomic.Value    // 令牌耗尽时的处理策略（Strategy）
-	closed atomic.Bool     // 是否已关闭
-	mu     sync.Mutex      // 保护以下字段的互斥锁
-	ctx    context.Context // 上下文
+	tokens   chan struct{} // 令牌 channel（缓冲大小=并发度）
+	size     int32         // 并发度（atomic 原子操作，动态调整后同步）
+	strat    atomic.Value  // 令牌耗尽时的处理策略（Strategy）
+	closed   atomic.Bool   // 是否已关闭
+	mu       sync.Mutex    // 保护以下字段的互斥锁
+	resizeMu sync.RWMutex  // 保护 Resize 期间禁止并发的 Acquire/Release
+	ctx      context.Context
 
 	rate        int           // 每 perDuration 补充的令牌数
 	perDuration time.Duration // 令牌补充周期
@@ -163,10 +165,12 @@ func (rl *RateLimiter) startRefill() {
 				close(rl.refillDone)
 				return
 			case <-ticker.C:
+				rl.resizeMu.RLock()
 				select {
 				case rl.tokens <- struct{}{}:
 				default:
 				}
+				rl.resizeMu.RUnlock()
 			}
 		}
 	}()
@@ -239,6 +243,8 @@ func (rl *RateLimiter) Acquire(ctx context.Context) error {
 	strat, _ := rl.strat.Load().(Strategy)
 	switch strat {
 	case Reject:
+		rl.resizeMu.RLock()
+		defer rl.resizeMu.RUnlock()
 		select {
 		case _, ok := <-rl.tokens:
 			if !ok {
@@ -250,23 +256,41 @@ func (rl *RateLimiter) Acquire(ctx context.Context) error {
 		}
 	case BlockForce:
 		for {
-			_, ok := <-rl.tokens
-			if ok {
-				return nil
+			rl.resizeMu.RLock()
+			select {
+			case _, ok := <-rl.tokens:
+				rl.resizeMu.RUnlock()
+				if ok {
+					return nil
+				}
+				continue
+			default:
 			}
+			rl.resizeMu.RUnlock()
 			if rl.closed.Load() {
 				return core.ErrRateLimiterStopped
 			}
+			runtime.Gosched()
 		}
 	default:
-		select {
-		case _, ok := <-rl.tokens:
-			if !ok {
-				return rl.Acquire(ctx)
+		for {
+			rl.resizeMu.RLock()
+			select {
+			case _, ok := <-rl.tokens:
+				rl.resizeMu.RUnlock()
+				if ok {
+					return nil
+				}
+				continue
+			default:
 			}
-			return nil
-		case <-ctx.Done():
-			return ctx.Err()
+			rl.resizeMu.RUnlock()
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
+			}
+			runtime.Gosched()
 		}
 	}
 }
@@ -283,15 +307,12 @@ func (rl *RateLimiter) Release() {
 	if rl.closed.Load() {
 		return
 	}
-	defer func() {
-		if r := recover(); r != nil {
-			core.LogCtxWarn(rl.ctx, "rate limiter release on closed limiter, token may be lost")
-		}
-	}()
+	rl.resizeMu.RLock()
 	select {
 	case rl.tokens <- struct{}{}:
 	default:
 	}
+	rl.resizeMu.RUnlock()
 }
 
 // Close 停止限流器的令牌补充 goroutine 并关闭令牌通道。多次调用安全。
@@ -342,6 +363,9 @@ func (rl *RateLimiter) Resize(newRate int) {
 		return
 	}
 
+	rl.resizeMu.Lock()
+	defer rl.resizeMu.Unlock()
+
 	oldTokens := rl.tokens
 	newTokens := make(chan struct{}, newRate)
 	for i := 0; i < current; i++ {
@@ -350,11 +374,12 @@ func (rl *RateLimiter) Resize(newRate int) {
 		default:
 		}
 	}
+
+	rl.tokens = newTokens
+	rl.size = int32(newRate)
 	for i := 0; i < newRate; i++ {
 		newTokens <- struct{}{}
 	}
-	rl.tokens = newTokens
-	rl.size = int32(newRate)
 	close(oldTokens)
 }
 
@@ -623,15 +648,17 @@ func NewAdaptiveRateLimiter(minRate, maxRate int) *AdaptiveRateLimiter {
 //   - ctx：上下文，取消后返回 ctx.Err()
 func (a *AdaptiveRateLimiter) Acquire(ctx context.Context) error {
 	a.mu.RLock()
-	defer a.mu.RUnlock()
-	return a.base.Acquire(ctx)
+	base := a.base
+	a.mu.RUnlock()
+	return base.Acquire(ctx)
 }
 
 // Release 释放一个并发槽位。
 func (a *AdaptiveRateLimiter) Release() {
 	a.mu.RLock()
-	defer a.mu.RUnlock()
-	a.base.Release()
+	base := a.base
+	a.mu.RUnlock()
+	base.Release()
 }
 
 // RecordSuccess 记录一次成功调用，用于自适应调整算法。

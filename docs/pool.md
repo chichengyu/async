@@ -898,112 +898,129 @@ func batchSendEmails(users []string) {
 
 ## Pool 方法速查表
 
-### 创建
+### 创建函数
 
-| 函数 | 说明 |
-|------|------|
-| `NewPool[T](size)` | 创建指定大小的泛型协程池 |
-| `DefaultPool[T]()` | 使用默认 IO 并发度创建 |
-| `NewNoResultPool(size)` | 创建无返回值池 |
-| `DefaultNoResultPool()` | 创建默认并发度无返回值池 |
+| 函数 | 完整签名 |
+|------|---------|
+| `NewPool[T]` | `func NewPool[T any](size int) *Pool[T]` |
+| `DefaultPool[T]` | `func DefaultPool[T any]() *Pool[T]` |
+| `NewNoResultPool` | `func NewNoResultPool(size int) *NoResultPool` |
+| `DefaultNoResultPool` | `func DefaultNoResultPool() *NoResultPool` |
+| `NewAutoScalePool[T]` | `func NewAutoScalePool[T any](initialSize int, config *AutoScaleConfig) *Pool[T]` |
 
-### 提交
+### Pool[T] 提交方法
 
-| 方法 | 说明 |
-|------|------|
-| `Submit(ctx, fn)` | 阻塞提交任务 |
-| `TrySubmit(ctx, fn)` | 非阻塞提交（队列满返回 ErrSubmitTimeout） |
-| `SubmitAt(index, ctx, fn)` | 指定结果索引位置阻塞提交 |
-| `TrySubmitAt(index, ctx, fn)` | 指定结果索引位置非阻塞提交 |
+| 方法 | 完整签名 | 说明 |
+|------|---------|------|
+| `Submit` | `func (p *Pool[T]) Submit(ctx context.Context, fn func(context.Context) (T, error)) error` | 阻塞提交，队列满等待直到 submit 超时 |
+| `TrySubmit` | `func (p *Pool[T]) TrySubmit(ctx context.Context, fn func(context.Context) (T, error)) error` | 非阻塞提交，队列满立即返回 ErrSubmitTimeout |
+| `SubmitAt` | `func (p *Pool[T]) SubmitAt(index int, ctx context.Context, fn func(context.Context) (T, error)) error` | 阻塞提交到指定索引位置 |
 
-### 等待与关闭
+### Pool[T] 等待与关闭方法
 
-| 方法 | 说明 |
-|------|------|
-| `Wait()` | 阻塞等待，返回全部结果 |
-| `WaitTimeout(d)` | 带超时等待，返回 `([]Result, bool)` |
-| `WaitContext(ctx)` | Context 控制等待 |
-| `WaitAndClose()` | Wait 后自动 Close |
-| `Close()` | 关闭任务队列，等待 worker 退出 |
-| `CloseAndWait()` | 关闭后等待 worker 处理完剩余任务 |
-| `CloseAndWaitTimeout(d)` | 带超时关闭 |
-| `CloseByIdle(d)` | 空闲后关闭，最多等 d |
+| 方法 | 完整签名 | 说明 |
+|------|---------|------|
+| `Wait` | `func (p *Pool[T]) Wait() []core.Result[T]` | 阻塞等待，返回全部结果 |
+| `WaitTimeout` | `func (p *Pool[T]) WaitTimeout(d time.Duration) ([]core.Result[T], bool)` | 带超时等待，第二个返回值指示是否在超时前完成 |
+| `WaitContext` | `func (p *Pool[T]) WaitContext(ctx context.Context) ([]core.Result[T], bool)` | Context 控制等待 |
+| `WaitAndClose` | `func (p *Pool[T]) WaitAndClose() []core.Result[T]` | Wait 后自动 Close |
+| `Close` | `func (p *Pool[T]) Close()` | 关闭任务队列，等待已提交任务执行完成 |
+| `CloseAndWait` | `func (p *Pool[T]) CloseAndWait()` | 关闭后等待 worker 处理完剩余任务 |
+| `CloseAndWaitTimeout` | `func (p *Pool[T]) CloseAndWaitTimeout(timeout time.Duration) (ok bool, workerDone <-chan struct{})` | 带超时关闭并等待 |
+| `CloseByIdle` | `func (p *Pool[T]) CloseByIdle(timeout time.Duration)` | 等待空闲后关闭，最多等待 timeout |
 
-### 高级选项
+### Pool[T] 选项链式方法（返回新 Pool + Context）
 
-| 方法 | 说明 |
-|------|------|
-| `WithTimeout(d)` | 设置任务超时 |
-| `WithSubmitTimeout(d)` | 设置提交等待超时 |
-| `WithContext(ctx)` | 注入 Context |
-| `WithTraceID(ctx)` | 确保 trace_id |
-| `WithFailFast(ctx)` | 开启 FailFast |
-| `WithFFTimeout(ctx, d)` | FailFast + 超时 |
-| `WithFFSubmitTO(ctx, d)` | FailFast + 提交超时 |
-| `WithCtxTimeout(ctx, d)` | Context + 超时 |
-| ... 及其 TraceID 组合变体 | (共 16 种组合) |
+| 方法 | 完整签名 |
+|------|---------|
+| `WithTraceID` | `func (p *Pool[T]) WithTraceID(ctx context.Context) (*Pool[T], context.Context)` |
+| `WithContext` | `func (p *Pool[T]) WithContext(ctx context.Context) (*Pool[T], context.Context)` |
+| `WithFailFast` | `func (p *Pool[T]) WithFailFast(ctx context.Context) (*Pool[T], context.Context)` |
+| `WithFFCtx` | `func (p *Pool[T]) WithFFCtx(ctx context.Context) (*Pool[T], context.Context)` |
+| `WithFFTraceID` | `func (p *Pool[T]) WithFFTraceID(ctx context.Context) (*Pool[T], context.Context)` |
+| `WithFFSubmitTO` | `func (p *Pool[T]) WithFFSubmitTO(ctx context.Context, submitTimeout time.Duration) (*Pool[T], context.Context)` |
+| `WithFFSubmitTOTraceID` | `func (p *Pool[T]) WithFFSubmitTOTraceID(ctx context.Context, submitTimeout time.Duration) (*Pool[T], context.Context)` |
+| `WithFFTimeout` | `func (p *Pool[T]) WithFFTimeout(ctx context.Context, timeout time.Duration) (*Pool[T], context.Context)` |
+| `WithCtxTraceID` | `func (p *Pool[T]) WithCtxTraceID(ctx context.Context) (*Pool[T], context.Context)` |
+| `WithFFTimeoutTraceID` | `func (p *Pool[T]) WithFFTimeoutTraceID(ctx context.Context, timeout time.Duration) (*Pool[T], context.Context)` |
+| `WithFFTimeoutSubmitTO` | `func (p *Pool[T]) WithFFTimeoutSubmitTO(ctx context.Context, timeout, submitTimeout time.Duration) (*Pool[T], context.Context)` |
+| `WithFFTimeoutSubmitTOTraceID` | `func (p *Pool[T]) WithFFTimeoutSubmitTOTraceID(ctx context.Context, timeout, submitTimeout time.Duration) (*Pool[T], context.Context)` |
+| `WithCtxTimeout` | `func (p *Pool[T]) WithCtxTimeout(ctx context.Context, timeout time.Duration) (*Pool[T], context.Context)` |
+| `WithCtxTimeoutTraceID` | `func (p *Pool[T]) WithCtxTimeoutTraceID(ctx context.Context, timeout time.Duration) (*Pool[T], context.Context)` |
+| `WithCtxSubmitTO` | `func (p *Pool[T]) WithCtxSubmitTO(ctx context.Context, submitTimeout time.Duration) (*Pool[T], context.Context)` |
+| `WithCtxSubmitTOTraceID` | `func (p *Pool[T]) WithCtxSubmitTOTraceID(ctx context.Context, submitTimeout time.Duration) (*Pool[T], context.Context)` |
 
-### 查询
+### Pool[T] 选项链式方法（返回修改后的 Pool）
 
-| 方法 | 说明 |
-|------|------|
-| `Size()` | Worker 数量 |
-| `Active()` | 活跃 worker 数 |
-| `Busy()` | 繁忙 worker 数 |
-| `Idle()` | 空闲 worker 数 |
-| `Pending()` | 排队任务数 |
-| `Stats()` | 完整统计 PoolStats |
+| 方法 | 完整签名 |
+|------|---------|
+| `WithTimeout` | `func (p *Pool[T]) WithTimeout(d time.Duration) *Pool[T]` |
+| `WithSubmitTimeout` | `func (p *Pool[T]) WithSubmitTimeout(d time.Duration) *Pool[T]` |
 
-### 结果提取
+### Pool[T] 查询/监控方法
 
-| 方法 | 说明 |
-|------|------|
-| `Values()` | 成功值切片 |
-| `Errors()` | 错误切片 |
-| `FirstError()` | 首个错误 |
-| `JoinErrors()` | 合并所有错误 |
-| `FailCount()` | 失败数 |
-| `SuccessCount()` | 成功数 |
-| `TotalCount()` | 总数 |
-| `HasError()` | 是否有错误 |
+| 方法 | 完整签名 | 说明 |
+|------|---------|------|
+| `Size` | `func (p *Pool[T]) Size() int` | Worker 数量 |
+| `Active` | `func (p *Pool[T]) Active() int` | 活跃 worker 数（含等待队列长度） |
+| `Busy` | `func (p *Pool[T]) Busy() int` | 繁忙 worker 数 |
+| `Idle` | `func (p *Pool[T]) Idle() int` | 空闲 worker 数（Size - Busy） |
+| `Pending` | `func (p *Pool[T]) Pending() int` | 排队任务数 |
+| `Stats` | `func (p *Pool[T]) Stats() PoolStats` | 完整统计信息 |
 
-### 动态管理
+### Pool[T] 结果提取方法
 
-| 方法 | 说明 |
-|------|------|
-| `Resize(newSize)` | 调整 worker 数量 |
-| `ResizeAndWaitTimeout(newSize, d)` | 调整并等待 |
-| `Reset()` | 关闭旧池创建新池 |
+| 方法 | 完整签名 | 说明 |
+|------|---------|------|
+| `Values` | `func (p *Pool[T]) Values() []T` | 所有成功值（无序） |
+| `Errors` | `func (p *Pool[T]) Errors() []error` | 所有非 nil 错误 |
+| `FirstError` | `func (p *Pool[T]) FirstError() error` | 首个错误（可能为 nil） |
+| `JoinErrors` | `func (p *Pool[T]) JoinErrors() error` | 合并所有错误为一个 error |
+| `FailCount` | `func (p *Pool[T]) FailCount() int64` | 失败数 |
+| `SuccessCount` | `func (p *Pool[T]) SuccessCount() int64` | 成功数 |
+| `TotalCount` | `func (p *Pool[T]) TotalCount() int64` | 总任务数 |
+| `HasError` | `func (p *Pool[T]) HasError() bool` | 是否有错误 |
+
+### Pool[T] 动态管理方法
+
+| 方法 | 完整签名 | 说明 |
+|------|---------|------|
+| `Resize` | `func (p *Pool[T]) Resize(newSize int) int` | 调整 worker 数量，返回旧大小 |
+| `ResizeAndWaitTimeout` | `func (p *Pool[T]) ResizeAndWaitTimeout(newSize int, timeout time.Duration)` | 调整并等待旧 worker 退出 |
+| `Reset` | `func (p *Pool[T]) Reset() (*Pool[T], error)` | 关闭旧池并创建同配置新池 |
+| `EnableAutoScale` | `func (p *Pool[T]) EnableAutoScale(config *core.AutoScaleConfig)` | 启用自动扩缩容（传 nil 使用默认配置） |
+| `DisableAutoScale` | `func (p *Pool[T]) DisableAutoScale()` | 停止并禁用自动扩缩容 |
+| `IsAutoScaleEnabled` | `func (p *Pool[T]) IsAutoScaleEnabled() bool` | 查询自动扩缩容是否已启用 |
 
 ### NoResultPool 辅助函数
 
-| 函数 | 说明 |
+| 函数 | 完整签名 | 说明 |
+|------|---------|------|
+| `SubmitAction` | `func SubmitAction(p *NoResultPool, ctx context.Context, fn func(context.Context) error) error` | 阻塞提交无返回值动作 |
+| `TrySubmitAction` | `func TrySubmitAction(p *NoResultPool, ctx context.Context, fn func(context.Context) error) error` | 非阻塞提交 |
+| `SubmitAtAction` | `func SubmitAtAction(p *NoResultPool, index int, ctx context.Context, fn func(context.Context) error) error` | 指定位置阻塞提交 |
+| `TrySubmitAtAction` | `func TrySubmitAtAction(p *NoResultPool, index int, ctx context.Context, fn func(context.Context) error) error` | 指定位置非阻塞提交 |
+| `GoAction` | `func GoAction(p *NoResultPool, ctx context.Context, fn func(context.Context) error)` | 提交并断言成功（失败则 panic） |
+| `SubmitActionWithTimeout` | `func SubmitActionWithTimeout(p *NoResultPool, ctx context.Context, timeout time.Duration, fn func(context.Context) error) error` | 带超时提交 |
+| `SubmitAtActionWithTimeout` | `func SubmitAtActionWithTimeout(p *NoResultPool, index int, ctx context.Context, timeout time.Duration, fn func(context.Context) error) error` | 指定位置带超时提交 |
+| `GoActionWithTimeout` | `func GoActionWithTimeout(p *NoResultPool, ctx context.Context, timeout time.Duration, fn func(context.Context) error)` | 带超时提交并断言成功 |
+
+### 顶层便捷函数
+
+| 函数 | 完整签名 | 说明 |
+|------|---------|------|
+| `Submit[T]` | `func Submit[T any](ctx context.Context, fn func(context.Context) (T, error)) (*Pool[T], int, error)` | 快速创建池提交单个任务，返回池+索引+错误 |
+| `SubmitN[T]` | `func SubmitN[T any](ctx context.Context, fn func(context.Context) (T, error), n int) (*Pool[T], []SubmitResult, error)` | 提交 n 个相同任务 |
+| `SubmitSafeN[T]` | `func SubmitSafeN[T any](ctx context.Context, fn func(context.Context) (T, error), n int) (*Pool[T], []SubmitResult)` | 提交 n 个（忽略提交失败） |
+| `SubmitBatch[T, S]` | `func SubmitBatch[T any, S ~[]E, E any](ctx context.Context, items S, fn func(context.Context, E) (T, error)) (*Pool[T], []SubmitResult, error)` | 批量提交切片元素 |
+| `MapPool[T, R]` | `func MapPool[T any, R any](ctx context.Context, items []T, fn func(context.Context, T) (R, error), concurrency int) (*Pool[R], []core.Result[R], error)` | 池化 Map，返回 Pool 和结果 |
+| `ForEachPool[T]` | `func ForEachPool[T any](ctx context.Context, items []T, fn func(context.Context, T) error, concurrency int) (*NoResultPool, error)` | 池化 ForEach，返回 NoResultPool |
+
+### 类型定义
+
+| 类型 | 定义 |
 |------|------|
-| `SubmitAction(p, ctx, fn)` | 阻塞提交无返回值动作 |
-| `TrySubmitAction(p, ctx, fn)` | 非阻塞提交 |
-| `SubmitAtAction(p, idx, ctx, fn)` | 指定位置阻塞提交 |
-| `TrySubmitAtAction(p, idx, ctx, fn)` | 指定位置非阻塞提交 |
-| `GoAction(p, ctx, fn)` | 提交并断言成功（失败 panic） |
-| `SubmitActionWithTimeout(p, ctx, d, fn)` | 带超时提交 |
-| `SubmitAtActionWithTimeout(p, idx, ctx, d, fn)` | 指定位置带超时提交 |
-| `GoActionWithTimeout(p, ctx, d, fn)` | 带超时提交并断言成功 |
-
-### 便捷函数
-
-| 函数 | 说明 |
-|------|------|
-| `Submit(ctx, fn)` | 快速创建池提交单个任务 |
-| `SubmitN(ctx, fn, n)` | 提交 N 个相同任务 |
-| `SubmitSafeN(ctx, fn, n)` | 提交 N 个（忽略失败） |
-| `SubmitBatch(ctx, items, fn)` | 批量提交切片元素 |
-| `MapPool(ctx, items, fn, c)` | 池化 Map |
-| `ForEachPool(ctx, items, fn, c)` | 池化 ForEach |
-
-### 类型
-
-| 类型 | 说明 |
-|------|------|
-| `Pool[T]` | 泛型协程池 |
-| `NoResultPool` | 无返回值协程池 |
-| `PoolStats` | 统计信息结构体 |
-| `SubmitResult` | 提交结果（包含 Index 和 Err） |
+| `Pool[T]` | `type Pool[T any] = pool.Pool[T]` |
+| `NoResultPool` | `type NoResultPool = pool.Pool[struct{}]` |
+| `PoolStats` | `struct{ Size, Active, Busy, Idle, Pending int; TotalTask, SuccessTask, FailTask int64 }` |
+| `SubmitResult` | `struct{ Index int; Err error }` |

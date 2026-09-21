@@ -614,130 +614,138 @@ func main() {
 
 ### Map 系列
 
-| 函数 | 说明 |
-|------|------|
-| `Map(ctx, items, c, fn)` | 并发映射 |
-| `MapWithFailFast(ctx, items, c, fn)` | FailFast 映射 |
-| `MapWithTimeout(ctx, items, c, d, fn)` | 带超时映射 |
-| `MapWithFFTimeout(ctx, items, c, d, fn)` | FailFast + 超时映射 |
-| `MapSerial(ctx, items, fn)` | 串行映射 |
-| `MapSerialFailFast(ctx, items, fn)` | 串行 FailFast 映射 |
-| `DefaultMap(ctx, items, fn)` | 默认并发度映射 |
-| `DefaultMapWithFailFast(ctx, items, fn)` | 默认 + FailFast |
-| `DefaultMapWithTimeout(ctx, items, d, fn)` | 默认 + 超时 |
-| `DefaultMapWithFFTimeout(ctx, items, d, fn)` | 默认 + FF + 超时 |
+| 函数 | 完整签名 |
+|------|---------|
+| `Map[T, R]` | `func Map[T any, R any](ctx context.Context, items []T, concurrency int, fn func(context.Context, T) (R, error)) []Result[R]` |
+| `MapWithFailFast[T, R]` | `func MapWithFailFast[T any, R any](ctx context.Context, items []T, concurrency int, fn func(context.Context, T) (R, error)) ([]Result[R], error)` |
+| `MapWithTimeout[T, R]` | `func MapWithTimeout[T any, R any](ctx context.Context, items []T, concurrency int, timeout time.Duration, fn func(context.Context, T) (R, error)) []Result[R]` |
+| `MapWithFFTimeout[T, R]` | `func MapWithFFTimeout[T any, R any](ctx context.Context, items []T, concurrency int, timeout time.Duration, fn func(context.Context, T) (R, error)) ([]Result[R], error)` |
+| `MapSerial[T, R]` | `func MapSerial[T any, R any](ctx context.Context, items []T, fn func(context.Context, T) (R, error)) []Result[R]` |
+| `MapSerialFailFast[T, R]` | `func MapSerialFailFast[T any, R any](ctx context.Context, items []T, fn func(context.Context, T) (R, error)) ([]Result[R], error)` |
+| `DefaultMap[T, R]` | `func DefaultMap[T any, R any](ctx context.Context, items []T, fn func(context.Context, T) (R, error)) []Result[R]` |
+| `DefaultMapWithFailFast[T, R]` | `func DefaultMapWithFailFast[T any, R any](ctx context.Context, items []T, fn func(context.Context, T) (R, error)) ([]Result[R], error)` |
+| `DefaultMapWithTimeout[T, R]` | `func DefaultMapWithTimeout[T any, R any](ctx context.Context, items []T, timeout time.Duration, fn func(context.Context, T) (R, error)) []Result[R]` |
+| `DefaultMapWithFFTimeout[T, R]` | `func DefaultMapWithFFTimeout[T any, R any](ctx context.Context, items []T, timeout time.Duration, fn func(context.Context, T) (R, error)) ([]Result[R], error)` |
 
 ### ForEach 系列
 
-| 函数 | 说明 |
-|------|------|
-| `ForEach(ctx, items, c, fn)` | 并发遍历 |
-| `ForEachWithFailFast(ctx, items, c, fn)` | FailFast 遍历 |
-| `ForEachWithTimeout(ctx, items, c, d, fn)` | 带超时遍历 |
-| `ForEachWithFFTimeout(ctx, items, c, d, fn)` | FailFast + 超时遍历 |
-| `ForEachSerial(ctx, items, fn)` | 串行遍历 |
-| `ForEachSerialFailFast(ctx, items, fn)` | 串行 FailFast 遍历 |
-| `DefaultForEach(ctx, items, fn)` | 默认并发度遍历 |
-| `DefaultForEachWithFailFast(ctx, items, fn)` | 默认 + FailFast |
-| `DefaultForEachWithTimeout(ctx, items, d, fn)` | 默认 + 超时 |
-| `DefaultForEachWithFFTimeout(ctx, items, d, fn)` | 默认 + FF + 超时 |
+| 函数 | 完整签名 |
+|------|---------|
+| `ForEach[T]` | `func ForEach[T any](ctx context.Context, items []T, concurrency int, fn func(context.Context, T) error) (*NoResult, error)` |
+| `ForEachWithFailFast[T]` | `func ForEachWithFailFast[T any](ctx context.Context, items []T, concurrency int, fn func(context.Context, T) error) (*NoResult, error)` |
+| `ForEachWithTimeout[T]` | `func ForEachWithTimeout[T any](ctx context.Context, items []T, concurrency int, timeout time.Duration, fn func(context.Context, T) error) (*NoResult, error)` |
+| `ForEachWithFFTimeout[T]` | `func ForEachWithFFTimeout[T any](ctx context.Context, items []T, concurrency int, timeout time.Duration, fn func(context.Context, T) error) (*NoResult, error)` |
+| `ForEachSerial[T]` | `func ForEachSerial[T any](ctx context.Context, items []T, fn func(context.Context, T) error) (*NoResult, error)` |
+| `ForEachSerialFailFast[T]` | `func ForEachSerialFailFast[T any](ctx context.Context, items []T, fn func(context.Context, T) error) (*NoResult, error)` |
+| `DefaultForEach[T]` | `func DefaultForEach[T any](ctx context.Context, items []T, fn func(context.Context, T) error) (*NoResult, error)` |
+| `DefaultForEachWithFailFast[T]` | `func DefaultForEachWithFailFast[T any](ctx context.Context, items []T, fn func(context.Context, T) error) (*NoResult, error)` |
+| `DefaultForEachWithTimeout[T]` | `func DefaultForEachWithTimeout[T any](ctx context.Context, items []T, timeout time.Duration, fn func(context.Context, T) error) (*NoResult, error)` |
+| `DefaultForEachWithFFTimeout[T]` | `func DefaultForEachWithFFTimeout[T any](ctx context.Context, items []T, timeout time.Duration, fn func(context.Context, T) error) (*NoResult, error)` |
 
 ### Reduce 系列
 
-| 函数 | 说明 |
-|------|------|
-| `Reduce(ctx, items, c, mapFn, init, reduceFn)` | 并发聚合 |
-| `ReduceWithFailFast(ctx, items, c, mapFn, init, reduceFn)` | FailFast 聚合 |
-| `ReduceWithTimeout(ctx, items, c, d, mapFn, init, reduceFn)` | 带超时聚合 |
-| `ReduceWithFFTimeout(ctx, items, c, d, mapFn, init, reduceFn)` | FailFast + 超时聚合 |
-| `DefaultReduce(ctx, items, mapFn, init, reduceFn)` | 默认并发度聚合 |
-| `DefaultReduceWithFailFast(ctx, items, mapFn, init, reduceFn)` | 默认 + FailFast |
-| `DefaultReduceWithTimeout(ctx, items, d, mapFn, init, reduceFn)` | 默认 + 超时 |
-| `DefaultReduceWithFFTimeout(ctx, items, d, mapFn, init, reduceFn)` | 默认 + FF + 超时 |
+| 函数 | 完整签名 |
+|------|---------|
+| `Reduce[T, R]` | `func Reduce[T any, R any](ctx context.Context, items []T, concurrency int, mapFn func(context.Context, T) (R, error), initial R, reduceFn func(R, R) R) (R, error)` |
+| `ReduceWithFailFast[T, R]` | `func ReduceWithFailFast[T any, R any](ctx context.Context, items []T, concurrency int, mapFn func(context.Context, T) (R, error), initial R, reduceFn func(R, R) R) (R, error)` |
+| `ReduceWithTimeout[T, R]` | `func ReduceWithTimeout[T any, R any](ctx context.Context, items []T, concurrency int, timeout time.Duration, mapFn func(context.Context, T) (R, error), initial R, reduceFn func(R, R) R) (R, error)` |
+| `ReduceWithFFTimeout[T, R]` | `func ReduceWithFFTimeout[T any, R any](ctx context.Context, items []T, concurrency int, timeout time.Duration, mapFn func(context.Context, T) (R, error), initial R, reduceFn func(R, R) R) (R, error)` |
+| `DefaultReduce[T, R]` | `func DefaultReduce[T any, R any](ctx context.Context, items []T, mapFn func(context.Context, T) (R, error), initial R, reduceFn func(R, R) R) (R, error)` |
+| `DefaultReduceWithFailFast[T, R]` | `func DefaultReduceWithFailFast[T any, R any](ctx context.Context, items []T, mapFn func(context.Context, T) (R, error), initial R, reduceFn func(R, R) R) (R, error)` |
+| `DefaultReduceWithTimeout[T, R]` | `func DefaultReduceWithTimeout[T any, R any](ctx context.Context, items []T, timeout time.Duration, mapFn func(context.Context, T) (R, error), initial R, reduceFn func(R, R) R) (R, error)` |
+| `DefaultReduceWithFFTimeout[T, R]` | `func DefaultReduceWithFFTimeout[T any, R any](ctx context.Context, items []T, timeout time.Duration, mapFn func(context.Context, T) (R, error), initial R, reduceFn func(R, R) R) (R, error)` |
 
-### Chunk 系列
+### Chunk 分块工具
 
-| 函数 | 说明 |
-|------|------|
-| `Chunk(items, batchSize)` | 按大小分块 |
-| `ChunkN(items, n)` | 按数量均分 |
+| 函数 | 完整签名 |
+|------|---------|
+| `Chunk[T]` | `func Chunk[T any](items []T, batchSize int) [][]T` |
+| `ChunkN[T]` | `func ChunkN[T any](items []T, n int) [][]T` |
 
-### MapChunk 系列（fn 接收整个 chunk，适合批量 INSERT）
+### MapChunk 系列（fn 接收整个 chunk `[]T`）
 
-| 函数 | 说明 |
-|------|------|
-| `MapChunk(ctx, items, c, batch, fn)` | 分块并发映射 |
-| `MapChunkWithFailFast(ctx, items, c, batch, fn)` | FailFast 分块 |
-| `MapChunkWithTimeout(ctx, items, c, batch, d, fn)` | 带超时分块 |
-| `MapChunkWithFFTimeout(ctx, items, c, batch, d, fn)` | FailFast + 超时分块 |
-| `DefaultMapChunk(ctx, items, batch, fn)` | 默认并发度分块 |
-| `DefaultMapChunkWithFailFast(ctx, items, batch, fn)` | 默认 + FailFast |
-| `DefaultMapChunkWithTimeout(ctx, items, batch, d, fn)` | 默认 + 超时 |
-| `DefaultMapChunkWithFFTimeout(ctx, items, batch, d, fn)` | 默认 + FF + 超时 |
+| 函数 | 完整签名 |
+|------|---------|
+| `MapChunk[T, R]` | `func MapChunk[T any, R any](ctx context.Context, items []T, concurrency int, batchSize int, fn func(context.Context, []T) (R, error)) []Result[R]` |
+| `MapChunkWithFailFast[T, R]` | `func MapChunkWithFailFast[T any, R any](ctx context.Context, items []T, concurrency int, batchSize int, fn func(context.Context, []T) (R, error)) ([]Result[R], error)` |
+| `MapChunkWithTimeout[T, R]` | `func MapChunkWithTimeout[T any, R any](ctx context.Context, items []T, concurrency int, batchSize int, timeout time.Duration, fn func(context.Context, []T) (R, error)) []Result[R]` |
+| `MapChunkWithFFTimeout[T, R]` | `func MapChunkWithFFTimeout[T any, R any](ctx context.Context, items []T, concurrency int, batchSize int, timeout time.Duration, fn func(context.Context, []T) (R, error)) ([]Result[R], error)` |
+| `DefaultMapChunk[T, R]` | `func DefaultMapChunk[T any, R any](ctx context.Context, items []T, batchSize int, fn func(context.Context, []T) (R, error)) []Result[R]` |
+| `DefaultMapChunkWithFailFast[T, R]` | `func DefaultMapChunkWithFailFast[T any, R any](ctx context.Context, items []T, batchSize int, fn func(context.Context, []T) (R, error)) ([]Result[R], error)` |
+| `DefaultMapChunkWithTimeout[T, R]` | `func DefaultMapChunkWithTimeout[T any, R any](ctx context.Context, items []T, batchSize int, timeout time.Duration, fn func(context.Context, []T) (R, error)) []Result[R]` |
+| `DefaultMapChunkWithFFTimeout[T, R]` | `func DefaultMapChunkWithFFTimeout[T any, R any](ctx context.Context, items []T, batchSize int, timeout time.Duration, fn func(context.Context, []T) (R, error)) ([]Result[R], error)` |
 
-### MapChunked 系列（fn 接收单元素，内部自动分块）
+### MapChunked 系列（fn 接收单元素 `T`，内部自动分块）
 
-| 函数 | 说明 |
-|------|------|
-| `MapChunked(ctx, items, c, batch, fn)` | 分块元素映射 |
-| `MapChunkedWithFailFast(ctx, items, c, batch, fn)` | FailFast 分块元素 |
-| `MapChunkedWithTimeout(ctx, items, c, batch, d, fn)` | 带超时分块元素 |
-| `MapChunkedWithFFTimeout(ctx, items, c, batch, d, fn)` | FailFast + 超时分块 |
-| `DefaultMapChunked(ctx, items, batch, fn)` | 默认并发度分块 |
-| `DefaultMapChunkedWithFailFast(ctx, items, batch, fn)` | 默认 + FailFast |
-| `DefaultMapChunkedWithTimeout(ctx, items, batch, d, fn)` | 默认 + 超时 |
-| `DefaultMapChunkedWithFFTimeout(ctx, items, batch, d, fn)` | 默认 + FF + 超时 |
+| 函数 | 完整签名 |
+|------|---------|
+| `MapChunked[T, R]` | `func MapChunked[T any, R any](ctx context.Context, items []T, concurrency int, batchSize int, fn func(context.Context, T) (R, error)) []Result[R]` |
+| `MapChunkedWithFailFast[T, R]` | `func MapChunkedWithFailFast[T any, R any](ctx context.Context, items []T, concurrency int, batchSize int, fn func(context.Context, T) (R, error)) ([]Result[R], error)` |
+| `MapChunkedWithTimeout[T, R]` | `func MapChunkedWithTimeout[T any, R any](ctx context.Context, items []T, concurrency int, batchSize int, timeout time.Duration, fn func(context.Context, T) (R, error)) []Result[R]` |
+| `MapChunkedWithFFTimeout[T, R]` | `func MapChunkedWithFFTimeout[T any, R any](ctx context.Context, items []T, concurrency int, batchSize int, timeout time.Duration, fn func(context.Context, T) (R, error)) ([]Result[R], error)` |
+| `DefaultMapChunked[T, R]` | `func DefaultMapChunked[T any, R any](ctx context.Context, items []T, batchSize int, fn func(context.Context, T) (R, error)) []Result[R]` |
+| `DefaultMapChunkedWithFailFast[T, R]` | `func DefaultMapChunkedWithFailFast[T any, R any](ctx context.Context, items []T, batchSize int, fn func(context.Context, T) (R, error)) ([]Result[R], error)` |
+| `DefaultMapChunkedWithTimeout[T, R]` | `func DefaultMapChunkedWithTimeout[T any, R any](ctx context.Context, items []T, batchSize int, timeout time.Duration, fn func(context.Context, T) (R, error)) []Result[R]` |
+| `DefaultMapChunkedWithFFTimeout[T, R]` | `func DefaultMapChunkedWithFFTimeout[T any, R any](ctx context.Context, items []T, batchSize int, timeout time.Duration, fn func(context.Context, T) (R, error)) ([]Result[R], error)` |
 
-### ForEachChunk 系列（fn 接收整个 chunk）
+### ForEachChunk 系列（fn 接收整个 chunk `[]T`）
 
-| 函数 | 说明 |
-|------|------|
-| `ForEachChunk(ctx, items, c, batch, fn)` | 分块并发遍历 |
-| `ForEachChunkWithFailFast(ctx, items, c, batch, fn)` | FailFast 分块遍历 |
-| `ForEachChunkWithTimeout(ctx, items, c, batch, d, fn)` | 带超时分块遍历 |
-| `ForEachChunkWithFFTimeout(ctx, items, c, batch, d, fn)` | FailFast + 超时分块 |
-| `DefaultForEachChunk(ctx, items, batch, fn)` | 默认并发度分块 |
-| `DefaultForEachChunkWithFailFast(ctx, items, batch, fn)` | 默认 + FailFast |
-| `DefaultForEachChunkWithTimeout(ctx, items, batch, d, fn)` | 默认 + 超时 |
-| `DefaultForEachChunkWithFFTimeout(ctx, items, batch, d, fn)` | 默认 + FF + 超时 |
+| 函数 | 完整签名 |
+|------|---------|
+| `ForEachChunk[T]` | `func ForEachChunk[T any](ctx context.Context, items []T, concurrency int, batchSize int, fn func(context.Context, []T) error) (*NoResult, error)` |
+| `ForEachChunkWithFailFast[T]` | `func ForEachChunkWithFailFast[T any](ctx context.Context, items []T, concurrency int, batchSize int, fn func(context.Context, []T) error) (*NoResult, error)` |
+| `ForEachChunkWithTimeout[T]` | `func ForEachChunkWithTimeout[T any](ctx context.Context, items []T, concurrency int, batchSize int, timeout time.Duration, fn func(context.Context, []T) error) (*NoResult, error)` |
+| `ForEachChunkWithFFTimeout[T]` | `func ForEachChunkWithFFTimeout[T any](ctx context.Context, items []T, concurrency int, batchSize int, timeout time.Duration, fn func(context.Context, []T) error) (*NoResult, error)` |
+| `DefaultForEachChunk[T]` | `func DefaultForEachChunk[T any](ctx context.Context, items []T, batchSize int, fn func(context.Context, []T) error) (*NoResult, error)` |
+| `DefaultForEachChunkWithFailFast[T]` | `func DefaultForEachChunkWithFailFast[T any](ctx context.Context, items []T, batchSize int, fn func(context.Context, []T) error) (*NoResult, error)` |
+| `DefaultForEachChunkWithTimeout[T]` | `func DefaultForEachChunkWithTimeout[T any](ctx context.Context, items []T, batchSize int, timeout time.Duration, fn func(context.Context, []T) error) (*NoResult, error)` |
+| `DefaultForEachChunkWithFFTimeout[T]` | `func DefaultForEachChunkWithFFTimeout[T any](ctx context.Context, items []T, batchSize int, timeout time.Duration, fn func(context.Context, []T) error) (*NoResult, error)` |
 
-### ForEachChunked 系列（fn 接收单元素）
+### ForEachChunked 系列（fn 接收单元素 `T`，内部自动分块）
 
-| 函数 | 说明 |
-|------|------|
-| `ForEachChunked(ctx, items, c, batch, fn)` | 分块遍历（单元素） |
-| `ForEachChunkedWithFailFast(ctx, items, c, batch, fn)` | FailFast 分块遍历 |
-| `ForEachChunkedWithTimeout(ctx, items, c, batch, d, fn)` | 带超时分块遍历 |
-| `ForEachChunkedWithFFTimeout(ctx, items, c, batch, d, fn)` | FailFast + 超时分块 |
-| `DefaultForEachChunked(ctx, items, batch, fn)` | 默认并发度分块 |
-| `DefaultForEachChunkedWithFailFast(ctx, items, batch, fn)` | 默认 + FailFast |
-| `DefaultForEachChunkedWithTimeout(ctx, items, batch, d, fn)` | 默认 + 超时 |
-| `DefaultForEachChunkedWithFFTimeout(ctx, items, batch, d, fn)` | 默认 + FF + 超时 |
+| 函数 | 完整签名 |
+|------|---------|
+| `ForEachChunked[T]` | `func ForEachChunked[T any](ctx context.Context, items []T, concurrency int, batchSize int, fn func(context.Context, T) error) (*NoResult, error)` |
+| `ForEachChunkedWithFailFast[T]` | `func ForEachChunkedWithFailFast[T any](ctx context.Context, items []T, concurrency int, batchSize int, fn func(context.Context, T) error) (*NoResult, error)` |
+| `ForEachChunkedWithTimeout[T]` | `func ForEachChunkedWithTimeout[T any](ctx context.Context, items []T, concurrency int, batchSize int, timeout time.Duration, fn func(context.Context, T) error) (*NoResult, error)` |
+| `ForEachChunkedWithFFTimeout[T]` | `func ForEachChunkedWithFFTimeout[T any](ctx context.Context, items []T, concurrency int, batchSize int, timeout time.Duration, fn func(context.Context, T) error) (*NoResult, error)` |
+| `DefaultForEachChunked[T]` | `func DefaultForEachChunked[T any](ctx context.Context, items []T, batchSize int, fn func(context.Context, T) error) (*NoResult, error)` |
+| `DefaultForEachChunkedWithFailFast[T]` | `func DefaultForEachChunkedWithFailFast[T any](ctx context.Context, items []T, batchSize int, fn func(context.Context, T) error) (*NoResult, error)` |
+| `DefaultForEachChunkedWithTimeout[T]` | `func DefaultForEachChunkedWithTimeout[T any](ctx context.Context, items []T, batchSize int, timeout time.Duration, fn func(context.Context, T) error) (*NoResult, error)` |
+| `DefaultForEachChunkedWithFFTimeout[T]` | `func DefaultForEachChunkedWithFFTimeout[T any](ctx context.Context, items []T, batchSize int, timeout time.Duration, fn func(context.Context, T) error) (*NoResult, error)` |
 
 ### MapPool / ForEachPool 系列
 
-| 函数 | 说明 |
-|------|------|
-| `MapPool(ctx, items, fn, c)` | 返回 `*Pool[R]`，可复用 |
-| `ForEachPool(ctx, items, fn, c)` | 返回 `*NoResultPool`，可复用 |
+| 函数 | 完整签名 | 说明 |
+|------|---------|------|
+| `MapPool[T, R]` | `func MapPool[T any, R any](ctx context.Context, items []T, fn func(context.Context, T) (R, error), concurrency int) (*Pool[R], []core.Result[R], error)` | 返回可复用的 `*Pool[R]` 和结果 |
+| `ForEachPool[T]` | `func ForEachPool[T any](ctx context.Context, items []T, fn func(context.Context, T) error, concurrency int) (*NoResultPool, error)` | 返回可复用的 `*NoResultPool` |
 
 ### Result 辅助函数
 
-| 函数 | 说明 |
-|------|------|
-| `ResultValues(results)` | 提取所有成功的值 |
-| `ResultErrors(results)` | 提取所有非 nil 错误 |
-| `Flat(results)` | 提取所有值（包括错误零值） |
-| `Every(results)` | 是否全部成功 |
-| `Some(results)` | 是否至少有一个成功 |
-| `AnyError(results)` | 是否存在任何错误 |
-| `Partition(results)` | 分离值和错误 |
-| `OnlyErrors(results)` | 提取错误（跳过 nil） |
+| 函数 | 完整签名 | 说明 |
+|------|---------|------|
+| `ResultValues[T]` | `func ResultValues[T any](results []Result[T]) []T` | 提取所有成功的值 |
+| `ResultErrors[T]` | `func ResultErrors[T any](results []Result[T]) []error` | 提取所有非 nil 错误 |
+| `Flat[T]` | `func Flat[T any](results []Result[T]) []T` | 提取所有值（包括错误前的零值） |
+| `OnlyErrors[T]` | `func OnlyErrors[T any](results []Result[T]) []error` | 提取错误（跳过 nil） |
+| `Every[T]` | `func Every[T any](results []Result[T]) bool` | 是否全部成功 |
+| `Some[T]` | `func Some[T any](results []Result[T]) bool` | 是否至少有一个成功 |
+| `AnyError[T]` | `func AnyError[T any](results []Result[T]) bool` | 是否存在任何错误 |
+| `Partition[T]` | `func Partition[T any](results []Result[T]) (values []T, errors []error)` | 分离值和错误 |
 
 ### 通用工具
 
-| 函数 | 说明 |
+| 函数 | 完整签名 | 说明 |
+|------|---------|------|
+| `Must[T]` | `func Must[T any](val T, err error) T` | 提取值，err != nil 时 panic |
+| `SafeCall[T, R]` | `func SafeCall[T any, R any](ctx context.Context, item T, fn func(ctx context.Context, item T) (R, error)) (R, error)` | 安全调用元素级函数，捕获 panic |
+| `SafeCallVoid[T]` | `func SafeCallVoid[T any](ctx context.Context, item T, fn func(ctx context.Context, item T) error) error` | 无返回值安全调用，捕获 panic |
+
+### 类型定义
+
+| 类型 | 定义 |
 |------|------|
-| `Must[T](val, err)` | 提取值，err!=nil 时 panic |
-| `SafeCall[T,R](ctx, item, fn)` | 安全调用单个元素，捕获 panic |
-| `SafeCallVoid[T](ctx, item, fn)` | 无返回值安全调用，捕获 panic |
+| `Result[T]` | `type Result[T any] = core.Result[T]`（含 `Value T`、`Err error`、`Ok()`、`IsPanic()`） |
+| `NoResult` | `type NoResult = group.NoResult` |
+| `PanicError` | `type PanicError = core.PanicError` |

@@ -368,34 +368,61 @@ func callWithRetry(ctx context.Context, url string) (string, error) {
 
 ## 方法速查表
 
-### 重试函数
+### 重试函数（顶层 async 包）
 
-| 函数 | 退避策略 | 说明 |
+| 函数 | 完整签名 | 说明 |
 |------|---------|------|
-| `Retry(ctx, maxRetries, fn)` | 无 | 立即重试 |
-| `RetryWithBackoff(ctx, max, backoff, fn)` | 指数 | 指数退避重试（无返回值） |
-| `RetryWithLinearBackoff(ctx, max, backoff, fn)` | 线性 | 等间隔重试（无返回值） |
-| `RetryWithConfig[T](ctx, fn, max, init, max, opts)` | 指数 | 带每次调用超时（有返回值） |
-| `RetryWithConfigVoid(ctx, fn, max, init, max, opts)` | 指数 | 带每次调用超时（无返回值） |
-| `RetryWithBackoffResult[T](ctx, fn, max, init, max)` | 指数 | 指数退避，返回 `Result[T]` |
-| `RetryWithLinearBackoffResult[T](ctx, fn, max, backoff)` | 线性 | 等间隔重试，返回 `Result[T]` |
+| `RetryWithBackoff[T]` | `func RetryWithBackoff[T any](ctx context.Context, fn func(context.Context) (T, error), maxRetries int, initialBackoff time.Duration, maxBackoff time.Duration) (T, error)` | 指数退避重试（有返回值） |
+| `RetryWithBackoffVoid` | `func RetryWithBackoffVoid(ctx context.Context, fn func(context.Context) error, maxRetries int, initialBackoff time.Duration, maxBackoff time.Duration) error` | 指数退避重试（无返回值） |
+| `RetryWithBackoffResult[T]` | `func RetryWithBackoffResult[T any](ctx context.Context, fn func(context.Context) (T, error), maxRetries int, initialBackoff time.Duration, maxBackoff time.Duration) core.Result[T]` | 指数退避，返回 `Result[T]`（不返回 error，所有错误都在 Result 中） |
+| `RetryWithLinearBackoff[T]` | `func RetryWithLinearBackoff[T any](ctx context.Context, fn func(context.Context) (T, error), maxRetries int, backoff time.Duration) (T, error)` | 线性退避重试（有返回值） |
+| `RetryWithLinearBackoffVoid` | `func RetryWithLinearBackoffVoid(ctx context.Context, fn func(context.Context) error, maxRetries int, backoff time.Duration) error` | 线性退避重试（无返回值） |
+| `RetryWithLinearBackoffResult[T]` | `func RetryWithLinearBackoffResult[T any](ctx context.Context, fn func(context.Context) (T, error), maxRetries int, backoff time.Duration) core.Result[T]` | 线性退避，返回 `Result[T]` |
+| `RetryWithConfig[T]` | `func RetryWithConfig[T any](ctx context.Context, fn func(context.Context) (T, error), maxRetries int, initialBackoff time.Duration, maxBackoff time.Duration, opts ...TimeoutOpt) (T, error)` | 带每次调用超时配置的指数退避（有返回值） |
+| `RetryWithConfigVoid` | `func RetryWithConfigVoid(ctx context.Context, fn func(context.Context) error, maxRetries int, initialBackoff time.Duration, maxBackoff time.Duration, opts ...TimeoutOpt) error` | 带每次调用超时配置的指数退避（无返回值） |
 
-### 超时/截止时间包装
+### 重试函数（retry 子包）
 
-| 函数 | 说明 |
-|------|------|
-| `WithTimeout[T](ctx, d, fn)` | 带超时包装（有返回值） |
-| `WithTimeoutVoid(ctx, d, fn)` | 带超时包装（无返回值） |
-| `WithDeadline[T](ctx, dl, fn)` | 带截止时间包装（有返回值） |
-| `WithDeadlineVoid(ctx, dl, fn)` | 带截止时间包装（无返回值） |
+| 函数 | 完整签名 | 说明 |
+|------|---------|------|
+| `retry.RetryWithBackoff[T]` | `func RetryWithBackoff[T any](ctx context.Context, fn func(context.Context) (T, error), maxRetries int, initialBackoff time.Duration, maxBackoff time.Duration) (T, error)` | 指数退避（有返回值） |
+| `retry.RetryWithBackoffVoid` | `func RetryWithBackoffVoid(ctx context.Context, fn func(context.Context) error, maxRetries int, initialBackoff time.Duration, maxBackoff time.Duration) error` | 指数退避（无返回值） |
+| `retry.RetryWithBackoffResult[T]` | `func RetryWithBackoffResult[T any](ctx context.Context, fn func(context.Context) (T, error), maxRetries int, initialBackoff time.Duration, maxBackoff time.Duration) core.Result[T]` | 指数退避返回 Result |
+| `retry.RetryWithLinearBackoff[T]` | `func RetryWithLinearBackoff[T any](ctx context.Context, fn func(context.Context) (T, error), maxRetries int, backoff time.Duration) (T, error)` | 线性退避（有返回值） |
+| `retry.RetryWithLinearBackoffVoid` | `func RetryWithLinearBackoffVoid(ctx context.Context, fn func(context.Context) error, maxRetries int, backoff time.Duration) error` | 线性退避（无返回值） |
+| `retry.RetryWithLinearBackoffResult[T]` | `func RetryWithLinearBackoffResult[T any](ctx context.Context, fn func(context.Context) (T, error), maxRetries int, backoff time.Duration) core.Result[T]` | 线性退避返回 Result |
+| `retry.RetryWithConfig[T]` | `func RetryWithConfig[T any](ctx context.Context, fn func(context.Context) (T, error), maxRetries int, initialBackoff time.Duration, maxBackoff time.Duration, opts ...TimeoutOpt) (T, error)` | 带每次超时配置 |
+| `retry.RetryWithConfigVoid` | `func RetryWithConfigVoid(ctx context.Context, fn func(context.Context) error, maxRetries int, initialBackoff time.Duration, maxBackoff time.Duration, opts ...TimeoutOpt) error` | 带每次超时配置（无返回值） |
 
-### 其他
+### 超时/截止时间包装（顶层 async 包）
 
-| 函数/类型 | 说明 |
-|-----------|------|
-| `retry.RetryWithBackoffVoid(ctx, fn, max, init, max)` | 指数退避（retry 子包 Void 版本） |
-| `retry.RetryWithLinearBackoffVoid(ctx, fn, max, backoff)` | 线性退避（retry 子包 Void 版本） |
-| `RetryFn(fn).WithRetry(n)` | 简单函数式重试 |
-| `BindRetryToWorker(ctx, pool, fn, max, init, max)` | Worker 提交重试 |
-| `TimeoutOpt{PerCallTimeout: d}` | 每次调用超时配置 |
-| `WorkerPoolBackend` | Worker 池接口 |
+| 函数 | 完整签名 | 说明 |
+|------|---------|------|
+| `WithTimeout[T]` | `func WithTimeout[T any](ctx context.Context, timeout time.Duration, fn func(ctx context.Context) (T, error)) (T, error)` | 带超时包装（有返回值） |
+| `WithTimeoutVoid` | `func WithTimeoutVoid(ctx context.Context, timeout time.Duration, fn func(ctx context.Context) error) error` | 带超时包装（无返回值） |
+| `WithDeadline[T]` | `func WithDeadline[T any](ctx context.Context, deadline time.Time, fn func(ctx context.Context) (T, error)) (T, error)` | 带截止时间包装（有返回值） |
+| `WithDeadlineVoid` | `func WithDeadlineVoid(ctx context.Context, deadline time.Time, fn func(ctx context.Context) error) error` | 带截止时间包装（无返回值） |
+
+### 超时/截止时间包装（retry 子包）
+
+| 函数 | 完整签名 | 说明 |
+|------|---------|------|
+| `retry.WithTimeout[T]` | `func WithTimeout[T any](ctx context.Context, timeout time.Duration, fn func(ctx context.Context) (T, error)) (T, error)` | 带超时包装 |
+| `retry.WithTimeoutVoid` | `func WithTimeoutVoid(ctx context.Context, timeout time.Duration, fn func(ctx context.Context) error) error` | 无返回值带超时包装 |
+| `retry.WithDeadline[T]` | `func WithDeadline[T any](ctx context.Context, deadline time.Time, fn func(ctx context.Context) (T, error)) (T, error)` | 带截止时间包装 |
+| `retry.WithDeadlineVoid` | `func WithDeadlineVoid(ctx context.Context, deadline time.Time, fn func(ctx context.Context) error) error` | 无返回值带截止时间包装 |
+
+### 函数式重试与 Worker 绑定
+
+| 函数/类型 | 完整签名 | 说明 |
+|-----------|---------|------|
+| `RetryFn` | `type RetryFn func() error` | 函数式重试封装 |
+| `(RetryFn).WithRetry` | `func (rf RetryFn) WithRetry(n int) error` | 简单无退避重试 n 次 |
+| `BindRetryToWorker` | `func BindRetryToWorker(ctx context.Context, pool WorkerPoolBackend, fn RetryFn, maxRetries int, initialBackoff time.Duration, maxBackoff time.Duration)` | 绑定重试到 Worker 池执行 |
+
+### 配置类型
+
+| 类型 | 完整定义 | 说明 |
+|------|---------|------|
+| `TimeoutOpt` | `type TimeoutOpt struct{ PerCallTimeout time.Duration }` | 每次调用超时配置（`RetryWithConfig` 的可变参数） |
+| `WorkerPoolBackend` | `interface{ Submit(ctx context.Context, fn func(context.Context) error) error }` | Worker 池抽象接口（Pool 和 Group 均实现） |

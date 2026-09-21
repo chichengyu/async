@@ -1111,12 +1111,19 @@ func ForEachChunk[T any](ctx context.Context, items []T, concurrency int, batchS
 
 // ForEachChunked 分块后并发 ForEach（fn 接收单个元素）。
 func ForEachChunked[T any](ctx context.Context, items []T, concurrency int, batchSize int, fn func(context.Context, T) error) (*NoResult, error) {
+	if batchSize <= 0 {
+		batchSize = len(items)
+	}
+	chunks := Chunk(items, batchSize)
 	nr := NewNoResult(concurrency)
-	for i := range items {
-		idx := i
-		nr.Go(ctx, func(ctx context.Context) error {
-			return fn(ctx, items[idx])
-		})
+	for ci, chunk := range chunks {
+		chunkIdx := ci
+		for i := range chunk {
+			idx := i
+			nr.Go(ctx, func(ctx context.Context) error {
+				return fn(ctx, chunks[chunkIdx][idx])
+			})
+		}
 	}
 	nr.Wait()
 	return nr, nr.FirstError()

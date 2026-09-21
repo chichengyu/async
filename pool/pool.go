@@ -359,6 +359,9 @@ func (p *Pool[T]) worker() {
 				return
 			}
 			if task.Quit {
+				if p.quitting.Load() <= 0 {
+					continue
+				}
 				p.quitting.Add(-1)
 				return
 			}
@@ -384,7 +387,9 @@ func (p *Pool[T]) worker() {
 						return
 					}
 					if task.Quit {
-						p.quitting.Add(-1)
+						if p.quitting.Load() > 0 {
+							p.quitting.Add(-1)
+						}
 						continue
 					}
 					p.active.Add(1)
@@ -431,6 +436,22 @@ func (p *Pool[T]) processTask(task core.PoolTask[T]) {
 	p.pending.Add(-1)
 	p.busy.Add(1)
 	defer p.busy.Add(-1)
+
+	// 出队后、执行前重检 ctx，消除 blockSend select 随机性带来的竞态窗口
+	select {
+	case <-taskCtx.Done():
+		var zero T
+		if index >= 0 {
+			record(core.Result[T]{Value: zero, Err: taskCtx.Err(), Occupied: true}, index)
+		} else {
+			record(core.Result[T]{Value: zero, Err: taskCtx.Err(), Occupied: true}, -1)
+		}
+		atomic.AddInt64(&p.errCnt, 1)
+		p.wg.Done()
+		taskCancel()
+		return
+	default:
+	}
 
 	if timeout > 0 {
 		var cancel context.CancelFunc
@@ -523,6 +544,15 @@ func (p *Pool[T]) submitIndexed(ctx context.Context, fn func(context.Context) (T
 		return -1, err
 	}
 	taskCtx, taskCancel := context.WithCancel(ctx)
+
+	// 二次检查：防止 poolPrecheck 与这里之间 Close() 被调用导致 wg 泄漏
+	if p.closed.Load() {
+		taskCancel()
+		p.mu.Lock()
+		p.results = append(p.results, core.Result[T]{Err: core.ErrPoolClosed, Occupied: true})
+		p.mu.Unlock()
+		return -1, core.ErrPoolClosed
+	}
 
 	p.mu.Lock()
 	idx := len(p.results)
@@ -639,6 +669,12 @@ func (p *Pool[T]) TrySubmit(ctx context.Context, fn func(context.Context) (T, er
 	}
 	taskCtx, taskCancel := context.WithCancel(ctx)
 
+	// 二次检查：防止检查通过后 Close() 被调用导致 wg 泄漏
+	if p.closed.Load() {
+		taskCancel()
+		return core.ErrPoolClosed
+	}
+
 	p.mu.Lock()
 	idx := len(p.results)
 	p.results = append(p.results, core.Result[T]{})
@@ -707,15 +743,21 @@ func (p *Pool[T]) Resize(newSize int) int {
 		p.quitting.Add(int32(quit))
 		if !p.closed.Load() {
 			for i := 0; i < quit; i++ {
-				select {
-				case p.taskCh <- core.PoolTask[T]{Quit: true}:
-				default:
-				}
+				p.sendQuitSignal()
 			}
 		}
 		return quit
 	}
 	return 0
+}
+
+// sendQuitSignal 向 taskCh 发送退出信号（尽力而为）。
+// 如果 taskCh 已满则静默丢弃，因为 worker 处理完任务后会通过 quitting 计数器自行退出。
+func (p *Pool[T]) sendQuitSignal() {
+	select {
+	case p.taskCh <- core.PoolTask[T]{Quit: true}:
+	default:
+	}
 }
 
 // ResizeAndWaitTimeout 调整 worker 数量并等待任务完成（最多等待 timeout）。
@@ -770,9 +812,12 @@ func (p *Pool[T]) enqueueTask(ctx context.Context, taskCtx context.Context, task
 		return err
 	}
 
-	// 慢路径：channel 满，分配 Timer 阻塞等待
+	// 慢路径：channel 满，分配 Timer 阻塞等待，带指数退避防止 CPU 空转
 	timer := time.NewTimer(core.SlotAcquireWarnTimeout)
 	defer timer.Stop()
+
+	backoff := 50 * time.Millisecond
+	const maxBackoff = 5 * time.Second
 
 	for {
 		if sent, err := p.blockSend(task, taskCtx, timer); sent {
@@ -783,6 +828,19 @@ func (p *Pool[T]) enqueueTask(ctx context.Context, taskCtx context.Context, task
 		} else if errors.Is(err, core.ErrSubmitTimeout) {
 			core.LogCtxWarn(ctx, "async: Pool.Submit blocking on task queue, consider setting WithSubmitTimeout",
 				core.Dur("elapsed", core.SlotAcquireWarnTimeout))
+			select {
+			case <-time.After(backoff):
+			case <-p.done:
+				p.discardTask(record, idx, taskCancel, core.ErrPoolClosed)
+				return core.ErrPoolClosed
+			case <-taskCtx.Done():
+				p.discardTask(record, idx, taskCancel, taskCtx.Err())
+				return taskCtx.Err()
+			}
+			backoff *= 2
+			if backoff > maxBackoff {
+				backoff = maxBackoff
+			}
 			timer.Reset(core.SlotAcquireWarnTimeout)
 			continue
 		}
@@ -799,6 +857,16 @@ func (p *Pool[T]) blockSend(task core.PoolTask[T], taskCtx context.Context, time
 	if p.closed.Load() {
 		return false, core.ErrPoolClosed
 	}
+
+	// 先检查取消，避免 select 随机选到 taskCh 而忽略取消信号
+	select {
+	case <-p.done:
+		return false, core.ErrPoolClosed
+	case <-taskCtx.Done():
+		return false, taskCtx.Err()
+	default:
+	}
+
 	defer func() {
 		if r := recover(); r != nil {
 			sent = false
@@ -823,6 +891,14 @@ func (p *Pool[T]) trySend(task core.PoolTask[T]) (sent bool, err error) {
 	if p.closed.Load() {
 		return false, core.ErrPoolClosed
 	}
+
+	// 先检查 done，避免 select 随机选到 taskCh 而忽略关闭信号
+	select {
+	case <-p.done:
+		return false, core.ErrPoolClosed
+	default:
+	}
+
 	defer func() {
 		if r := recover(); r != nil {
 			sent = false
@@ -910,11 +986,19 @@ func (p *Pool[T]) Close() {
 	p.mu.Unlock()
 	p.workerWg.Wait()
 
-	// 排空孤儿任务 —— 这些任务在 worker 退出后才被发送到 taskCh，
-	// 没有 worker 会处理它们，需要手动调用 wg.Done() 避免 Wait() 永久阻塞。
+	p.drainOrphanTasks()
+}
+
+// drainOrphanTasks 排空孤儿任务 —— 这些任务在 worker 退出后才被发送到 taskCh，
+// 没有 worker 会处理它们，需要手动清理避免 Wait() 永久阻塞。
+func (p *Pool[T]) drainOrphanTasks() {
 	for {
 		select {
 		case task := <-p.taskCh:
+			if task.Quit || task.Record == nil {
+				continue
+			}
+			p.pending.Add(-1)
 			p.discardTask(task.Record, task.Index, task.Cancel, core.ErrPoolClosed)
 		default:
 			return
@@ -951,16 +1035,19 @@ func (p *Pool[T]) CloseAndWaitTimeout(timeout time.Duration) (ok bool, workerDon
 		p.mu.Unlock()
 		return false, nil
 	}
-	close(p.taskCh)
+	close(p.done)
 	p.mu.Unlock()
+
 	done := make(chan struct{})
 	go func() {
 		p.workerWg.Wait()
 		close(done)
 	}()
+
 	select {
 	case <-done:
 		p.wg.Wait()
+		p.drainOrphanTasks()
 		return true, nil
 	case <-time.After(timeout):
 		return false, done

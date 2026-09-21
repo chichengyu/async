@@ -252,138 +252,103 @@ val := async.Must(someFn(ctx, input))
 
 ### 超时配置
 
-| 方法 | 说明 |
-|------|------|
-| `SetDefaultTimeout(d)` | 设置全局默认超时 |
-| `GetDefaultTimeout()` | 获取全局默认超时 |
-| `SetSubmitTimeout(d)` | 设置全局提交超时 |
-| `GetSubmitTimeout()` | 获取全局提交超时 |
-| `SetMaxCleanupDuration(d)` | 设置清理最大时长 |
-| `GetMaxCleanupDuration()` | 获取清理最大时长 |
+| 方法 | 完整签名 | 说明 |
+|------|---------|------|
+| `SetDefaultTimeout` | `func SetDefaultTimeout(d time.Duration)` | 设置全局 Pool/Group 任务默认超时 |
+| `GetDefaultTimeout` | `func GetDefaultTimeout() time.Duration` | 获取全局默认超时 |
+| `SetSubmitTimeout` | `func SetSubmitTimeout(d time.Duration)` | 设置全局提交等待空闲 worker 的超时 |
+| `GetSubmitTimeout` | `func GetSubmitTimeout() time.Duration` | 获取全局提交超时 |
+| `SetMaxCleanupDuration` | `func SetMaxCleanupDuration(d time.Duration)` | 设置超时后清理 goroutine 的最大等待时长 |
+| `GetMaxCleanupDuration` | `func GetMaxCleanupDuration() time.Duration` | 获取最大清理时长 |
 
 ### 日志配置
 
-| 方法 | 说明 |
-|------|------|
-| `SetLogger(logger)` | 注入自定义日志实现（如 zerolog、zap） |
-| `GetLogger()` | 获取当前日志器 |
-| `SetTaskFailLogLevel(level)` | 设置失败日志级别 |
-| `GetTaskFailLogLevel()` | 获取失败日志级别 |
-| `SetTraceLogEnabled(bool)` | 开关 Trace 日志 |
-| `GetTraceLogEnabled()` | 获取 Trace 日志状态 |
+| 方法 | 完整签名 | 说明 |
+|------|---------|------|
+| `SetLogger` | `func SetLogger(logger Logger)` | 注入自定义日志实现（支持 zerolog、zap、slog 等） |
+| `GetLogger` | `func GetLogger() Logger` | 获取当前日志器 |
+| `SetTaskFailLogLevel` | `func SetTaskFailLogLevel(level TaskLogLevel)` | 设置任务失败时的日志级别 |
+| `GetTaskFailLogLevel` | `func GetTaskFailLogLevel() TaskLogLevel` | 获取失败日志级别 |
+| `SetTraceLogEnabled` | `func SetTraceLogEnabled(enabled bool)` | 开关 Trace 日志 |
+| `GetTraceLogEnabled` | `func GetTraceLogEnabled() bool` | 获取 Trace 日志状态 |
 
 ### MergeCancel
 
-合并两个 `CancelFunc`，调用时依次执行新旧 cancel：
-
-```go
-// 场景：包装一个已有 cancel 的 context
-newCtx, newCancel := context.WithCancel(oldCtx)
-mergedCancel := async.MergeCancel(oldCancel, newCancel)
-// 调用 mergedCancel 时，会依次执行 newCancel 和 oldCancel
-defer mergedCancel()
-```
-
-| 函数 | 签名 |
-|------|------|
-| `async.MergeCancel(old, new)` | `(oldCancel, newCancel CancelFunc) → CancelFunc` |
+| 函数 | 完整签名 | 说明 |
+|------|---------|------|
+| `MergeCancel` | `func MergeCancel(oldCancel, newCancel context.CancelFunc) context.CancelFunc` | 合并两个 CancelFunc，调用返回的函数时依次执行 newCancel 和 oldCancel |
 
 ### 日志级别
 
-| 常量 | 说明 |
-|------|------|
-| `LogLevelError` | 错误（默认） |
-| `LogLevelWarn` | 警告 |
-| `LogLevelInfo` | 信息 |
-| `LogLevelDebug` | 调试 |
-| `LogLevelSilent` | 静默 |
+| 常量 | 值 | 说明 |
+|------|---|------|
+| `LogLevelError` | `"error"` | 错误（默认） |
+| `LogLevelWarn` | `"warn"` | 警告 |
+| `LogLevelInfo` | `"info"` | 信息 |
+| `LogLevelDebug` | `"debug"` | 调试 |
+| `LogLevelSilent` | `"silent"` | 静默（完全不输出） |
 
 ### 配置常量
 
-| 常量 | 说明 |
-|------|------|
-| `async.DefaultSubmitTimeout` | Submit 等待空闲 worker 的默认超时（5 秒） |
-| `async.WaitContextCleanupWarn` | 超时清理 goroutine 发出警告的间隔（5 分钟） |
-| `async.WaitContextCleanupError` | 超时清理 goroutine 发出错误的阈值（30 分钟） |
-| `async.SlotAcquireWarnTimeout` | 等待并发槽位时发出警告的阈值（30 秒） |
-
-**所有配置常量都可通过 `async.SetDefaultTimeout`、`async.SetSubmitTimeout` 等方法动态修改。**
+| 常量 | 默认值 | 说明 |
+|------|--------|------|
+| `DefaultSubmitTimeout` | 5 秒 | Submit 等待空闲 worker 的最大时长 |
+| `WaitContextCleanupWarn` | 5 分钟 | 超时清理 goroutine 仍在运行时发出警告的阈值 |
+| `WaitContextCleanupError` | 30 分钟 | 超时清理 goroutine 仍在运行时发出错误日志的阈值 |
+| `SlotAcquireWarnTimeout` | 30 秒 | Group 等待并发槽位时发出警告的阈值 |
 
 ### 哨兵错误
 
-库中所有可预见的错误都通过哨兵错误常量暴露，方便统一判断：
-
-```go
-// 提交超时
-if errors.Is(err, async.ErrSubmitTimeout) {
-    // 池已满，无法在超时内提交
-}
-
-// 池已关闭
-if errors.Is(err, async.ErrPoolClosed) {
-    // 池已关闭，不能再提交
-}
-
-// 池已 Wait（不能写入新任务）
-if errors.Is(err, async.ErrPoolWaited) {
-    // Wait 之后不能再提交
-}
-
-// FailFast 跳过
-if errors.Is(err, async.ErrSkipped) {
-    // 任务被跳过因为有其他任务已失败
-}
-
-// 限流器已停止
-if errors.Is(err, async.ErrRateLimiterStopped) {
-    // 限流器已停止
-}
-
-// 操作超时
-if errors.Is(err, async.ErrTimeout) {
-    // 通用超时错误
-}
-```
-
 | 错误常量 | 触发场景 |
 |---------|---------|
-| `async.ErrSubmitTimeout` | 提交任务时超过 `DefaultSubmitTimeout` 或 `WithSubmitTimeout` 设置的超时 |
-| `async.ErrPoolClosed` | 向已关闭的 Pool 提交任务 |
-| `async.ErrPoolWaited` | Pool 已调用 `Wait` 后继续 `Submit` |
-| `async.ErrGroupWaited` | Group 已调用 `Wait` 后继续 `Go` |
-| `async.ErrSkipped` | FailFast 模式下因已有任务失败而跳过 |
-| `async.ErrRateLimiterStopped` | 限流器已停止时尝试获取令牌 |
-| `async.ErrTimeout` | 通用超时（如 `WaitTimeout` / `WithTimeout`） |
+| `ErrSubmitTimeout` | 提交任务时超过提交超时时间 |
+| `ErrPoolClosed` | 向已关闭的 Pool 提交任务 |
+| `ErrPoolWaited` | Pool 已调用 `Wait` 后继续 `Submit` |
+| `ErrGroupWaited` | Group 已调用 `Wait` 后继续 `Go` |
+| `ErrSkipped` | FailFast 模式下因已有任务失败而跳过 |
+| `ErrRateLimiterStopped` | 限流器已停止时尝试获取令牌 |
+| `ErrTimeout` | 通用超时（如 `WaitTimeout` / `WithTimeout` 返回） |
 
 ### 并发度
 
-| 函数 | 说明 |
-|------|------|
-| `CPU()` | CPU 密集型并发度（核心数） |
-| `IO()` | IO 密集型并发度（核心数×2） |
-| `IOMulti(n)` | 自定义倍数（核心数×n） |
-| `WithConfig(n)` | n>0 返回 n，否则返回 IO() |
+| 函数 | 完整签名 | 说明 |
+|------|---------|------|
+| `CPU` | `func CPU() int` | CPU 密集型并发度（`runtime.NumCPU()`） |
+| `IO` | `func IO() int` | IO 密集型并发度（`runtime.NumCPU() × 2`） |
+| `IOMulti` | `func IOMulti(n int) int` | 自定义倍数（`runtime.NumCPU() × n`） |
+| `WithConfig` | `func WithConfig(n int) int` | n > 0 返回 n，否则返回 IO() |
 
 ### TraceID
 
-| 函数 | 说明 |
-|------|------|
-| `EnsureTraceID(ctx)` | 确保 ctx 有 trace_id |
-| `GetTraceID(ctx)` | 提取 trace_id |
-| `WithTraceID(ctx, id)` | 设置指定 trace_id |
-| `NewTraceID()` | 生成随机 trace_id |
+| 函数 | 完整签名 | 说明 |
+|------|---------|------|
+| `EnsureTraceID` | `func EnsureTraceID(ctx context.Context) context.Context` | 确保 ctx 有 trace_id（不存在则新建） |
+| `GetTraceID` | `func GetTraceID(ctx context.Context) string` | 从 ctx 提取 trace_id |
+| `WithTraceID` | `func WithTraceID(ctx context.Context, traceID string) context.Context` | 设置指定 trace_id 到 ctx |
+| `NewTraceID` | `func NewTraceID() string` | 生成随机的 trace_id |
 
 ### 安全调用
 
-| 函数 | 说明 |
-|------|------|
-| `SafeCall[T, R](ctx, input, fn)` | 安全调用（有返回值，捕获 panic） |
-| `SafeCallVoid[T](ctx, input, fn)` | 安全调用（无返回值，捕获 panic） |
-| `IsPanicError(err)` | 检查是否为 PanicError |
-| `NewPanicError(r)` | 创建 PanicError |
+| 函数 | 完整签名 | 说明 |
+|------|---------|------|
+| `IsPanicError` | `func IsPanicError(err error) bool` | 检查 err 是否为 PanicError |
+| `NewPanicError` | `func NewPanicError(r interface{}) *PanicError` | 从 recover() 值创建 PanicError |
 
 ### 通用工具
 
-| 函数 | 说明 |
-|------|------|
-| `Must[T](val, err)` | 提取值，err!=nil 时 panic |
+| 函数 | 完整签名 | 说明 |
+|------|---------|------|
+| `Must[T]` | `func Must[T any](val T, err error) T` | 提取值，err != nil 时 panic |
+| `SafeCall[T, R]` | `func SafeCall[T any, R any](ctx context.Context, item T, fn func(ctx context.Context, item T) (R, error)) (R, error)` | 安全调用，捕获 fn 中 panic 转为 error |
+| `SafeCallVoid[T]` | `func SafeCallVoid[T any](ctx context.Context, item T, fn func(ctx context.Context, item T) error) error` | 无返回值安全调用，捕获 panic |
+
+### 类型定义
+
+| 类型 | 定义 | 说明 |
+|------|------|------|
+| `Logger` | `type Logger = core.Logger` | 日志器接口 |
+| `LogField` | `type LogField = core.LogField` | 日志字段（key-value 对） |
+| `LogLevel` | `type LogLevel = core.LogLevel` | 日志级别字符串别名 |
+| `TaskLogLevel` | `type TaskLogLevel = core.TaskLogLevel` | 任务日志级别 |
+| `TraceIDKeyType` | `type TraceIDKeyType = core.TraceIDKeyType` | TraceID 的 context key 类型 |
+| `PanicError` | `type PanicError = core.PanicError` | 包含 recover 值与堆栈的 panic 错误 |

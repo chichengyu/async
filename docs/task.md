@@ -397,44 +397,55 @@ func main() {
 
 ### 异步任务启动
 
-| 函数 | 说明 |
-|------|------|
-| `Go(ctx, fn)` | 启动无返回值异步任务，返回 `*TaskVoid` |
-| `GoWithTimeout(ctx, d, fn)` | 带超时的无返回值异步任务 |
-| `GoResult[T](ctx, fn)` | 启动带返回值异步任务，返回 `*AsyncResult[T]` |
-| `GoResultWithTimeout[T](ctx, d, fn)` | 带超时的带返回值异步任务 |
+| 函数 | 完整签名 | 说明 |
+|------|---------|------|
+| `Go` | `func Go(ctx context.Context, fn func(ctx context.Context)) *TaskVoid` | 启动无返回值异步任务（fire-and-forget） |
+| `GoWithTimeout` | `func GoWithTimeout(ctx context.Context, timeout time.Duration, fn func(ctx context.Context)) *TaskVoid` | 带超时的无返回值异步任务 |
+| `GoResult[T]` | `func GoResult[T any](ctx context.Context, fn func(ctx context.Context) (T, error)) *AsyncResult[T]` | 启动带返回值异步任务 |
+| `GoResultWithTimeout[T]` | `func GoResultWithTimeout[T any](ctx context.Context, timeout time.Duration, fn func(ctx context.Context) (T, error)) *AsyncResult[T]` | 带超时的带返回值异步任务 |
 
-### AsyncResult[T] 方法
+### Task[T] 可取消任务
 
-| 方法 | 说明 |
-|------|------|
-| `Wait()` | 阻塞等待，返回 `(T, error)` |
-| `WaitTimeout(d)` | 带超时等待，返回 `(T, error, ok)` |
-| `WaitCh()` | 返回结果 channel，可用于 select |
-| `Cancel()` | 取消等待 |
-| `Ok()` | 阻塞等待并返回是否成功 |
-| `IsPanic()` | 阻塞等待并返回是否 panic |
+| 方法 | 完整签名 | 说明 |
+|------|---------|------|
+| `NewTask[T]` | `func NewTask[T any]() *Task[T]` | 创建可手动完成的任务 |
+| `Complete` | `func (t *Task[T]) Complete(result Result[T])` | 设置结果（线程安全，仅第一次有效） |
+| `Done` | `func (t *Task[T]) Done() bool` | 是否已完成 |
+| `Result` | `func (t *Task[T]) Result() (Result[T], bool)` | 获取结果（非阻塞） |
+| `Wait` | `func (t *Task[T]) Wait(ctx context.Context) error` | 阻塞等待完成 |
+| `Cancel` | `func (t *Task[T]) Cancel(reason error)` | 取消任务（标记失败） |
 
-### TaskVoid 方法
+### AsyncResult[T] 异步结果句柄
 
-| 方法 | 说明 |
-|------|------|
-| `Wait()` | 阻塞等待，返回 error |
-| `Ok()` | 阻塞等待并返回是否成功 |
-| `IsPanic()` | 阻塞等待并返回是否 panic |
+| 方法 | 完整签名 | 说明 |
+|------|---------|------|
+| `Wait` | `func (ar *AsyncResult[T]) Wait() (T, error)` | 阻塞等待，返回结果值 |
+| `WaitTimeout` | `func (ar *AsyncResult[T]) WaitTimeout(d time.Duration) (T, error, bool)` | 带超时等待，第三个返回值指示是否在超时前完成 |
+| `WaitCh` | `func (ar *AsyncResult[T]) WaitCh() <-chan core.Result[T]` | 返回结果 channel，可用于 `select` 多路复用 |
+| `Cancel` | `func (ar *AsyncResult[T]) Cancel()` | 取消等待 |
+| `Ok` | `func (ar *AsyncResult[T]) Ok() bool` | 阻塞等待并返回是否成功（err == nil && not panic） |
+| `IsPanic` | `func (ar *AsyncResult[T]) IsPanic() bool` | 阻塞等待并返回是否 panic |
+
+### TaskVoid 无返回值任务句柄
+
+| 方法 | 完整签名 | 说明 |
+|------|---------|------|
+| `Wait` | `func (tv *TaskVoid) Wait() error` | 阻塞等待，返回 error（可能 nil） |
+| `Ok` | `func (tv *TaskVoid) Ok() bool` | 阻塞等待并返回是否成功 |
+| `IsPanic` | `func (tv *TaskVoid) IsPanic() bool` | 阻塞等待并返回是否 panic |
 
 ### Mu[T] 线程安全切片
 
-| 方法 | 说明 |
-|------|------|
-| `Append(fn)` | 线程安全追加元素 |
-| `Snapshot()` | 返回所有元素副本 |
+| 方法 | 完整签名 | 说明 |
+|------|---------|------|
+| `Append` | `func (m *Mu[T]) Append(fn func() T)` | 线程安全地追加元素（fn 返回值在锁内执行，保证原子性） |
+| `Snapshot` | `func (m *Mu[T]) Snapshot() []T` | 返回所有元素的副本（nil receiver 安全） |
 
-### 类型
+### 类型定义
 
-| 类型 | 说明 |
+| 类型 | 定义 |
 |------|------|
-| `TaskVoid` | 无返回值异步任务句柄 |
-| `AsyncResult[T]` | 带返回值异步结果句柄 |
-| `Task[T]` | 可取消的异步任务 |
-| `Mu[T]` | 线程安全切片容器 |
+| `Task[T]` | `type Task[T any] = task.Task[T]` — 可取消、可手动完成的任务 |
+| `AsyncResult[T]` | `type AsyncResult[T any] = task.AsyncResult[T]` — `GoResult` 返回的异步结果句柄 |
+| `TaskVoid` | `struct{ ... }` — `Go` 返回的无返回值任务句柄（含 `Wait()`、`Ok()`、`IsPanic()`） |
+| `Mu[T]` | `type Mu[T any] = task.Mu[T]` — 线程安全切片容器 |

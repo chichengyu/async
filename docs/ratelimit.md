@@ -324,41 +324,66 @@ func main() {
 
 ### RateLimiter
 
-| 方法 | 说明 |
-|------|------|
-| `NewRateLimiter(rate, perDuration)` | 创建定时补充令牌的限流器 |
-| `NewRateLimiterWithBurst(rate, d, burst)` | 创建支持突发容量的限流器 |
-| `Wait(ctx)` / `Acquire(ctx)` | 获取令牌 |
-| `Release()` | 归还令牌 |
-| `Token(ctx)` | 获取可 defer 释放的 Token |
-| `Close()` / `Stop()` | 关闭限流器 |
-| `Resize(newRate)` | 动态调整速率 |
-| `Size()` | 当前速率大小 |
-| `Available()` | 当前可用令牌数 |
-| `WithStrategy(s)` | 切换策略 |
+| 方法 | 完整签名 | 说明 |
+|------|---------|------|
+| `NewRateLimiter` | `func NewRateLimiter(rate int, perDuration time.Duration) *RateLimiter` | 创建定时补充令牌的限流器 |
+| `NewRateLimiterWithBurst` | `func NewRateLimiterWithBurst(rate int, perDuration time.Duration, burst int) *RateLimiter` | 创建支持突发容量的限流器 |
+| `Wait` | `func (rl *RateLimiter) Wait(ctx context.Context) error` | 阻塞等待直到获取令牌 |
+| `Acquire` | `func (rl *RateLimiter) Acquire(ctx context.Context) error` | 获取令牌（`Wait` 的别名） |
+| `Release` | `func (rl *RateLimiter) Release()` | 归还令牌 |
+| `Token` | `func (rl *RateLimiter) Token(ctx context.Context) (*Token, error)` | 获取可 `defer t.Release()` 释放的 Token |
+| `Close` | `func (rl *RateLimiter) Close()` | 关闭限流器，清理资源 |
+| `Stop` | `func (rl *RateLimiter) Stop()` | 停止限流器（`Close` 的别名） |
+| `Resize` | `func (rl *RateLimiter) Resize(newRate int)` | 动态调整速率 |
+| `Size` | `func (rl *RateLimiter) Size() int` | 当前速率大小（每秒令牌数） |
+| `Available` | `func (rl *RateLimiter) Available() int` | 当前可用令牌数 |
+| `WithStrategy` | `func (rl *RateLimiter) WithStrategy(s Strategy) *RateLimiter` | 切换限流策略 |
+| `WithTraceID` | `func (rl *RateLimiter) WithTraceID(ctx context.Context) (*RateLimiter, context.Context)` | 设置 TraceID |
+
+### Token（RateLimiter 返回的令牌句柄）
+
+| 方法 | 完整签名 | 说明 |
+|------|---------|------|
+| `Release` | `func (t *Token) Release()` | 归还令牌 |
 
 ### SlidingWindowRateLimiter
 
-| 方法 | 说明 |
-|------|------|
-| `NewSlidingWindowRateLimiter(limit, window)` | 创建滑动窗口限流器 |
-| `Allow()` | 检查 1 个请求是否允许 |
-| `AllowN(n)` | 检查 n 个请求是否允许 |
+| 方法 | 完整签名 | 说明 |
+|------|---------|------|
+| `NewSlidingWindowRateLimiter` | `func NewSlidingWindowRateLimiter(limit int, window time.Duration) *SlidingWindowRateLimiter` | 创建滑动窗口限流器 |
+| `Allow` | `func (sw *SlidingWindowRateLimiter) Allow() bool` | 检查 1 个请求是否允许 |
+| `AllowN` | `func (sw *SlidingWindowRateLimiter) AllowN(n int) bool` | 检查 n 个请求是否允许 |
 
-### TokenBucket
+### TokenBucket（经典令牌桶，无时间维度）
 
-| 方法 | 说明 |
-|------|------|
-| `NewTokenBucket(rate, capacity)` | 创建经典令牌桶 |
-| `Allow()` | 消费 1 个令牌 |
-| `AllowN(n)` | 消费 n 个令牌 |
+| 方法 | 完整签名 | 说明 |
+|------|---------|------|
+| `NewTokenBucket` | `func NewTokenBucket(rate float64, capacity float64) *TokenBucket` | 创建经典令牌桶 |
+| `Allow` | `func (tb *TokenBucket) Allow() bool` | 消费 1 个令牌 |
+| `AllowN` | `func (tb *TokenBucket) AllowN(n float64) bool` | 消费 n 个令牌 |
 
 ### AdaptiveRateLimiter
 
-| 方法 | 说明 |
+| 方法 | 完整签名 | 说明 |
+|------|---------|------|
+| `NewAdaptiveRateLimiter` | `func NewAdaptiveRateLimiter(minRate, maxRate int) *AdaptiveRateLimiter` | 创建自适应限流器 |
+| `Acquire` | `func (a *AdaptiveRateLimiter) Acquire(ctx context.Context) error` | 获取许可（阻塞等待） |
+| `Release` | `func (a *AdaptiveRateLimiter) Release()` | 释放许可 |
+| `RecordSuccess` | `func (a *AdaptiveRateLimiter) RecordSuccess()` | 记录成功（降低限流压力） |
+| `RecordFailure` | `func (a *AdaptiveRateLimiter) RecordFailure()` | 记录失败（增大限流压力，速率衰减） |
+
+### 限流策略常量
+
+| 常量 | 值 | 说明 |
+|------|---|------|
+| `StrategyRateLimiter` | 固定速率补充令牌 | 默认策略 |
+| `StrategyPriorityRateLimiter` | 优先级感知限流 | 高优先级请求优先获取令牌 |
+
+### 类型定义
+
+| 类型 | 说明 |
 |------|------|
-| `NewAdaptiveRateLimiter(min, max)` | 创建自适应限流器 |
-| `Acquire(ctx)` | 获取许可 |
-| `Release()` | 释放许可 |
-| `RecordSuccess()` | 记录成功 |
-| `RecordFailure()` | 记录失败 |
+| `RateLimiter` | 基于令牌桶的通用限流器 |
+| `SlidingWindowRateLimiter` | 基于滑动窗口的限流器 |
+| `TokenBucket` | 经典令牌桶（无时间维度） |
+| `AdaptiveRateLimiter` | 自适应限流器，根据成功率自动调速率 |

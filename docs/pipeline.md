@@ -305,32 +305,40 @@ processRequest(w, req)
 
 ### 多阶段管道
 
-| 函数 | 说明 |
-|------|------|
-| `Execute[T](ctx, stages, items, fn)` | 执行多阶段并发管道 |
-| `ExecuteWithMeta[T](ctx, stages, items, fn)` | 执行管道并返回阶段元信息 |
-| `ExecuteWithGroup[T](ctx, items, fn, c)` | 使用 Group 执行单阶段管道 |
+| 函数 | 完整签名 |
+|------|---------|
+| `Execute[T]` | `func Execute[T any](ctx context.Context, stages []Stage[T], items []T, fn func(context.Context, T) (T, error)) []ResultWithMeta[T]` |
+| `ExecuteWithMeta[T]` | `func ExecuteWithMeta[T any](ctx context.Context, stages []Stage[T], items []T, fn func(context.Context, T) (T, error)) []ResultWithMeta[T]` |
+| `ExecuteWithGroup[T]` | `func ExecuteWithGroup[T any](ctx context.Context, items []T, fn func(context.Context, T) (T, error), concurrency int) []ResultWithMeta[T]` |
 
 ### Stage 类型
 
-| 字段 | 说明 |
-|------|------|
-| `Stage.Name` | 阶段名称 |
-| `Stage.Concurrency` | 阶段并发度 |
+| 字段 | 完整定义 |
+|------|---------|
+| `Stage.Name` | `string` — 阶段名称 |
+| `Stage.Concurrency` | `int` — 阶段并发度 |
 
 ### ResultWithMeta 类型
 
-| 字段 | 说明 |
-|------|------|
-| `ResultWithMeta.Stage` | 阶段名称 |
-| `ResultWithMeta.Value` | 结果值 |
-| `ResultWithMeta.Err` | 错误 |
+| 字段 | 完整定义 |
+|------|---------|
+| `ResultWithMeta.Stage` | `string` — 阶段名称 |
+| `ResultWithMeta.Value` | `T` — 结果值 |
+| `ResultWithMeta.Err` | `error` — 错误 |
 
 ### 串行管道 (Pipeline)
 
-| 方法 | 说明 |
+| 方法 | 完整签名 | 说明 |
+|------|---------|------|
+| `NewPipeline[T]` | `func NewPipeline[T any](ctx context.Context, stages ...func(context.Context, T) (T, error)) *Pipeline[T]` | 创建串行管道 |
+| `p.Run` | `func (p *Pipeline[T]) Run(input T) (T, error)` | 串行执行所有阶段 |
+| `p.Stages` | `func (p *Pipeline[T]) Stages() int` | 返回阶段数量 |
+| `p.WithTraceID` | `func (p *Pipeline[T]) WithTraceID(ctx context.Context)` | 设置 TraceID |
+
+### 类型定义
+
+| 类型 | 定义 |
 |------|------|
-| `NewPipeline[T](ctx, stages...)` | 创建串行管道 |
-| `p.Run(input)` | 串行执行所有阶段 |
-| `p.Stages()` | 返回阶段数量 |
-| `p.WithTraceID(ctx)` | 设置 TraceID |
+| `Stage[T]` | `struct{ Name string; Concurrency int }` |
+| `ResultWithMeta[T]` | `struct{ Stage string; Value T; Err error }` |
+| `Pipeline[T]` | `struct{ ... }` — 串行管道结构体 |

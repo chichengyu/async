@@ -778,82 +778,166 @@ func batchInsertWithAutoScale(ctx context.Context, records []Record) error {
 
 ## Group 方法速查表
 
-### 创建
+### 创建函数
 
-| 函数 | 说明 |
+| 函数 | 完整签名 |
+|------|---------|
+| `NewGroup[T]` | `func NewGroup[T any](concurrency int) *Group[T]` |
+| `DefaultGroup[T]` | `func DefaultGroup[T any]() *Group[T]` |
+| `NewNoResult` | `func NewNoResult(concurrency int) *NoResult` |
+| `DefaultNoResult` | `func DefaultNoResult() *NoResult` |
+
+### Group[T] 提交方法
+
+| 方法 | 完整签名 | 说明 |
+|------|---------|------|
+| `Go` | `func (g *Group[T]) Go(ctx context.Context, fn func(context.Context) (T, error)) error` | 追加一个任务到队列 |
+| `GoWithTimeout` | `func (g *Group[T]) GoWithTimeout(ctx context.Context, timeout time.Duration, fn func(context.Context) (T, error)) error` | 追加带超时任务 |
+| `GoAt` | `func (g *Group[T]) GoAt(index int, ctx context.Context, fn func(context.Context) (T, error)) error` | 指定结果索引位置添加任务 |
+| `GoAtWithTimeout` | `func (g *Group[T]) GoAtWithTimeout(index int, ctx context.Context, timeout time.Duration, fn func(context.Context) (T, error)) error` | 指定位置添加带超时任务 |
+
+### Group[T] 等待方法
+
+| 方法 | 完整签名 | 说明 |
+|------|---------|------|
+| `Wait` | `func (g *Group[T]) Wait() []core.Result[T]` | 阻塞等待，返回全部结果 |
+| `WaitTimeout` | `func (g *Group[T]) WaitTimeout(d time.Duration) ([]core.Result[T], bool)` | 带超时等待 |
+| `WaitContext` | `func (g *Group[T]) WaitContext(ctx context.Context) ([]core.Result[T], bool)` | Context 控制等待 |
+
+### Group[T] 选项链式方法（返回新 Group + Context）
+
+| 方法 | 完整签名 |
+|------|---------|
+| `WithTraceID` | `func (g *Group[T]) WithTraceID(ctx context.Context) (*Group[T], context.Context)` |
+| `WithContext` | `func (g *Group[T]) WithContext(ctx context.Context) (*Group[T], context.Context)` |
+| `WithFailFast` | `func (g *Group[T]) WithFailFast(ctx context.Context) (*Group[T], context.Context)` |
+| `WithFFCtx` | `func (g *Group[T]) WithFFCtx(ctx context.Context) (*Group[T], context.Context)` |
+| `WithFFTraceID` | `func (g *Group[T]) WithFFTraceID(ctx context.Context) (*Group[T], context.Context)` |
+| `WithFFSubmitTO` | `func (g *Group[T]) WithFFSubmitTO(ctx context.Context, submitTimeout time.Duration) (*Group[T], context.Context)` |
+| `WithFFSubmitTOTraceID` | `func (g *Group[T]) WithFFSubmitTOTraceID(ctx context.Context, submitTimeout time.Duration) (*Group[T], context.Context)` |
+| `WithFFTimeout` | `func (g *Group[T]) WithFFTimeout(ctx context.Context, timeout time.Duration) (*Group[T], context.Context)` |
+| `WithCtxTraceID` | `func (g *Group[T]) WithCtxTraceID(ctx context.Context) (*Group[T], context.Context)` |
+| `WithFFTimeoutTraceID` | `func (g *Group[T]) WithFFTimeoutTraceID(ctx context.Context, timeout time.Duration) (*Group[T], context.Context)` |
+| `WithFFTimeoutSubmitTO` | `func (g *Group[T]) WithFFTimeoutSubmitTO(ctx context.Context, timeout, submitTimeout time.Duration) (*Group[T], context.Context)` |
+| `WithFFTimeoutSubmitTOTraceID` | `func (g *Group[T]) WithFFTimeoutSubmitTOTraceID(ctx context.Context, timeout, submitTimeout time.Duration) (*Group[T], context.Context)` |
+| `WithCtxTimeout` | `func (g *Group[T]) WithCtxTimeout(ctx context.Context, timeout time.Duration) (*Group[T], context.Context)` |
+| `WithCtxTimeoutTraceID` | `func (g *Group[T]) WithCtxTimeoutTraceID(ctx context.Context, timeout time.Duration) (*Group[T], context.Context)` |
+| `WithCtxSubmitTO` | `func (g *Group[T]) WithCtxSubmitTO(ctx context.Context, submitTimeout time.Duration) (*Group[T], context.Context)` |
+| `WithCtxSubmitTOTraceID` | `func (g *Group[T]) WithCtxSubmitTOTraceID(ctx context.Context, submitTimeout time.Duration) (*Group[T], context.Context)` |
+
+### Group[T] 选项链式方法（返回修改后的 Group）
+
+| 方法 | 完整签名 |
+|------|---------|
+| `WithTimeout` | `func (g *Group[T]) WithTimeout(d time.Duration) *Group[T]` |
+| `WithSubmitTimeout` | `func (g *Group[T]) WithSubmitTimeout(d time.Duration) *Group[T]` |
+
+### Group[T] 查询/监控方法
+
+| 方法 | 完整签名 | 说明 |
+|------|---------|------|
+| `Concurrency` | `func (g *Group[T]) Concurrency() int` | 并发槽位数 |
+| `Active` | `func (g *Group[T]) Active() int` | 活跃任务数 |
+| `Busy` | `func (g *Group[T]) Busy() int` | 繁忙槽位数 |
+| `Stats` | `func (g *Group[T]) Stats() GroupStats` | 完整统计信息 |
+
+### Group[T] 结果提取方法
+
+| 方法 | 完整签名 | 说明 |
+|------|---------|------|
+| `Values` | `func (g *Group[T]) Values() []T` | 所有成功值 |
+| `Errors` | `func (g *Group[T]) Errors() []error` | 所有非 nil 错误 |
+| `FirstError` | `func (g *Group[T]) FirstError() error` | 首个错误 |
+| `JoinErrors` | `func (g *Group[T]) JoinErrors() error` | 合并所有错误 |
+| `FailCount` | `func (g *Group[T]) FailCount() int64` | 失败数 |
+| `SuccessCount` | `func (g *Group[T]) SuccessCount() int64` | 成功数 |
+| `TotalCount` | `func (g *Group[T]) TotalCount() int64` | 总数 |
+| `HasError` | `func (g *Group[T]) HasError() bool` | 是否有错误 |
+
+### Group[T] 动态管理方法
+
+| 方法 | 完整签名 | 说明 |
+|------|---------|------|
+| `Reset` | `func (g *Group[T]) Reset() (*Group[T], error)` | 关闭旧组创建同配置新组 |
+| `EnableAutoScale` | `func (g *Group[T]) EnableAutoScale(config *core.AutoScaleConfig)` | 启用自动扩缩容（传 nil 使用默认配置） |
+| `DisableAutoScale` | `func (g *Group[T]) DisableAutoScale()` | 停止并禁用自动扩缩容 |
+| `IsAutoScaleEnabled` | `func (g *Group[T]) IsAutoScaleEnabled() bool` | 查询自动扩缩容是否已启用 |
+
+### NoResult 提交方法
+
+| 方法 | 完整签名 | 说明 |
+|------|---------|------|
+| `Go` | `func (nr *NoResult) Go(ctx context.Context, fn func(ctx context.Context) error) error` | 追加一个无返回值任务 |
+| `GoWithTimeout` | `func (nr *NoResult) GoWithTimeout(ctx context.Context, timeout time.Duration, fn func(ctx context.Context) error) error` | 追加带超时任务 |
+| `GoAt` | `func (nr *NoResult) GoAt(index int, ctx context.Context, fn func(ctx context.Context) error) error` | 指定位置添加任务 |
+| `GoAtWithTimeout` | `func (nr *NoResult) GoAtWithTimeout(index int, ctx context.Context, timeout time.Duration, fn func(ctx context.Context) error) error` | 指定位置带超时任务 |
+
+### NoResult 等待方法
+
+| 方法 | 完整签名 | 说明 |
+|------|---------|------|
+| `Wait` | `func (nr *NoResult) Wait()` | 阻塞等待所有任务完成 |
+| `WaitTimeout` | `func (nr *NoResult) WaitTimeout(d time.Duration) (completed int64, ok bool)` | 带超时等待，返回已完成数和是否全部完成 |
+| `WaitContext` | `func (nr *NoResult) WaitContext(ctx context.Context) (completed int64, ok bool)` | Context 控制等待 |
+
+### NoResult 选项链式方法
+
+（共 16 种组合，与 Group[T] 同模式，区别是返回 `*NoResult` 而非 `*Group[T]`）
+
+| 方法 | 完整签名 |
+|------|---------|
+| `WithTraceID` | `func (nr *NoResult) WithTraceID(ctx context.Context) (*NoResult, context.Context)` |
+| `WithContext` | `func (nr *NoResult) WithContext(ctx context.Context) (*NoResult, context.Context)` |
+| `WithFailFast` | `func (nr *NoResult) WithFailFast(ctx context.Context) (*NoResult, context.Context)` |
+| `WithFFCtx` | `func (nr *NoResult) WithFFCtx(ctx context.Context) (*NoResult, context.Context)` |
+| `WithTimeout` | `func (nr *NoResult) WithTimeout(d time.Duration) *NoResult` |
+| `WithSubmitTimeout` | `func (nr *NoResult) WithSubmitTimeout(d time.Duration) *NoResult` |
+| `WithFFTraceID` | `func (nr *NoResult) WithFFTraceID(ctx context.Context) (*NoResult, context.Context)` |
+| `WithFFSubmitTO` | `func (nr *NoResult) WithFFSubmitTO(ctx context.Context, submitTimeout time.Duration) (*NoResult, context.Context)` |
+| `WithFFTimeout` | `func (nr *NoResult) WithFFTimeout(ctx context.Context, timeout time.Duration) (*NoResult, context.Context)` |
+| `WithFFSubmitTOTraceID` | `func (nr *NoResult) WithFFSubmitTOTraceID(ctx context.Context, submitTimeout time.Duration) (*NoResult, context.Context)` |
+| `WithFFTimeoutTraceID` | `func (nr *NoResult) WithFFTimeoutTraceID(ctx context.Context, timeout time.Duration) (*NoResult, context.Context)` |
+| `WithFFTimeoutSubmitTO` | `func (nr *NoResult) WithFFTimeoutSubmitTO(ctx context.Context, timeout, submitTimeout time.Duration) (*NoResult, context.Context)` |
+| `WithFFTimeoutSubmitTOTraceID` | `func (nr *NoResult) WithFFTimeoutSubmitTOTraceID(ctx context.Context, timeout, submitTimeout time.Duration) (*NoResult, context.Context)` |
+| `WithCtxTraceID` | `func (nr *NoResult) WithCtxTraceID(ctx context.Context) (*NoResult, context.Context)` |
+| `WithCtxSubmitTO` | `func (nr *NoResult) WithCtxSubmitTO(ctx context.Context, submitTimeout time.Duration) (*NoResult, context.Context)` |
+| `WithCtxSubmitTOTraceID` | `func (nr *NoResult) WithCtxSubmitTOTraceID(ctx context.Context, submitTimeout time.Duration) (*NoResult, context.Context)` |
+| `WithCtxTimeout` | `func (nr *NoResult) WithCtxTimeout(ctx context.Context, timeout time.Duration) (*NoResult, context.Context)` |
+| `WithCtxTimeoutTraceID` | `func (nr *NoResult) WithCtxTimeoutTraceID(ctx context.Context, timeout time.Duration) (*NoResult, context.Context)` |
+
+### NoResult 查询/结果方法
+
+| 方法 | 完整签名 | 说明 |
+|------|---------|------|
+| `Concurrency` | `func (nr *NoResult) Concurrency() int` | 并发槽位数 |
+| `Active` | `func (nr *NoResult) Active() int` | 活跃任务数 |
+| `Busy` | `func (nr *NoResult) Busy() int` | 繁忙槽位数 |
+| `Stats` | `func (nr *NoResult) Stats() GroupStats` | 完整统计 |
+| `FailCount` | `func (nr *NoResult) FailCount() int64` | 失败数 |
+| `SuccessCount` | `func (nr *NoResult) SuccessCount() int64` | 成功数 |
+| `HasError` | `func (nr *NoResult) HasError() bool` | 是否有错误 |
+| `TotalCount` | `func (nr *NoResult) TotalCount() int64` | 总任务数 |
+| `Errors` | `func (nr *NoResult) Errors() []error` | 所有错误 |
+| `FirstError` | `func (nr *NoResult) FirstError() error` | 首个错误 |
+| `JoinErrors` | `func (nr *NoResult) JoinErrors() error` | 合并所有错误 |
+| `Reset` | `func (nr *NoResult) Reset() (*NoResult, error)` | 关闭旧组创建新组 |
+| `EnableAutoScale` | `func (nr *NoResult) EnableAutoScale(config *core.AutoScaleConfig)` | 启用自动扩缩容 |
+| `DisableAutoScale` | `func (nr *NoResult) DisableAutoScale()` | 停止自动扩缩容 |
+| `IsAutoScaleEnabled` | `func (nr *NoResult) IsAutoScaleEnabled() bool` | 是否已启用 |
+
+### 顶层便捷函数
+
+| 函数 | 完整签名 | 说明 |
+|------|---------|------|
+| `EnableGroupAutoScale[T]` | `func EnableGroupAutoScale[T any](g *Group[T], config *AutoScaleConfig)` | 启用 Group 自动扩缩容 |
+| `DisableGroupAutoScale[T]` | `func DisableGroupAutoScale[T any](g *Group[T])` | 停止 Group 自动扩缩容 |
+| `EnableNoResultAutoScale` | `func EnableNoResultAutoScale(nr *NoResult, config *AutoScaleConfig)` | 启用 NoResult 自动扩缩容 |
+| `DisableNoResultAutoScale` | `func DisableNoResultAutoScale(nr *NoResult)` | 停止 NoResult 自动扩缩容 |
+
+### 类型定义
+
+| 类型 | 定义 |
 |------|------|
-| `NewGroup[T](concurrency)` | 创建泛型任务组 |
-| `DefaultGroup[T]()` | 使用默认 IO 并发度创建 |
-| `NewNoResult(concurrency)` | 创建无返回值任务组 |
-| `DefaultNoResult()` | 创建默认并发度无返回值任务组 |
-
-### 提交
-
-| 方法 | 说明 |
-|------|------|
-| `Go(ctx, fn)` | 追加到任务队列 |
-| `GoAt(index, ctx, fn)` | 指定结果位置添加任务 |
-| `GoWithTimeout(ctx, d, fn)` | 追加带超时任务 |
-| `GoAtWithTimeout(index, ctx, d, fn)` | 指定位置带超时任务 |
-
-### 等待
-
-| 方法 | 说明 |
-|------|------|
-| `Wait()` | 阻塞等待，返回全部结果 |
-| `WaitTimeout(d)` | 带超时等待 |
-| `WaitContext(ctx)` | Context 控制等待 |
-
-### 高级选项
-
-| 方法 | 说明 |
-|------|------|
-| `WithTimeout(d)` | 设置超时 |
-| `WithSubmitTimeout(d)` | 设置提交超时 |
-| `WithFailFast(ctx)` | 开启 FailFast |
-| `WithContext(ctx)` | 设置上下文 |
-| `WithTraceID(ctx)` | 设置 TraceID |
-| ... 及其组合变体 | (共 16 种组合) |
-
-### 查询
-
-| 方法 | 说明 |
-|------|------|
-| `Concurrency()` | Worker 数量 |
-| `Active()` | 活跃任务数 |
-| `Idle()` | 空闲槽位数 |
-| `Busy()` | 繁忙槽位数 |
-| `Stats()` | 完整统计 GroupStats |
-
-### 结果提取
-
-| 方法 | 说明 |
-|------|------|
-| `Values()` | 成功值切片 |
-| `Errors()` | 错误切片 |
-| `FirstError()` | 首个错误 |
-| `JoinErrors()` | 合并所有错误 |
-| `FailCount()` | 失败数 |
-| `SuccessCount()` | 成功数 |
-| `TotalCount()` | 总数 |
-| `HasError()` | 是否有错误 |
-
-### 动态管理
-
-| 方法 | 说明 |
-|------|------|
-| `Reset()` | 关闭旧组创建新组 |
-| `EnableAutoScale(config)` | 启用自动扩缩容（传 nil=默认） |
-| `DisableAutoScale()` | 停止并禁用自动扩缩容 |
-| `IsAutoScaleEnabled()` | 是否已启用 |
-| `GetAutoScaleConfig()` | 获取当前配置（副本） |
-| `SetConcurrency(n)` | 设置固定并发（会停止自动扩缩容） |
-
-### 顶层便捷方法
-
-| 方法 | 说明 |
-|------|------|
-| `async.EnableGroupAutoScale(g, config)` | 启用 Group 自动扩缩容 |
-| `async.DisableGroupAutoScale(g)` | 停止 Group 自动扩缩容 |
-| `async.EnableNoResultAutoScale(nr, config)` | 启用 NoResult 自动扩缩容 |
-| `async.DisableNoResultAutoScale(nr)` | 停止 NoResult 自动扩缩容 |
+| `Group[T]` | `type Group[T any] = group.Group[T]` |
+| `NoResult` | `type NoResult = group.NoResult` |
+| `GroupStats` | `struct{ Concurrency, Active, Busy int; TotalTask, SuccessTask, FailTask int64 }` |

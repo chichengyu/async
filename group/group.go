@@ -51,6 +51,7 @@ type Group[T any] struct {
 	// ──────── 自动扩缩容（可选，默认关闭）────────
 	autoScale        *core.AutoScaleConfig // 扩缩容配置（nil=未启用）
 	autoScaleEnabled atomic.Bool           // 是否已启用自动扩缩容
+	autoScaleStop    chan struct{}         // 停止自动扩缩容的信号
 }
 
 // GroupRecordFunc 记录结果的函数类型，抽象 addResult（Go）和 setResultAt（GoAt）。
@@ -384,8 +385,25 @@ func (g *Group[T]) groupAcquireSlot(ctx context.Context, taskCtx context.Context
 	if g.submitTimeout > 0 {
 		timer := time.NewTimer(g.submitTimeout)
 		defer timer.Stop()
+
+		// 先检查 ctx 是否已取消，避免 select 随机选到 slot 而忽略取消信号
+		select {
+		case <-taskCtx.Done():
+			g.discardTask(record, taskCancel, taskCtx.Err())
+			return nil, taskCtx.Err()
+		default:
+		}
+
 		select {
 		case limitCh <- struct{}{}:
+			// 获取槽位后再检查 ctx，防止在 select 两个 case 都就绪时随机选了 slot
+			select {
+			case <-taskCtx.Done():
+				<-limitCh
+				g.discardTask(record, taskCancel, taskCtx.Err())
+				return nil, taskCtx.Err()
+			default:
+			}
 			return limitCh, nil
 		case <-taskCtx.Done():
 			g.discardTask(record, taskCancel, taskCtx.Err())
@@ -398,9 +416,23 @@ func (g *Group[T]) groupAcquireSlot(ctx context.Context, taskCtx context.Context
 		}
 	}
 
-	// 快速路径：非阻塞获取槽位，避免每次 Go 都创建 Timer
+	// 快速路径：先检查 ctx 取消，再非阻塞获取槽位
+	select {
+	case <-taskCtx.Done():
+		g.discardTask(record, taskCancel, taskCtx.Err())
+		return nil, taskCtx.Err()
+	default:
+	}
+
 	select {
 	case limitCh <- struct{}{}:
+		select {
+		case <-taskCtx.Done():
+			<-limitCh
+			g.discardTask(record, taskCancel, taskCtx.Err())
+			return nil, taskCtx.Err()
+		default:
+		}
 		return limitCh, nil
 	case <-taskCtx.Done():
 		g.discardTask(record, taskCancel, taskCtx.Err())
@@ -413,8 +445,23 @@ func (g *Group[T]) groupAcquireSlot(ctx context.Context, taskCtx context.Context
 	defer timer.Stop()
 
 	for {
+		// 每轮迭代先检查取消，防止 select 随机选到 slot
+		select {
+		case <-taskCtx.Done():
+			g.discardTask(record, taskCancel, taskCtx.Err())
+			return nil, taskCtx.Err()
+		default:
+		}
+
 		select {
 		case limitCh <- struct{}{}:
+			select {
+			case <-taskCtx.Done():
+				<-limitCh
+				g.discardTask(record, taskCancel, taskCtx.Err())
+				return nil, taskCtx.Err()
+			default:
+			}
 			return limitCh, nil
 		case <-taskCtx.Done():
 			g.discardTask(record, taskCancel, taskCtx.Err())
@@ -559,6 +606,15 @@ func (g *Group[T]) runTaskImpl(taskCtx context.Context, taskCancel context.Cance
 			}
 		}
 	}()
+
+	// 获取槽位后再次检查 ctx，消除 groupAcquireSlot select 随机性带来的竞态窗口
+	select {
+	case <-taskCtx.Done():
+		record(core.Result[T]{Err: taskCtx.Err()})
+		atomic.AddInt64(&g.errCnt, 1)
+		return
+	default:
+	}
 
 	if timeout > 0 {
 		var cancel context.CancelFunc
@@ -895,6 +951,12 @@ func (g *Group[T]) Reset() (*Group[T], error) {
 	// Reinitialize done channel for potential auto-scale usage after reset
 	doneCh := make(chan struct{})
 	g.done.Store(&doneCh)
+	// Reset auto-scale state: autoScaleLoop has exited via done channel,
+	// close the old stop channel so EnableAutoScale can create a fresh one.
+	if g.autoScaleEnabled.Load() {
+		g.autoScaleEnabled.Store(false)
+		close(g.autoScaleStop)
+	}
 	core.LogCtxDebug(context.Background(), "async: Group.Reset completed, above config preserved across reset",
 		core.Dur("timeout", savedTimeout),
 		core.Dur("submit_timeout", savedSubmitTimeout),
@@ -980,6 +1042,7 @@ func (g *Group[T]) EnableAutoScale(config *core.AutoScaleConfig) {
 
 	g.autoScale = config
 	if g.autoScaleEnabled.CompareAndSwap(false, true) {
+		g.autoScaleStop = make(chan struct{})
 		go func() {
 			g.autoScaleLoop(config)
 		}()
@@ -991,6 +1054,7 @@ func (g *Group[T]) EnableAutoScale(config *core.AutoScaleConfig) {
 // 停止后仍可通过手动方式调整。如果自动扩缩容未启用，调用无效果。
 func (g *Group[T]) DisableAutoScale() {
 	if g.autoScaleEnabled.CompareAndSwap(true, false) {
+		close(g.autoScaleStop)
 		if g.autoScale != nil {
 			minWorkers := g.autoScale.MinWorkers
 			if minWorkers > 0 && g.Concurrency() != minWorkers {
@@ -1024,9 +1088,14 @@ func (g *Group[T]) autoScaleLoop(config *core.AutoScaleConfig) {
 
 	var scaleUpCount, scaleDownCount int
 
-	for g.autoScaleEnabled.Load() {
+	for {
 		select {
+		case <-g.autoScaleStop:
+			return
 		case <-ticker.C:
+			if !g.autoScaleEnabled.Load() {
+				return
+			}
 			if doneCh := g.done.Load(); doneCh != nil {
 				select {
 				case <-*doneCh:
