@@ -796,6 +796,9 @@ func (p *Pool[T]) enqueueTask(ctx context.Context, taskCtx context.Context, task
 // 返回 (true, nil) 表示发送成功，
 // 返回 (false, error) 表示发送失败（可能是通道关闭、context 取消或超时）。
 func (p *Pool[T]) blockSend(task core.PoolTask[T], taskCtx context.Context, timer *time.Timer) (sent bool, err error) {
+	if p.closed.Load() {
+		return false, core.ErrPoolClosed
+	}
 	defer func() {
 		if r := recover(); r != nil {
 			sent = false
@@ -817,6 +820,9 @@ func (p *Pool[T]) blockSend(task core.PoolTask[T], taskCtx context.Context, time
 // trySend 非阻塞安全发送到 taskCh，用于 TrySubmit。
 // 通道关闭时通过 recover 安全返回 (false, ErrPoolClosed)。
 func (p *Pool[T]) trySend(task core.PoolTask[T]) (sent bool, err error) {
+	if p.closed.Load() {
+		return false, core.ErrPoolClosed
+	}
 	defer func() {
 		if r := recover(); r != nil {
 			sent = false
@@ -903,7 +909,17 @@ func (p *Pool[T]) Close() {
 	close(p.done)
 	p.mu.Unlock()
 	p.workerWg.Wait()
-	close(p.taskCh)
+
+	// 排空孤儿任务 —— 这些任务在 worker 退出后才被发送到 taskCh，
+	// 没有 worker 会处理它们，需要手动调用 wg.Done() 避免 Wait() 永久阻塞。
+	for {
+		select {
+		case task := <-p.taskCh:
+			p.discardTask(task.Record, task.Index, task.Cancel, core.ErrPoolClosed)
+		default:
+			return
+		}
+	}
 }
 
 // CloseAndWait 关闭池并等待所有任务完成。
