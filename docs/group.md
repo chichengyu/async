@@ -20,9 +20,9 @@
 >
 > `Wait()` 只能调用一次，调用后不可再 `Go()`。如需复用，请使用 `Reset()` 重置 Group。
 >
-> **⚠️ goroutine 不复用**
+> **⚠️ goroutine 不复用，不适合海量任务**
 >
-> 与 Pool 不同，Group 不会复用 goroutine。每个 `Go()` 启动一个新 goroutine，适合几千到几万量级的批量任务，不适合百万级高频提交。
+> 与 Pool 不同，Group 不会复用 goroutine。每个 `Go()` 启动一个新 goroutine，适合几千到几万量级的批量任务，不适合百万级高频提交。**实测 20 万任务时内存开销已极大，生产环境建议单次不超过 5 万。** 海量短任务请使用 [Pool](pool.md)。
 >
 > **⚠️ Concurrency 控制**
 >
@@ -1226,6 +1226,49 @@ fmt.Printf("success: %d, fail: %d, total: %d\n",
 values := mg.Values()
 // 提取所有错误
 errors := mg.Errors()
+```
+
+---
+
+## 生产最佳实践
+
+> **⚠️ 必读：Group 的生产使用边界**
+
+### 任务数量上限
+
+Group 每次 `Go()` 创建一个新 goroutine（用完销毁），因此**不适合海量任务**：
+
+```go
+// ❌ 危险：100万任务 × 100万 goroutine = 内存爆炸
+g := async.NewGroup[int](500)
+for i := 0; i < 1_000_000; i++ {
+    g.Go(ctx, heavyTask)
+}
+
+// ✅ 正确：单次 5 万以内用 Group，超过用 Pool
+g := async.NewGroup[int](500)
+for i := 0; i < 50_000; i++ {
+    g.Go(ctx, heavyTask)
+}
+results := g.Wait()
+```
+
+### Pool vs Group 选型速查
+
+| 条件 | 推荐 | 
+|------|------|
+| 任务数 < 5 万，一次性批量 | **Group** |
+| 任务数 > 5 万，或持续提交 | **Pool** |
+| 长期运行的后台服务 | **Pool** |
+| 需要 goroutine 复用 | **Pool** |
+
+### WithMaxResults 同样适用
+
+Group 的 results 切片也没有默认上限，大量任务时同样建议配合限制：
+
+```go
+g := async.NewGroup[int](500).
+    WithMaxResults(50_000)   // 限制结果切片
 ```
 
 ---

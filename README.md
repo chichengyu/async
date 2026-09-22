@@ -14,6 +14,10 @@
 go get github.com/chichengyu/async
 ```
 
+> **⚠️ 生产上线前必读：[生产注意事项](docs/production.md)**
+>
+> 汇总了 OOM 陷阱、内存控制、Pool/Group 选型边界、流式消费丢失等所有生产环境关键注意点。
+
 ---
 
 ## 使用流程
@@ -2177,6 +2181,27 @@ err := async.RetryFn(func() error { return doSomething() }).WithRetry(3)
 // 向池提交任务，提交失败时自动退避重试
 err := async.BindRetryToWorker(ctx, pool, fn, 3, 10*time.Millisecond, 1*time.Second)
 ```
+
+---
+
+## 生产注意事项
+
+> 详见 **[生产注意事项文档](docs/production.md)** — OOM 陷阱、Pool/Group 选型边界、生命周期管理、流式消费丢失、分片不保序等全部要点。
+
+| 重点 | 一句话 |
+|------|--------|
+| 🔴 WithMaxResults 默认 0=无限 | 长期运行的 Pool 必须设置，否则内存持续增长 |
+| 🔴 Group 不适合 >5 万任务 | 每任务新 goroutine，海量任务用 Pool |
+| 🔴 GoResult / GoCancel 必须配对 | 不 Wait/Cancel 直接 goroutine 泄漏 |
+| 🔴 Pool/RateLimiter 必须 Close | 否则 goroutine 永久泄漏 |
+| 🟡 Close 会丢弃任务 | Close() 不等待执行中任务，推荐用 CloseAndWait() |
+| 🟡 FailFast 丢弃成功结果 | 第一个错误后其他成功结果全丢 |
+| 🟡 Retry MaxRetries=0 不重试 | 0 表示只执行一次，不是无限重试 |
+| 🟡 流式消费会静默丢弃 | 消费者慢时丢结果，务必监控 StreamDropped |
+| 🟡 ShardedPool 资源 = N×每分片 | 8 分片 × 100 worker = 800 goroutine 上限 |
+| 🟢 生产配置模板 | [全局 init](docs/production.md#global-config) + [Pool 完整配置](docs/production.md#pool-config) 即抄即用 |
+
+> 📖 [查看完整生产注意事项 →](docs/production.md)
 
 ---
 

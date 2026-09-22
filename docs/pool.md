@@ -1193,15 +1193,21 @@ func (p *Pool[T]) WithMaxResults(maxResults int) *Pool[T]
 
 | 参数 | 类型 | 说明 |
 |------|------|------|
-| `maxResults` | `int` | results 切片容量上限，0=无限 |
+| `maxResults` | `int` | results 切片容量上限，**默认 0=无限** |
 
 限制 results 切片的内存增长。超出上限后，新结果仅通过流式或环形缓冲区消费。
+
+> **⚠️ 默认无限制，长期运行的 Pool 必须设置**
+>
+> 默认值 `0` 意味着 **results 切片永无上限**，千万级提交将导致内存中保留千万个 Result 对象。
+> `WithRingBuffer` 不能替代此设置——环形缓冲和 results 切片是并行的两个存储通道。
+> 详见 [生产最佳实践 - WithMaxResults 默认值陷阱](#生产最佳实践)。
 
 ```go
 p := async.NewPool[string](8).
     WithMaxPending(1000).
     WithOverflow(async.OverflowError).
-    WithMaxResults(1_000_000)
+    WithMaxResults(1_000_000)    // 最多保留 100 万个结果
 defer p.Close()
 
 for _, item := range items {
@@ -1735,6 +1741,109 @@ Pool 内部使用 **32 分片无锁存储**：
 - **结果顺序**：按 `submitIdx` 确定全局顺序，Wait 时遍历合并
 
 这种设计消除了全局锁竞争，在千万级并发下保持线性吞吐。
+
+---
+
+## 生产最佳实践
+
+> **⚠️ 必读：以下配置不当可能在生产高并发下导致 OOM**
+
+### WithMaxResults 默认值陷阱
+
+`WithMaxResults` **默认值为 0（无限制）**，即所有提交任务的结果都会永久保留在 results 切片中：
+
+```go
+// ❌ 危险：长期运行的服务，结果切片无界增长，最终 OOM
+p := async.NewPool[string](8)
+for {
+    p.Submit(ctx, heavyTask)
+}
+p.Wait() // 内存爆炸
+```
+
+`WithRingBuffer` 和 results 切片是**并行的两个存储通道**，只配环形缓冲不会限制 results 切片增长。必须按场景选择至少一种内存控制策略：
+
+```go
+// ✅ 方案1：限制 results 切片容量（推荐）
+p := async.NewPool[string](8).WithMaxResults(100_000)
+
+// ✅ 方案2：环形缓冲（需配合 WithMaxResults 真正限制 results 切片）
+p := async.NewPool[string](8).
+    WithMaxResults(100_000).
+    WithRingBuffer(50_000, async.OverflowDrop)
+
+// ✅ 方案3：流式消费（用 WithStreaming + WithMaxResults）
+p := async.NewPool[string](8).
+    WithMaxResults(100_000).
+    WithStreaming(4096)
+```
+
+### 长期运行 Pool 完整配置
+
+```go
+// ✅ 推荐的生产级 Pool 配置模板
+p := async.NewPool[MyType](async.IO()).
+    WithTimeout(30 * time.Second).           // 单个任务超时
+    WithSubmitTimeout(5 * time.Second).      // 提交等待超时
+    WithMaxPending(10000).                   // 最大排队任务数
+    WithOverflow(async.OverflowError).       // 超出返回错误，触发降级
+    WithMaxResults(100_000).                 // 限制 results 切片内存（默认0=无限！）
+    WithRingBuffer(50_000, async.OverflowDrop). // 固定环形缓冲兜底
+    WithResultCallback(func(r core.Result[MyType]) {
+        // 轻量回调：记录 metrics、打点等
+    })
+```
+
+> **⚠️ Pool vs Group 选型**
+>
+> | 场景 | 推荐 | 原因 |
+> |------|------|------|
+> | 长期运行的后台服务（百万/QPS） | **Pool** | goroutine 复用，32 分片锁 |
+> | 一次性批量任务（几千~几万） | **Group** | 用完即销毁，编码简单 |
+> | 海量短任务（千万级）| **Pool + RingBuffer** | Group 每任务新建 goroutine，千万级内存爆炸 |
+
+### 流式消费注意事项
+
+`WithStreaming` 使用非阻塞 `select default` 写入，消费者慢时会**静默丢弃**结果。务必监控 `StreamDropped()`：
+
+```go
+go func() {
+    ticker := time.NewTicker(10 * time.Second)
+    for range ticker.C {
+        if dropped := p.StreamDropped(); dropped > 0 {
+            log.Printf("[ALERT] stream results dropped: %d", dropped)
+        }
+    }
+}()
+```
+
+### 全局初始化配置
+
+```go
+func init() {
+    async.SetDefaultTimeout(30 * time.Second)       // 默认超时
+    async.SetSubmitTimeout(5 * time.Second)          // 提交超时
+    async.SetTaskFailLogLevel(async.LogLevelWarn)    // 失败日志降级，减少噪音
+    async.SetTraceLogEnabled(false)                  // 关闭 Trace 日志
+    async.SetLogger(myProductionLogger)              // 注入自定义 Logger
+}
+```
+
+> **⚠️ 生命周期必须成对**
+>
+> 创建 Pool 后必须调用 `Close()`、`WaitAndClose()` 或 `CloseAndWait()`，否则 worker goroutine 将永久泄漏。
+>
+> **⚠️ Wait 一次性**
+>
+> `Wait()` 只能调用一次，调用后不可再 Submit。如需重复提交+等待，请使用 `Reset()`。
+>
+> **⚠️ Submit 后必须收集**
+>
+> Submit 后必须调用 Wait / WaitAndClose / CloseAndWait 中的一种来收集结果，否则创建的 goroutine 会泄漏。
+>
+> **⚠️ Close 不等待**
+>
+> `Close()` 会立即停止 worker，不等待正在执行的任务完成。生产环境推荐 `CloseAndWait()`。
 
 ---
 
