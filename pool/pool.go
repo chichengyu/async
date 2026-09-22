@@ -70,7 +70,6 @@ type Pool[T any] struct {
 	active        atomic.Int32                   // 当前活跃任务数
 	busy          atomic.Int32                   // 当前忙碌任务数
 	pending       atomic.Int32                   // 等待中的任务数
-	waiting       atomic.Bool                    // 是否正在 Wait 等待中
 	waited        atomic.Bool                    // 是否已完成 Wait
 	quitting      atomic.Int32                   // 是否正在退出中
 	ctx           context.Context                // 池级别的上下文
