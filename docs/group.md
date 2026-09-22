@@ -1054,6 +1054,8 @@ func batchInsertWithAutoScale(ctx context.Context, records []Record) error {
 | `DisableGroupAutoScale[T]` | `func DisableGroupAutoScale[T any](g *Group[T])` | 停止 Group 自动扩缩容 |
 | `EnableNoResultAutoScale` | `func EnableNoResultAutoScale(nr *NoResult, config *AutoScaleConfig)` | 启用 NoResult 自动扩缩容 |
 | `DisableNoResultAutoScale` | `func DisableNoResultAutoScale(nr *NoResult)` | 停止 NoResult 自动扩缩容 |
+| `BuildAggregateNoResult(nr)` | `func BuildAggregateNoResult(nr *NoResult) AggregatedNoResult` | 从 NoResult 构建聚合的统计信息（成功/失败/跳过计数） |
+| `FillNoResultSkipped(nr, total)` | `func FillNoResultSkipped(nr *NoResult, total int)` | 为 NoResult 填充跳过任务的占位（FailFast 场景） |
 
 ### 类型定义
 

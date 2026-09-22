@@ -487,7 +487,6 @@ async.IOMulti(n) // 自定义倍数 = runtime.NumCPU() * n
 | `SubmitN[T](ctx, fn, n)` | 快速创建池并提交 N 个相同任务 |
 | `SubmitSafeN[T](ctx, fn, n)` | 提交 N 个任务（忽略提交失败） |
 | `SubmitBatch[T, S](ctx, items, fn)` | 批量提交切片元素 |
-| `SubmitFunc(ctx, fn)` | 提交 func() → (*Pool, index, error) |
 | `MapPool[T, R](ctx, items, fn, c)` | 池化 Map |
 | `ForEachPool[T](ctx, items, fn, c)` | 池化 ForEach |
 | `SubmitAction(p, ctx, fn)` | 提交无返回值动作 |
@@ -507,6 +506,9 @@ async.IOMulti(n) // 自定义倍数 = runtime.NumCPU() * n
 | `GoWithTimeout(ctx, d, fn)` | 带超时的无返回值异步任务 |
 | `GoResult[T](ctx, fn)` | 启动带返回值异步任务 |
 | `GoResultWithTimeout[T](ctx, d, fn)` | 带超时的带返回值异步任务 |
+| `GoCancel[T](ctx, fn)` | 启动可取消的带返回值异步任务（返回 Task[T]） |
+| `GoErr(ctx, fn)` | 启动无返回值异步任务（fn 签名为 `func(ctx) error`），返回 `*AsyncErr` |
+| `GoCancelErr(ctx, fn)` | 启动可取消的无返回值异步任务（fn 签名为 `func(ctx) error`），返回 `TaskErr` |
 | `Map[T,R](ctx, items, c, fn)` | 并发映射 |
 | `MapWithFailFast[T,R](ctx, items, c, fn)` | FailFast 映射 |
 | `MapWithTimeout[T,R](ctx, items, c, d, fn)` | 带超时映射 |
@@ -546,6 +548,8 @@ async.IOMulti(n) // 自定义倍数 = runtime.NumCPU() * n
 | `Retry(ctx, n, fn)` | 简单重试 |
 | `RetryWithBackoff(ctx, n, d, fn)` | 指数退避重试 |
 | `RetryWithLinearBackoff(ctx, n, d, fn)` | 线性退避重试 |
+| `RetryBackoff(ctx, fn, n, ib, mb)` | 指数退避重试（fn 签名为 `func(ctx) error`） |
+| `RetryLinear(ctx, fn, n, b)` | 线性退避重试（fn 签名为 `func(ctx) error`） |
 | `RetryWithBackoffResult[T](ctx, fn, n, ib, mb)` | 返回 Result 的指数退避重试 |
 | `RetryWithLinearBackoffResult[T](ctx, fn, n, d)` | 返回 Result 的线性退避重试 |
 | `RetryWithConfig[T](ctx, fn, n, ib, mb, opts)` | 完整配置重试 |
@@ -564,6 +568,8 @@ async.IOMulti(n) // 自定义倍数 = runtime.NumCPU() * n
 | `Partition(results)` | 分离值和错误 |
 | `Flat[T](results)` | 扁平提取成功值 |
 | `OnlyErrors[T](results)` | 只提取错误 |
+| `BuildAggregateNoResult(nr)` | 从 NoResult 构建聚合统计信息 |
+| `FillNoResultSkipped(nr, total)` | 为 NoResult 填充跳过任务的占位 |
 | `SafeCall[T,R](ctx, item, fn)` | 安全调用（捕获 panic） |
 | `SafeCallVoid[T](ctx, item, fn)` | Void 安全调用 |
 | `Must[T](val, err)` | 提取值，err!=nil 则 panic |
@@ -1796,9 +1802,20 @@ err := async.BindRetryToWorker(ctx, pool, fn, 3, 10*time.Millisecond, 1*time.Sec
 本库经过 **6 套压测体系、250+ 测试用例、千万级极限高并发** 的全面验证，
 所有测试均启用 **Go Race Detector**（`-race`），零竞态、零死锁、零 goroutine 泄漏。
 
-> 完整测试数据、覆盖矩阵和修复记录请参阅：[极限并发测试报告](docs/test_report.md)
+> 修复记录和详细说明请参阅：[极限并发测试报告](docs/test_report.md)
 
-### 核心指标（1M ~ 10M 量级）
+### 测试体系总览
+
+| 测试套件 | 数量 | -race | 结果 |
+|----------|------|-------|------|
+| 10M 极限压力+Race | 9 | ✅ | ALL PASS |
+| 综合边界压力+Race | 100+ | ✅ | ALL PASS |
+| 综合边界压力 | 100+ | ❌ | ALL PASS |
+| Hyper 高并发 | 18 | ✅ | ALL PASS |
+| Production 生产级千万 | 80+ | ❌ | ALL PASS |
+| 子包全量测试+Race | 全量 | ✅ | ALL PASS |
+
+### 核心吞吐量指标（1M ~ 10M 量级）
 
 | 场景 | 吞吐量 | 说明 |
 |------|--------|------|
@@ -1817,7 +1834,34 @@ err := async.BindRetryToWorker(ctx, pool, fn, 3, 10*time.Millisecond, 1*time.Sec
 | `Group AutoScale` | **561K ops/s** | 自动扩缩容Group |
 | `NoResult AutoScale` | **573K ops/s** | 无返回值自动扩缩容 |
 
-### 10M Race 压力测试（带 -race，全部通过）
+### Production 生产级千万测试详情
+
+| 测试名称 | 任务量 | 耗时 | 吞吐量 | 失败 |
+|----------|--------|------|--------|------|
+| `10M_Pool_Submit` | 10,000,000 | 26.3s | 380K | **0** |
+| `10M_Map` | 10,000,000 | 0.03s | 295M | 0 |
+| `10M_Go` | 10,000,000 | ~10s | 961K | 0 |
+| `10M_MapWithFailFast` | 10,000,000 | 0.07s | 145M | 0 |
+| `10M_MapWithTimeout` | 10,000,000 | 15.8s | 633K | 0 |
+| `10M_MapWithFFTimeout` | 10,000,000 | 17.3s | 581K | 0 |
+| `10M_GoWithTimeout` | 10,000,000 | 19.3s | 531K | 0 |
+| `10M_GoResult` | 10,000,000 | 12.2s | — | **0** |
+| `10M_TokenBucket` | 10,000,000 | 5.7s | 1.74M | 0 |
+| `10M_SlidingWindow` | 10,000,000 | 6.0s | 1.66M | 0 |
+| `10M_Pipeline` | 10,000,000 | 0.14s | 70.7M | 0 |
+| `10M_SafeCall` | 10,000,000 | 3.1s | 3.22M | 0 |
+| `10M_Group_AutoScale` | 10,000,000 | 17.8s | 561K | **0** |
+| `10M_NoResult_AutoScale` | 10,000,000 | 17.5s | 573K | **0** |
+| `1M_GoResult` | 1,000,000 | 2.3s | 427K | 0 |
+| `1M_ForEach` | 1,000,000 | 1.0s | 1M | 0 |
+| `1M_RateLimiter` | 1,000,000 | 0.1s | 8M | 0 |
+| `1M_Retry` | 1,000,000 | 0.02s | 51M | 0 |
+| `1M_Chunk` | 1,000,000 | 0.0005s | 1.9B | 0 |
+| `1M_MixedPool` | 1,000,000 | 1.3s | 794K | 0 |
+| `200K_Group_AutoScale` | 200,000 | 0.2s | 965K | 0 |
+| `1M_AutoScalePool` | 1,000,000 | 8.5s | 117K | 0 |
+
+### 10M Race 极限压力（带 -race，全部通过）
 
 | 测试 | 任务量 | 耗时 | 结果 |
 |------|--------|------|------|
@@ -1831,40 +1875,46 @@ err := async.BindRetryToWorker(ctx, pool, fn, 3, 10*time.Millisecond, 1*time.Sec
 | ForEachChunked BatchSize | 批量分块 | — | ✅ |
 | MapChunk Concurrent | 5万元素 | — | ✅ |
 
-### 测试覆盖矩阵
+### 安全性指标
 
-| 模块 | 用例数 | 覆盖 |
-|------|--------|------|
-| Pool（含 NoResultPool） | 24 | Submit/Wait/TrySubmit/FailFast/AutoScale/Close/Reset/Stats… |
-| Group（含 NoResult） | 12 | Go/Wait/GoAt/FailFast/AutoScale/GoWithTimeout/Reset… |
-| MapReduce（含 Chunk） | 22 | Map/ForEach/Reduce/Chunk/ChunkN/Default* 全变体全覆盖 |
-| RateLimiter（含 Adaptive） | 9 | TokenBucket/SlidingWindow/Adaptive/Resize/Strategy… |
-| Retry | 8 | Backoff/Linear/Config/RetryFn/BindRetryToWorker… |
-| Async（Go/GoResult/Mu） | 10 | Go/GoResult/GoWithTimeout/AsyncResult/Mu… |
-| Pipeline | 4 | Run/Execute/ExecuteWithMeta/ExecuteWithGroup |
-| 流式消费（新增） | 5 | Pool/Group Streaming + ResultCallback + 并发竞态 |
-| 环形缓冲（新增） | 5 | RingBuffer Drop/Block/Error + Flush + 并发Push/Pop |
-| 背压控制（新增） | 5 | MaxPending Block/Drop/Error + QueueDepth + 高速竞态 |
-| 分片分发（新增） | 10 | ShardedPool/ShardedGroup + Streaming+RingBuffer+Backpressure |
+#### FailFast 故障传播
 
-### 竞态安全验证
+| 场景 | 结果 |
+|------|------|
+| MapWithFailFast 50万故障元素 | 402,504 failures → 成功捕获首个错误，取消后续任务 |
+| Group.FailFast 10K×10轮 | 每轮 9,999/9,999 后续任务被正确取消 |
+| ForEachWithFailFast 高并发 | FailFast 正确返回首个错误，无误返回 nil |
+| ForEachSerialFailFast | 串行 FailFast 正确取消后续任务 |
 
-Race Detector 全面通过，零竞态。重点验证：
+#### 竞态安全（Race Detector 全面通过）
 
-| 热点场景 | 结果 |
-|----------|------|
-| Pool.AutoScale + Close 竞态 | ✅ |
-| Pool.Resize 扩缩容并发 | ✅ |
-| Group.FailFast 级联取消 | ✅ |
-| Group.AutoScale + Close | ✅ |
-| RateLimiter.Resize 并发调速率 | ✅ |
-| Retry.Backoff 并发重试 | ✅ 100K次 零竞态 |
-| ShardedPool 并发分发 | ✅ |
-| ShardedGroup 并发分发 | ✅ |
-| 流式消费 Stream + Submit 并发 | ✅ |
-| 环形缓冲 Push/Pop 并发 | ✅ |
+| 场景 | 结果 |
+|------|------|
+| Pool.Close + Submit 并发 | ✅ 零竞态 |
+| Pool.AutoScale + Close 竞态 | ✅ 零竞态 |
+| Pool.AutoScale + Wait + Close 竞态 | ✅ 零竞态 |
+| Pool.Resize 并发扩缩容 | ✅ 零竞态 |
+| Group.FailFast 快速失败竞态 | ✅ 零竞态 |
+| Group.AutoScale + Close 竞态 | ✅ 零竞态 |
+| Group.NoResult + AutoScale 竞态 | ✅ 零竞态 |
+| RateLimiter.Resize 竞态 | ✅ 零竞态 |
+| Retry.Backoff 重试竞态 | ✅ 10万次零竞态 |
+| ShardedPool 并发提交分发 | ✅ 零竞态 |
+| ShardedGroup 并发提交分发 | ✅ 零竞态 |
+| 流式消费 Stream + Submit 并发 | ✅ 零竞态 |
+| 环形缓冲 Push/Pop 并发 | ✅ 零竞态 |
 
-### 边界条件全覆盖
+#### Race Detector 关键修复
+
+| 竞态热点 | 修复方式 |
+|----------|---------|
+| AutoScale 与 autoScaleLoop stop channel | EnableAutoScale 使用本地 stopCh 传入 |
+| Stream channel 未在 Close 时关闭 | Close() 中增加 drainStreaming() |
+| poolPrecheck → wg.Add(1) TOCTOU | 无锁化（atomic.Bool）消除竞态窗口 |
+| Resize 缩容 Quit 信号与 worker 退出 | 安全的 select broadcast 机制 |
+| blockSend/trySend 的 Close 竞态 | 安全的 channel 操作 + close 标记 |
+
+#### 边界条件全覆盖
 
 | 场景 | 结果 |
 |------|------|
@@ -1874,6 +1924,120 @@ Race Detector 全面通过，零竞态。重点验证：
 | FailFast 级联传播 | ✅ 无任务遗漏 |
 | Pool+Group+RateLimiter+Retry 混合 | ✅ 极限混合并发安全 |
 | WaitTimeout 超时 | ✅ 无goroutine泄漏 |
+| Extreme FailFast Cascade | ✅ 级联传播无丢失 |
+| Pool.Resize 扩缩容循环 | ✅ 最终Worker数一致 |
+
+### 测试覆盖矩阵（250+ 测试用例）
+
+#### Pool 类（24项）
+
+| 测试覆盖 |
+|----------|
+| Submit/Wait, TrySubmit, SubmitAt, Resize, AutoScale, FailFast, Close, Reset |
+| WaitTimeout, WaitContext, CloseAndWait, CloseAndWaitTimeout, CloseByIdle |
+| NoResultPool, MapPool, ForEachPool, NewAutoScalePool, Stats |
+| Errors, Values, JoinErrors, SubmitAction, TrySubmitAction, GoAction |
+
+#### Group 类（12项）
+
+| 测试覆盖 |
+|----------|
+| Go/Wait, GoAt, FailFast, AutoScale, NoResult |
+| GoWithTimeout, GoAtWithTimeout, WaitTimeout, WaitContext, Reset, Stats |
+
+#### MapReduce 类（22项）
+
+| 测试覆盖 |
+|----------|
+| Map/ForEach/Reduce 标准版、FailFast版、Timeout版、FFTimeout版、Serial版 |
+| Chunk/ChunkN, MapChunk/MapChunked, ForEachChunk/ForEachChunked |
+| MapPool/ForEachPool, DefaultMap/DefaultForEach/DefaultReduce 全快捷变体 |
+
+#### 限流器类（9项）
+
+| 测试覆盖 |
+|----------|
+| TokenBucket Wait/Allow, SlidingWindow Allow, AdaptiveRateLimiter |
+| RateLimiter Resize/Strategy, NewWithBurst |
+
+#### 重试类（8项）
+
+| 测试覆盖 |
+|----------|
+| Retry, RetryWithBackoff, RetryWithLinearBackoff, RetryWithConfig |
+| RetryFn WithRetry, BindRetryToWorker, WithTimeout, WithDeadline |
+
+#### 异步任务类（10项）
+
+| 测试覆盖 |
+|----------|
+| Go/GoResult/GoWithTimeout/GoResultWithTimeout |
+| AsyncResult Wait/WaitTimeout/WaitCh/Cancel, Task Cancel, Mu Append |
+
+#### 管道类（4项）
+
+| 测试覆盖 |
+|----------|
+| Pipeline Run, Execute, ExecuteWithMeta, ExecuteWithGroup |
+
+#### 流式消费（5项）
+
+| 测试覆盖 |
+|----------|
+| Pool/Group Streaming, Pool/Group ResultCallback, 流式消费高并发竞态 |
+
+#### 环形缓冲（5项）
+
+| 测试覆盖 |
+|----------|
+| RingBuffer Drop/Block/Error 策略, Flush 排空 + 并发写入, 并发 Push/Pop 竞态 |
+
+#### 背压控制（5项）
+
+| 测试覆盖 |
+|----------|
+| WithMaxPending + OverflowBlock/Drop/Error, QueueDepth 实时监控, 背压+高速提交竞态 |
+
+#### 分片分发（10项）
+
+| 测试覆盖 |
+|----------|
+| ShardedPool Submit/Wait/SubmitKeyed/SubmitBatch, ShardedGroup Go/Wait/GoKeyed/GoBatch |
+| ShardedPool Streaming + RingBuffer + Backpressure, 分片并发分发竞态 |
+
+### 子包全量测试（带 -race）
+
+| 子包 | 结果 |
+|------|------|
+| `pool/` | ✅ ALL PASS |
+| `group/` | ✅ ALL PASS |
+| `core/` | ✅ ALL PASS |
+| `shard/` | ✅ ALL PASS |
+| `retry/` | ✅ ALL PASS |
+| `ratelimit/` | ✅ ALL PASS |
+| `pipeline/` | ✅ ALL PASS |
+| `mapreduce/` | ✅ ALL PASS |
+| `task/` | ✅ ALL PASS |
+
+### 最终结论
+
+经过 **6 套压测体系 + 250+ 测试用例** 全覆盖验证：
+
+- ✅ **10M 量级极限并发** — Pool、Map、Go、Pipeline、SafeCall、AutoScale 等全部通过
+- ✅ **Race Detector** — 全量通过，零竞态问题（含已知热点单独修复验证）
+- ✅ **FailFast 故障传播** — 级联取消正确，无任务遗漏
+- ✅ **AutoScale 自动扩缩容** — 高并发竞态安全
+- ✅ **Close/Resize 竞态** — 关闭或调整大小时无 goroutine 泄漏
+- ✅ **流式结果消费** — channel 和回调两种模式并发安全
+- ✅ **环形缓冲** — Drop/Block/Error 三种溢出策略全路径安全
+- ✅ **背压控制** — MaxPending + Overflow 队列限制生效
+- ✅ **分片分发** — RoundRobin/Hash 多实例正确路由
+- ✅ **限流器** — 四种限流器竞态安全、策略切换正常
+- ✅ **重试机制** — 指数/线性退避、超时控制正确
+- ✅ **管道** — 多阶段并发和串行管道竞态安全
+- ✅ **MapReduce** — 所有变体（FailFast/Timeout/FFTimeout/Serial/Chunk）正常
+
+**✅ 全部通过 — Race Detector 零竞态 — 可扛住真实线上生产极限高并发**
 
 ### 运行压测
 

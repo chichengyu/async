@@ -7,8 +7,12 @@
 - [核心概念](#核心概念)
 - [无返回值异步任务 (Go)](#无返回值异步任务-go)
 - [带返回值异步任务 (GoResult)](#带返回值异步任务-goresult)
+- [GoCancel — 可取消的带返回值异步任务](#gocancel--可取消的带返回值异步任务)
+- [GoErr — 无返回值错误处理异步任务](#goerr--无返回值错误处理异步任务)
+- [GoCancelErr — 可取消的无返回值异步任务](#gocancelerr--可取消的无返回值异步任务)
 - [AsyncResult 等待模式](#asyncresult-等待模式)
 - [Task 可取消任务](#task-可取消任务)
+- [SafeCall — Panic 保护](#safecall---panic-保护)
 - [Mu\[T\] 线程安全切片](#mut-线程安全切片)
 - [完整示例](#完整示例)
 - [方法速查表](#方法速查表)
@@ -31,7 +35,9 @@ Task         → Ctx + Cancel + Result（可主动取消）
 |------|---------|--------|--------|
 | `TaskVoid` | `Go(ctx, fn)` | 无 | ❌ |
 | `AsyncResult[T]` | `GoResult(ctx, fn)` | `(T, error)` | ❌ |
-| `Task[T]` | 子包 `task.GoResult(ctx, fn)` | `(T, error)` | ✅ |
+| `AsyncErr` | `GoErr(ctx, fn)` | `error` | ❌ |
+| `Task[T]` | `GoCancel(ctx, fn)` | `Result[T]` | ✅ |
+| `TaskErr` | `GoCancelErr(ctx, fn)` | `Result[NoResult]` | ✅ |
 
 ---
 
@@ -137,6 +143,100 @@ val, err := ar.Wait()
 - `ctx` — 上下文
 - `timeout` — 超时时间
 - `fn` — `func(context.Context) (T, error)`
+
+---
+
+## GoCancel — 可取消的带返回值异步任务
+
+`GoCancel[T]` 启动一个可取消的异步任务，返回 `Task[T]`（支持主动 `Cancel()` 和 context 取消）。
+
+```go
+t := async.GoCancel(ctx, func(ctx context.Context) (*Data, error) {
+    return slowQuery(ctx, id)
+})
+
+// 超时后主动取消
+time.Sleep(3 * time.Second)
+t.Cancel()
+
+// 或通过 context 控制
+ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+defer cancel()
+t := async.GoCancel(ctx, func(ctx context.Context) (string, error) {
+    return fetchData(ctx)
+})
+result, ok := t.Result() // 非阻塞获取结果
+if !ok {
+    fmt.Println("任务尚未完成")
+}
+```
+
+**`GoCancel` 参数：**
+- `ctx` — 上下文（cancel 时自动终止任务）
+- `fn` — `func(context.Context) (T, error)`
+
+**返回：** `Task[T]` — 可取消任务句柄，支持 `Result()`（非阻塞）、`Wait(ctx)`（阻塞）、`Cancel(reason)`（主动取消）
+
+> `GoCancel` 实际上是 `task.GoResult` 的别名。
+
+---
+
+## GoErr — 无返回值错误处理异步任务
+
+`GoErr` 启动一个 fn 签名为 `func(ctx) error` 的异步任务，返回 `*AsyncErr`（即 `*AsyncResult[NoResult]`）。
+
+```go
+ar := async.GoErr(ctx, func(ctx context.Context) error {
+    return sendData(ctx, payload)
+})
+
+// 阻塞等待，获取最终 error
+if err := ar.Wait(); err != nil {
+    log.Printf("发送失败: %v", err)
+}
+
+// 带超时等待
+err, ok := ar.WaitTimeout(2 * time.Second)
+if !ok {
+    log.Println("等待超时")
+}
+```
+
+**`GoErr` 参数：**
+- `ctx` — 上下文
+- `fn` — `func(context.Context) error`（无返回值，只返回 error）
+
+**返回：** `*AsyncErr`（即 `*task.AsyncResult[NoResult]`）— 异步结果句柄，支持 `Wait()` / `WaitTimeout()` / `WaitCh()` / `Cancel()` / `Ok()` / `IsPanic()`
+
+---
+
+## GoCancelErr — 可取消的无返回值异步任务
+
+`GoCancelErr` 启动一个 fn 签名为 `func(ctx) error` 的可取消异步任务，返回 `TaskErr`（即 `Task[NoResult]`）。
+
+```go
+t := async.GoCancelErr(ctx, func(ctx context.Context) error {
+    return longRunning(ctx)
+})
+
+// 超时后主动取消
+time.Sleep(3 * time.Second)
+t.Cancel(fmt.Errorf("超时取消"))
+
+// 获取结果
+result, ok := t.Result()
+if ok && result.Ok() {
+    fmt.Println("任务成功完成")
+}
+```
+
+**`GoCancelErr` 参数：**
+- `ctx` — 上下文（cancel 时自动终止任务）
+- `fn` — `func(context.Context) error`（无返回值，只返回 error）
+
+**返回：** `TaskErr`（即 `*task.Task[NoResult]`）— 可取消任务句柄
+
+> `GoCancelErr` 实际上是 `task.GoResultAction` 的别名。
 
 ---
 
@@ -403,6 +503,9 @@ func main() {
 | `GoWithTimeout` | `func GoWithTimeout(ctx context.Context, timeout time.Duration, fn func(ctx context.Context)) *TaskVoid` | 带超时的无返回值异步任务 |
 | `GoResult[T]` | `func GoResult[T any](ctx context.Context, fn func(ctx context.Context) (T, error)) *AsyncResult[T]` | 启动带返回值异步任务 |
 | `GoResultWithTimeout[T]` | `func GoResultWithTimeout[T any](ctx context.Context, timeout time.Duration, fn func(ctx context.Context) (T, error)) *AsyncResult[T]` | 带超时的带返回值异步任务 |
+| `GoCancel[T]` | `func GoCancel[T any](ctx context.Context, fn func(ctx context.Context) (T, error)) Task[T]` | 启动可取消的带返回值异步任务（返回 `Task[T]`，支持 `Cancel()`） |
+| `GoErr` | `func GoErr(ctx context.Context, fn func(context.Context) error) *AsyncErr` | 启动无返回值异步任务（fn 签名为 `func(ctx) error`），返回 `*AsyncErr` |
+| `GoCancelErr` | `func GoCancelErr(ctx context.Context, fn func(context.Context) error) TaskErr` | 启动可取消的无返回值异步任务（fn 签名为 `func(ctx) error`），返回 `TaskErr` |
 
 ### Task[T] 可取消任务
 
@@ -448,4 +551,6 @@ func main() {
 | `Task[T]` | `type Task[T any] = task.Task[T]` — 可取消、可手动完成的任务 |
 | `AsyncResult[T]` | `type AsyncResult[T any] = task.AsyncResult[T]` — `GoResult` 返回的异步结果句柄 |
 | `TaskVoid` | `struct{ ... }` — `Go` 返回的无返回值任务句柄（含 `Wait()`、`Ok()`、`IsPanic()`） |
+| `AsyncErr` | `type AsyncErr = task.AsyncResult[NoResult]` — `GoErr` 返回的无返回值异步结果句柄 |
+| `TaskErr` | `type TaskErr = task.Task[NoResult]` — `GoCancelErr` 返回的可取消无返回值任务 |
 | `Mu[T]` | `type Mu[T any] = task.Mu[T]` — 线程安全切片容器 |

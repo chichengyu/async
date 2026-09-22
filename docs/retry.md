@@ -220,6 +220,46 @@ err := retry.RetryWithLinearBackoffVoid(ctx, func(ctx context.Context) error {
 
 > **说明：** 这两个函数在 `retry` 子包中导出，同时被顶层的 `RetryWithBackoff` / `RetryWithLinearBackoff` 内部调用。用户如果已经在使用 `import "..." retry` 可以直接使用 Void 版本。
 
+### async 顶层便捷重试（推荐）
+
+`async` 根包提供参数更简洁的重试便利方法，是大多数场景下的首选：
+
+```go
+// RetryBackoff：指数退避重试（fn 签名为 func(ctx) error）
+err := async.RetryBackoff(ctx, func(ctx context.Context) error {
+    return writeDB(ctx, record)
+}, 5, 100*time.Millisecond, 30*time.Second)
+
+// RetryLinear：线性退避重试（fn 签名为 func(ctx) error）
+err := async.RetryLinear(ctx, func(ctx context.Context) error {
+    return pollStatus(ctx, jobID)
+}, 5, 2*time.Second)
+```
+
+| 函数 | 签名 | 说明 |
+|------|------|------|
+| `RetryBackoff` | `func RetryBackoff(ctx, fn, maxRetries, initialBackoff, maxBackoff) error` | 指数退避重试，fn 签名 `func(ctx) error` |
+| `RetryLinear` | `func RetryLinear(ctx, fn, maxRetries, backoff) error` | 线性退避重试，fn 签名 `func(ctx) error` |
+
+**`RetryBackoff` 参数：**
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `ctx` | `context.Context` | 上下文 |
+| `fn` | `func(context.Context) error` | 要重试的函数 |
+| `maxRetries` | `int` | 最大重试次数 |
+| `initialBackoff` | `time.Duration` | 初始退避时间 |
+| `maxBackoff` | `time.Duration` | 最大退避上限 |
+
+**`RetryLinear` 参数：**
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `ctx` | `context.Context` | 上下文 |
+| `fn` | `func(context.Context) error` | 要重试的函数 |
+| `maxRetries` | `int` | 最大重试次数 |
+| `backoff` | `time.Duration` | 每次重试的固定等待时间 |
+
 
 ## 简单函数式重试
 
