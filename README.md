@@ -2,9 +2,102 @@
 
 [![Go Version](https://img.shields.io/badge/Go-1.25-00ADD8?style=flat&logo=go)](https://go.dev/)
 [![Go Reference](https://pkg.go.dev/badge/github.com/chichengyu/async.svg)](https://pkg.go.dev/github.com/chichengyu/async)
+[![Go Report](https://goreportcard.com/badge/github.com/chichengyu/async)](https://goreportcard.com/report/github.com/chichengyu/async)
 [![License](https://img.shields.io/badge/license-MIT-green?style=flat)](LICENSE)
 
-泛型 Go 并发工具库，提供协程池、任务组、异步任务、Map/Reduce、重试、限流、管道等开箱即用的并发原语。**零外部依赖，仅需 Go 1.25+**。
+**零依赖、千万级压测、370K ops/s 吞吐的泛型 Go 并发工具库。**
+
+协程池 · 任务组 · Map/Reduce · 重试 · 限流 · 管道 · 分片 — 一行代码，生产就绪。
+
+> **⚠️ 生产上线前必读：[生产注意事项](docs/production.md)**
+
+---
+
+## 为什么选 async？
+
+| 对比 | ants | conc | workerpool | **async** |
+|------|:--:|:--:|:--:|:--:|
+| 协程池 | ✅ | ❌ | ✅ | ✅ |
+| 任务组 | ❌ | ❌ | ❌ | ✅ |
+| Map/Reduce | ❌ | ❌ | ❌ | ✅ |
+| 重试 + 退避 | ❌ | ❌ | ❌ | ✅ **4 种策略** |
+| 限流器 | ❌ | ❌ | ❌ | ✅ **4 种算法** |
+| 管道编排 | ❌ | ❌ | ❌ | ✅ |
+| 32 路分片无锁 | ❌ | ❌ | ❌ | ✅ **独家** |
+| 泛型 | ✅ | ✅ | ❌ | ✅ |
+| 零外部依赖 | ❌ | ❌ | ❌ | ✅ |
+| 千万级 Race 压测 | ❌ | ❌ | ❌ | ✅ |
+
+---
+
+## 性能一览
+
+| 场景 | 吞吐量 |
+|------|--------|
+| `Pool.Submit` + `Wait`（千万任务） | **370K ops/s** |
+| `Map` 千万元素映射 | **2.95 亿/s** |
+| `Go` FireAndForget | **961K ops/s** |
+| `Pipeline` 2阶段 × 千万 | **85M ops/s** |
+| `BoundedRunner` | **569K ops/s** |
+| `TokenBucket` 限流 | **194万/s** |
+
+> 全部测试启用 `-race`，6 套压测体系、275+ 用例，详见 [测试与性能](#测试与性能)
+
+---
+
+## 5 秒上手
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "time"
+
+    "github.com/chichengyu/async"
+)
+
+func main() {
+    // 创建协程池：复用 goroutine，内置 32 路无锁分片
+    pool := async.NewPool[int](async.IO()).
+        WithMaxResults(10_000).                     // 防 OOM
+        WithRingBuffer(5_000, async.OverflowDrop)   // 环形缓冲兜底
+    defer pool.CloseAndWait()
+
+    // 提交千万级任务不卡顿
+    for i := 0; i < 10_000; i++ {
+        pool.Submit(context.Background(), func(ctx context.Context) (int, error) {
+            return i * i, nil
+        })
+    }
+
+    // 数据并行：Map、ForEach、Reduce 一行搞定
+    items := []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}
+    results := async.Map(context.Background(), items, async.IO(),
+        func(ctx context.Context, n int) (int, error) {
+            return n * n, nil
+        })
+
+    // 重试 + 指数退避
+    async.RetryWithBackoff(context.Background(), 3, 100*time.Millisecond,
+        func(ctx context.Context) error {
+            return callExternalAPI(ctx)
+        })
+
+    fmt.Println(results)
+}
+```
+
+| 场景 | 一行代码 |
+|------|----------|
+| 🔁 协程池提交 | `pool.Submit(ctx, fn)` |
+| 🗺️ 数据并行映射 | `async.Map(ctx, slice, concurrency, fn)` |
+| 🔄 指数退避重试 | `async.RetryWithBackoff(ctx, 3, 100ms, fn)` |
+| ⏱️ 令牌桶限流 | `limiter.Wait(ctx)` |
+| 🔀 分片隔离 | `pool.Shard(8)` |
+| 🔗 管道编排 | `pipeline.Execute(ctx, items)` |
+| 📡 流式消费 | `pool.WithStreaming(4096)` |
 
 ---
 
@@ -14,9 +107,7 @@
 go get github.com/chichengyu/async
 ```
 
-> **⚠️ 生产上线前必读：[生产注意事项](docs/production.md)**
->
-> 汇总了 OOM 陷阱、内存控制、Pool/Group 选型边界、流式消费丢失等所有生产环境关键注意点。
+> 仅需 Go 1.25+，零外部依赖。
 
 ---
 
