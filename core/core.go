@@ -386,7 +386,7 @@ func WaitTimeoutImpl[T any](
 	wg *sync.WaitGroup,
 	cancel context.CancelFunc,
 	mu *sync.Mutex,
-	waited *bool,
+	waited *atomic.Bool,
 	waiting *atomic.Bool,
 	cancelAll func(),
 	copyResults func() []Result[T],
@@ -426,7 +426,7 @@ func WaitTimeoutImpl[T any](
 			cancel()
 		}
 		mu.Lock()
-		*waited = true
+		waited.Store(true)
 		waiting.Store(false)
 		safeCancelAll()
 		results := copyResults()
@@ -437,7 +437,7 @@ func WaitTimeoutImpl[T any](
 			cancel()
 		}
 		mu.Lock()
-		*waited = true
+		waited.Store(true)
 		waiting.Store(false)
 		safeCancelAll()
 		results := copyResults()
@@ -486,7 +486,7 @@ func WaitContextImpl[T any](
 	wg *sync.WaitGroup,
 	cancel context.CancelFunc,
 	mu *sync.Mutex,
-	waited *bool,
+	waited *atomic.Bool,
 	waiting *atomic.Bool,
 	cancelAll func(),
 	copyResults func() []Result[T],
@@ -506,7 +506,7 @@ func WaitContextImpl[T any](
 			cancel()
 		}
 		mu.Lock()
-		*waited = true
+		waited.Store(true)
 		waiting.Store(false)
 		cancelAll()
 		results := copyResults()
@@ -517,7 +517,7 @@ func WaitContextImpl[T any](
 			cancel()
 		}
 		mu.Lock()
-		*waited = true
+		waited.Store(true)
 		waiting.Store(false)
 		cancelAll()
 		results := copyResults()

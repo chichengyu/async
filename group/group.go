@@ -44,7 +44,7 @@ type Group[T any] struct {
 	timeout       time.Duration                 // 全局任务超时时间（0=无限制）
 	submitTimeout time.Duration                 // 任务提交超时时间
 	failFast      atomic.Bool                   // 是否启用 FailFast 模式
-	waited        bool                          // 是否已完成 Wait
+	waited        atomic.Bool                   // 是否已完成 Wait
 	ctx           context.Context               // 组级别的上下文
 	done          atomic.Pointer[chan struct{}] // 组结束信号（Wait 后关闭）
 	doneSignalled atomic.Bool                   // 确保 done channel 只关闭一次
@@ -378,7 +378,7 @@ func (g *Group[T]) drainStreaming() {
 
 func (g *Group[T]) groupPrecheck(ctx context.Context, record GroupRecordFunc[T], index int, caller string) (context.Context, context.CancelFunc, error) {
 	g.mu.Lock()
-	if g.waited {
+	if g.waited.Load() {
 		if index >= 0 {
 			for len(g.results) <= index {
 				g.results = append(g.results, core.Result[T]{})
@@ -782,7 +782,7 @@ func (g *Group[T]) Wait() []core.Result[T] {
 	g.addMu.Unlock()
 	g.wg.Wait()
 	g.mu.Lock()
-	g.waited = true
+	g.waited.Store(true)
 	g.waiting.Store(false)
 	g.cancelAll()
 	results := make([]core.Result[T], len(g.results))
@@ -904,7 +904,7 @@ func (g *Group[T]) Stats() GroupStats {
 func (g *Group[T]) Errors() []error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if !g.waited {
+	if !g.waited.Load() {
 		core.LogCtxWarn(g.ctx, "async: Group.Errors called before Wait, results may be incomplete", core.Str("type", "Group"))
 	}
 	errs := make([]error, 0, g.FailCount())
@@ -920,7 +920,7 @@ func (g *Group[T]) Errors() []error {
 func (g *Group[T]) FirstError() error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if !g.waited {
+	if !g.waited.Load() {
 		core.LogCtxWarn(g.ctx, "async: Group.FirstError called before Wait, results may be incomplete", core.Str("type", "Group"))
 	}
 	for _, r := range g.results {
@@ -942,7 +942,7 @@ func (g *Group[T]) FirstError() error {
 func (g *Group[T]) Values() []T {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if !g.waited {
+	if !g.waited.Load() {
 		core.LogCtxWarn(g.ctx, "async: Group.Values called before Wait, results may be incomplete", core.Str("type", "Group"))
 	}
 	vals := make([]T, 0, len(g.results))
@@ -979,7 +979,7 @@ func (g *Group[T]) JoinErrors() error {
 //	g.Wait()
 func (g *Group[T]) Reset() (*Group[T], error) {
 	g.mu.Lock()
-	if !g.waited {
+	if !g.waited.Load() {
 		g.mu.Unlock()
 		return g, errors.New("async: Group.Reset called before Wait, concurrent unsafe")
 	}
@@ -991,7 +991,7 @@ func (g *Group[T]) Reset() (*Group[T], error) {
 	g.cancels = nil
 	g.cancel = nil
 	g.failFast.Store(false)
-	g.waited = false
+	g.waited.Store(false)
 	savedTimeout := g.timeout
 	savedSubmitTimeout := g.submitTimeout
 	savedConcurrency := int(g.concurrency.Load())
@@ -1186,10 +1186,7 @@ func (g *Group[T]) performAutoScaleCheck(config *core.AutoScaleConfig, scaleUpCo
 		return
 	}
 
-	g.mu.Lock()
-	waited := g.waited
-	g.mu.Unlock()
-	if waited {
+	if g.waited.Load() {
 		return
 	}
 

@@ -59,7 +59,7 @@ type Pool[T any] struct {
 	busy          atomic.Int32          // 当前忙碌任务数
 	pending       atomic.Int32          // 等待中的任务数
 	waiting       atomic.Bool           // 是否正在 Wait 等待中
-	waited        bool                  // 是否已完成 Wait
+	waited        atomic.Bool           // 是否已完成 Wait
 	quitting      atomic.Int32          // 是否正在退出中
 	ctx           context.Context       // 池级别的上下文
 
@@ -633,16 +633,12 @@ func (p *Pool[T]) poolPrecheck(ctx context.Context, caller string) error {
 	if p.closed.Load() {
 		return core.ErrPoolClosed
 	}
-	p.mu.Lock()
-	if p.waited {
-		p.mu.Unlock()
+	if p.waited.Load() {
 		return core.ErrPoolWaited
 	}
 	if p.waiting.Load() {
-		p.mu.Unlock()
 		return core.ErrPoolWaiting
 	}
-	p.mu.Unlock()
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
@@ -836,12 +832,9 @@ func (p *Pool[T]) TrySubmit(ctx context.Context, fn func(context.Context) (T, er
 	if p.closed.Load() {
 		return core.ErrPoolClosed
 	}
-	p.mu.Lock()
-	if p.waiting.Load() || p.waited {
-		p.mu.Unlock()
+	if p.waiting.Load() || p.waited.Load() {
 		return core.ErrPoolWaiting
 	}
-	p.mu.Unlock()
 	taskCtx, taskCancel := context.WithCancel(ctx)
 
 	// 二次检查：防止检查通过后 Close() 被调用导致 wg 泄漏
@@ -1123,7 +1116,7 @@ func (p *Pool[T]) Wait() []core.Result[T] {
 	p.mu.Unlock()
 	p.wg.Wait()
 	p.mu.Lock()
-	p.waited = true
+	p.waited.Store(true)
 	p.waiting.Store(false)
 	for _, c := range p.cancels {
 		c()
@@ -1362,7 +1355,7 @@ func (p *Pool[T]) Stats() PoolStats {
 func (p *Pool[T]) Errors() []error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if !p.waited {
+	if !p.waited.Load() {
 		core.LogCtxWarn(p.ctx, "async: Pool.Errors called before Wait, results may be incomplete", core.Str("type", "Pool"))
 	}
 	errs := make([]error, 0, p.FailCount())
@@ -1385,7 +1378,7 @@ func (p *Pool[T]) Errors() []error {
 func (p *Pool[T]) FirstError() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if !p.waited {
+	if !p.waited.Load() {
 		core.LogCtxWarn(p.ctx, "async: Pool.FirstError called before Wait, results may be incomplete", core.Str("type", "Pool"))
 	}
 	for _, r := range p.results {
@@ -1672,14 +1665,14 @@ func (p *Pool[T]) Values() []T {
 //	defer newP.Close()
 func (p *Pool[T]) Reset() (*Pool[T], error) {
 	p.mu.Lock()
-	if !p.waited {
+	if !p.waited.Load() {
 		p.mu.Unlock()
 		return p, fmt.Errorf("async: Pool.Reset called before Wait")
 	}
 	oldTaskCh := p.taskCh
 	p.results = nil
 	p.cancels = nil
-	p.waited = false
+	p.waited.Store(false)
 	savedTimeout := p.timeout
 	savedSubmitTimeout := p.submitTimeout
 	savedMaxPending := p.maxPending

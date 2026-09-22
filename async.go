@@ -628,6 +628,12 @@ type Task[T any] = task.Task[T]
 // AsyncResult[T] 异步结果句柄，支持 Wait/WaitTimeout/Cancel/Ok/IsPanic。
 type AsyncResult[T any] = task.AsyncResult[T]
 
+// TaskErr 仅返回错误的可取消任务句柄（fn 签名为 func(ctx) error）。
+type TaskErr = task.TaskNoResult
+
+// AsyncErr 仅返回错误的异步结果句柄（fn 签名为 func(ctx) error）。
+type AsyncErr = task.AsyncResultNoResult
+
 // Mu[T] 线程安全的切片容器，支持并发安全的 Appen d 和 Snapshot。
 // 适用于多个 goroutine 需要安全地收集结果的场景。
 //
@@ -762,6 +768,52 @@ func GoResultWithTimeout[T any](ctx context.Context, timeout time.Duration, fn f
 		defer cancel()
 		return fn(ctx)
 	})
+}
+
+// GoCancel 启动可取消的异步任务，返回 Task[T] 句柄。
+// fn 签名为 func(ctx) (T, error)，ctx 可在外部通过 Task.Cancel() 取消。
+//
+// 示例：
+//
+//	t := async.GoCancel(ctx, func(ctx context.Context) (*Data, error) {
+//	    return fetchData(ctx)
+//	})
+//	time.Sleep(5 * time.Second)
+//	t.Cancel()
+//	result, err := t.Result()
+func GoCancel[T any](ctx context.Context, fn func(ctx context.Context) (T, error)) Task[T] {
+	return task.GoResult(ctx, fn)
+}
+
+// GoErr 启动无返回值异步任务，fn 签名为 func(ctx) error。
+// 返回 *AsyncErr，通过 Wait() 阻塞等待并获取最终 error。
+//
+// 示例：
+//
+//	ar := async.GoErr(ctx, func(ctx context.Context) error {
+//	    return sendData(ctx, payload)
+//	})
+//	if err := ar.Wait(); err != nil {
+//	    log.Printf("发送失败: %v", err)
+//	}
+func GoErr(ctx context.Context, fn func(context.Context) error) *AsyncErr {
+	return task.GoAction(ctx, fn)
+}
+
+// GoCancelErr 启动可取消的无返回值异步任务，fn 签名为 func(ctx) error。
+// 返回 TaskErr，支持通过 Cancel() 主动取消。
+//
+// 示例：
+//
+//	t := async.GoCancelErr(ctx, func(ctx context.Context) error {
+//	    return longRunning(ctx)
+//	})
+//	// 超时后主动取消
+//	time.Sleep(3 * time.Second)
+//	t.Cancel()
+//	err := t.Result()
+func GoCancelErr(ctx context.Context, fn func(context.Context) error) TaskErr {
+	return task.GoResultAction(ctx, fn)
 }
 
 // ──────────────────────────── Map 并发映射 ────────────────────────────
@@ -1661,6 +1713,28 @@ func RetryWithLinearBackoffResult[T any](ctx context.Context, fn func(ctx contex
 	return retry.RetryWithLinearBackoffResult(ctx, fn, maxRetries, backoff)
 }
 
+// RetryBackoff 指数退避重试，fn 签名为 func(ctx) error（无返回值）。
+//
+// 示例：
+//
+//	err := async.RetryBackoff(ctx, func(ctx context.Context) error {
+//	    return sendMessage(ctx, msg)
+//	}, 3, 10*time.Millisecond, 1*time.Second)
+func RetryBackoff(ctx context.Context, fn func(context.Context) error, maxRetries int, initialBackoff time.Duration, maxBackoff time.Duration) error {
+	return retry.RetryWithBackoffVoid(ctx, fn, maxRetries, initialBackoff, maxBackoff)
+}
+
+// RetryLinear 线性退避重试，fn 签名为 func(ctx) error（无返回值）。
+//
+// 示例：
+//
+//	err := async.RetryLinear(ctx, func(ctx context.Context) error {
+//	    return writeDB(ctx, record)
+//	}, 5, 100*time.Millisecond)
+func RetryLinear(ctx context.Context, fn func(context.Context) error, maxRetries int, backoff time.Duration) error {
+	return retry.RetryWithLinearBackoffVoid(ctx, fn, maxRetries, backoff)
+}
+
 // ──────────────────────────── RateLimiter 限流 ────────────────────────────
 
 // Strategy 限流策略：Block（阻塞等待）、Reject（立即拒绝）、BlockForce（强制阻塞忽略 ctx 取消）。
@@ -2074,4 +2148,15 @@ func Must[T any](val T, err error) T {
 		panic(err)
 	}
 	return val
+}
+
+// Split 按谓词将切片拆分为两个：满足条件的放入 matched，不满足的放入 unmatched。
+//
+// 示例：
+//
+//	nums := []int{1, 2, 3, 4, 5}
+//	evens, odds := async.Split(nums, func(n int) bool { return n%2 == 0 })
+//	// evens: [2, 4], odds: [1, 3, 5]
+func Split[T any](items []T, pred func(T) bool) (matched []T, unmatched []T) {
+	return mapreduce.Partition(items, pred)
 }
