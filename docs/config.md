@@ -394,6 +394,130 @@ defer newCancel()
 
 > 主要用于 Pool/Group 内部，在创建新 context 的同时能保留上层取消链。
 
+### Log 字段构造器
+
+在实现自定义 Logger 或直接调用 Log 快捷函数时，使用以下构造器创建键值字段：
+
+所有字段构造器均返回 `LogField` 类型，包含 `Key` 和 `Value` 两个字段。
+
+**`Str`** — 创建字符串字段
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `key` | `string` | 字段名 |
+| `val` | `string` | 字段值 |
+
+**`Err`** — 创建错误字段（key 固定为 `"error"`）
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `err` | `error` | 错误对象 |
+
+**`Dur`** — 创建 Duration 字段
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `key` | `string` | 字段名 |
+| `d` | `time.Duration` | 时间间隔 |
+
+**`Any`** — 创建任意类型字段
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `key` | `string` | 字段名 |
+| `val` | `any` | 任意类型的值 |
+
+**`Bytes`** — 创建字节数组字段
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `key` | `string` | 字段名 |
+| `val` | `[]byte` | 字节数组 |
+
+**`Int64`** — 创建 int64 字段
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `key` | `string` | 字段名 |
+| `val` | `int64` | 整数 |
+
+```go
+import "github.com/chichengyu/async"
+
+// 示例：手动构建日志
+logger := async.GetLogger()
+logger.Log(ctx, async.LogLevelInfo, "请求完成",
+    async.Str("method", "POST"),
+    async.Dur("latency", 150*time.Millisecond),
+    async.Int64("status", 200),
+    async.Err(nil),
+)
+```
+
+### Log 快捷函数
+
+库提供了无需注入 Logger 即可直接输出日志的快捷函数，底层使用已注册的 Logger（未注册时使用默认静默实现）。
+
+#### Context 感知版本（推荐）
+
+这些函数从 context 中提取 trace_id 等元信息，推荐在请求处理链路中使用：
+
+| 函数 | 签名 | 说明 |
+|------|------|------|
+| `LogCtxError` | `func LogCtxError(ctx context.Context, msg string, fields ...LogField)` | 输出 Error 级别日志 |
+| `LogCtxWarn` | `func LogCtxWarn(ctx context.Context, msg string, fields ...LogField)` | 输出 Warn 级别日志 |
+| `LogCtxInfo` | `func LogCtxInfo(ctx context.Context, msg string, fields ...LogField)` | 输出 Info 级别日志 |
+| `LogCtxDebug` | `func LogCtxDebug(ctx context.Context, msg string, fields ...LogField)` | 输出 Debug 级别日志 |
+| `LogTaskFailCtx` | `func LogTaskFailCtx(ctx context.Context, msg string, fields ...LogField)` | 以任务失败日志级别输出（受 `SetTaskFailLogLevel` 控制） |
+
+```go
+async.LogCtxInfo(ctx, "用户登录成功",
+    async.Str("user_id", "u123"),
+    async.Dur("elapsed", 45*time.Millisecond),
+)
+
+async.LogCtxWarn(ctx, "临近限流阈值",
+    async.Int64("current_qps", 9500),
+    async.Int64("limit", 10000),
+)
+```
+
+#### 无 Context 版本
+
+不需要 trace_id 时使用以下简写：
+
+| 函数 | 签名 | 说明 |
+|------|------|------|
+| `LogError` | `func LogError(msg string, fields ...LogField)` | Error 级别 |
+| `LogWarn` | `func LogWarn(msg string, fields ...LogField)` | Warn 级别 |
+| `LogInfo` | `func LogInfo(msg string, fields ...LogField)` | Info 级别 |
+| `LogDebug` | `func LogDebug(msg string, fields ...LogField)` | Debug 级别 |
+| `LogFatal` | `func LogFatal(msg string, fields ...LogField)` | Fatal 级别（不退出进程，使用最高日志级别输出） |
+
+```go
+async.LogError("数据库连接失败",
+    async.Err(dbErr),
+    async.Str("dsn", maskedDSN),
+)
+```
+
+#### 任务失败日志
+
+**`LogTaskFail`** — 内部任务失败时自动调用的日志函数
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `ctx` | `context.Context` | 上下文 |
+| `err` | `error` | 任务返回的错误 |
+| `msg` | `string` | 附加信息 |
+
+输出级别受 `SetTaskFailLogLevel` 控制，默认 Error 级别。可通过设为 `LogLevelSilent` 完全关闭。
+
+```go
+// 由 Pool/Group 内部任务失败时自动调用，一般无需手动使用
+async.LogTaskFail(ctx, err, "map_task_failed")
+```
+
 ### 日志级别
 
 | 常量 | 值 | 说明 |
@@ -403,6 +527,39 @@ defer newCancel()
 | `LogLevelInfo` | `"info"` | 信息 |
 | `LogLevelDebug` | `"debug"` | 调试 |
 | `LogLevelSilent` | `"silent"` | 静默（完全不输出） |
+
+### 背压控制类型
+
+#### OverflowStrategy
+
+**`OverflowStrategy`** — 环形缓冲和背压队列溢出时的处理策略
+
+| 常量 | 说明 |
+|------|------|
+| `OverflowBlock` | 阻塞等待消费者消费空间（默认，背压队列满时 Submit 阻塞） |
+| `OverflowDrop` | 覆盖/丢弃最旧的数据（环形缓冲覆盖最旧结果，队列满时静默丢弃新任务） |
+| `OverflowError` | 返回 `ErrQueueOverflow` 错误（调用方自行降级处理） |
+
+```go
+p := async.NewPool[string](8).
+    WithMaxPending(1000).
+    WithOverflow(async.OverflowError) // 满时返回错误
+defer p.Close()
+
+err := p.Submit(ctx, fn)
+if errors.Is(err, async.ErrQueueOverflow) {
+    // 降级处理
+    fallbackProcess()
+}
+```
+
+**`QueueDepth`** — 队列深度查询函数类型
+
+```go
+type QueueDepth = func() int
+```
+
+由 Pool 内部生成，通过 `p.QueueDepth()` 返回，调用此函数可实时查询当前排队中的任务数。`ShardedPool` 的 `TotalPending()` 即通过遍历所有分片的 QueueDepth 实现。
 
 ### 配置常量
 

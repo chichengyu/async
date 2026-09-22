@@ -58,6 +58,38 @@ func init() {
 | Trace 日志开关 | `SetTraceLogEnabled(bool)` | 开 |
 | 自定义 Logger | `SetLogger(logger)` | 静默 |
 
+### TraceID 管理
+
+```go
+// 确保 ctx 中有 trace_id（没有则自动生成 32 位随机串）
+ctx := async.EnsureTraceID(context.Background())
+
+// 从 ctx 提取 trace_id
+id := async.GetTraceID(ctx)
+
+// 设置自定义 trace_id
+ctx = async.WithTraceID(ctx, "req-abc-123")
+
+// 生成新 trace_id（32 位十六进制）
+newID := async.NewTraceID()
+```
+
+### Log 快捷函数
+
+无需注入 Logger 即可直接输出日志（内置静默 logger，注入自定义 Logger 后生效）：
+
+```go
+// Context 感知版本（推荐，自动携带 trace_id）
+async.LogCtxInfo(ctx, "任务完成", async.Str("task", "import"), async.Dur("cost", d))
+async.LogCtxError(ctx, "请求失败", async.Err(err), async.Int64("retry", 3))
+
+// 无 context 版本
+async.LogWarn("内存使用率较高", async.Int64("percent", 85))
+
+// 任务失败日志（级别受 SetTaskFailLogLevel 控制）
+async.LogTaskFail(ctx, err, "map_reduce_step")
+```
+
 > 详细说明请参阅：[全局配置文档](docs/config.md)
 
 ---
@@ -708,6 +740,10 @@ results, ok := p.WaitContext(ctx)
 
 // FailFast 模式：第一个失败立即取消其他任务
 p2, ffCtx := p.WithFailFast(ctx)
+
+// WithContext 创建绑定到 Pool 生命周期的子 context（Pool Close 时自动取消）
+p2, boundCtx := p.WithContext(ctx)
+// boundCtx 会在 Pool.Close() 时自动取消，下游 goroutine 可通过监听 ctx.Done() 安全退出
 ```
 
 ### 状态查询
@@ -938,6 +974,9 @@ g.WithTimeout(30 * time.Second)
 
 // FailFast 模式
 g2, ffCtx := g.WithFailFast(ctx)
+
+// WithContext 创建绑定到 Group 生命周期的子 context（Group Wait/Reset 时自动取消）
+g2, boundCtx := g.WithContext(ctx)
 
 // Reset 重置（关闭旧组，创建新组）
 newG, err := g.Reset()
@@ -1752,203 +1791,107 @@ err := async.BindRetryToWorker(ctx, pool, fn, 3, 10*time.Millisecond, 1*time.Sec
 
 ---
 
-## 高并发压力测试
+## 测试与性能
 
-本库经过生产级极端高并发验证，所有模块均通过 **千万级** 压力测试及 **Data Race 检测**（Go race detector + CGO + GCC）。
+本库经过 **6 套压测体系、250+ 测试用例、千万级极限高并发** 的全面验证，
+所有测试均启用 **Go Race Detector**（`-race`），零竞态、零死锁、零 goroutine 泄漏。
 
-### 千万级生产压测（10,000,000）
+> 完整测试数据、覆盖矩阵和修复记录请参阅：[极限并发测试报告](docs/test_report.md)
 
-共 **21 个核心方法** 通过 1000 万级极限并发验证，零失败、零泄漏：
+### 核心指标（1M ~ 10M 量级）
 
-| 测试场景 | 吞吐量 | 耗时 | 结果 |
-|---------|--------|------|------|
-| `Pool` Submit + Wait（200 worker） | 456,746 ops/s | 21.9s | ✅ |
-| `Map` 并发映射（500 并发） | **1.90 亿/s** | 53ms | ✅ |
-| `Go` fire-and-forget（分批 10 万） | 926,770 ops/s | 10.8s | ✅ |
-| `Chunk` 分块（1000 一批） | +Inf | <0.03s | ✅ |
-| `ChunkN` 均分（200 片） | — | <0.03s | ✅ |
-| `MapWithFailFast` 并发映射 + 快速失败（500 并发） | **7,241 万/s** | 0.14s | ✅ |
-| `MapWithTimeout` 并发映射 + 超时（500 并发） | 984,982 ops/s | 10.2s | ✅ |
-| `MapWithFFTimeout` FailFast + Timeout（500 并发） | 843,749 ops/s | 11.9s | ✅ |
-| `GoWithTimeout` 带超时 fire-and-forget | 629,585 ops/s | 15.9s | ✅ |
-| `GoResult` 有返回值异步任务 | 10M 成功 / 0 失败 | 10.3s | ✅ |
-| `TokenBucket.Allow` 令牌桶限流 | 2,147,829 ops/s | 4.7s | ✅ |
-| `TokenBucket.AllowN(1)` 取 N 个令牌 | 2,347,124 ops/s | 4.3s | ✅ |
-| `SlidingWindow.Allow` 滑动窗口限流 | 2,153,610 ops/s | 4.6s | ✅ |
-| `Pipeline.Run` 串行管道（2 阶段） | **1.20 亿/s** | 0.08s | ✅ |
-| `SafeCall` panic 保护调用 | 4,711,646 ops/s | 2.1s | ✅ |
-| `AutoScale Pool` 自动扩缩容（4→1024 worker） | 119,434 ops/s | 8.4s | ✅ |
-| `AutoScale TrySubmit` 自动扩缩容 + 非阻塞提交 | 896,300 submit/s | 6.2s | ✅ |
-| **`Group AutoScale` Group 自动扩缩容** | **1,038,087 ops/s** | 9.6s | ✅ |
-| **`NoResult AutoScale` NoResult 自动扩缩容** | **1,011,310 ops/s** | 9.9s | ✅ |
-| **`Group AutoScale (convenience)` 便捷方法** | **1,038,087 ops/s** | 9.6s | ✅ |
-| **`NoResult AutoScale (convenience)` 便捷方法** | **1,019,651 ops/s** | 9.8s | ✅ |
+| 场景 | 吞吐量 | 说明 |
+|------|--------|------|
+| `Pool.Submit` + `Wait` | **380K ops/s** | 千万任务提交+等待，含结果写入 |
+| `Map` 数据映射 | **2.95 亿/s** | 千万元素并行映射（500并发） |
+| `Go` FireAndForget | **961K ops/s** | 千万任务并行发射 |
+| `MapWithFailFast` | **1.45 亿/s** | 千万元素FailFast映射 |
+| `MapWithTimeout` | **633K ops/s** | 千万元素超时映射 |
+| `MapWithFFTimeout` | **581K ops/s** | 千万元素FailFast+超时 |
+| `GoWithTimeout` | **531K ops/s** | 千万任务超时发射 |
+| `GoResult` | 千万成功 0失败 | 千万任务带返回值异步 |
+| `TokenBucket.Allow` | **174万/s** | 千万次令牌桶检测 |
+| `SlidingWindow.Allow` | **166万/s** | 千万次滑动窗口检测 |
+| `Pipeline(2阶段)` | **7,069万/s** | 千万元素2阶段管道 |
+| `SafeCall` | **322万/s** | 千万次安全调用 |
+| `Group AutoScale` | **561K ops/s** | 自动扩缩容Group |
+| `NoResult AutoScale` | **573K ops/s** | 无返回值自动扩缩容 |
 
-### 自动扩缩容（AutoScale）
+### 10M Race 压力测试（带 -race，全部通过）
 
-`Pool` 和 `Group` 都支持根据负载自动调整并发数，初始轻度启动，高并发时自动扩容，低负载时自动缩容。
+| 测试 | 任务量 | 耗时 | 结果 |
+|------|--------|------|------|
+| Pool Submit 10M | 10,000,000 | 120.7s | ✅ G泄漏=0 |
+| Pool CloseAndWaitTimeout Race | 50轮×200并发 | 54.0s | ✅ G泄漏=0 |
+| Pool AutoScale CloseRace | 50轮×200并发 | 74.9s | ✅ G泄漏=0 |
+| RateLimiter ResizeRace | 100并发×426K | 1.1s | ✅ 426,529/426,529 |
+| Group NoResult Race | 50轮×200并发 | 69.9s | ✅ 0失败 |
+| Group AutoScale Race | 30轮×100并发 | 50.0s | ✅ G泄漏=0 |
+| Retry Backoff Race | 10万次×100并发 | 0.2s | ✅ 100,000/100,000 |
+| ForEachChunked BatchSize | 批量分块 | — | ✅ |
+| MapChunk Concurrent | 5万元素 | — | ✅ |
 
-**Pool 自动扩缩容：**
+### 测试覆盖矩阵
 
-```go
-p := async.NewPool[int](4)
-// 启用自动扩缩容（使用默认配置）
-p.EnableAutoScale(nil)
-defer p.Close()
-
-// 默认配置：MinWorkers=CPU×2, MaxWorkers=CPU×100, 每 5s 检测
-// 高负载下 busy/size > 0.7 持续 3 次 → 扩容（翻倍）
-// 低负载下 busy/size < 0.2 持续 5 次 → 缩容（减半）
-```
-
-**Group 自动扩缩容（新增）：**
-
-```go
-g := async.NewGroup[int](4)
-async.EnableGroupAutoScale(g, &async.AutoScaleConfig{
-    MinWorkers:     2,
-    MaxWorkers:     500,
-    CheckInterval:  3 * time.Second,
-})
-// ... 提交大量任务 ...
-results := g.Wait()
-
-// NoResult 同理
-nr := async.NewNoResult(4)
-async.EnableNoResultAutoScale(nr, nil) // 使用默认配置
-```
-
-| 配置项 | 默认值 | 说明 |
-|--------|--------|------|
-| `MinWorkers` | CPU×2 | 最小并发数 |
-| `MaxWorkers` | CPU×100 | 最大并发数 |
-| `CheckInterval` | 5s | 检测间隔 |
-| `ScaleUpThreshold` | 0.7 | busy/total 超过此值触发扩容 |
-| `ScaleDownThreshold` | 0.2 | busy/total 低于此值触发缩容 |
-| `ScaleUpChecks` | 3 | 连续触发扩容次数（防抖动） |
-| `ScaleDownChecks` | 5 | 连续触发缩容次数（防抖动） |
-
-**千万级自动扩缩容验证：**
-
-| 场景 | 起始 | 峰值 | 耗时 | 结果 |
-|------|------|------|------|------|
-| Pool 100万任务（500μs/任务） | 4 worker | **1024 worker** | 8.4s | ✅ 自动扩容正常 |
-| Pool 1000万 TrySubmit | 4 worker | — | 6.2s | ✅ 无阻塞、无死锁 |
-| Pool 空闲缩容 | 20 worker | 2 worker | 2.0s | ✅ 自动缩容正常 |
-| Pool 并发 Submit+扩缩 不卡死 | — | — | 0.3s | ✅ 无死锁 |
-| **Group 1000万 Go+Wait** | 8 | — | **9.6s** | ✅ 104万 ops/s |
-| **NoResult 1000万 Go+Wait** | 8 | — | **9.9s** | ✅ 101万 ops/s |
-
-### 百万级生产压测（1,000,000）
-
-| 测试场景 | 吞吐量 | 耗时 | 结果 |
-|---------|--------|------|------|
-| `Pool` 100万 Submit + Wait（100 worker） | **416,637 ops/s** | 2.4s | ✅ |
-| `Group` 20万 Go + Wait（500 并发） | 11,632 ops/s | 17.2s | ✅ |
-| `Map` 100万元素并发映射（200 并发） | **5,720万/s** | 17ms | ✅ |
-| `ForEach` 100万并发遍历（200 并发） | 1,659 ops/s | 10min | ✅ |
-| `Go` 100万 fire-and-forget | **933,455 ops/s** | 1.07s | ✅ |
-| `RateLimiter` 100万 Acquire/Release（5万/s） | **585万/s** | 0.17s | ✅ |
-| `Retry` 100万无退避重试（200 并发） | **6,751万/s** | 15ms | ✅ |
-| `Chunk` 100万元素分块（1000 批 × 200 并发） | ~无限 | <10ms | ✅ |
-| `Pool` 100万 × 10 并发 Submit | **671,417 ops/s** | 1.49s | ✅ |
-
-### 百万级 / 50万级补测（全部方法覆盖）
-
-| 测试场景 | 吞吐量 | 耗时 | 结果 |
-|---------|--------|------|------|
-| `Reduce` 100万 MapReduce 聚合（200 并发） | ✅ | ✅ | ✅ |
-| `NoResult` 20万 Go + Wait（500 并发） | 10,446 ops/s | 19.1s | ✅ |
-| `NoResultPool` 100万 Submit + Wait（100 worker） | **417,491 ops/s** | 2.4s | ✅ |
-| `Mu` 100万 Append + Snapshot（100 并发） | **1,254万/s** | 80ms | ✅ |
-| `ForEachWithFailFast` 50万（200 并发） | 3,287 ops/s | 2.5min | ✅ |
-| `ForEachWithTimeout` 10万（200 并发） | ✅ | ✅ | ✅ |
-| `ForEachWithFFTimeout` 10万（200 并发） | ✅ | ✅ | ✅ |
-| `ForEachSerial` 5万 串行遍历 | ✅ | ✅ | ✅ |
-| `ForEachChunk` 10万 分块遍历（100 并发） | ✅ | ✅ | ✅ |
-| `ForEachChunked` 10万 Chunked 遍历（100 并发） | ✅ | ✅ | ✅ |
-| `MapSerial` 10万 串行映射 | ✅ | ✅ | ✅ |
-| `MapSerialFailFast` 10万 串行 + FailFast | ✅ | ✅ | ✅ |
-| `MapChunk` 50万 分块聚合（100 并发 × 5000 批） | ~无限 | <1ms | ✅ |
-| `MapChunkWithFailFast` 20万（200 并发） | ✅ | ✅ | ✅ |
-| `MapChunkWithTimeout` 20万（200 并发） | ✅ | ✅ | ✅ |
-| `MapChunked` 20万 Chunked 聚合（200 并发） | ✅ | ✅ | ✅ |
-| `MapChunkedWithFailFast` 20万（200 并发） | ✅ | ✅ | ✅ |
-| `ReduceWithFailFast` 10万（200 并发） | ✅ | ✅ | ✅ |
-| `ReduceWithTimeout` 10万（200 并发） | ✅ | ✅ | ✅ |
-| `RetryWithBackoff` 20万 指数退避（100 并发） | **4,348万/s** | 4.6ms | ✅ |
-| `RetryWithBackoffResult` 20万 带结果重试（100 并发） | ✅ | ✅ | ✅ |
-| `RetryWithLinearBackoffResult` 20万 线性退避（100 并发） | ✅ | ✅ | ✅ |
-| `WithTimeout` 20万 超时重试（100 并发） | ✅ | ✅ | ✅ |
-| `WithDeadline` 20万 截止时间重试（100 并发） | ✅ | ✅ | ✅ |
-| `AdaptiveRateLimiter` 50万 Acquire/Release（50-500） | **569万/s** | 88ms | ✅ |
-| `AdaptiveRateLimiter` 80% 失败率自适应缩容 | ✅ 正常调整 | — | ✅ |
-| `RateLimiter.Token` 50万 手动令牌 | ✅ | ✅ | ✅ |
-| `RateLimiter.BlockForce` 50万 阻塞策略 | ✅ | ✅ | ✅ |
-| `Pool.TrySubmit` 100万 非阻塞提交 | ✅ | ✅ | ✅ |
-| `Pool.WaitTimeout` 50万 超时等待 | ✅ | ✅ | ✅ |
-| `Pool.Reset` 50万 多轮 Resize | ✅ | ✅ | ✅ |
-| `Group.GoWithTimeout` 10万（200 并发） | ✅ | ✅ | ✅ |
-| `Group.WaitTimeout` 10万 | ✅ | ✅ | ✅ |
-| `Group.GoAt` 10万 索引任务 | ✅ | ✅ | ✅ |
-| `Pipeline.Execute` 50万（3 阶段 × 200 并发） | **1,373万/s** | 109ms | ✅ |
-| `Pipeline.ExecuteWithMeta` 50万（2 阶段 × 200 并发） | 603万/s | 166ms | ✅ |
-| `ExecuteWithGroup` 50万 管道 + Group 组合（200 并发） | 2,361 ops/s | 3.5min | ✅ |
-| `NoResultPool.SubmitAction` 100万 Submit + Action | **370,883 ops/s** | 2.7s | ✅ |
-| `NoResultPool.TrySubmitAction` 100万 非阻塞 Action | ✅ | ✅ | ✅ |
-| `SafeCallVoid` 50万 panic 保护（100 并发） | ✅ | ✅ | ✅ |
+| 模块 | 用例数 | 覆盖 |
+|------|--------|------|
+| Pool（含 NoResultPool） | 24 | Submit/Wait/TrySubmit/FailFast/AutoScale/Close/Reset/Stats… |
+| Group（含 NoResult） | 12 | Go/Wait/GoAt/FailFast/AutoScale/GoWithTimeout/Reset… |
+| MapReduce（含 Chunk） | 22 | Map/ForEach/Reduce/Chunk/ChunkN/Default* 全变体全覆盖 |
+| RateLimiter（含 Adaptive） | 9 | TokenBucket/SlidingWindow/Adaptive/Resize/Strategy… |
+| Retry | 8 | Backoff/Linear/Config/RetryFn/BindRetryToWorker… |
+| Async（Go/GoResult/Mu） | 10 | Go/GoResult/GoWithTimeout/AsyncResult/Mu… |
+| Pipeline | 4 | Run/Execute/ExecuteWithMeta/ExecuteWithGroup |
+| 流式消费（新增） | 5 | Pool/Group Streaming + ResultCallback + 并发竞态 |
+| 环形缓冲（新增） | 5 | RingBuffer Drop/Block/Error + Flush + 并发Push/Pop |
+| 背压控制（新增） | 5 | MaxPending Block/Drop/Error + QueueDepth + 高速竞态 |
+| 分片分发（新增） | 10 | ShardedPool/ShardedGroup + Streaming+RingBuffer+Backpressure |
 
 ### 竞态安全验证
 
-| 测试场景 | 轮次 | 结果 |
-|---------|------|------|
-| `Pool` Submit + Close 竞态（50 goroutine） | ×50 轮 | ✅ |
-| `Pool` Submit + Close + Wait 竞态（50 goroutine） | ×50 轮 | ✅ |
-| `Group` Go + Wait 竞态（100 goroutine × 100 任务） | ×50 轮 | ✅ |
-| `RateLimiter` 1万并发 Acquire/Release | ×1 次 | ✅ |
-| goroutine 泄漏检测（50万任务 × 20 轮） | diff=0 | ✅ 零泄漏 |
+Race Detector 全面通过，零竞态。重点验证：
 
-### 真实生产工作流验证
+| 热点场景 | 结果 |
+|----------|------|
+| Pool.AutoScale + Close 竞态 | ✅ |
+| Pool.Resize 扩缩容并发 | ✅ |
+| Group.FailFast 级联取消 | ✅ |
+| Group.AutoScale + Close | ✅ |
+| RateLimiter.Resize 并发调速率 | ✅ |
+| Retry.Backoff 并发重试 | ✅ 100K次 零竞态 |
+| ShardedPool 并发分发 | ✅ |
+| ShardedGroup 并发分发 | ✅ |
+| 流式消费 Stream + Submit 并发 | ✅ |
+| 环形缓冲 Push/Pop 并发 | ✅ |
 
-模拟完整生产链路：100万数据 → `Map` 并发处理 → `RateLimiter` 限流 → `Partition` 分离成功/失败 → `Retry` 重试失败项。
+### 边界条件全覆盖
 
-| 指标 | 数值 |
+| 场景 | 结果 |
 |------|------|
-| 数据量 | 1,000,000 条 |
-| 并发度 | 200 |
-| 限流速 | 10,000/s |
-| 吞吐量 | **3,129,533 ops/s** |
-| 成功率 | 99.99%（100 条模拟失败后重试） |
-
-### Data Race 检测
-
-对所有包执行 `go test -race`（需要安装 GCC/CGO），结果：**0 个 Data Race 告警**，测试耗时约 10 分钟（race detector 会降低 5-10x 性能）。
-
-```bash
-# 安装 GCC（Windows）
-# 从 https://winlibs.com 下载 mingw64，解压后加入 PATH
-
-# 运行 race 检测
-$env:CGO_ENABLED=1; go test -race ./... -count=1
-```
+| Pool.Size=1 单Worker | ✅ 不阻塞、不死锁 |
+| Group.Concurrency=1 单槽位 | ✅ 不永久阻塞 |
+| Pool.Resize 缩容到0再扩容 | ✅ 信号不丢失 |
+| FailFast 级联传播 | ✅ 无任务遗漏 |
+| Pool+Group+RateLimiter+Retry 混合 | ✅ 极限混合并发安全 |
+| WaitTimeout 超时 | ✅ 无goroutine泄漏 |
 
 ### 运行压测
 
 ```bash
-# 百万级 / 50万级压测（约 15 分钟）
-go test -run "^TestProduction_.*_1M|^TestProduction_.*_500K|TestProduction_ForEach|TestProduction_MapSerial|TestProduction_Reduce|TestProduction_Retry|TestProduction_Adaptive|TestProduction_Execute|TestProduction_Chunk" -v -count=1 -timeout 25m .
+# 综合压测（Pool/Group/MapReduce/限流器/重试/管道，约3.5分钟）
+go test -run "^TestStress_" -v -count=1 -timeout 10m .
 
-# 千万级压测（17 个方法，约 1.5 分钟）
-go test -run "^TestProduction_10M" -v -count=1 -timeout 5m .
+# 50K级Hyper并发测试（约10s）
+go test -run "^TestHyperStress_" -v -count=1 -timeout 2m .
 
-# 自动扩缩容压测
-go test -run "^TestProduction_10M_AutoScale|^TestAutoScale" -v -count=1 -timeout 5m .
-
-# 全部极限压测（百万级 + 千万级，约 17 分钟）
+# 生产级百万/千万压测（约5分钟）
 go test -run "^TestProduction_" -v -count=1 -timeout 30m .
 
-# 竞态 + 稳定性压测
-go test -run "^TestProduction_(CloseRace|CloseWaitRace|GoroutineLeak|RealWorld)" -v -count=1 -timeout 5m .
+# 10M Race 极限压测（约7分钟，需 GCC）
+$env:CGO_ENABLED=1; go test -run "^Test10M_" -race -v -count=1 -timeout 20m .
+
+# 全量 Race 检测
+$env:CGO_ENABLED=1; go test -race ./... -count=1
 ```
 
 ### 并发安全性
@@ -1956,8 +1899,9 @@ go test -run "^TestProduction_(CloseRace|CloseWaitRace|GoroutineLeak|RealWorld)"
 - **Pool/Group**：`Close()`/`Wait()` 与 `Submit()`/`Go()` 并发调用安全
 - **Group**：每任务独立 goroutine，适合一次性批量场景；高频复用请用 `Pool`
 - **Mu[T]**：线程安全切片，nil receiver 安全
-- **Map/ForEach/Reduce**：并发 Map 阶段内置 panic recovery
-- **Pipeline**：每个阶段使用独立 items 切片，不会翻倍
+- **Map/ForEach/Reduce**：并发阶段内置 panic recovery（SafeCall）
+- **Pipeline**：每个阶段使用独立 items 切片，不翻倍
+- **RingBuffer/Backpressure**：Push/Pop/Flush 全路径并发安全
 
 ---
 

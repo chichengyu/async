@@ -349,6 +349,19 @@ sp.Submit(ffCtx, fn)
 
 **返回：** `(*ShardedPool[T], context.Context)` — 新的分片池引用 + FailFast ctx
 
+#### WithContext — 绑定上下文生命周期
+
+```go
+sp2, boundCtx := sp.WithContext(ctx)
+// boundCtx 会在 ShardedPool.Close() 时自动取消
+```
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `ctx` | `context.Context` | 上游上下文 |
+
+**返回：** `(*ShardedPool[T], context.Context)` — 新分片池引用 + 自动取消的子 context
+
 #### WithStreaming — 启用流式结果消费
 
 ```go
@@ -688,6 +701,19 @@ sg, ffCtx := sg.WithFFCtx(ctx)
 | `ctx` | `context.Context` | 上下文 |
 
 **返回：** `(*ShardedGroup[T], context.Context)`
+
+#### WithContext — 绑定上下文生命周期
+
+```go
+sg2, boundCtx := sg.WithContext(ctx)
+// boundCtx 会在 ShardedGroup.Close() 时自动取消
+```
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `ctx` | `context.Context` | 上游上下文 |
+
+**返回：** `(*ShardedGroup[T], context.Context)` — 新分片组引用 + 自动取消的子 context
 
 #### WithStreaming — 启用流式结果消费
 
