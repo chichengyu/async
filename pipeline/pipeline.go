@@ -27,6 +27,7 @@ package pipeline
 
 import (
 	"context"
+	"runtime"
 	"sync"
 
 	"github.com/chichengyu/async/core"
@@ -244,4 +245,275 @@ func ExecuteWithGroup[T any](
 	}
 	results := g.Wait()
 	return results, nil
+}
+
+// ──────────────────────────── Pipeline 链式分片 ────────────────────────────
+
+// Pipeline 多阶段数据处理管道，支持水平分片以提升极限高并发性能。
+//
+// 与顶层函数 Execute() 的区别：
+//   - Execute()：一次性调用，当前阶段用 goroutine 分块处理
+//   - Pipeline.Shard()：每个阶段内部使用 MultiGroup，通过分片降低锁竞争和 goroutine 创建开销
+//
+// 使用示例：
+//
+//	stages := []pipeline.Stage[string]{
+//	    {Name: "parse", Concurrency: 10},
+//	    {Name: "validate", Concurrency: 5},
+//	}
+//
+//	// 无分片（等效于 Execute）
+//	p := pipeline.NewPipeline(stages)
+//	results, _ := p.Execute(ctx, items, fn)
+//
+//	// 链式分片
+//	results, _ := pipeline.NewPipeline(stages).Shard(8).Execute(ctx, items, fn)
+//
+//	// 自动分片
+//	results, _ := pipeline.NewPipeline(stages).DefaultShard().Execute(ctx, items, fn)
+type Pipeline[T any] struct {
+	stages []Stage[T]
+	shards int
+}
+
+// NewPipeline 创建管道实例。
+func NewPipeline[T any](stages []Stage[T]) *Pipeline[T] {
+	return &Pipeline[T]{stages: stages}
+}
+
+// Shard 设置水平分片数，返回自身以支持链式调用。
+// shards <= 1 时不启用分片，行为与原始 Execute() 一致。
+func (p *Pipeline[T]) Shard(shards int) *Pipeline[T] {
+	p.shards = shards
+	return p
+}
+
+// DefaultShard 使用默认分片数（runtime.GOMAXPROCS(0)，最少 2）启用分片。
+func (p *Pipeline[T]) DefaultShard() *Pipeline[T] {
+	shards := runtime.GOMAXPROCS(0)
+	if shards < 2 {
+		shards = 2
+	}
+	p.shards = shards
+	return p
+}
+
+// ShardCount 返回当前设置的分片数。
+func (p *Pipeline[T]) ShardCount() int {
+	if p.shards <= 1 {
+		return 1
+	}
+	return p.shards
+}
+
+// Execute 执行管道。
+// 当前 shards <= 1 时，行为与顶层 Execute() 一致（goroutine 分块处理，保持元素顺序）。
+// 当 shards >= 2 时，每个阶段使用 MultiGroup 水平分片执行（不保证全局顺序）。
+func (p *Pipeline[T]) Execute(
+	ctx context.Context,
+	items []T,
+	fn func(ctx context.Context, stage string, item T) (T, error),
+) ([]core.Result[T], error) {
+	if p.shards <= 1 {
+		return p.executeNative(ctx, items, fn)
+	}
+	return p.executeSharded(ctx, items, fn)
+}
+
+// executeNative 与原始 Execute() 行为一致：goroutine 分块 + 保序。
+func (p *Pipeline[T]) executeNative(
+	ctx context.Context,
+	items []T,
+	fn func(ctx context.Context, stage string, item T) (T, error),
+) ([]core.Result[T], error) {
+	resultsList := make([]core.Result[T], len(items))
+	for i, item := range items {
+		resultsList[i] = core.Result[T]{Value: item}
+	}
+
+	for _, stage := range p.stages {
+		nextResults := make([]core.Result[T], len(resultsList))
+		concurrency := stage.Concurrency
+		if concurrency <= 0 {
+			concurrency = core.IO()
+		}
+		if concurrency > len(resultsList) {
+			concurrency = len(resultsList)
+		}
+		if concurrency <= 0 {
+			concurrency = 1
+		}
+
+		chunkSize := (len(resultsList) + concurrency - 1) / concurrency
+		var wg sync.WaitGroup
+		var mu sync.Mutex
+		for c := 0; c < concurrency; c++ {
+			start := c * chunkSize
+			end := start + chunkSize
+			if start >= len(resultsList) {
+				break
+			}
+			if end > len(resultsList) {
+				end = len(resultsList)
+			}
+			wg.Add(1)
+			go func(start, end int) {
+				defer wg.Done()
+				for j := start; j < end; j++ {
+					val, err := fn(ctx, stage.Name, resultsList[j].Value)
+					mu.Lock()
+					nextResults[j] = core.Result[T]{Value: val, Err: err}
+					mu.Unlock()
+				}
+			}(start, end)
+		}
+		wg.Wait()
+		resultsList = nextResults
+	}
+	return resultsList, nil
+}
+
+// executeSharded 每个阶段使用 MultiGroup 水平分片执行。
+// 每个分片内部使用 Group 信号量控制并发，分片间互不影响，不保证全局元素顺序。
+func (p *Pipeline[T]) executeSharded(
+	ctx context.Context,
+	items []T,
+	fn func(ctx context.Context, stage string, item T) (T, error),
+) ([]core.Result[T], error) {
+	resultsList := make([]core.Result[T], len(items))
+	for i, item := range items {
+		resultsList[i] = core.Result[T]{Value: item}
+	}
+
+	for _, stage := range p.stages {
+		concurrency := stage.Concurrency
+		if concurrency <= 0 {
+			concurrency = core.IO()
+		}
+
+		g := group.NewGroup[T](concurrency)
+		mg := g.Shard(p.shards)
+
+		for _, r := range resultsList {
+			item := r.Value
+			stageName := stage.Name
+			mg.Go(ctx, func(ctx context.Context) (T, error) {
+				return fn(ctx, stageName, item)
+			})
+		}
+
+		stageResults := mg.Wait()
+		mg.Close()
+		resultsList = stageResults
+	}
+	return resultsList, nil
+}
+
+// ExecuteWithMeta 带阶段元信息执行（分片模式下不保证全局顺序）。
+func (p *Pipeline[T]) ExecuteWithMeta(
+	ctx context.Context,
+	items []T,
+	fn func(ctx context.Context, stage string, item T) (T, error),
+) []ResultWithMeta[T] {
+	if p.shards <= 1 {
+		return p.executeWithMetaNative(ctx, items, fn)
+	}
+	return p.executeWithMetaSharded(ctx, items, fn)
+}
+
+func (p *Pipeline[T]) executeWithMetaNative(
+	ctx context.Context,
+	items []T,
+	fn func(ctx context.Context, stage string, item T) (T, error),
+) []ResultWithMeta[T] {
+	elems := make([]T, len(items))
+	copy(elems, items)
+	results := make([]ResultWithMeta[T], 0)
+
+	for _, stage := range p.stages {
+		concurrency := stage.Concurrency
+		if concurrency <= 0 {
+			concurrency = core.IO()
+		}
+		if concurrency > len(elems) {
+			concurrency = len(elems)
+		}
+		if concurrency <= 0 {
+			concurrency = 1
+		}
+
+		stageResults := make([]core.Result[T], len(elems))
+		chunkSize := (len(elems) + concurrency - 1) / concurrency
+		var wg sync.WaitGroup
+		var mu sync.Mutex
+		for c := 0; c < concurrency; c++ {
+			start := c * chunkSize
+			end := start + chunkSize
+			if start >= len(elems) {
+				break
+			}
+			if end > len(elems) {
+				end = len(elems)
+			}
+			wg.Add(1)
+			go func(start, end int) {
+				defer wg.Done()
+				for j := start; j < end; j++ {
+					val, err := fn(ctx, stage.Name, elems[j])
+					mu.Lock()
+					stageResults[j] = core.Result[T]{Value: val, Err: err}
+					mu.Unlock()
+				}
+			}(start, end)
+		}
+		wg.Wait()
+		nextItems := make([]T, 0, len(stageResults))
+		for _, r := range stageResults {
+			results = append(results, ResultWithMeta[T]{Result: r, Stage: stage.Name})
+			nextItems = append(nextItems, r.Value)
+		}
+		elems = nextItems
+	}
+
+	return results
+}
+
+func (p *Pipeline[T]) executeWithMetaSharded(
+	ctx context.Context,
+	items []T,
+	fn func(ctx context.Context, stage string, item T) (T, error),
+) []ResultWithMeta[T] {
+	elems := make([]T, len(items))
+	copy(elems, items)
+	results := make([]ResultWithMeta[T], 0)
+
+	for _, stage := range p.stages {
+		concurrency := stage.Concurrency
+		if concurrency <= 0 {
+			concurrency = core.IO()
+		}
+
+		g := group.NewGroup[T](concurrency)
+		mg := g.Shard(p.shards)
+
+		for _, elem := range elems {
+			item := elem
+			stageName := stage.Name
+			mg.Go(ctx, func(ctx context.Context) (T, error) {
+				return fn(ctx, stageName, item)
+			})
+		}
+
+		stageResults := mg.Wait()
+		mg.Close()
+
+		nextItems := make([]T, 0, len(stageResults))
+		for _, r := range stageResults {
+			results = append(results, ResultWithMeta[T]{Result: r, Stage: stage.Name})
+			nextItems = append(nextItems, r.Value)
+		}
+		elems = nextItems
+	}
+
+	return results
 }

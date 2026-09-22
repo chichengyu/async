@@ -358,6 +358,69 @@ func (sp *ShardedPool[T]) Flush(maxPerShard int) []core.Result[T] {
 	return all
 }
 
+// ──────────────────────────── 便捷构造函数 ────────────────────────────
+
+// NewShardedPoolSimple 用简单参数创建分片池，无需配置结构体。
+// shards 是分片数量，sizePerShard 是每个分片的 worker 数量（<=0 时使用 IO 并发度）。
+//
+// 使用示例：
+//
+//	// 8 个分片，每个分片 16 个 worker
+//	p := shard.NewShardedPoolSimple[string](8, 16)
+//	defer p.Close()
+//
+//	// 4 个分片，每个分片使用默认 IO 并发度
+//	p := shard.NewShardedPoolSimple[int](4, 0)
+func NewShardedPoolSimple[T any](shards int, sizePerShard int) *ShardedPool[T] {
+	return NewShardedPool(ShardPoolConfig[T]{
+		Shards:       shards,
+		SizePerShard: sizePerShard,
+	})
+}
+
+// DefaultShardedPoolWith 用自定义分片数创建分片池，其余使用默认值（IO 并发度、RoundRobin）。
+// shards 是分片数量，<=0 时使用默认 4 个分片。
+//
+// 使用示例：
+//
+//	// 16 个分片，每个分片 IO 并发度
+//	p := shard.DefaultShardedPoolWith[string](16)
+//	defer p.Close()
+func DefaultShardedPoolWith[T any](shards int) *ShardedPool[T] {
+	return NewShardedPool(ShardPoolConfig[T]{
+		Shards: shards,
+	})
+}
+
+// NewAutoScaleShardedPool 创建带自动扩缩容的分片池。
+// 每个分片都会启用独立的自动扩缩容，根据各自负载独立调整 worker 数量。
+//
+// 参数：
+//   - shards：分片数量，<=0 时默认 4
+//   - initialSizePerShard：每个分片的初始 worker 数量，<=0 时使用 IO 并发度
+//   - config：自动扩缩容配置，nil 时使用 DefaultAutoScaleConfig()
+//
+// 使用示例：
+//
+//	// 默认自动扩缩容配置
+//	sp := shard.NewAutoScaleShardedPool[string](8, 4, nil)
+//	defer sp.Close()
+//
+//	// 自定义扩缩容配置
+//	sp := shard.NewAutoScaleShardedPool[int](4, 8, &core.AutoScaleConfig{
+//	    MinWorkers:    2,
+//	    MaxWorkers:    200,
+//	    CheckInterval: 3 * time.Second,
+//	    ScaleUpFactor: 1.5,
+//	})
+func NewAutoScaleShardedPool[T any](shards int, initialSizePerShard int, config *core.AutoScaleConfig) *ShardedPool[T] {
+	sp := NewShardedPoolSimple[T](shards, initialSizePerShard)
+	for _, p := range sp.pools {
+		p.EnableAutoScale(config)
+	}
+	return sp
+}
+
 func (sp *ShardedPool[T]) pick() int {
 	if sp.dist == Hash && sp.keyFn != nil {
 		return 0

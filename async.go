@@ -488,6 +488,49 @@ type Pool[T any] = pool.Pool[T]
 // NoResultPool 无返回值协程池的别名。
 type NoResultPool = pool.Pool[struct{}]
 
+// ── MultiPool：Pool 水平分片，极限高并发 ──
+
+// MultiPool 将同一配置的 Pool 水平分片为 N 个实例，支持极限高并发（百万~千万 QPS）。
+// 通过 Pool.Shard() 创建，或使用 ShardPool() 便捷函数。
+//
+// 示例：
+//
+//	mp := async.NewPool[int](100).Shard(8) // 8 分片 × 100 worker = 800 worker
+//	defer mp.Close()
+//	for i := 0; i < 10_000_000; i++ {
+//	    mp.Submit(ctx, fn)
+//	}
+//	results := mp.Wait()
+type MultiPool[T any] = pool.MultiPool[T]
+
+// ShardPool 将 Pool 水平分片为 N 个实例的便捷函数。
+// 等价于 p.Shard(shards)。
+//
+// 示例：
+//
+//	p := async.NewPool[int](50).
+//	    WithMaxPending(5000).
+//	    WithOverflow(async.OverflowDrop)
+//	mp := async.ShardPool(p, 16)
+//	defer mp.Close()
+func ShardPool[T any](p *Pool[T], shards int) *MultiPool[T] {
+	return p.Shard(shards)
+}
+
+// DefaultShardPool 使用默认分片数（runtime.GOMAXPROCS(0)，最少 2）对 Pool 进行水平分片。
+//
+// 等效于 p.DefaultShard()。
+//
+// 示例：
+//
+//	p := async.NewPool[int](100).
+//	    WithMaxPending(5000)
+//	mp := async.DefaultShardPool(p)
+//	defer mp.Close()
+func DefaultShardPool[T any](p *Pool[T]) *MultiPool[T] {
+	return p.DefaultShard()
+}
+
 // ── 分片池（多实例水平扩展）──
 
 // ShardedPool 将任务分发到 N 个 Pool 实例的分片池。
@@ -515,6 +558,51 @@ func DefaultShardedPool[T any]() *ShardedPool[T] {
 	return shard.DefaultShardedPool[T]()
 }
 
+// NewShardedPoolSimple 用简单参数创建分片池。
+// shards 是分片数量，sizePerShard 是每个分片的 worker 数量（<=0 时使用 IO 并发度）。
+//
+// 示例：
+//
+//	// 8 个分片，每个分片 16 个 worker
+//	sp := async.NewShardedPoolSimple[string](8, 16)
+//	defer sp.Close()
+//
+//	// 4 个分片，每个使用默认 IO 并发度
+//	sp := async.NewShardedPoolSimple[int](4, 0)
+func NewShardedPoolSimple[T any](shards int, sizePerShard int) *ShardedPool[T] {
+	return shard.NewShardedPoolSimple[T](shards, sizePerShard)
+}
+
+// DefaultShardedPoolWith 用自定义分片数创建分片池，其余使用默认值。
+// shards 是分片数量，<=0 时默认 4。
+//
+// 示例：
+//
+//	sp := async.DefaultShardedPoolWith[string](16) // 16 个分片
+//	defer sp.Close()
+func DefaultShardedPoolWith[T any](shards int) *ShardedPool[T] {
+	return shard.DefaultShardedPoolWith[T](shards)
+}
+
+// NewAutoScaleShardedPool 创建带自动扩缩容的分片池。
+// 每个分片独立扩缩容，根据各自负载自动调整 worker 数量。
+//
+// config 为 nil 时使用 DefaultAutoScaleConfig()。
+//
+// 示例：
+//
+//	// 默认扩缩容配置
+//	sp := async.NewAutoScaleShardedPool[string](8, 4, nil)
+//	defer sp.Close()
+//
+//	// 自定义配置
+//	sp := async.NewAutoScaleShardedPool[int](4, 8, &async.AutoScaleConfig{
+//	    MaxWorkers: 200,
+//	})
+func NewAutoScaleShardedPool[T any](shards int, initialSizePerShard int, config *AutoScaleConfig) *ShardedPool[T] {
+	return shard.NewAutoScaleShardedPool[T](shards, initialSizePerShard, config)
+}
+
 // SubmitBatchResult 分片池批量提交的单条结果。
 type SubmitBatchResult = shard.SubmitBatchResult
 
@@ -534,6 +622,54 @@ func NewShardedGroup[T any](cfg ShardGroupConfig[T]) *ShardedGroup[T] {
 // DefaultShardedGroup 使用默认配置创建分片 Group（4 分片、IO 并发度、RoundRobin）。
 func DefaultShardedGroup[T any]() *ShardedGroup[T] {
 	return shard.DefaultShardedGroup[T]()
+}
+
+// ── MultiGroup：Group 水平分片，极限高并发 ──
+
+// MultiGroup 将同一配置的 Group 水平分片为 N 个实例，支持极限高并发（百万~千万 QPS）。
+// 通过 Group.Shard() 创建，或使用 ShardGroup() 便捷函数。
+//
+// 每个分片独立运行，通过 round-robin 分发任务，互不影响；
+// 第一个分片复用当前 Group，其余自动克隆配置。
+//
+// 使用示例：
+//
+//	// 链式调用
+//	g, _ := async.NewGroup[int](50).
+//	    WithContext(ctx)
+//	mg := g.Shard(8)
+//	defer mg.Close()
+//
+//	mg.Go(ctx, fn)
+//	results := mg.Wait()
+//
+//	// 自动分片
+//	mg := async.NewGroup[int](50).DefaultShard()
+type MultiGroup[T any] = group.MultiGroup[T]
+
+// ShardGroup 将 Group 水平分片为 N 个实例的便捷函数。
+// 等效于 g.Shard(shards)。
+//
+// 使用示例：
+//
+//	g, _ := async.NewGroup[int](50).WithCtx(ctx)
+//	mg := async.ShardGroup(g, 16)
+//	defer mg.Close()
+func ShardGroup[T any](g *Group[T], shards int) *MultiGroup[T] {
+	return g.Shard(shards)
+}
+
+// DefaultShardGroup 使用默认分片数（runtime.GOMAXPROCS(0)，最少 2）对 Group 进行水平分片。
+//
+// 等效于 g.DefaultShard()。
+//
+// 使用示例：
+//
+//	g, _ := async.NewGroup[int](50).WithCtx(ctx)
+//	mg := async.DefaultShardGroup(g)
+//	defer mg.Close()
+func DefaultShardGroup[T any](g *Group[T]) *MultiGroup[T] {
+	return g.DefaultShard()
 }
 
 // GoBatchResult 分片 Group 批量分发结果。
@@ -1874,6 +2010,86 @@ func ExecuteWithMeta[T any](ctx context.Context, stages []Stage[T], items []T, f
 // ExecuteWithGroup 使用 Group 执行管道，支持错误聚合。
 func ExecuteWithGroup[T any](ctx context.Context, items []T, fn func(context.Context, T) (T, error), concurrency int) ([]core.Result[T], error) {
 	return pipeline.ExecuteWithGroup(ctx, items, fn, concurrency)
+}
+
+// ── ParallelPipeline：链式分片管道 ──
+
+// ParallelPipeline 多阶段并行数据处理管道，支持水平分片以提升极限高并发性能。
+// 与串行 Pipeline 不同，ParallelPipeline 每个阶段并发处理所有元素。
+//
+// 使用示例：
+//
+//	stages := []async.Stage[string]{
+//	    {Name: "parse", Concurrency: 10},
+//	    {Name: "validate", Concurrency: 5},
+//	}
+//
+//	// 无分片
+//	p := async.NewParallelPipeline(stages)
+//	results, _ := p.Execute(ctx, items, fn)
+//
+//	// 链式分片
+//	results, _ := async.NewParallelPipeline(stages).Shard(8).Execute(ctx, items, fn)
+//
+//	// 自动分片
+//	results, _ := async.NewParallelPipeline(stages).DefaultShard().Execute(ctx, items, fn)
+type ParallelPipeline[T any] = pipeline.Pipeline[T]
+
+// NewParallelPipeline 创建并行管道。
+func NewParallelPipeline[T any](stages []Stage[T]) *ParallelPipeline[T] {
+	return pipeline.NewPipeline(stages)
+}
+
+// ShardParallelPipeline 对并行管道进行水平分片的便捷函数。
+// 等效于 p.Shard(shards)。
+func ShardParallelPipeline[T any](p *ParallelPipeline[T], shards int) *ParallelPipeline[T] {
+	return p.Shard(shards)
+}
+
+// DefaultShardParallelPipeline 使用默认分片数对并行管道进行水平分片。
+// 等效于 p.DefaultShard()。
+func DefaultShardParallelPipeline[T any](p *ParallelPipeline[T]) *ParallelPipeline[T] {
+	return p.DefaultShard()
+}
+
+// ── BoundedRunner：Task goroutine 限流 ──
+
+// BoundedRunner 限制并发 goroutine 数的异步任务执行器。
+//
+// 使用示例：
+//
+//	runner := async.NewBoundedRunner(1000)
+//	for i := 0; i < 1000000; i++ {
+//	    idx := i
+//	    async.BoundedGo(runner, ctx, func(ctx context.Context) (int, error) {
+//	        return processData(ctx, idx)
+//	    })
+//	}
+type BoundedRunner = task.BoundedRunner
+
+// NewBoundedRunner 创建限流执行器。
+func NewBoundedRunner(max int) *BoundedRunner {
+	return task.NewBoundedRunner(max)
+}
+
+// NewDefaultBoundedRunner 使用默认 IO 并发度创建限流执行器。
+func NewDefaultBoundedRunner() *BoundedRunner {
+	return task.NewDefaultBoundedRunner()
+}
+
+// BoundedGo 通过限流器启动异步任务。
+func BoundedGo[T any](r *BoundedRunner, ctx context.Context, fn func(context.Context) (T, error)) *AsyncResult[T] {
+	return task.BoundedGo(r, ctx, fn)
+}
+
+// BoundedGoAction 通过限流器启动无返回值异步任务。
+func BoundedGoAction(r *BoundedRunner, ctx context.Context, fn func(context.Context) error) *AsyncErr {
+	return task.BoundedGoAction(r, ctx, fn)
+}
+
+// BoundedGoResult 通过限流器启动可取消异步任务。
+func BoundedGoResult[T any](r *BoundedRunner, ctx context.Context, fn func(context.Context) (T, error)) Task[T] {
+	return task.BoundedGoResult(r, ctx, fn)
 }
 
 // Pipeline 串行管道（原始 API），每个阶段串行执行。

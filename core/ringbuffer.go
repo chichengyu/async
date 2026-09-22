@@ -147,6 +147,11 @@ func (rb *RingBuffer[T]) Cap() int {
 	return rb.capacity
 }
 
+// OverflowStrategy 返回溢出策略。
+func (rb *RingBuffer[T]) OverflowStrategy() OverflowStrategy {
+	return rb.overflow
+}
+
 // Dropped 返回因 OverflowDrop 策略被覆盖丢弃的元素数。
 func (rb *RingBuffer[T]) Dropped() int64 {
 	return rb.dropped.Load()

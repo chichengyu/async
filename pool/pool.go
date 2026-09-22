@@ -1877,6 +1877,347 @@ func (p *Pool[T]) autoScaleLoop(config *core.AutoScaleConfig, stopCh chan struct
 }
 
 // performAutoScaleCheck 执行一次扩缩容检测。
+// ──────────────────────────── MultiPool 分片协程池 ────────────────────────────
+
+// MultiPool 将任务分发到 N 个 Pool 实例，实现水平扩展，支持极限高并发（百万~千万 QPS）。
+// 每个分片池独立运行，互不影响，通过 round-robin 分发任务。
+//
+// 通过 Pool.Shard() 创建，无需直接构造：
+//
+//	mp := pool.NewPool[int](100).Shard(8) // 8 个分片，每个 100 worker
+//	defer mp.Close()
+//	mp.Submit(ctx, fn)
+//	results := mp.Wait()
+type MultiPool[T any] struct {
+	pools   []*Pool[T]
+	nextIdx atomic.Uint64
+}
+
+// ShardCount 返回分片数。
+func (mp *MultiPool[T]) ShardCount() int {
+	return len(mp.pools)
+}
+
+// GetShard 获取指定分片的 Pool 实例，用于直接调用 Pool 的方法。
+// idx 越界返回 nil。
+func (mp *MultiPool[T]) GetShard(idx int) *Pool[T] {
+	if idx < 0 || idx >= len(mp.pools) {
+		return nil
+	}
+	return mp.pools[idx]
+}
+
+// Submit 将任务以 round-robin 方式分发到某个分片提交。
+func (mp *MultiPool[T]) Submit(ctx context.Context, fn func(context.Context) (T, error)) error {
+	idx := int(mp.nextIdx.Add(1)-1) % len(mp.pools)
+	return mp.pools[idx].Submit(ctx, fn)
+}
+
+// TrySubmit 非阻塞分发提交，不等待 worker 空闲。
+func (mp *MultiPool[T]) TrySubmit(ctx context.Context, fn func(context.Context) (T, error)) error {
+	idx := int(mp.nextIdx.Add(1)-1) % len(mp.pools)
+	return mp.pools[idx].TrySubmit(ctx, fn)
+}
+
+// SubmitKeyed 按 key 哈希分发到固定分片，保证同一 key 的任务落到同一分片。
+func (mp *MultiPool[T]) SubmitKeyed(key uint64, ctx context.Context, fn func(context.Context) (T, error)) error {
+	idx := int(key % uint64(len(mp.pools)))
+	return mp.pools[idx].Submit(ctx, fn)
+}
+
+// TrySubmitKeyed 按 key 哈希非阻塞分发。
+func (mp *MultiPool[T]) TrySubmitKeyed(key uint64, ctx context.Context, fn func(context.Context) (T, error)) error {
+	idx := int(key % uint64(len(mp.pools)))
+	return mp.pools[idx].TrySubmit(ctx, fn)
+}
+
+// SubmitBatch 批量提交，每个 item 分发到不同分片。
+// 返回每个元素的提交结果，包含分片索引和错误。
+func (mp *MultiPool[T]) SubmitBatch(ctx context.Context, items []T, fn func(context.Context, T) (T, error)) []SubmitResult {
+	results := make([]SubmitResult, len(items))
+	for i, item := range items {
+		idx := int(mp.nextIdx.Add(1)-1) % len(mp.pools)
+		err := mp.pools[idx].Submit(ctx, func(ctx context.Context) (T, error) {
+			return fn(ctx, item)
+		})
+		results[i] = SubmitResult{Index: i, Err: err}
+	}
+	return results
+}
+
+// Wait 等待所有分片完成，合并结果（保持各分片内部顺序，分片间不保证全局顺序）。
+func (mp *MultiPool[T]) Wait() []core.Result[T] {
+	var total int
+	for _, p := range mp.pools {
+		total += int(p.totalResultsCount())
+	}
+	all := make([]core.Result[T], 0, total)
+	for _, p := range mp.pools {
+		all = append(all, p.Wait()...)
+	}
+	return all
+}
+
+// WaitAndClose 等待所有分片完成后关闭。
+func (mp *MultiPool[T]) WaitAndClose() []core.Result[T] {
+	var total int
+	for _, p := range mp.pools {
+		total += int(p.totalResultsCount())
+	}
+	all := make([]core.Result[T], 0, total)
+	for _, p := range mp.pools {
+		all = append(all, p.WaitAndClose()...)
+	}
+	return all
+}
+
+// Close 关闭所有分片。
+func (mp *MultiPool[T]) Close() {
+	for _, p := range mp.pools {
+		p.Close()
+	}
+}
+
+// ── 代理配置方法 ──
+
+// WithTimeout 为所有分片设置任务超时。
+func (mp *MultiPool[T]) WithTimeout(d time.Duration) *MultiPool[T] {
+	for _, p := range mp.pools {
+		p.WithTimeout(d)
+	}
+	return mp
+}
+
+// WithSubmitTimeout 为所有分片设置提交超时。
+func (mp *MultiPool[T]) WithSubmitTimeout(d time.Duration) *MultiPool[T] {
+	for _, p := range mp.pools {
+		p.WithSubmitTimeout(d)
+	}
+	return mp
+}
+
+// WithStreaming 为所有分片启用流式结果消费。
+// 注意：目前各分片的流式 channel 是独立的，如需统一消费请使用 resultCb。
+func (mp *MultiPool[T]) WithStreaming(bufSize int) *MultiPool[T] {
+	for _, p := range mp.pools {
+		p.WithStreaming(bufSize)
+	}
+	return mp
+}
+
+// WithResultCallback 为所有分片设置结果回调。
+func (mp *MultiPool[T]) WithResultCallback(fn func(core.Result[T])) *MultiPool[T] {
+	for _, p := range mp.pools {
+		p.WithResultCallback(fn)
+	}
+	return mp
+}
+
+// WithRingBuffer 为所有分片启用环形缓冲区。
+func (mp *MultiPool[T]) WithRingBuffer(capacity int, overflow core.OverflowStrategy) *MultiPool[T] {
+	for _, p := range mp.pools {
+		p.WithRingBuffer(capacity, overflow)
+	}
+	return mp
+}
+
+// WithMaxPending 为所有分片设置最大等待任务数（背压控制）。
+func (mp *MultiPool[T]) WithMaxPending(n int) *MultiPool[T] {
+	for _, p := range mp.pools {
+		p.WithMaxPending(n)
+	}
+	return mp
+}
+
+// WithOverflow 为所有分片设置溢出策略。
+func (mp *MultiPool[T]) WithOverflow(strategy core.OverflowStrategy) *MultiPool[T] {
+	for _, p := range mp.pools {
+		p.WithOverflow(strategy)
+	}
+	return mp
+}
+
+// WithMaxResults 为所有分片设置最大结果数。
+func (mp *MultiPool[T]) WithMaxResults(n int) *MultiPool[T] {
+	for _, p := range mp.pools {
+		p.WithMaxResults(n)
+	}
+	return mp
+}
+
+// ── 统计聚合 ──
+
+// TotalActive 汇总所有分片当前活跃任务数。
+func (mp *MultiPool[T]) TotalActive() int {
+	var total int
+	for _, p := range mp.pools {
+		total += p.Active()
+	}
+	return total
+}
+
+// TotalBusy 汇总所有分片当前忙碌任务数。
+func (mp *MultiPool[T]) TotalBusy() int {
+	var total int
+	for _, p := range mp.pools {
+		total += p.Busy()
+	}
+	return total
+}
+
+// TotalPending 汇总所有分片等待中任务数。
+func (mp *MultiPool[T]) TotalPending() int {
+	var total int
+	for _, p := range mp.pools {
+		total += p.Pending()
+	}
+	return total
+}
+
+// TotalWorkerCount 汇总所有分片的 worker 总数。
+func (mp *MultiPool[T]) TotalWorkerCount() int {
+	var total int
+	for _, p := range mp.pools {
+		total += p.Size()
+	}
+	return total
+}
+
+// TotalFailCount 汇总所有分片的失败数。
+func (mp *MultiPool[T]) TotalFailCount() int64 {
+	var total int64
+	for _, p := range mp.pools {
+		total += p.FailCount()
+	}
+	return total
+}
+
+// TotalSuccessCount 汇总所有分片的成功数。
+func (mp *MultiPool[T]) TotalSuccessCount() int64 {
+	var total int64
+	for _, p := range mp.pools {
+		total += p.SuccessCount()
+	}
+	return total
+}
+
+// TotalCount 汇总所有分片的任务总数。
+func (mp *MultiPool[T]) TotalCount() int64 {
+	var total int64
+	for _, p := range mp.pools {
+		total += p.TotalCount()
+	}
+	return total
+}
+
+// Flush 从所有分片环形缓冲区排空结果（需提前启用 WithRingBuffer）。
+func (mp *MultiPool[T]) Flush(maxPerShard int) []core.Result[T] {
+	var all []core.Result[T]
+	for _, p := range mp.pools {
+		all = append(all, p.Flush(maxPerShard)...)
+	}
+	return all
+}
+
+// ──────────────────────────── Pool.Shard ────────────────────────────
+
+// Shard 将当前 Pool 水平扩展为 N 个分片，支持极限高并发（百万~千万 QPS）。
+// 第一个分片复用当前 Pool，剩余分片创建相同配置的新 Pool。
+//
+// 适用场景：单 Pool 的 channel 缓冲区成为瓶颈时，通过分片降低单 channel 竞争。
+// 例如：一个 Pool(100 worker) 吞吐约 37万/s，Shard(8) 后理论可达 ~300万/s。
+//
+// shards <= 1 时返回只有当前 Pool 的单分片 MultiPool。
+//
+// 使用示例：
+//
+//	// 基本用法：8 分片 × 每个 100 worker = 800 worker
+//	mp := pool.NewPool[int](100).Shard(8)
+//	defer mp.Close()
+//	for i := 0; i < 10_000_000; i++ {
+//	    mp.Submit(ctx, func(ctx context.Context) (int, error) { return i * 2, nil })
+//	}
+//	results := mp.Wait()
+//
+//	// 配合自动扩缩容：每个分片独立扩缩
+//	mp := pool.NewPool[int](4).
+//	    WithMaxPending(10000).
+//	    Shard(4)
+//	for _, p := range mp.GetShard(i) { ... } // 手动为每个分片开启 AutoScale
+//
+//	// 配合背压控制
+//	mp := pool.NewPool[int](50).
+//	    WithMaxPending(5000).
+//	    WithOverflow(core.OverflowDrop).
+//	    Shard(16)
+func (p *Pool[T]) Shard(shards int) *MultiPool[T] {
+	if shards <= 1 {
+		return &MultiPool[T]{pools: []*Pool[T]{p}}
+	}
+
+	templateSize := p.Size()
+
+	pools := make([]*Pool[T], shards)
+	pools[0] = p // 第一个分片复用当前 Pool
+
+	for i := 1; i < shards; i++ {
+		clone := NewPool[T](templateSize)
+		// 复制所有配置
+		clone.timeout = p.timeout
+		clone.submitTimeout = p.submitTimeout
+		clone.maxPending = p.maxPending
+		clone.overflowStrat = p.overflowStrat
+		clone.maxResults = p.maxResults
+		clone.ctx = p.ctx
+
+		// FailFast
+		if p.failFast.Load() {
+			clone.failFast.Store(true)
+			clone.cancel = p.cancel
+		}
+
+		// RingBuffer
+		if p.ringBufFlag.Load() && p.ringBuf != nil {
+			clone.ringBuf = core.NewRingBuffer[core.Result[T]](p.ringBuf.Cap(), p.ringBuf.OverflowStrategy())
+			clone.ringBufFlag.Store(true)
+		}
+
+		// Stream channel
+		if p.streamCh != nil {
+			clone.streamCh = make(chan core.Result[T], cap(p.streamCh))
+		}
+
+		// Result callback
+		clone.resultCb = p.resultCb
+
+		// AutoScale
+		if p.IsAutoScaleEnabled() && p.autoScale != nil {
+			cfgCopy := *p.autoScale
+			clone.EnableAutoScale(&cfgCopy)
+		}
+
+		pools[i] = clone
+	}
+
+	return &MultiPool[T]{pools: pools}
+}
+
+// DefaultShard 使用默认分片数（runtime.GOMAXPROCS(0)，最少 2）对当前 Pool 进行水平分片。
+// 等效于 p.Shard(max(2, runtime.GOMAXPROCS(0)))，无需手动指定分片数。
+//
+// 示例：
+//
+//	// 自动按 CPU 核心数分片
+//	mp := async.NewPool[int](100).DefaultShard()
+//	defer mp.Close()
+func (p *Pool[T]) DefaultShard() *MultiPool[T] {
+	shards := runtime.GOMAXPROCS(0)
+	if shards < 2 {
+		shards = 2
+	}
+	return p.Shard(shards)
+}
+
 func (p *Pool[T]) performAutoScaleCheck(config *core.AutoScaleConfig, scaleUpCount, scaleDownCount *int) {
 	if p.closed.Load() || p.submitGuard.Load() {
 		return

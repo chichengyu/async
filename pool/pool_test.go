@@ -588,3 +588,196 @@ func TestPool_Concurrency1_10K(t *testing.T) {
 		t.Fatalf("expected %d, got %d", n, len(results))
 	}
 }
+
+// ==================== MultiPool / Shard 测试 ====================
+
+func TestMultiPool_Shard_Basic(t *testing.T) {
+	mp := NewPool[int](4).Shard(4)
+	defer mp.Close()
+
+	ctx := context.Background()
+	n := 1000
+	for i := 0; i < n; i++ {
+		val := i
+		if err := mp.Submit(ctx, func(ctx context.Context) (int, error) {
+			return val * 2, nil
+		}); err != nil {
+			t.Fatalf("submit failed: %v", err)
+		}
+	}
+
+	results := mp.Wait()
+	if len(results) != n {
+		t.Fatalf("expected %d results, got %d", n, len(results))
+	}
+
+	// verify results
+	for _, r := range results {
+		if !r.Ok() {
+			t.Fatalf("unexpected error: %v", r.Err)
+		}
+	}
+}
+
+func TestMultiPool_Shard_ConfigCopy(t *testing.T) {
+	// 创建带配置的 Pool，然后 Shard，验证配置被复制
+	p := NewPool[int](8).
+		WithTimeout(5 * time.Second).
+		WithMaxPending(100).
+		WithOverflow(core.OverflowDrop)
+	mp := p.Shard(4)
+
+	if mp.ShardCount() != 4 {
+		t.Fatalf("expected 4 shards, got %d", mp.ShardCount())
+	}
+
+	// 第一个分片是原 Pool，后三个是克隆
+	for i := 0; i < 4; i++ {
+		sp := mp.GetShard(i)
+		if sp == nil {
+			t.Fatalf("shard %d is nil", i)
+		}
+		if sp.maxPending != 100 {
+			t.Fatalf("shard %d maxPending: expected 100, got %d", i, sp.maxPending)
+		}
+		if sp.timeout != 5*time.Second {
+			t.Fatalf("shard %d timeout: expected 5s, got %v", i, sp.timeout)
+		}
+		if sp.overflowStrat != core.OverflowDrop {
+			t.Fatalf("shard %d overflowStrat: expected OverflowDrop", i)
+		}
+	}
+
+	mp.Close()
+}
+
+func TestMultiPool_SubmitKeyed(t *testing.T) {
+	mp := NewPool[string](4).Shard(4)
+	defer mp.Close()
+
+	ctx := context.Background()
+
+	// 同一 key 应该落到同一分片
+	for i := 0; i < 100; i++ {
+		if err := mp.SubmitKeyed(42, ctx, func(ctx context.Context) (string, error) {
+			return "a", nil
+		}); err != nil {
+			t.Fatalf("submit failed: %v", err)
+		}
+	}
+
+	results := mp.Wait()
+	if len(results) != 100 {
+		t.Fatalf("expected 100, got %d", len(results))
+	}
+}
+
+func TestMultiPool_TrySubmit(t *testing.T) {
+	mp := NewPool[int](100).Shard(4)
+	defer mp.Close()
+
+	ctx := context.Background()
+	n := 500
+	var submitted int
+	// TrySubmit 是非阻塞的，channel 满时会返回 error
+	for i := 0; i < n; i++ {
+		err := mp.TrySubmit(ctx, func(ctx context.Context) (int, error) {
+			return i, nil
+		})
+		if err == nil {
+			submitted++
+		}
+	}
+
+	results := mp.Wait()
+	if len(results) < 100 {
+		t.Fatalf("expected at least 100 results from TrySubmit, got %d", len(results))
+	}
+	t.Logf("TrySubmit: submitted=%d/%d, results=%d", submitted, n, len(results))
+}
+
+func TestMultiPool_Shard_Single(t *testing.T) {
+	// shards <= 1 返回单分片 MultiPool，复用原 Pool
+	p := NewPool[int](4)
+	mp := p.Shard(1)
+
+	if mp.ShardCount() != 1 {
+		t.Fatalf("expected 1 shard, got %d", mp.ShardCount())
+	}
+	if mp.GetShard(0) != p {
+		t.Fatal("single shard should reuse original pool")
+	}
+
+	mp.Close()
+}
+
+func TestMultiPool_Stats(t *testing.T) {
+	mp := NewPool[int](4).Shard(4)
+	defer mp.Close()
+
+	ctx := context.Background()
+	n := 1000
+	for i := 0; i < n; i++ {
+		mp.Submit(ctx, func(ctx context.Context) (int, error) { return 1, nil })
+	}
+	mp.Wait()
+
+	if mp.TotalCount() != int64(n) {
+		t.Fatalf("TotalCount: expected %d, got %d", n, mp.TotalCount())
+	}
+	if mp.TotalSuccessCount() != int64(n) {
+		t.Fatalf("TotalSuccessCount: expected %d, got %d", n, mp.TotalSuccessCount())
+	}
+	if mp.TotalWorkerCount() != 16 { // 4 shards × 4 workers
+		t.Fatalf("TotalWorkerCount: expected 16, got %d", mp.TotalWorkerCount())
+	}
+}
+
+func TestMultiPool_SubmitBatch(t *testing.T) {
+	mp := NewPool[int](4).Shard(4)
+	defer mp.Close()
+
+	ctx := context.Background()
+	items := []int{1, 2, 3, 4, 5, 6, 7, 8}
+	results := mp.SubmitBatch(ctx, items, func(ctx context.Context, v int) (int, error) {
+		return v * 10, nil
+	})
+
+	for _, r := range results {
+		if r.Err != nil {
+			t.Fatalf("batch submit error at %d: %v", r.Index, r.Err)
+		}
+	}
+
+	vals := mp.Wait()
+	if len(vals) != 8 {
+		t.Fatalf("expected 8 results, got %d", len(vals))
+	}
+}
+
+func TestMultiPool_Race(t *testing.T) {
+	// 竞态检测：多 goroutine 并发提交
+	mp := NewPool[int](8).Shard(8)
+	defer mp.Close()
+
+	var wg sync.WaitGroup
+	ctx := context.Background()
+	n := 1000
+	concurrency := 20
+
+	for g := 0; g < concurrency; g++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < n/concurrency; i++ {
+				mp.Submit(ctx, func(ctx context.Context) (int, error) { return 1, nil })
+			}
+		}()
+	}
+	wg.Wait()
+
+	results := mp.Wait()
+	if len(results) != n {
+		t.Fatalf("expected %d results, got %d", n, len(results))
+	}
+}

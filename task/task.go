@@ -397,3 +397,115 @@ func (m *Mu[T]) Snapshot() []T {
 	copy(out, m.ts)
 	return out
 }
+
+// ──────────────────────────── BoundedRunner ────────────────────────────
+
+// BoundedRunner 限制并发 goroutine 数的异步任务执行器。
+// 通过内部信号量控制最大并发 goroutine 数，用 task.Go() 的 API 体验扛千万级高并发。
+//
+// 与裸 task.Go() 的区别：
+//   - task.Go()：每次调用创建一个新 goroutine，1 千万调用 = 1 千万 goroutine
+//   - BoundedRunner.Go()：最多同时运行 max 个 goroutine，其余阻塞等待，公平调度
+//
+// 使用示例：
+//
+//	// 限制最多 1000 个并发 goroutine
+//	runner := task.NewBoundedRunner(1000)
+//
+//	for i := 0; i < 10_000_000; i++ {
+//	    idx := i
+//	    task.BoundedGo(runner, ctx, func(ctx context.Context) (int, error) {
+//	        return processData(ctx, idx)
+//	    })
+//	}
+type BoundedRunner struct {
+	sem chan struct{}
+}
+
+// NewBoundedRunner 创建一个限制并发 goroutine 数的执行器。
+// max <= 0 时使用默认 IO 并发度。
+func NewBoundedRunner(max int) *BoundedRunner {
+	if max <= 0 {
+		max = core.IO()
+	}
+	return &BoundedRunner{sem: make(chan struct{}, max)}
+}
+
+// NewDefaultBoundedRunner 使用默认 IO 并发度创建执行器。
+func NewDefaultBoundedRunner() *BoundedRunner {
+	return NewBoundedRunner(core.IO())
+}
+
+// Max 返回最大并发 goroutine 数。
+func (r *BoundedRunner) Max() int {
+	return cap(r.sem)
+}
+
+// Available 返回当前可用的并发槽位数。
+func (r *BoundedRunner) Available() int {
+	return cap(r.sem) - len(r.sem)
+}
+
+// Busy 返回当前正在执行任务的 goroutine 数。
+func (r *BoundedRunner) Busy() int {
+	return len(r.sem)
+}
+
+// BoundedGo 通过信号量限流后启动异步任务，返回 AsyncResult[T]。
+// 当并发 goroutine 数已达上限时，阻塞等待 slot 释放或 ctx 取消。
+func BoundedGo[T any](r *BoundedRunner, ctx context.Context, fn func(context.Context) (T, error)) *AsyncResult[T] {
+	select {
+	case r.sem <- struct{}{}:
+	case <-ctx.Done():
+		var zero T
+		ar := &AsyncResult[T]{ready: make(chan struct{})}
+		ar.result = core.Result[T]{Value: zero, Err: ctx.Err()}
+		close(ar.ready)
+		return ar
+	}
+
+	return Go[T](ctx, func(ctx context.Context) (T, error) {
+		defer func() { <-r.sem }()
+		return fn(ctx)
+	})
+}
+
+// BoundedGoAction 带限流的无返回值异步任务，返回 AsyncResultNoResult。
+func BoundedGoAction(r *BoundedRunner, ctx context.Context, fn func(context.Context) error) *AsyncResultNoResult {
+	select {
+	case r.sem <- struct{}{}:
+	case <-ctx.Done():
+		ar := &AsyncResultNoResult{ready: make(chan struct{})}
+		ar.result = core.Result[NoResult]{Value: NoResult{}, Err: ctx.Err()}
+		close(ar.ready)
+		return ar
+	}
+
+	return GoAction(ctx, func(ctx context.Context) error {
+		defer func() { <-r.sem }()
+		return fn(ctx)
+	})
+}
+
+// BoundedGoResult 带限流的可取消异步任务，返回 Task[T]。
+func BoundedGoResult[T any](r *BoundedRunner, ctx context.Context, fn func(context.Context) (T, error)) Task[T] {
+	select {
+	case r.sem <- struct{}{}:
+	case <-ctx.Done():
+		var zero T
+		ctx, cancel := context.WithCancel(ctx)
+		return Task[T]{
+			Ctx:    ctx,
+			Cancel: cancel,
+			Result: func() (T, error) { return zero, ctx.Err() },
+		}
+	}
+
+	t := GoResult[T](ctx, fn)
+	orig := t.Result
+	t.Result = func() (T, error) {
+		defer func() { <-r.sem }()
+		return orig()
+	}
+	return t
+}
