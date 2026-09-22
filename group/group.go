@@ -1043,9 +1043,15 @@ func (g *Group[T]) WaitTimeout(d time.Duration) ([]core.Result[T], bool) {
 	g.addMu.Lock()
 	g.waiting.Store(true)
 	g.addMu.Unlock()
-	results, ok := core.WaitTimeoutImpl(d, &g.wg, g.cancel, &g.mu, &g.waited, &g.waiting, g.cancelAll, func() []core.Result[T] {
+	results, ok := core.WaitTimeoutImpl(d, &g.wg, g.cancel, nil, &g.waited, func() {
+		g.mu.Lock()
+		g.cancelAll()
+		g.mu.Unlock()
+	}, func() []core.Result[T] {
+		g.mu.Lock()
 		results := make([]core.Result[T], len(g.results))
 		copy(results, g.results)
+		g.mu.Unlock()
 		return results
 	}, g.ctx)
 	g.signalDone()
@@ -1067,9 +1073,15 @@ func (g *Group[T]) WaitContext(ctx context.Context) ([]core.Result[T], bool) {
 	g.addMu.Lock()
 	g.waiting.Store(true)
 	g.addMu.Unlock()
-	results, ok := core.WaitContextImpl(ctx, &g.wg, g.cancel, &g.mu, &g.waited, &g.waiting, g.cancelAll, func() []core.Result[T] {
+	results, ok := core.WaitContextImpl(ctx, &g.wg, g.cancel, nil, &g.waited, func() {
+		g.mu.Lock()
+		g.cancelAll()
+		g.mu.Unlock()
+	}, func() []core.Result[T] {
+		g.mu.Lock()
 		results := make([]core.Result[T], len(g.results))
 		copy(results, g.results)
+		g.mu.Unlock()
 		return results
 	}, g.ctx, "Group")
 	g.signalDone()
@@ -1202,7 +1214,10 @@ func (g *Group[T]) performAutoScaleCheck(config *core.AutoScaleConfig, scaleUpCo
 		*scaleDownCount = 0
 		*scaleUpCount++
 		if *scaleUpCount >= config.ScaleUpChecks {
-			newSize := cur * 2
+			newSize := int(float64(cur) * config.ScaleUpFactor)
+			if newSize <= cur {
+				newSize = cur + 1
+			}
 			if newSize > config.MaxWorkers {
 				newSize = config.MaxWorkers
 			}
@@ -1215,7 +1230,10 @@ func (g *Group[T]) performAutoScaleCheck(config *core.AutoScaleConfig, scaleUpCo
 		*scaleUpCount = 0
 		*scaleDownCount++
 		if *scaleDownCount >= config.ScaleDownChecks {
-			newSize := cur / 2
+			newSize := int(float64(cur) * config.ScaleDownFactor)
+			if newSize >= cur {
+				newSize = cur - 1
+			}
 			if newSize < config.MinWorkers {
 				newSize = config.MinWorkers
 			}

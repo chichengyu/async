@@ -95,6 +95,9 @@ func NewRateLimiter(rate int, perDuration time.Duration) *RateLimiter {
 		refillDone:  make(chan struct{}),
 	}
 	rl.strat.Store(Block)
+	for i := 0; i < rate; i++ {
+		rl.tokens <- struct{}{}
+	}
 	rl.startRefill()
 	return rl
 }
@@ -156,7 +159,36 @@ func (rl *RateLimiter) startRefill() {
 	if interval <= 0 {
 		interval = time.Nanosecond
 	}
-	ticker := time.NewTicker(interval)
+
+	// 批量补充：当速率很高时（如 10000/s），逐令牌补充会产生极大的 ticker 开销。
+	// 改为按较粗粒度周期性补充，每次补充一批令牌，大幅降低 CPU 消耗。
+	const minBatchInterval = 100 * time.Millisecond
+	const maxBatchInterval = time.Second
+
+	var batchSize int
+	var tickInterval time.Duration
+
+	if interval < minBatchInterval {
+		// 高速率场景：批量补充
+		batchSize = int(minBatchInterval / interval)
+		if batchSize < 1 {
+			batchSize = 1
+		}
+		tickInterval = minBatchInterval
+	} else if interval > maxBatchInterval {
+		// 极低速率场景：最长 1 秒补充一次，每次补充少量
+		batchSize = int(float64(rl.rate) * maxBatchInterval.Seconds() / rl.perDuration.Seconds())
+		if batchSize < 1 {
+			batchSize = 1
+		}
+		tickInterval = maxBatchInterval
+	} else {
+		// 中等速率：逐令牌补充（间隔在合理范围内）
+		batchSize = 1
+		tickInterval = interval
+	}
+
+	ticker := time.NewTicker(tickInterval)
 	go func() {
 		defer ticker.Stop()
 		for {
@@ -166,9 +198,12 @@ func (rl *RateLimiter) startRefill() {
 				return
 			case <-ticker.C:
 				rl.resizeMu.RLock()
-				select {
-				case rl.tokens <- struct{}{}:
-				default:
+				for i := 0; i < batchSize; i++ {
+					select {
+					case rl.tokens <- struct{}{}:
+					default:
+						break
+					}
 				}
 				rl.resizeMu.RUnlock()
 			}

@@ -381,21 +381,24 @@ func MergeCancel(oldCancel, newCancel context.CancelFunc) context.CancelFunc {
 // ──────────────────────────── WaitTimeoutImpl ────────────────────────────
 
 // WaitTimeoutImpl 实现带超时的 Wait 逻辑，内部使用。
+//
+// 参数说明：
+//   - submitGuard: 提交保护标记，Wait 开始时应为 true，结束时自动设为 false。
+//     Pool 用它禁止 Wait 期间的新 Submit；Group 传 nil（自己在外部管理）。
+//   - cancelAll 和 copyResults 必须由调用方保证线程安全。
+//     Pool 内部使用分片锁，无需外部互斥；Group 应在闭包内自行加锁。
 func WaitTimeoutImpl[T any](
 	d time.Duration,
 	wg *sync.WaitGroup,
 	cancel context.CancelFunc,
-	mu *sync.Mutex,
+	submitGuard *atomic.Bool,
 	waited *atomic.Bool,
-	waiting *atomic.Bool,
 	cancelAll func(),
 	copyResults func() []Result[T],
 	logCtx context.Context,
 ) ([]Result[T], bool) {
 	timeoutCtx, timeoutCancel := context.WithTimeout(context.Background(), d)
 	defer timeoutCancel()
-
-	waiting.Store(true)
 
 	var cancelAllOnce sync.Once
 	safeCancelAll := func() {
@@ -408,9 +411,7 @@ func WaitTimeoutImpl[T any](
 		if cancel != nil {
 			cancel()
 		}
-		mu.Lock()
 		safeCancelAll()
-		mu.Unlock()
 	})
 	defer stopAfter()
 
@@ -425,23 +426,23 @@ func WaitTimeoutImpl[T any](
 		if cancel != nil {
 			cancel()
 		}
-		mu.Lock()
 		waited.Store(true)
-		waiting.Store(false)
+		if submitGuard != nil {
+			submitGuard.Store(false)
+		}
 		safeCancelAll()
 		results := copyResults()
-		mu.Unlock()
 		return results, true
 	case <-timeoutCtx.Done():
 		if cancel != nil {
 			cancel()
 		}
-		mu.Lock()
 		waited.Store(true)
-		waiting.Store(false)
+		if submitGuard != nil {
+			submitGuard.Store(false)
+		}
 		safeCancelAll()
 		results := copyResults()
-		mu.Unlock()
 		go func() {
 			maxDur := time.Duration(atomic.LoadInt64(&maxCleanupDuration))
 			warnTicker := time.NewTicker(WaitContextCleanupWarn)
@@ -481,19 +482,23 @@ func WaitTimeoutImpl[T any](
 // ──────────────────────────── WaitContextImpl ────────────────────────────
 
 // WaitContextImpl 实现基于 context 的 Wait 逻辑，内部使用。
+//
+// 参数说明：
+//   - submitGuard: 提交保护标记，Wait 开始时应为 true，结束时自动设为 false。
+//     Pool 用它禁止 Wait 期间的新 Submit；Group 传 nil（自己在外部管理）。
+//   - cancelAll 和 copyResults 必须由调用方保证线程安全。
+//     Pool 内部使用分片锁，无需外部互斥；Group 应在闭包内自行加锁。
 func WaitContextImpl[T any](
 	ctx context.Context,
 	wg *sync.WaitGroup,
 	cancel context.CancelFunc,
-	mu *sync.Mutex,
+	submitGuard *atomic.Bool,
 	waited *atomic.Bool,
-	waiting *atomic.Bool,
 	cancelAll func(),
 	copyResults func() []Result[T],
 	logCtx context.Context,
 	callerType string,
 ) ([]Result[T], bool) {
-	waiting.Store(true)
 	done := make(chan struct{})
 	go func() {
 		wg.Wait()
@@ -505,23 +510,23 @@ func WaitContextImpl[T any](
 		if cancel != nil {
 			cancel()
 		}
-		mu.Lock()
 		waited.Store(true)
-		waiting.Store(false)
+		if submitGuard != nil {
+			submitGuard.Store(false)
+		}
 		cancelAll()
 		results := copyResults()
-		mu.Unlock()
 		return results, true
 	case <-ctx.Done():
 		if cancel != nil {
 			cancel()
 		}
-		mu.Lock()
 		waited.Store(true)
-		waiting.Store(false)
+		if submitGuard != nil {
+			submitGuard.Store(false)
+		}
 		cancelAll()
 		results := copyResults()
-		mu.Unlock()
 		go func() {
 			maxDur := time.Duration(atomic.LoadInt64(&maxCleanupDuration))
 			warnTicker := time.NewTicker(WaitContextCleanupWarn)

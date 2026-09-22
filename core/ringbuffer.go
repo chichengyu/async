@@ -1,28 +1,53 @@
 package core
 
-import "sync"
+import (
+	"sync"
+	"sync/atomic"
+)
 
 // RingBuffer 固定容量环形缓冲区，线程安全。
+// 使用分片设计降低锁竞争：内部按 16 个分片组织数据，
+// 每个分片有独立的 mutex，写操作均匀分布到各分片。
 type RingBuffer[T any] struct {
+	shards   [ringBufShardCount]ringBufShard[T]
+	capacity int
+	overflow OverflowStrategy
+	writeIdx atomic.Uint64 // 全局写入序号，用于分片路由
+	readIdx  atomic.Uint64 // 全局读取序号
+	dropped  atomic.Int64  // 因 OverflowDrop 被覆盖的元素数
+}
+
+const ringBufShardCount = 16
+
+type ringBufShard[T any] struct {
+	mu       sync.Mutex
 	buf      []T
 	head     int
 	tail     int
 	size     int
-	capacity int
-	mu       sync.Mutex
-	overflow OverflowStrategy
+	capacity int // 每个分片的容量
 }
 
 // NewRingBuffer 创建指定容量的环形缓冲区。
+// capacity 会被向上取整到 ringBufShardCount 的倍数。
 func NewRingBuffer[T any](capacity int, overflow OverflowStrategy) *RingBuffer[T] {
 	if capacity < 1 {
 		capacity = 1024
 	}
-	return &RingBuffer[T]{
-		buf:      make([]T, capacity),
-		capacity: capacity,
+	// 向上取整到分片数的倍数，每个分片至少 1 个槽位
+	perShard := (capacity + ringBufShardCount - 1) / ringBufShardCount
+	if perShard < 1 {
+		perShard = 1
+	}
+	rb := &RingBuffer[T]{
+		capacity: perShard * ringBufShardCount,
 		overflow: overflow,
 	}
+	for i := range rb.shards {
+		rb.shards[i].buf = make([]T, perShard)
+		rb.shards[i].capacity = perShard
+	}
+	return rb
 }
 
 // Push 写入一个元素。满时根据策略处理：
@@ -30,57 +55,91 @@ func NewRingBuffer[T any](capacity int, overflow OverflowStrategy) *RingBuffer[T
 // OverflowBlock：返回 false
 // OverflowError：返回 false
 func (rb *RingBuffer[T]) Push(val T) bool {
-	rb.mu.Lock()
-	defer rb.mu.Unlock()
-	if rb.size == rb.capacity {
+	widx := rb.writeIdx.Add(1) - 1
+	shardIdx := int(widx % ringBufShardCount)
+	s := &rb.shards[shardIdx]
+
+	s.mu.Lock()
+	if s.size == s.capacity {
 		switch rb.overflow {
 		case OverflowDrop:
-			rb.buf[rb.head] = val
-			rb.head = (rb.head + 1) % rb.capacity
-			rb.tail = (rb.tail + 1) % rb.capacity
+			rb.dropped.Add(1)
+			s.buf[s.head] = val
+			s.head = (s.head + 1) % s.capacity
+			s.tail = (s.tail + 1) % s.capacity
+			s.mu.Unlock()
 			return true
 		default:
+			// Block/Error 策略：写失败不推进写入序号（回退）
+			rb.writeIdx.Add(^uint64(0)) // -1
+			s.mu.Unlock()
 			return false
 		}
 	}
-	rb.buf[rb.tail] = val
-	rb.tail = (rb.tail + 1) % rb.capacity
-	rb.size++
+	s.buf[s.tail] = val
+	s.tail = (s.tail + 1) % s.capacity
+	s.size++
+	s.mu.Unlock()
 	return true
 }
 
 // Pop 读取并移除最旧元素。空时返回零值和 false。
 func (rb *RingBuffer[T]) Pop() (T, bool) {
-	rb.mu.Lock()
-	defer rb.mu.Unlock()
-	if rb.size == 0 {
+	ridx := rb.readIdx.Load()
+	widx := rb.writeIdx.Load()
+	if ridx >= widx {
 		var zero T
 		return zero, false
 	}
-	val := rb.buf[rb.head]
+
+	shardIdx := int(ridx % ringBufShardCount)
+	s := &rb.shards[shardIdx]
+
+	s.mu.Lock()
+	if s.size == 0 {
+		s.mu.Unlock()
+		var zero T
+		return zero, false
+	}
+	val := s.buf[s.head]
 	var zero T
-	rb.buf[rb.head] = zero
-	rb.head = (rb.head + 1) % rb.capacity
-	rb.size--
+	s.buf[s.head] = zero
+	s.head = (s.head + 1) % s.capacity
+	s.size--
+	s.mu.Unlock()
+
+	rb.readIdx.Add(1)
 	return val, true
 }
 
 // Peek 读取最旧元素但不移除。
 func (rb *RingBuffer[T]) Peek() (T, bool) {
-	rb.mu.Lock()
-	defer rb.mu.Unlock()
-	if rb.size == 0 {
+	ridx := rb.readIdx.Load()
+	widx := rb.writeIdx.Load()
+	if ridx >= widx {
 		var zero T
 		return zero, false
 	}
-	return rb.buf[rb.head], true
+
+	shardIdx := int(ridx % ringBufShardCount)
+	s := &rb.shards[shardIdx]
+
+	s.mu.Lock()
+	if s.size == 0 {
+		s.mu.Unlock()
+		var zero T
+		return zero, false
+	}
+	val := s.buf[s.head]
+	s.mu.Unlock()
+	return val, true
 }
 
 // Len 返回当前元素数。
 func (rb *RingBuffer[T]) Len() int {
-	rb.mu.Lock()
-	defer rb.mu.Unlock()
-	return rb.size
+	widx := rb.writeIdx.Load()
+	ridx := rb.readIdx.Load()
+	return int(widx - ridx)
 }
 
 // Cap 返回容量。
@@ -88,63 +147,58 @@ func (rb *RingBuffer[T]) Cap() int {
 	return rb.capacity
 }
 
+// Dropped 返回因 OverflowDrop 策略被覆盖丢弃的元素数。
+func (rb *RingBuffer[T]) Dropped() int64 {
+	return rb.dropped.Load()
+}
+
 // IsFull 返回是否已满。
 func (rb *RingBuffer[T]) IsFull() bool {
-	rb.mu.Lock()
-	defer rb.mu.Unlock()
-	return rb.size == rb.capacity
+	return rb.Len() >= rb.capacity
 }
 
 // Flush 排空并返回所有元素（FIFO 顺序）。
 func (rb *RingBuffer[T]) Flush() []T {
-	rb.mu.Lock()
-	defer rb.mu.Unlock()
-	if rb.size == 0 {
-		return nil
-	}
-	result := make([]T, rb.size)
-	idx := 0
-	for rb.size > 0 {
-		result[idx] = rb.buf[rb.head]
-		var zero T
-		rb.buf[rb.head] = zero
-		rb.head = (rb.head + 1) % rb.capacity
-		rb.size--
-		idx++
-	}
-	return result
+	return rb.FlushN(0)
 }
 
 // FlushN 排空并返回最多 n 个元素（FIFO 顺序，保留超出的元素）。
+// n <= 0 取出全部。
 func (rb *RingBuffer[T]) FlushN(n int) []T {
-	rb.mu.Lock()
-	defer rb.mu.Unlock()
-	if n <= 0 || n > rb.size {
-		n = rb.size
-	}
-	if n == 0 {
+	total := rb.Len()
+	if total == 0 {
 		return nil
 	}
-	result := make([]T, n)
+	if n <= 0 || n > total {
+		n = total
+	}
+
+	result := make([]T, 0, n)
 	for i := 0; i < n; i++ {
-		result[i] = rb.buf[rb.head]
-		var zero T
-		rb.buf[rb.head] = zero
-		rb.head = (rb.head + 1) % rb.capacity
-		rb.size--
+		if val, ok := rb.Pop(); ok {
+			result = append(result, val)
+		} else {
+			break
+		}
 	}
 	return result
 }
 
 // Reset 清空缓冲区。
 func (rb *RingBuffer[T]) Reset() {
-	rb.mu.Lock()
-	defer rb.mu.Unlock()
-	for i := range rb.buf {
-		var zero T
-		rb.buf[i] = zero
+	rb.readIdx.Store(0)
+	rb.writeIdx.Store(0)
+	rb.dropped.Store(0)
+	for i := range rb.shards {
+		s := &rb.shards[i]
+		s.mu.Lock()
+		for j := range s.buf {
+			var zero T
+			s.buf[j] = zero
+		}
+		s.head = 0
+		s.tail = 0
+		s.size = 0
+		s.mu.Unlock()
 	}
-	rb.head = 0
-	rb.tail = 0
-	rb.size = 0
 }

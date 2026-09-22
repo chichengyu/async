@@ -24,6 +24,12 @@ type AutoScaleConfig struct {
 	ScaleUpChecks int
 	// ScaleDownChecks 是连续触发缩容所需的检测次数，防止短暂低谷误缩容，<=0 时默认 5。
 	ScaleDownChecks int
+	// ScaleUpFactor 是扩容倍数，<=0 时默认 1.5（即增加 50% worker）。
+	// 设为 2.0 时等价于翻倍；设为 1.2 时每次只增加 20%，更加平滑。
+	ScaleUpFactor float64
+	// ScaleDownFactor 是缩容倍数，<=0 时默认 0.75（即保留 75%，移除 25% worker）。
+	// 设为 0.5 时等价于减半；设为 0.8 时每次只移除 20%，更加保守。
+	ScaleDownFactor float64
 }
 
 // DefaultAutoScaleConfig 返回生产级默认自动扩缩容配置：
@@ -35,6 +41,8 @@ type AutoScaleConfig struct {
 //	ScaleDownThreshold = 0.2 (20% busy)
 //	ScaleUpChecks = 3 (连续3次才扩容)
 //	ScaleDownChecks = 5 (连续5次才缩容)
+//	ScaleUpFactor = 1.5 (每次扩容增加 50%)
+//	ScaleDownFactor = 0.75 (每次缩容保留 75%)
 func DefaultAutoScaleConfig() *AutoScaleConfig {
 	return &AutoScaleConfig{
 		MinWorkers:         runtime.NumCPU() * 2,
@@ -44,6 +52,8 @@ func DefaultAutoScaleConfig() *AutoScaleConfig {
 		ScaleDownThreshold: 0.2,
 		ScaleUpChecks:      3,
 		ScaleDownChecks:    5,
+		ScaleUpFactor:      1.5,
+		ScaleDownFactor:    0.75,
 	}
 }
 
@@ -69,5 +79,11 @@ func (c *AutoScaleConfig) Normalize() {
 	}
 	if c.ScaleDownChecks <= 0 {
 		c.ScaleDownChecks = 5
+	}
+	if c.ScaleUpFactor <= 0 {
+		c.ScaleUpFactor = 1.5
+	}
+	if c.ScaleDownFactor <= 0 {
+		c.ScaleDownFactor = 0.75
 	}
 }
