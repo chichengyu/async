@@ -1799,27 +1799,27 @@ err := async.BindRetryToWorker(ctx, pool, fn, 3, 10*time.Millisecond, 1*time.Sec
 
 ## 测试与性能
 
-本库经过 **6 套压测体系、250+ 测试用例、千万级极限高并发** 的全面验证，
+本库经过 **6 套压测体系、275+ 测试用例、千万级极限高并发** 的全面验证，
 所有测试均启用 **Go Race Detector**（`-race`），零竞态、零死锁、零 goroutine 泄漏。
 
 > 修复记录和详细说明请参阅：[极限并发测试报告](docs/test_report.md)
 
 ### 测试体系总览
 
-| 测试套件 | 数量 | -race | 结果 |
-|----------|------|-------|------|
-| 10M 极限压力+Race | 9 | ✅ | ALL PASS |
-| 综合边界压力+Race | 100+ | ✅ | ALL PASS |
-| 综合边界压力 | 100+ | ❌ | ALL PASS |
-| Hyper 高并发 | 18 | ✅ | ALL PASS |
-| Production 生产级千万 | 80+ | ❌ | ALL PASS |
-| 子包全量测试+Race | 全量 | ✅ | ALL PASS |
+| 测试套件 | 数量 | -race | 结果 | 耗时 |
+|----------|------|-------|------|------|
+| 10M 极限压力+Race | 9 | ✅ | **ALL PASS** | ~7 min |
+| Production 生产级千万 | 100 | ❌ | **ALL PASS** | ~242s |
+| 综合边界压力 | 130 | ❌ | **ALL PASS** | ~3.5 min |
+| 综合边界压力+Race | 130 | ✅ | **ALL PASS** | ~26 min |
+| Hyper 高并发 | 18 | ✅ | **ALL PASS** | ~10s |
+| 子包全量测试+Race | 全量 | ✅ | **ALL PASS** | ~21s |
 
 ### 核心吞吐量指标（1M ~ 10M 量级）
 
 | 场景 | 吞吐量 | 说明 |
 |------|--------|------|
-| `Pool.Submit` + `Wait` | **380K ops/s** | 千万任务提交+等待，含结果写入 |
+| `Pool.Submit` + `Wait` | **370K ops/s** | 千万任务提交+等待，32分片无锁写入 |
 | `Map` 数据映射 | **2.95 亿/s** | 千万元素并行映射（500并发） |
 | `Go` FireAndForget | **961K ops/s** | 千万任务并行发射 |
 | `MapWithFailFast` | **1.45 亿/s** | 千万元素FailFast映射 |
@@ -1827,38 +1827,42 @@ err := async.BindRetryToWorker(ctx, pool, fn, 3, 10*time.Millisecond, 1*time.Sec
 | `MapWithFFTimeout` | **581K ops/s** | 千万元素FailFast+超时 |
 | `GoWithTimeout` | **531K ops/s** | 千万任务超时发射 |
 | `GoResult` | 千万成功 0失败 | 千万任务带返回值异步 |
-| `TokenBucket.Allow` | **174万/s** | 千万次令牌桶检测 |
-| `SlidingWindow.Allow` | **166万/s** | 千万次滑动窗口检测 |
-| `Pipeline(2阶段)` | **7,069万/s** | 千万元素2阶段管道 |
+| `TokenBucket.Allow` | **194万/s** | 千万次令牌桶检测（批量补充优化后↑20%） |
+| `SlidingWindow.Allow` | **159万/s** | 千万次滑动窗口检测 |
+| `Pipeline(2阶段)` | **85M ops/s** | 千万元素2阶段管道 |
 | `SafeCall` | **322万/s** | 千万次安全调用 |
-| `Group AutoScale` | **561K ops/s** | 自动扩缩容Group |
-| `NoResult AutoScale` | **573K ops/s** | 无返回值自动扩缩容 |
+| `Group AutoScale` | **788K ops/s** | 自动扩缩容Group（扩缩因子优化后↑41%） |
+| `NoResult AutoScale` | **805K ops/s** | 无返回值自动扩缩容（优化后↑40%） |
 
 ### Production 生产级千万测试详情
 
 | 测试名称 | 任务量 | 耗时 | 吞吐量 | 失败 |
 |----------|--------|------|--------|------|
 | `10M_Pool_Submit` | 10,000,000 | 26.3s | 380K | **0** |
-| `10M_Map` | 10,000,000 | 0.03s | 295M | 0 |
-| `10M_Go` | 10,000,000 | ~10s | 961K | 0 |
-| `10M_MapWithFailFast` | 10,000,000 | 0.07s | 145M | 0 |
+| `10M_Map` | 10,000,000 | 0.034s | 295M | 0 |
+| `10M_Go` | 10,000,000 | 10.4s | 961K | 0 |
+| `10M_MapWithFailFast` | 10,000,000 | 0.069s | 145M | 0 |
 | `10M_MapWithTimeout` | 10,000,000 | 15.8s | 633K | 0 |
 | `10M_MapWithFFTimeout` | 10,000,000 | 17.3s | 581K | 0 |
 | `10M_GoWithTimeout` | 10,000,000 | 19.3s | 531K | 0 |
 | `10M_GoResult` | 10,000,000 | 12.2s | — | **0** |
-| `10M_TokenBucket` | 10,000,000 | 5.7s | 1.74M | 0 |
-| `10M_SlidingWindow` | 10,000,000 | 6.0s | 1.66M | 0 |
-| `10M_Pipeline` | 10,000,000 | 0.14s | 70.7M | 0 |
-| `10M_SafeCall` | 10,000,000 | 3.1s | 3.22M | 0 |
-| `10M_Group_AutoScale` | 10,000,000 | 17.8s | 561K | **0** |
-| `10M_NoResult_AutoScale` | 10,000,000 | 17.5s | 573K | **0** |
+| `10M_TokenBucket` | 10,000,000 | 5.16s | **194万** | 0 |
+| `10M_SlidingWindow` | 10,000,000 | 6.3s | 159万 | 0 |
+| `10M_Pipeline(2阶段)` | 10,000,000 | 0.12s | 85M | 0 |
+| `10M_SafeCall` | 10,000,000 | 3.1s | 322万 | 0 |
+| `10M_Group_AutoScale` | 10,000,000 | 12.68s | **788K** | **0** |
+| `10M_NoResult_AutoScale` | 10,000,000 | 13.87s | **720K** | **0** |
+| `10M_Group_AutoScale_Convenience` | 10,000,000 | 15.22s | 657K | **0** |
+| `10M_NoResult_AutoScale_Convenience` | 10,000,000 | 12.42s | **805K** | **0** |
+| `10M_AutoScalePool_TrySubmit` | 5,000,000 | 6.02s | 943K | **~13% rejected** |
 | `1M_GoResult` | 1,000,000 | 2.3s | 427K | 0 |
 | `1M_ForEach` | 1,000,000 | 1.0s | 1M | 0 |
-| `1M_RateLimiter` | 1,000,000 | 0.1s | 8M | 0 |
+| `1M_RateLimiter_AcquireRelease` | 1,000,000 | 0.11s | **924万** | 0 |
 | `1M_Retry` | 1,000,000 | 0.02s | 51M | 0 |
 | `1M_Chunk` | 1,000,000 | 0.0005s | 1.9B | 0 |
 | `1M_MixedPool` | 1,000,000 | 1.3s | 794K | 0 |
-| `200K_Group_AutoScale` | 200,000 | 0.2s | 965K | 0 |
+| `200K_Group_AutoScale` | 200,000 | 0.21s | **970K** | 0 |
+| `200K_NoResult_AutoScale` | 200,000 | 0.39s | 515K | 0 |
 | `1M_AutoScalePool` | 1,000,000 | 8.5s | 117K | 0 |
 
 ### 10M Race 极限压力（带 -race，全部通过）
@@ -1903,6 +1907,10 @@ err := async.BindRetryToWorker(ctx, pool, fn, 3, 10*time.Millisecond, 1*time.Sec
 | ShardedGroup 并发提交分发 | ✅ 零竞态 |
 | 流式消费 Stream + Submit 并发 | ✅ 零竞态 |
 | 环形缓冲 Push/Pop 并发 | ✅ 零竞态 |
+| **Pool resultsCollect 无锁读取** | ✅ **分片锁保护，零竞态** |
+| **Pool cancelAllShards 持锁调 cancel** | ✅ **先拷贝再释放锁后调用，零阻塞** |
+| **Group AutoScale 扩缩因子** | ✅ **config.ScaleUpFactor/DownFactor，零竞态** |
+| **RateLimiter 高并发批量补充** | ✅ **100ms 批量补充，零panic** |
 
 #### Race Detector 关键修复
 
@@ -1913,6 +1921,11 @@ err := async.BindRetryToWorker(ctx, pool, fn, 3, 10*time.Millisecond, 1*time.Sec
 | poolPrecheck → wg.Add(1) TOCTOU | 无锁化（atomic.Bool）消除竞态窗口 |
 | Resize 缩容 Quit 信号与 worker 退出 | 安全的 select broadcast 机制 |
 | blockSend/trySend 的 Close 竞态 | 安全的 channel 操作 + close 标记 |
+| **Pool resultsCollect 32分片无锁访问** | **对每个分片加 s.mu.Lock()/Unlock() 保护** |
+| **Pool cancelAllShards 持锁阻塞** | **持有锁时拷贝 cancels，释放锁后再调用** |
+| **Group 扩缩容硬编码 *2 / /2** | **改用 AutoScaleConfig.ScaleUpFactor/DownFactor** |
+| **RateLimiter 单令牌补充高 CPU** | **100ms 粒度批量补充 + 预填充冷启动令牌** |
+| **Pool 死代码 waiting 字段** | **移除未使用字段，避免混淆** |
 
 #### 边界条件全覆盖
 
@@ -1927,7 +1940,7 @@ err := async.BindRetryToWorker(ctx, pool, fn, 3, 10*time.Millisecond, 1*time.Sec
 | Extreme FailFast Cascade | ✅ 级联传播无丢失 |
 | Pool.Resize 扩缩容循环 | ✅ 最终Worker数一致 |
 
-### 测试覆盖矩阵（250+ 测试用例）
+### 测试覆盖矩阵（275+ 测试用例）
 
 #### Pool 类（24项）
 
@@ -1938,12 +1951,13 @@ err := async.BindRetryToWorker(ctx, pool, fn, 3, 10*time.Millisecond, 1*time.Sec
 | NoResultPool, MapPool, ForEachPool, NewAutoScalePool, Stats |
 | Errors, Values, JoinErrors, SubmitAction, TrySubmitAction, GoAction |
 
-#### Group 类（12项）
+#### Group 类（15项）
 
 | 测试覆盖 |
 |----------|
 | Go/Wait, GoAt, FailFast, AutoScale, NoResult |
 | GoWithTimeout, GoAtWithTimeout, WaitTimeout, WaitContext, Reset, Stats |
+| EnableAutoScale/DisableAutoScale, AutoScaleCustomConfig, AutoScaleDisableMidRun |
 
 #### MapReduce 类（22项）
 
@@ -1953,12 +1967,12 @@ err := async.BindRetryToWorker(ctx, pool, fn, 3, 10*time.Millisecond, 1*time.Sec
 | Chunk/ChunkN, MapChunk/MapChunked, ForEachChunk/ForEachChunked |
 | MapPool/ForEachPool, DefaultMap/DefaultForEach/DefaultReduce 全快捷变体 |
 
-#### 限流器类（9项）
+#### 限流器类（12项）
 
 | 测试覆盖 |
 |----------|
-| TokenBucket Wait/Allow, SlidingWindow Allow, AdaptiveRateLimiter |
-| RateLimiter Resize/Strategy, NewWithBurst |
+| TokenBucket Wait/Allow/AllowN, SlidingWindow Allow, AdaptiveRateLimiter |
+| RateLimiter Resize/Strategy/NewWithBurst, 批量补充令牌验证, ResizeRace |
 
 #### 重试类（8项）
 
@@ -2021,18 +2035,18 @@ err := async.BindRetryToWorker(ctx, pool, fn, 3, 10*time.Millisecond, 1*time.Sec
 
 ### 最终结论
 
-经过 **6 套压测体系 + 250+ 测试用例** 全覆盖验证：
+经过 **6 套压测体系 + 275+ 测试用例** 全覆盖验证：
 
 - ✅ **10M 量级极限并发** — Pool、Map、Go、Pipeline、SafeCall、AutoScale 等全部通过
-- ✅ **Race Detector** — 全量通过，零竞态问题（含已知热点单独修复验证）
+- ✅ **Race Detector** — 全量通过，零竞态（包含本轮 5 个关键修复的单独验证）
 - ✅ **FailFast 故障传播** — 级联取消正确，无任务遗漏
-- ✅ **AutoScale 自动扩缩容** — 高并发竞态安全
+- ✅ **AutoScale 自动扩缩容** — 扩缩因子可配置，高并发竞态安全
 - ✅ **Close/Resize 竞态** — 关闭或调整大小时无 goroutine 泄漏
 - ✅ **流式结果消费** — channel 和回调两种模式并发安全
 - ✅ **环形缓冲** — Drop/Block/Error 三种溢出策略全路径安全
 - ✅ **背压控制** — MaxPending + Overflow 队列限制生效
 - ✅ **分片分发** — RoundRobin/Hash 多实例正确路由
-- ✅ **限流器** — 四种限流器竞态安全、策略切换正常
+- ✅ **限流器** — 四种限流器竞态安全、批量补充优化、策略切换正常
 - ✅ **重试机制** — 指数/线性退避、超时控制正确
 - ✅ **管道** — 多阶段并发和串行管道竞态安全
 - ✅ **MapReduce** — 所有变体（FailFast/Timeout/FFTimeout/Serial/Chunk）正常
@@ -2042,19 +2056,22 @@ err := async.BindRetryToWorker(ctx, pool, fn, 3, 10*time.Millisecond, 1*time.Sec
 ### 运行压测
 
 ```bash
-# 综合压测（Pool/Group/MapReduce/限流器/重试/管道，约3.5分钟）
+# 综合压测（Pool/Group/MapReduce/限流器/重试/管道，130项，约3.5分钟）
 go test -run "^TestStress_" -v -count=1 -timeout 10m .
 
-# 50K级Hyper并发测试（约10s）
+# 综合压测 + Race（130项，约26分钟）
+$env:CGO_ENABLED=1; go test -run "^TestStress_" -race -v -count=1 -timeout 30m .
+
+# 50K级Hyper并发测试（18项，约10s）
 go test -run "^TestHyperStress_" -v -count=1 -timeout 2m .
 
-# 生产级百万/千万压测（约5分钟）
+# 生产级百万/千万压测（100项，约242s）
 go test -run "^TestProduction_" -v -count=1 -timeout 30m .
 
-# 10M Race 极限压测（约7分钟，需 GCC）
+# 10M Race 极限压测（9项，约7分钟，需 GCC）
 $env:CGO_ENABLED=1; go test -run "^Test10M_" -race -v -count=1 -timeout 20m .
 
-# 全量 Race 检测
+# 全量 Race 检测（9个子包）
 $env:CGO_ENABLED=1; go test -race ./... -count=1
 ```
 

@@ -1,450 +1,871 @@
-# 任务组 (Group)
+# Group（任务组）文档
 
-任务组 `Group[T]` / `NoResult` 适合**一次性批量并发任务**，每次 `Go` 新建 goroutine，任务完成后销毁。用完即走，不需要维护生命周期。
+## 概述
+
+`Group[T]` 是一次性批量并发任务组，每次 `Go()` 新建 goroutine，用完即销毁。适合数据迁移、批量 API 调用等一次性任务。
+
+**核心特性**:
+- 固定并发度控制（信号量模式）
+- 自动扩缩容（可配置扩缩因子）
+- 流式结果消费
+- FailFast 快速失败
+- NoResult 无返回值模式
+- 丰富的 With* 链式配置组合方法
+
+**与 Pool 的区别**:
+
+| 特性 | Pool | Group |
+|------|------|------|
+| goroutine | 复用（常驻 worker） | 每任务新建 |
+| 适用场景 | 长期运行的服务 | 一次性批量任务 |
+| 生命周期 | 需手动 Close | 用完自动释放 |
+| 自动扩缩容 | `EnableAutoScale()` | `EnableAutoScale()` |
+| 流式消费 | ✅ | ✅ |
 
 ## 目录
 
-- [核心概念](#核心概念)
-- [创建任务组](#创建任务组)
-- [提交任务](#提交任务)
-- [等待结果](#等待结果)
-- [高级选项](#高级选项)
-- [FailFast 模式](#failfast-模式)
-- [查询 Group 状态](#查询-group-状态)
-- [自动扩缩容（AutoScale）](#自动扩缩容autoscale)
-- [结果提取](#结果提取)
-- [带超时提交](#带超时提交)
-- [Reset 重置](#reset-重置)
-- [NoResult 无返回值任务组](#noresult-无返回值任务组)
+- [创建](#创建)
+  - [NewGroup / DefaultGroup](#newgroup)
+  - [NewNoResult / DefaultNoResult](#newnoresult--defaultnoresult)
+- [任务提交](#任务提交)
+  - [Go / GoWithTimeout](#go)
+  - [GoAt / GoAtWithTimeout](#goat)
+- [等待与结果](#等待与结果)
+  - [Wait / WaitTimeout / WaitContext](#wait)
+- [结构体类型](#结构体类型)
+  - [GroupStats](#groupstats)
+- [状态查询](#状态查询)
+  - [Stats / Concurrency / Active / Busy](#stats)
+  - [SuccessCount / FailCount / TotalCount / HasError](#successcount)
+- [错误提取](#错误提取)
+  - [Errors / FirstError / JoinErrors / Values](#errors)
+- [超时与上下文](#超时与上下文)
+  - [WithTimeout / WithSubmitTimeout](#withtimeout)
+  - [WithContext / WithFailFast / WithFFCtx](#withcontext)
+- [With* 组合方法速查](#with-组合方法速查)
+- [自动扩缩容](#自动扩缩容)
+  - [EnableAutoScale / IsAutoScaleEnabled / DisableAutoScale](#enableautoscale)
 - [流式结果消费](#流式结果消费)
-- [Group/NoResult 对比 Pool](#groupnoresult-对比-pool)
-- [完整示例](#完整示例)
-- [方法速查表](#group-方法速查表)
+  - [WithStreaming / StreamResults / WithResultCallback](#withstreaming)
+- [Reset 重置](#reset-重置)
+- [NoResult 完整方法](#noresult-完整方法)
+  - [任务提交 / 等待 / 状态查询 / 错误提取 / 配置](#noresult-完整方法)
+- [NoResult 辅助函数](#noresult-辅助函数)
+  - [BuildAggregateNoResult / FillNoResultSkipped](#buildaggregatenoresult)
+- [性能基准](#性能基准)
 
----
+## 创建
 
-## 核心概念
-
-```
-生命周期：NewGroup → Go / GoAt → Wait → 销毁
-```
-
-- **Group[T]**：每个任务返回 `Result[T]`，适合需要聚合结果的场景
-- **NoResult**：每个任务只返回 error，适合批量写入、通知等场景
-
-**何时用 Group 而非 Pool？**
-- 一次性批量任务（如数据迁移、批量 API 调用）
-- 任务数量已知且有限
-- 不需要长期维护 goroutine 生命周期
-
----
-
-## 创建任务组
+### NewGroup
 
 ```go
-import "github.com/chichengyu/async"
-
-// 创建并发度为 4 的任务组
-g := async.NewGroup[string](4)
-
-// 使用默认 IO 并发度创建
-g := async.DefaultGroup[string]()
-
-// 创建无返回值任务组
-nr := async.NewNoResult(8)
-
-// 使用默认并发度的无返回值任务组
-nr := async.DefaultNoResult()
+// 语法
+func NewGroup[T any](concurrency int) *Group[T]
 ```
 
-> 并发度 `<=0` 时默认为 1。
-
-**默认行为：**
-
-| 默认项 | 默认值 | 说明 |
-|--------|--------|------|
-| 任务超时 | **30s**（全局默认值） | 每个任务最多执行 30s 后超时取消，可通过 `WithTimeout` 覆盖 |
-| 提交超时 | **无限等待** | `Go` 阻塞等待并发槽位，不设硬超时；每 30s 输出一次警告 |
-| `concurrency <= 0` | **1** | 并发度过小自动设为 1 |
-| `DefaultGroup()` | **IO()**（CPU 核数×2） | 默认使用 IO 并发度 |
-
----
-
-## 提交任务
-
-### Go - 追加提交
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `concurrency` | `int` | 最大并发数，<=0 时默认 1 |
 
 ```go
-g := async.NewGroup[int](4)
+g := async.NewGroup[int](8)        // 最多 8 个任务并发
+g := async.NewGroup[string](0)     // 默认 1 并发
+```
 
-// 提交任务，结果追加到结果列表末尾
-g.Go(ctx, func(ctx context.Context) (int, error) {
-    return fetchUserCount(ctx), nil
+### DefaultGroup
+
+```go
+// 语法
+func DefaultGroup[T any]() *Group[T]
+```
+
+等价于 `NewGroup[T](core.IO())`，使用 IO 并发度。
+
+```go
+g := async.DefaultGroup[int]()
+```
+
+### NewNoResult / DefaultNoResult
+
+```go
+// 语法
+func NewNoResult(concurrency int) *NoResult    // NoResult = Group[struct{}]
+func DefaultNoResult() *NoResult
+```
+
+无返回值任务组，适合只关心 error 的批量操作。
+
+```go
+nr := async.NewNoResult(16)
+
+err := nr.Go(ctx, func(ctx context.Context) error {
+    return db.Insert(ctx, record)
 })
 
-g.Go(ctx, func(ctx context.Context) (int, error) {
-    return fetchOrderCount(ctx), nil
-})
-
-results := g.Wait()
-// results[0] = fetchUserCount 的结果
-// results[1] = fetchOrderCount 的结果
+nr.Wait()
+success := nr.SuccessCount()
+fail := nr.FailCount()
 ```
 
-### GoAt - 指定位置提交
+---
+
+## 任务提交
+
+### Go
 
 ```go
-// 指定结果数组索引，保证结果顺序
-users := []string{"alice", "bob", "charlie"}
-for i, user := range users {
-    u := user
-    idx := i
-    g.GoAt(idx, ctx, func(ctx context.Context) (string, error) {
-        return getUserInfo(ctx, u), nil
+// 语法
+func (g *Group[T]) Go(ctx context.Context, fn func(context.Context) (T, error)) error
+```
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `ctx` | `context.Context` | 上下文 |
+| `fn` | `func(context.Context) (T, error)` | 任务函数 |
+| 返回 | `error` | ErrGroupWaited / ErrGroupWaiting / ErrSubmitTimeout |
+
+阻塞提交任务，直到有空闲并发槽位。
+
+```go
+err := g.Go(ctx, func(ctx context.Context) (int, error) {
+    return fetchCount(ctx), nil
+})
+```
+
+### GoWithTimeout
+
+```go
+// 语法
+func (g *Group[T]) GoWithTimeout(ctx context.Context, timeout time.Duration, fn func(context.Context) (T, error)) error
+```
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `timeout` | `time.Duration` | 提交超时 |
+| `fn` | `func(context.Context) (T, error)` | 任务函数 |
+
+带提交超时的任务提交。
+
+```go
+err := g.GoWithTimeout(ctx, 5*time.Second, fn)
+```
+
+### GoAt
+
+```go
+// 语法
+func (g *Group[T]) GoAt(index int, ctx context.Context, fn func(context.Context) (T, error)) error
+```
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `index` | `int` | 结果在 `Wait()` 返回切片中的位置 |
+
+提交到指定索引位置，结果保持索引顺序。
+
+```go
+for i, url := range urls {
+    g.GoAt(i, ctx, func(ctx context.Context) (string, error) {
+        return fetchURL(ctx, url), nil
     })
 }
-
-results := g.Wait()
-// results[0] 一定对应 "alice"
-// results[1] 一定对应 "bob"
-// results[2] 一定对应 "charlie"
+// results[i] 对应 urls[i]
 ```
 
-### GoAt 注意事项
+### GoAtWithTimeout
 
 ```go
-// 跳空提交：位置 0 无任务，位置 0 的结果为 Result{T, Err: nil, Occupied: false}
-g.GoAt(1, ctx, func(ctx context.Context) (string, error) {
-    return "only position 1", nil
-})
-results := g.Wait()
-// results[0]: Occupied=false, Err=nil
-// results[1]: Value="only position 1"
+// 语法
+func (g *Group[T]) GoAtWithTimeout(index int, ctx context.Context, timeout time.Duration, fn func(context.Context) (T, error)) error
+```
+
+指定索引位置 + 带提交超时。
+
+```go
+err := g.GoAtWithTimeout(3, ctx, 5*time.Second, fn)
 ```
 
 ---
 
-## 等待结果
+## 等待与结果
 
-### Wait - 阻塞等待
+### Wait
+
+```go
+// 语法
+func (g *Group[T]) Wait() []core.Result[T]
+```
+
+等待所有任务完成，返回结果切片（按提交顺序）。调用后不能再提交新任务。
 
 ```go
 results := g.Wait()
-// 此后不可再 Go（会返回 ErrGroupWaited）
-
-for i, r := range results {
+for _, r := range results {
     if r.Ok() {
-        fmt.Printf("任务 %d 成功: %v\n", i, r.Value)
-    } else {
-        log.Printf("任务 %d 失败: %v", i, r.Err)
+        fmt.Println(r.Value)
     }
 }
 ```
 
-### WaitTimeout - 带超时等待
+### WaitTimeout
+
+```go
+// 语法
+func (g *Group[T]) WaitTimeout(timeout time.Duration) (results []core.Result[T], ok bool)
+```
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `timeout` | `time.Duration` | 等待超时 |
+| 返回值1 | `[]core.Result[T]` | 已完成任务的结果 |
+| 返回值2 | `bool` | 是否所有任务完成 |
 
 ```go
 results, ok := g.WaitTimeout(5 * time.Second)
 if !ok {
-    log.Println("等待超时，部分任务可能未完成")
+    log.Println("部分任务未完成")
 }
 ```
 
-### WaitContext - Context 控制等待
+### WaitContext
+
+```go
+// 语法
+func (g *Group[T]) WaitContext(ctx context.Context) (results []core.Result[T], ok bool)
+```
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `ctx` | `context.Context` | 控制等待的 context |
+
+通过 context 控制等待。
 
 ```go
 ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 defer cancel()
-
 results, ok := g.WaitContext(ctx)
-if !ok {
-    log.Println("context 已取消")
+```
+
+---
+
+## 结构体类型
+
+### GroupStats
+
+`Group[T].Stats()` 返回的统计信息结构体，包含 Group 的运行时状态和历史统计。
+
+```go
+type GroupStats struct {
+    Concurrency int           // 当前并发度
+    Active      int           // 当前活跃任务数
+    Busy        int           // 当前忙碌任务数（正在执行 fn）
+    FailFast    bool          // 是否启用 FailFast
+    Timeout     time.Duration // 全局任务超时时间
+    TotalTask   int64         // 历史提交任务总数
+    SuccessTask int64         // 历史成功任务数
+    FailTask    int64         // 历史失败任务数
 }
 ```
 
----
-
-## 高级选项
-
-### 超时控制
-
-```go
-// 设置单个任务的超时（不设置时默认 30 秒，来自全局默认值）
-g.WithTimeout(10 * time.Second)
-
-// 设置 Go 等待并发槽位的超时（不设置时默认无限等待）
-g.WithSubmitTimeout(2 * time.Second)
-```
-
-### Context 注入
-
-```go
-// 带取消能力的 context
-g, ctx := g.WithContext(ctx)
-
-// 带 TraceID
-g, ctx := g.WithTraceID(ctx)
-
-// Context + 超时
-g, ctx := g.WithCtxTimeout(ctx, 10*time.Second)
-
-// Context + 超时 + TraceID
-g, ctx := g.WithCtxTimeoutTraceID(ctx, 10*time.Second)
-
-// Context + 提交超时 + TraceID
-g, ctx := g.WithCtxSubmitTOTraceID(ctx, 3*time.Second)
-```
-
-### With 方法完整速查
-
-| 方法 | 说明 |
-|------|------|
-| `WithTimeout(d)` | 设置单个任务超时 |
-| `WithSubmitTimeout(d)` | 设置提交等待超时 |
-| `WithContext(ctx)` | 注入 Context（带取消） |
-| `WithTraceID(ctx)` | 确保 context 有 trace_id |
-| `WithFailFast(ctx)` | 开启 FailFast 模式 |
-| `WithFFCtx(ctx)` | = WithFailFast |
-| `WithFFTraceID(ctx)` | FailFast + TraceID |
-| `WithFFSubmitTO(ctx, d)` | FailFast + 提交超时 |
-| `WithFFSubmitTOTraceID(ctx, d)` | FailFast + 提交超时 + TraceID |
-| `WithFFTimeout(ctx, d)` | FailFast + 超时 |
-| `WithFFTimeoutTraceID(ctx, d)` | FailFast + 超时 + TraceID |
-| `WithFFTimeoutSubmitTO(ctx, d, sd)` | FailFast + 超时 + 提交超时 |
-| `WithFFTimeoutSubmitTOTraceID(ctx, d, sd)` | FailFast + 超时 + 提交超时 + TraceID |
-| `WithCtxTraceID(ctx)` | Context + TraceID |
-| `WithCtxTimeout(ctx, d)` | Context + 超时 |
-| `WithCtxTimeoutTraceID(ctx, d)` | Context + 超时 + TraceID |
-| `WithCtxSubmitTO(ctx, d)` | Context + 提交超时 |
-| `WithCtxSubmitTOTraceID(ctx, d)` | Context + 提交超时 + TraceID |
-
----
-
-## FailFast 模式
-
-```go
-g := async.NewGroup[string](5)
-
-// 开启 FailFast 模式
-ctx, cancel := context.WithCancel(context.Background())
-defer cancel()
-g, ffCtx := g.WithFailFast(ctx)
-
-g.Go(ffCtx, someTask)
-g.Go(ffCtx, anotherTask)
-// 任一任务返回错误时，其他未运行的提交将被跳过（ErrSkipped）
-```
-
----
-
-## 查询 Group 状态
-
-### Concurrency / Active / Busy
-
-```go
-// 并发度
-fmt.Printf("并发度: %d\n", g.Concurrency())
-
-// 活跃任务数
-fmt.Printf("活跃任务: %d\n", g.Active())
-
-// 繁忙槽位数
-fmt.Printf("繁忙槽位: %d\n", g.Busy())
-```
-
-### Stats - 完整统计
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `Concurrency` | `int` | 当前并发度（可能因扩缩容而变化） |
+| `Active` | `int` | 当前已被 consumer 接收的任务数 |
+| `Busy` | `int` | 当前正在执行 fn 函数的任务数 |
+| `FailFast` | `bool` | 是否启用快速失败模式 |
+| `Timeout` | `time.Duration` | 每个任务的最大执行超时 |
+| `TotalTask` | `int64` | 自创建以来通过 Go 提交的任务总数 |
+| `SuccessTask` | `int64` | 成功完成的任务数 |
+| `FailTask` | `int64` | 失败的任务数（含 panic 恢复） |
 
 ```go
 stats := g.Stats()
-fmt.Printf("GroupStats{concurrency=%d, active=%d, busy=%d, failFast=%v, timeout=%v, total=%d, success=%d, fail=%d}\n",
-    stats.Concurrency, stats.Active, stats.Busy,
-    stats.FailFast, stats.Timeout,
+fmt.Printf("并发度: %d, 活跃: %d, 执行中: %d\n",
+    stats.Concurrency, stats.Active, stats.Busy)
+fmt.Printf("累计: 总提交=%d, 成功=%d, 失败=%d\n",
     stats.TotalTask, stats.SuccessTask, stats.FailTask)
-```
 
-### FailCount / SuccessCount / TotalCount / HasError
-
-```go
-results := g.Wait()
-
-fmt.Printf("总数: %d, 成功: %d, 失败: %d\n",
-    g.TotalCount(), g.SuccessCount(), g.FailCount())
-
-if g.HasError() {
-    log.Printf("存在失败的任务")
+// 计算成功率
+if stats.TotalTask > 0 {
+    rate := float64(stats.SuccessTask) / float64(stats.TotalTask) * 100
+    fmt.Printf("成功率: %.2f%%\n", rate)
 }
 ```
 
 ---
 
-## 自动扩缩容（AutoScale）
+## 状态查询
 
-Group 支持根据负载自动调整并发数。**不启用时并发数固定**，启用后后台周期性检测 `busy/concurrency` 比率，高负载扩容、低负载缩容。
+### Stats
 
-> 扩缩容仅在调用 `EnableAutoScale` 后生效，与 `SetConcurrency` 不同（后者立即生效，且与自动扩缩容互斥）。
-
-### 启用自动扩缩容
+返回 Group 的完整运行统计快照，包含实时状态和历史累计数据。详见 [GroupStats 结构体](#groupstats)。
 
 ```go
-g := async.NewGroup[int](4) // 初始并发 4
+// 语法
+func (g *Group[T]) Stats() GroupStats
+```
 
-// 方式1：默认配置（Min=CPU×2, Max=CPU×100, 每 5s 检测）
-g.EnableAutoScale(nil)
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| 无 | — | — |
 
-// 方式2：通过顶层便捷方法（推荐）
-async.EnableGroupAutoScale(g, nil)
+| 返回值 | 类型 | 说明 |
+|--------|------|------|
+| `GroupStats` | `GroupStats` | 完整统计信息 |
 
-// 方式3：自定义配置
+```go
+stats := g.Stats()
+fmt.Printf("Group 统计: %+v\n", stats)
+```
+
+---
+
+### Concurrency
+
+返回当前并发度（协程数），该值可能在启用自动扩缩容后动态变化。
+
+```go
+// 语法
+func (g *Group[T]) Concurrency() int
+```
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| 无 | — | — |
+
+| 返回值 | 类型 | 说明 |
+|--------|------|------|
+| `int` | `int` | 当前并发度 |
+
+```go
+g := async.NewGroup[int](8)
+fmt.Println(g.Concurrency()) // 8
+```
+
+---
+
+### Active
+
+返回当前已被 consumer 协程接收（即已出队）的任务数量。
+
+```go
+// 语法
+func (g *Group[T]) Active() int
+```
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| 无 | — | — |
+
+| 返回值 | 类型 | 说明 |
+|--------|------|------|
+| `int` | `int` | 当前活跃任务数 |
+
+```go
+g.Go(ctx, fn1)
+g.Go(ctx, fn2)
+g.Go(ctx, fn3)
+
+time.Sleep(10 * time.Millisecond)
+fmt.Println(g.Active()) // 3（3 个任务已出队）
+```
+
+---
+
+### Busy
+
+返回当前正在执行 fn 函数体的协程数量。可用于判断是否需要扩容。
+
+```go
+// 语法
+func (g *Group[T]) Busy() int
+```
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| 无 | — | — |
+
+| 返回值 | 类型 | 说明 |
+|--------|------|------|
+| `int` | `int` | 当前忙碌协程数 |
+
+```go
+// 扩容监控
+if g.EnableAutoScale(nil); float64(g.Busy())/float64(g.Concurrency()) > 0.8 {
+    log.Printf("负载较高: %d/%d busy", g.Busy(), g.Concurrency())
+}
+```
+
+---
+
+### SuccessCount
+
+返回自创建以来成功完成的任务总数（fn 返回 err == nil）。
+
+```go
+// 语法
+func (g *Group[T]) SuccessCount() int64
+```
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| 无 | — | — |
+
+| 返回值 | 类型 | 说明 |
+|--------|------|------|
+| `int64` | `int64` | 成功任务数 |
+
+```go
+g.Wait()
+fmt.Printf("成功: %d, 失败: %d\n", g.SuccessCount(), g.FailCount())
+```
+
+---
+
+### FailCount
+
+返回自创建以来失败的任务总数（fn 返回 err != nil 或 panic）。
+
+```go
+// 语法
+func (g *Group[T]) FailCount() int64
+```
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| 无 | — | — |
+
+| 返回值 | 类型 | 说明 |
+|--------|------|------|
+| `int64` | `int64` | 失败任务数 |
+
+```go
+if g.FailCount() > 0 {
+    log.Printf("有 %d 个任务执行失败", g.FailCount())
+}
+```
+
+---
+
+### TotalCount
+
+返回自创建以来提交的任务总数（成功 + 失败）。
+
+```go
+// 语法
+func (g *Group[T]) TotalCount() int64
+```
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| 无 | — | — |
+
+| 返回值 | 类型 | 说明 |
+|--------|------|------|
+| `int64` | `int64` | 总任务数 |
+
+```go
+total := g.TotalCount()
+fmt.Printf("Group 已处理 %d 个任务\n", total)
+```
+
+---
+
+### HasError
+
+返回是否有任务执行失败。建议在 `Wait()` 之后调用。
+
+```go
+// 语法
+func (g *Group[T]) HasError() bool
+```
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| 无 | — | — |
+
+| 返回值 | 类型 | 说明 |
+|--------|------|------|
+| `bool` | `bool` | true 表示至少有一个任务失败 |
+
+```go
+g.Wait()
+if g.HasError() {
+    log.Printf("存在失败任务，第一个错误: %v", g.FirstError())
+}
+```
+
+---
+
+## 错误提取
+
+### Errors
+
+返回所有失败任务的错误切片（nil error 被跳过）。建议在 `Wait()` 之后调用。
+
+```go
+// 语法
+func (g *Group[T]) Errors() []error
+```
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| 无 | — | — |
+
+| 返回值 | 类型 | 说明 |
+|--------|------|------|
+| `[]error` | `[]error` | 所有非 nil 错误的切片，全成功时返回 nil / 空切片 |
+
+```go
+g.Wait()
+errs := g.Errors()
+if len(errs) == 0 {
+    fmt.Println("所有任务成功完成")
+    return
+}
+for i, err := range errs {
+    log.Printf("错误 #%d: %v", i, err)
+}
+```
+
+---
+
+### FirstError
+
+返回第一个错误（按 Go 提交顺序）。无错误时返回 nil。建议在 `Wait()` 之后调用。
+
+```go
+// 语法
+func (g *Group[T]) FirstError() error
+```
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| 无 | — | — |
+
+| 返回值 | 类型 | 说明 |
+|--------|------|------|
+| `error` | `error` | 第一个错误，无错误时为 nil |
+
+```go
+g.Wait()
+if firstErr := g.FirstError(); firstErr != nil {
+    log.Printf("Group 首个失败: %v", firstErr)
+}
+```
+
+---
+
+### JoinErrors
+
+将所有错误合并为一个 error，以 `"; "` 分隔。所有任务成功时返回 nil。
+
+```go
+// 语法
+func (g *Group[T]) JoinErrors() error
+```
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| 无 | — | — |
+
+| 返回值 | 类型 | 说明 |
+|--------|------|------|
+| `error` | `error` | 合并后的错误，全成功时为 nil |
+
+```go
+g.Wait()
+if joinedErr := g.JoinErrors(); joinedErr != nil {
+    log.Printf("批量错误: %v", joinedErr)
+    // 输出: "task1: timeout; task3: connection refused"
+}
+```
+
+---
+
+### Values
+
+返回所有成功任务的返回值切片（失败任务的零值不包含在内）。建议在 `Wait()` 之后调用。
+
+```go
+// 语法
+func (g *Group[T]) Values() []T
+```
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| 无 | — | — |
+
+| 返回值 | 类型 | 说明 |
+|--------|------|------|
+| `[]T` | `[]T` | 所有成功任务的返回值 |
+
+```go
+g.Wait()
+values := g.Values()
+fmt.Printf("成功获取 %d 个结果\n", len(values))
+for i, v := range values {
+    fmt.Printf("结果 #%d: %v\n", i, v)
+}
+```
+
+---
+
+## 超时与上下文
+
+### WithTimeout
+
+```go
+// 语法
+func (g *Group[T]) WithTimeout(d time.Duration) *Group[T]
+```
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `d` | `time.Duration` | 每个任务的超时时间 |
+
+```go
+g := async.NewGroup[int](8).WithTimeout(30 * time.Second)
+```
+
+### WithSubmitTimeout
+
+```go
+// 语法
+func (g *Group[T]) WithSubmitTimeout(d time.Duration) *Group[T]
+```
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `d` | `time.Duration` | 提交超时时间 |
+
+### WithContext
+
+```go
+// 语法
+func (g *Group[T]) WithContext(ctx context.Context) (*Group[T], context.Context)
+```
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `ctx` | `context.Context` | 原始上下文 |
+| 返回 | `(*Group[T], context.Context)` | 新 Group + 可取消的子 context |
+
+创建绑定到 Group 生命周期的子 context。Group Wait/Reset 时自动取消。
+
+```go
+g, boundCtx := g.WithContext(ctx)
+// boundCtx 在 Group Wait/Reset 时自动取消
+go func() {
+    <-boundCtx.Done()
+    log.Println("Group 已完成或重置")
+}()
+```
+
+### WithFailFast
+
+```go
+// 语法
+func (g *Group[T]) WithFailFast(ctx context.Context) (*Group[T], context.Context)
+```
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `ctx` | `context.Context` | 原始上下文 |
+| 返回 | `(*Group[T], context.Context)` | Group + 可取消的子 context |
+
+启用 FailFast 模式：第一个任务失败立即取消所有其他任务。
+
+```go
+g, ffCtx := g.WithFailFast(ctx)
+for _, item := range items {
+    g.Go(ffCtx, func(ctx context.Context) (int, error) {
+        return validate(ctx, item)
+    })
+}
+```
+
+### WithFFCtx
+
+```go
+// 语法
+func (g *Group[T]) WithFFCtx(ctx context.Context) (*Group[T], context.Context)
+```
+
+`WithFailFast` 的缩写形式。
+
+---
+
+## With* 组合方法速查
+
+| 方法 | 说明 | 签名 |
+|------|------|------|
+| `WithTraceID(ctx)` | 注入 TraceID | `(*Group[T], context.Context)` |
+| `WithContext(ctx)` | Context 绑定 | `(*Group[T], context.Context)` |
+| `WithFailFast(ctx)` | 快速失败 | `(*Group[T], context.Context)` |
+| `WithFFCtx(ctx)` | FailFast 缩写 | `(*Group[T], context.Context)` |
+| `WithTimeout(d)` | 任务超时 | `*Group[T]` |
+| `WithSubmitTimeout(d)` | 提交超时 | `*Group[T]` |
+| `WithFFTraceID(ctx)` | FF + TraceID | `(*Group[T], context.Context)` |
+| `WithFFSubmitTO(ctx, d)` | FF + 提交超时 | `(*Group[T], context.Context)` |
+| `WithFFSubmitTOTraceID(ctx, d)` | FF + 提交超时 + TraceID | `(*Group[T], context.Context)` |
+| `WithFFTimeout(ctx, d)` | FF + 任务超时 | `(*Group[T], context.Context)` |
+| `WithFFTimeoutTraceID(ctx, d)` | FF + 任务超时 + TraceID | `(*Group[T], context.Context)` |
+| `WithFFTimeoutSubmitTO(ctx, d, d)` | FF + 任务超时 + 提交超时 | `(*Group[T], context.Context)` |
+| `WithFFTimeoutSubmitTOTraceID(ctx, d, d)` | FF + 任务超时 + 提交超时 + TraceID | `(*Group[T], context.Context)` |
+| `WithCtxTraceID(ctx)` | Context + TraceID | `(*Group[T], context.Context)` |
+| `WithCtxTimeout(ctx, d)` | Context + 任务超时 | `(*Group[T], context.Context)` |
+| `WithCtxTimeoutTraceID(ctx, d)` | Context + 任务超时 + TraceID | `(*Group[T], context.Context)` |
+| `WithCtxSubmitTO(ctx, d)` | Context + 提交超时 | `(*Group[T], context.Context)` |
+| `WithCtxSubmitTOTraceID(ctx, d)` | Context + 提交超时 + TraceID | `(*Group[T], context.Context)` |
+
+```go
+// 完整组合示例
+g, ffCtx := async.NewGroup[string](10).
+    WithFFTimeoutTraceID(ctx, 5*time.Second)
+// 等价于: WithFailFast + WithTimeout(5s) + WithTraceID
+```
+
+---
+
+## 自动扩缩容
+
+### EnableAutoScale
+
+```go
+// 语法
+func (g *Group[T]) EnableAutoScale(cfg *AutoScaleConfig)
+```
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `cfg` | `*AutoScaleConfig` | 扩缩容配置，nil 使用默认配置 |
+
+```go
+g := async.NewGroup[int](4)
+
+// 方式一：Group 自身方法
 g.EnableAutoScale(&async.AutoScaleConfig{
-    MinWorkers:      2,              // 最小并发（缩容下限）
-    MaxWorkers:      500,            // 最大并发（扩容上限）
-    CheckInterval:   3 * time.Second,// 检测间隔
-    ScaleUpThreshold: 0.7,           // busy/total > 0.7 触发扩容
-    ScaleUpChecks:   2,              // 连续 2 次超过阈值才扩容
-    ScaleDownThreshold: 0.2,         // busy/total < 0.2 触发缩容
-    ScaleDownChecks: 5,              // 连续 5 次低于阈值才缩容
+    MinWorkers:      2,
+    MaxWorkers:      200,
+    CheckInterval:   3 * time.Second,
+    ScaleUpFactor:   1.5,
+    ScaleDownFactor: 0.7,
 })
+
+// 方式二：便捷函数
+async.EnableGroupAutoScale(g, nil)
 ```
 
-### 配置项说明
-
-| 配置项 | 默认值 | 说明 |
-|--------|--------|------|
-| `MinWorkers` | **CPU × 2** | 最小并发数，缩容不低于此值 |
-| `MaxWorkers` | **CPU × 100** | 最大并发数，扩容不超此值 |
-| `CheckInterval` | **5s** | 后台检测间隔 |
-| `ScaleUpThreshold` | **0.7** | busy/total 超过此比例触发扩容计数 |
-| `ScaleDownThreshold` | **0.2** | busy/total 低于此比例触发缩容计数 |
-| `ScaleUpChecks` | **3** | 连续触发扩容次数（防抖动） |
-| `ScaleDownChecks` | **5** | 连续触发缩容次数（防抖动） |
-
-### 扩容/缩容规则
-
-```
-扩容：busy/total > 0.7 持续 ScaleUpChecks 次 → 并发数翻倍（上限 MaxWorkers）
-缩容：busy/total < 0.2 持续 ScaleDownChecks 次 → 并发数减半（下限 MinWorkers）
-```
-
-- **扩缩容不中断正在运行的任务**：已有任务继续执行，只影响新提交任务的并发上限
-- **Wait 后自动停止**：`Wait` / `WaitTimeout` / `WaitContext` 完成后自动停止后台检测
-- **Reset 后需重新启用**：`Reset` 会清除自动扩缩容状态
-
-### 停止自动扩缩容
+### IsAutoScaleEnabled
 
 ```go
-// 通过 Group 方法
+// 语法
+func (g *Group[T]) IsAutoScaleEnabled() bool
+```
+
+查询是否已启用自动扩缩容。
+
+### DisableAutoScale
+
+```go
+// 语法
+func (g *Group[T]) DisableAutoScale()
+```
+
+停止自动扩缩容。
+
+```go
 g.DisableAutoScale()
-
-// 通过顶层便捷方法
+// 或
 async.DisableGroupAutoScale(g)
-```
-
-停止后并发数恢复到 `MinWorkers`。
-
-### 查询扩缩容状态
-
-```go
-func(g *Group[T]) IsAutoScaleEnabled() bool  // 是否已启用
-func(g *Group[T]) GetAutoScaleConfig() *AutoScaleConfig  // 当前配置（副本）
 ```
 
 ### NoResult 自动扩缩容
 
+NoResult 同样支持自动扩缩容：
+
 ```go
 nr := async.NewNoResult(4)
 
-// 自定义配置
-nr.EnableAutoScale(&async.AutoScaleConfig{
-    MinWorkers: 2,
-    MaxWorkers: 200,
-})
+// 方式一
+nr.EnableAutoScale(nil)
 
-// 或通过顶层便捷方法
-async.EnableNoResultAutoScale(nr, nil) // 默认配置
+// 方式二：便捷函数
+async.EnableNoResultAutoScale(nr, nil)
 
-// ... 提交任务 ...
-nr.Wait()
+// 查询
+enabled := nr.IsAutoScaleEnabled()
+
+// 停止
+nr.DisableAutoScale()
+async.DisableNoResultAutoScale(nr)
 ```
 
-### 扩缩容与 SetConcurrency 互斥
-
-```go
-g := async.NewGroup[int](4)
-g.EnableAutoScale(nil)  // 启用自动扩缩容
-
-// 以下调用会先停止自动扩缩容再设置固定并发
-g.SetConcurrency(16)    // 自动扩缩容已停止，并发固定为 16
-```
-
-### 千万级实战验证
-
-| 场景 | 任务量 | 耗时 | 吞吐 | 结果 |
-|------|--------|------|------|------|
-| Group AutoScale | 1000 万 | 12.1s | 828,965 ops/s | ✅ 零失败 |
-| NoResult AutoScale | 1000 万 | 9.9s | **1,011,310 ops/s** | ✅ 零失败 |
-| Group 便捷方法 | 1000 万 | 9.6s | **1,038,087 ops/s** | ✅ 零失败 |
-| NoResult 便捷方法 | 1000 万 | 9.8s | **1,019,651 ops/s** | ✅ 零失败 |
+**扩缩容策略**: 基于 `busy/concurrency` 比率周期性检测：
+- `busyRatio > ScaleUpThreshold` 连续 `ScaleUpChecks` 次 → 扩容（`cur * ScaleUpFactor`）
+- `busyRatio < ScaleDownThreshold` 连续 `ScaleDownChecks` 次 → 缩容（`cur * ScaleDownFactor`）
 
 ---
 
-## 结果提取
+## 流式结果消费
 
-### Values - 提取成功值
+### WithStreaming
 
 ```go
-results := g.Wait()
-values := g.Values() // []T，只包含成功的值
-fmt.Printf("成功值: %v\n", values)
+// 语法
+func (g *Group[T]) WithStreaming(bufSize int) *Group[T]
 ```
 
-### Errors - 提取所有错误
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `bufSize` | `int` | channel 缓冲大小，<=0 时自动使用 `Concurrency()*2` |
 
 ```go
-errs := g.Errors() // []error
-for i, e := range errs {
-    log.Printf("错误 %d: %v", i, e)
-}
-```
+g := async.NewGroup[int](8).WithStreaming(0)
 
-### FirstError - 首个错误
-
-```go
-if firstErr := g.FirstError(); firstErr != nil {
-    log.Printf("首个错误: %v", firstErr)
-}
-```
-
-### JoinErrors - 合并错误
-
-```go
-if err := g.JoinErrors(); err != nil {
-    if errors.Is(err, async.ErrTimeout) {
-        log.Println("存在超时错误")
+ch := g.StreamResults()
+go func() {
+    for r := range ch {
+        if r.Ok() {
+            fmt.Println("实时:", r.Value)
+        }
     }
+}()
+
+for _, item := range items {
+    g.Go(ctx, func(ctx context.Context) (int, error) {
+        return compute(ctx, item), nil
+    })
 }
+g.Wait() // channel 自动关闭
 ```
 
----
-
-## 带超时提交
-
-### GoWithTimeout - 追加带超时提交
+### StreamResults
 
 ```go
-g := async.NewGroup[string](5)
-
-// 单个任务最多执行 3 秒
-g.GoWithTimeout(ctx, 3*time.Second, func(ctx context.Context) (string, error) {
-    return fetchData(ctx)
-})
+// 语法
+func (g *Group[T]) StreamResults() <-chan core.Result[T]
 ```
 
-### GoAtWithTimeout - 指定位置带超时提交
+返回流式结果 channel，未启用流式时返回 nil。
+
+### WithResultCallback
 
 ```go
-// 位置 0，单个任务最多执行 3 秒
-g.GoAtWithTimeout(0, ctx, 3*time.Second, func(ctx context.Context) (string, error) {
-    return fetchData(ctx)
+// 语法
+func (g *Group[T]) WithResultCallback(fn func(core.Result[T])) *Group[T]
+```
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `fn` | `func(core.Result[T])` | 每个任务完成时调用的回调 |
+
+```go
+g := async.NewGroup[int](8).WithResultCallback(func(r core.Result[int]) {
+    if !r.Ok() {
+        log.Printf("任务失败: %v", r.Err)
+    }
 })
 ```
 
@@ -452,615 +873,155 @@ g.GoAtWithTimeout(0, ctx, 3*time.Second, func(ctx context.Context) (string, erro
 
 ## Reset 重置
 
-Wait 后需要再次使用同一个 Group 实例时调用 Reset：
+```go
+// 语法
+func (g *Group[T]) Reset() (*Group[T], error)
+```
+
+关闭旧组，创建同等并发度的新组（复用变量）。
 
 ```go
-g := async.NewGroup[string](5)
-g.Go(ctx, task1)
+g := async.NewGroup[int](4)
 results := g.Wait()
 
-// Wait 后再次使用需要 Reset
 newG, err := g.Reset()
 if err != nil {
-    log.Printf("重置失败: %v", err)
+    log.Fatal(err)
 }
-newG.Go(ctx, task2)
-newResults := newG.Wait()
+g = newG // 第二轮
 ```
-
-> 调用 Reset 前必须已完成 Wait()，否则返回错误。
 
 ---
 
-## NoResult 无返回值任务组
+## NoResult 完整方法
 
-适合批量写入、通知发送、文件下载等**只关心错误**的场景。
+`NoResult` 是 `Group[struct{}]` 的类型别名。支持以下方法：
 
-### 基本使用
+### 任务提交
 
-```go
-nr := async.NewNoResult(8)
+| 方法 | 语法 | 说明 |
+|------|------|------|
+| `Go` | `func (nr *NoResult) Go(ctx, fn) error` | 阻塞提交 |
+| `GoWithTimeout` | `func (nr *NoResult) GoWithTimeout(ctx, timeout, fn) error` | 带超时提交 |
+| `GoAt` | `func (nr *NoResult) GoAt(index, ctx, fn) error` | 指定位置提交 |
+| `GoAtWithTimeout` | `func (nr *NoResult) GoAtWithTimeout(index, ctx, timeout, fn) error` | 指定位置+超时 |
 
-// 批量发送通知
-for _, user := range users {
-    u := user
-    nr.Go(ctx, func(ctx context.Context) error {
-        return sendNotification(ctx, u, message)
-    })
-}
+### 等待
 
-// 等待完成
-nr.Wait()
+| 方法 | 语法 | 说明 |
+|------|------|------|
+| `Wait` | `func (nr *NoResult) Wait()` | 等待所有任务完成 |
+| `WaitTimeout` | `func (nr *NoResult) WaitTimeout(timeout) (ok bool)` | 带超时等待 |
+| `WaitContext` | `func (nr *NoResult) WaitContext(ctx) (ok bool)` | context 控制等待 |
 
-// 检查是否有错误
-if err := nr.FirstError(); err != nil {
-    log.Printf("通知发送失败: %v", err)
-}
+### 状态查询
 
-// 查看统计
-fmt.Printf("成功: %d, 失败: %d\n", nr.SuccessCount(), nr.FailCount())
-```
+| 方法 | 语法 | 说明 |
+|------|------|------|
+| `SuccessCount` | `func (nr *NoResult) SuccessCount() int64` | 成功数 |
+| `FailCount` | `func (nr *NoResult) FailCount() int64` | 失败数 |
+| `HasError` | `func (nr *NoResult) HasError() bool` | 是否有失败 |
+| `TotalCount` | `func (nr *NoResult) TotalCount() int64` | 总任务数 |
+| `Concurrency` | `func (nr *NoResult) Concurrency() int` | 当前并发度 |
+| `Active` | `func (nr *NoResult) Active() int` | 活跃任务数 |
+| `Busy` | `func (nr *NoResult) Busy() int` | 忙碌任务数 |
+| `Stats` | `func (nr *NoResult) Stats() GroupStats` | 统计信息 |
 
-### NoResult - Go / GoWithTimeout / GoAt / GoAtWithTimeout
+### 错误提取
 
-```go
-nr := async.NewNoResult(4)
+| 方法 | 语法 | 说明 |
+|------|------|------|
+| `Errors` | `func (nr *NoResult) Errors() []error` | 所有错误 |
+| `FirstError` | `func (nr *NoResult) FirstError() error` | 第一个错误 |
+| `JoinErrors` | `func (nr *NoResult) JoinErrors() error` | 合并错误 |
 
-// 追加提交
-nr.Go(ctx, func(ctx context.Context) error {
-    return processItem(ctx)
-})
+### 配置
 
-// 追加提交带超时
-nr.GoWithTimeout(ctx, 3*time.Second, func(ctx context.Context) error {
-    return processItemWithTimeout(ctx)
-})
-
-// 指定位置提交
-nr.GoAt(0, ctx, func(ctx context.Context) error {
-    return processFirst(ctx)
-})
-
-// 指定位置带超时提交
-nr.GoAtWithTimeout(1, ctx, 3*time.Second, func(ctx context.Context) error {
-    return processSecond(ctx)
-})
-
-nr.Wait()
-```
-
-### NoResult 高级选项
-
-```go
-// FailFast
-nr, ffCtx := nr.WithFailFast(ctx)
-
-// FailFast + 提交超时
-nr, ffCtx := nr.WithFFSubmitTO(ctx, 5*time.Second)
-
-// FailFast + 超时
-nr, ffCtx := nr.WithFFTimeout(ctx, 10*time.Second)
-
-// FailFast + 超时 + 提交超时 + TraceID
-nr, ffCtx := nr.WithFFTimeoutSubmitTOTraceID(ctx, 10*time.Second, 3*time.Second)
-```
-
-### NoResult 统计方法
-
-| 方法 | 说明 |
-|------|------|
-| `SuccessCount()` | 成功任务数 |
-| `FailCount()` | 失败任务数 |
-| `TotalCount()` | 总任务数 |
-| `HasError()` | 是否有错误 |
-| `FirstError()` | 第一个错误 |
-| `Errors()` | 所有错误 |
-| `JoinErrors()` | 合并所有错误 |
-| `Stats()` | 完整统计信息 |
-| `Concurrency()` | 并发度 |
-| `Active()` | 活跃任务数 |
-| `Busy()` | 繁忙任务数 |
-| `WaitTimeout(d)` | 带超时等待 |
-| `WaitContext(ctx)` | Context 控制等待 |
-| `Reset()` | 重置 |
+| 方法 | 语法 | 说明 |
+|------|------|------|
+| `WithTimeout` | `func (nr *NoResult) WithTimeout(d) *NoResult` | 设置超时 |
+| `WithFailFast` | `func (nr *NoResult) WithFailFast(ctx) (*NoResult, context.Context)` | FailFast |
+| `Reset` | `func (nr *NoResult) Reset() (*NoResult, error)` | 重置 |
 
 ---
 
-## 流式结果消费
+## NoResult 辅助函数
 
-Group 也支持流式消费，在任务执行过程中实时推送每个完成的结果，无需等待全部完成。
+这些独立函数帮助从已完成的 `NoResult` 中提取和构建聚合结果。
 
-### WithStreaming — 启用流式 channel
-
-```go
-g := async.NewGroup[string](4)
-
-// 启用流式消费，bufSize=0 自动使用 Concurrency() * 2
-g.WithStreaming(128)
-
-// 启动消费者
-go func() {
-    for r := range g.StreamResults() {
-        if r.Ok() {
-            fmt.Println("实时结果:", r.Value)
-        } else {
-            log.Printf("任务失败: %v", r.Err)
-        }
-    }
-    fmt.Println("所有流式结果消费完毕")
-}()
-
-// 提交任务
-for i := 0; i < 100; i++ {
-    g.Go(ctx, fn)
-}
-
-// Wait 会等待所有任务完成后关闭 streamCh
-g.Wait()
-```
-
-**`WithStreaming` 参数：**
-
-| 参数 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `bufSize` | `int` | **Concurrency() × 2**（≤0 时） | channel 缓冲区大小 |
-
-**返回：** `*Group[T]` — 支持链式调用
-
-### WithResultCallback — 回调消费
+### BuildAggregateNoResult
 
 ```go
-g := async.NewGroup[int](8)
-g.WithResultCallback(func(r core.Result[int]) {
-    if r.Ok() {
-        metrics.Record(r.Value)
-    } else {
-        log.Printf("任务失败: %v", r.Err)
-    }
-})
-
-for i := 0; i < 1000; i++ {
-    g.Go(ctx, fn)
-}
-g.Wait()
+func BuildAggregateNoResult(nr *NoResult) (total int64, failCnt int64, firstErr error, results []core.Result[struct{}])
 ```
 
-**`WithResultCallback` 参数：**
+从已 `Wait` 的 `NoResult` 中构建聚合结果，用于 `ForEach`/`ForEachWithFailFast` 等无返回值场景。
 
 | 参数 | 类型 | 说明 |
 |------|------|------|
-| `fn` | `func(core.Result[T])` | 回调函数（每个任务完成时同步调用） |
+| `nr` | `*NoResult` | 已 Wait 的 NoResult 实例 |
+| 返回1 | `int64` | total：总任务数 |
+| 返回2 | `int64` | failCnt：失败任务数 |
+| 返回3 | `error` | firstErr：第一个遇到的错误 |
+| 返回4 | `[]core.Result[struct{}]` | results：所有任务的结果详情 |
 
-> ⚠️ 回调在任务 goroutine 中同步执行，应尽量轻量，避免阻塞。
+**实现细节**：将 `NoResult`（底层为 `*Group[struct{}]`）的 results 切片拷贝一份返回，同时统计 total/failCnt/firstErr。
 
-### StreamResults — 获取流式 channel
-
-```go
-ch := g.StreamResults() // <-chan core.Result[T]
-
-select {
-case r := <-ch:
-    handleResult(r)
-case <-ctx.Done():
-    log.Println("上下文取消")
-}
-```
-
-**返回：** `<-chan core.Result[T]` — 只读结果 channel（未启用流式消费时返回 nil）
-
-> streamCh 在 `Wait()` / `WaitTimeout()` / `WaitContext()` 时关闭（Group 无 Close 方法，生命周期随 Wait 结束）。
-
-### 流式消费完整示例
+**使用示例**:
 
 ```go
-func processWithStreaming(ctx context.Context, items []string) {
-    g := async.NewGroup[string](8)
-    g.WithStreaming(256)
-
-    // 启动消费者：实时写入数据库
-    var wg sync.WaitGroup
-    wg.Add(1)
-    go func() {
-        defer wg.Done()
-        for r := range g.StreamResults() {
-            if r.Ok() {
-                db.Insert(ctx, r.Value)
-            }
-        }
-    }()
-
-    // 提交任务
-    for _, item := range items {
-        it := item
-        g.Go(ctx, func(ctx context.Context) (string, error) {
-            return processItem(ctx, it)
-        })
-    }
-
-    // Wait 关闭 streamCh，等待消费者完成
-    g.Wait()
-    wg.Wait()
-
-    // 统计
-    fmt.Printf("处理完成: success=%d fail=%d\n",
-        g.SuccessCount(), g.FailCount())
-}
-```
-
----
-
-## Group/NoResult 对比 Pool
-
-| 特性 | Group | Pool |
-|------|-------|------|
-| goroutine 复用 | ❌ 每次 Go 新建 | ✅ 复用固定数量 |
-| 适用场景 | 一次性批量任务 | 长期运行反复提交 |
-| 生命周期管理 | 用完即销毁 | 需手动 Close |
-| 结果顺序保证 | ✅ GoAt 保证 | ✅ SubmitAt 保证 |
-| Wait 后可继续提交 | ✅ (需 Reset) | ❌ |
-| 动态调整并发度 | ✅ 自动扩缩容 | ✅ Resize / 自动扩缩容 |
-
----
-
-## 完整示例
-
-### 示例1：并发查询用户信息
-
-```go
-package main
-
-import (
-    "context"
-    "fmt"
-    "log"
-
-    "github.com/chichengyu/async"
-)
-
-func main() {
-    ctx := context.Background()
-    ctx = async.EnsureTraceID(ctx)
-
-    userIDs := []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}
-
-    // 创建并发度为 5 的任务组
-    g := async.NewGroup[string](5)
-
-    // 提交任务（保证结果顺序）
-    for i, uid := range userIDs {
-        idx := i
-        id := uid
-        g.GoAt(idx, ctx, func(ctx context.Context) (string, error) {
-            name, err := queryUser(ctx, id)
-            if err != nil {
-                return "", fmt.Errorf("查询用户 %d 失败: %w", id, err)
-            }
-            return name, nil
-        })
-    }
-
-    // 等待结果
-    results := g.Wait()
-
-    // 处理结果
-    var names []string
-    for _, r := range results {
-        if r.Ok() {
-            names = append(names, r.Value)
-        } else {
-            log.Printf("任务失败: %v", r.Err)
-        }
-    }
-
-    // 统计
-    fmt.Printf("成功查询 %d 个用户: %v\n", len(names), names)
-    fmt.Printf("总数: %d, 成功: %d, 失败: %d\n",
-        g.TotalCount(), g.SuccessCount(), g.FailCount())
-}
-
-func queryUser(ctx context.Context, id int) (string, error) {
-    return fmt.Sprintf("User-%d", id), nil
-}
-```
-
-### 示例2：NoResult 批量文件下载
-
-```go
-func downloadFiles(urls []string) error {
-    ctx := context.Background()
-    nr := async.NewNoResult(8)
-    nr.WithTimeout(30 * time.Second) // 每个文件最多 30 秒
-
-    for _, url := range urls {
-        u := url
-        nr.Go(ctx, func(ctx context.Context) error {
-            return downloadFile(ctx, u)
-        })
-    }
-
-    nr.Wait()
-
-    // 检查结果
-    stats := nr.Stats()
-    fmt.Printf("下载完成: 成功=%d 失败=%d\n", stats.SuccessTask, stats.FailTask)
-
-    if err := nr.FirstError(); err != nil {
-        log.Printf("首个失败: %v", err)
-        // 合并所有错误
-        if joinedErr := nr.JoinErrors(); joinedErr != nil {
-            return fmt.Errorf("批量下载失败: %w", joinedErr)
-        }
-    }
-    return nil
-}
-```
-
-### 示例3：FailFast + 验证
-
-```go
-func validateAll(items []string) error {
-    ctx, cancel := context.WithCancel(context.Background())
-    defer cancel()
-
-    g, ffCtx := async.NewGroup[bool](3).WithFailFast(ctx)
-
-    for i, item := range items {
-        idx := i
-        it := item
-        g.GoAt(idx, ffCtx, func(ctx context.Context) (bool, error) {
-            if !isValid(it) {
-                return false, fmt.Errorf("验证失败: %s", it)
-            }
-            return true, nil
-        })
-    }
-
-    results := g.Wait()
-
-    // 检查结果
-    if g.HasError() {
-        return fmt.Errorf("验证失败 (首个): %w", g.FirstError())
-    }
-
-    // 全部通过
-    values := g.Values()
-    fmt.Printf("全部验证通过，共 %d 项\n", len(values))
-    return nil
-}
-```
-
-### 示例4：自动扩缩容 — 大批量数据处理
-
-适用于不确定任务量、负载波动大的场景。初始并发较小，高负载时自动扩容提升吞吐。
-
-```go
-func batchProcessWithAutoScale(ctx context.Context, items []string) error {
-    // 初始并发 4，后续根据负载自动调整（2 ~ 500）
-    g := async.NewGroup[string](4)
-    g.EnableAutoScale(&async.AutoScaleConfig{
-        MinWorkers:      2,
-        MaxWorkers:      500,
-        CheckInterval:   3 * time.Second,
-        ScaleUpChecks:   2,  // 快速响应高负载
-        ScaleDownChecks: 5,  // 慢速缩容避免抖动
+nr := group.NewNoResult(8)
+for i := 0; i < 100; i++ {
+    nr.Go(ctx, func(ctx context.Context) error {
+        return processItem(ctx, i)
     })
-
-    for _, item := range items {
-        it := item
-        g.Go(ctx, func(ctx context.Context) (string, error) {
-            result, err := heavyProcess(ctx, it)
-            if err != nil {
-                return "", err
-            }
-            return result, nil
-        })
-    }
-
-    results := g.Wait()
-
-    stats := g.Stats()
-    fmt.Printf("处理完成: 总数=%d 成功=%d 失败=%d 最终并发=%d\n",
-        stats.TotalTask, stats.SuccessTask, stats.FailTask,
-        g.Concurrency())
-
-    return g.FirstError()
 }
-```
+nr.Wait()
 
-### 示例5：NoResult + 自动扩缩容 — 批量写入
-
-```go
-func batchInsertWithAutoScale(ctx context.Context, records []Record) error {
-    nr := async.NewNoResult(4)
-
-    // 使用顶层便捷方法 + 自定义配置
-    async.EnableNoResultAutoScale(nr, &async.AutoScaleConfig{
-        MinWorkers: 2,
-        MaxWorkers: 200,
-    })
-
-    for _, record := range records {
-        r := record
-        nr.Go(ctx, func(ctx context.Context) error {
-            return db.Insert(ctx, r)
-        })
-    }
-
-    nr.Wait()
-
-    fmt.Printf("批量写入: 成功=%d 失败=%d 最终并发=%d\n",
-        nr.SuccessCount(), nr.FailCount(), nr.Concurrency())
-
-    return nr.FirstError()
+total, failCnt, firstErr, results := group.BuildAggregateNoResult(nr)
+fmt.Printf("total=%d fail=%d\n", total, failCnt)
+if firstErr != nil {
+    fmt.Printf("first error: %v\n", firstErr)
 }
 ```
 
 ---
 
-## Group 方法速查表
+### FillNoResultSkipped
 
-### 创建函数
+```go
+func FillNoResultSkipped(nr *NoResult, total int)
+```
 
-| 函数 | 完整签名 |
-|------|---------|
-| `NewGroup[T]` | `func NewGroup[T any](concurrency int) *Group[T]` |
-| `DefaultGroup[T]` | `func DefaultGroup[T any]() *Group[T]` |
-| `NewNoResult` | `func NewNoResult(concurrency int) *NoResult` |
-| `DefaultNoResult` | `func DefaultNoResult() *NoResult` |
+在 `nr.Wait()` 之后补齐缺失的结果槽位，确保 `TotalCount() == total`。缺失的槽位会被填充为 `core.ErrSkipped` 错误。
 
-### Group[T] 提交方法
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `nr` | `*NoResult` | 已 Wait 的 NoResult 实例 |
+| `total` | `int` | 期望的总任务数 |
 
-| 方法 | 完整签名 | 说明 |
-|------|---------|------|
-| `Go` | `func (g *Group[T]) Go(ctx context.Context, fn func(context.Context) (T, error)) error` | 追加一个任务到队列 |
-| `GoWithTimeout` | `func (g *Group[T]) GoWithTimeout(ctx context.Context, timeout time.Duration, fn func(context.Context) (T, error)) error` | 追加带超时任务 |
-| `GoAt` | `func (g *Group[T]) GoAt(index int, ctx context.Context, fn func(context.Context) (T, error)) error` | 指定结果索引位置添加任务 |
-| `GoAtWithTimeout` | `func (g *Group[T]) GoAtWithTimeout(index int, ctx context.Context, timeout time.Duration, fn func(context.Context) (T, error)) error` | 指定位置添加带超时任务 |
+**使用场景**：适用于使用 `GoAt` 提交任务后存在索引空洞（跳过的索引），需要让 `TotalCount()` 反映预期总数时。
 
-### Group[T] 等待方法
+**使用示例**:
 
-| 方法 | 完整签名 | 说明 |
-|------|---------|------|
-| `Wait` | `func (g *Group[T]) Wait() []core.Result[T]` | 阻塞等待，返回全部结果 |
-| `WaitTimeout` | `func (g *Group[T]) WaitTimeout(d time.Duration) ([]core.Result[T], bool)` | 带超时等待 |
-| `WaitContext` | `func (g *Group[T]) WaitContext(ctx context.Context) ([]core.Result[T], bool)` | Context 控制等待 |
+```go
+nr := group.NewNoResult(8)
+nr.GoAt(0, ctx, fn1)  // 索引 0
+nr.GoAt(5, ctx, fn2)  // 索引 5（跳过 1-4）
+nr.Wait()
 
-### Group[T] 选项链式方法（返回新 Group + Context）
+// 补齐跳过的 1-4 槽位为 ErrSkipped
+group.FillNoResultSkipped(nr, 6)
+fmt.Println(nr.TotalCount()) // 输出: 6
+fmt.Println(nr.FailCount())  // 输出: 4（1-4 为 ErrSkipped）
+```
 
-| 方法 | 完整签名 |
-|------|---------|
-| `WithTraceID` | `func (g *Group[T]) WithTraceID(ctx context.Context) (*Group[T], context.Context)` |
-| `WithContext` | `func (g *Group[T]) WithContext(ctx context.Context) (*Group[T], context.Context)` |
-| `WithFailFast` | `func (g *Group[T]) WithFailFast(ctx context.Context) (*Group[T], context.Context)` |
-| `WithFFCtx` | `func (g *Group[T]) WithFFCtx(ctx context.Context) (*Group[T], context.Context)` |
-| `WithFFTraceID` | `func (g *Group[T]) WithFFTraceID(ctx context.Context) (*Group[T], context.Context)` |
-| `WithFFSubmitTO` | `func (g *Group[T]) WithFFSubmitTO(ctx context.Context, submitTimeout time.Duration) (*Group[T], context.Context)` |
-| `WithFFSubmitTOTraceID` | `func (g *Group[T]) WithFFSubmitTOTraceID(ctx context.Context, submitTimeout time.Duration) (*Group[T], context.Context)` |
-| `WithFFTimeout` | `func (g *Group[T]) WithFFTimeout(ctx context.Context, timeout time.Duration) (*Group[T], context.Context)` |
-| `WithCtxTraceID` | `func (g *Group[T]) WithCtxTraceID(ctx context.Context) (*Group[T], context.Context)` |
-| `WithFFTimeoutTraceID` | `func (g *Group[T]) WithFFTimeoutTraceID(ctx context.Context, timeout time.Duration) (*Group[T], context.Context)` |
-| `WithFFTimeoutSubmitTO` | `func (g *Group[T]) WithFFTimeoutSubmitTO(ctx context.Context, timeout, submitTimeout time.Duration) (*Group[T], context.Context)` |
-| `WithFFTimeoutSubmitTOTraceID` | `func (g *Group[T]) WithFFTimeoutSubmitTOTraceID(ctx context.Context, timeout, submitTimeout time.Duration) (*Group[T], context.Context)` |
-| `WithCtxTimeout` | `func (g *Group[T]) WithCtxTimeout(ctx context.Context, timeout time.Duration) (*Group[T], context.Context)` |
-| `WithCtxTimeoutTraceID` | `func (g *Group[T]) WithCtxTimeoutTraceID(ctx context.Context, timeout time.Duration) (*Group[T], context.Context)` |
-| `WithCtxSubmitTO` | `func (g *Group[T]) WithCtxSubmitTO(ctx context.Context, submitTimeout time.Duration) (*Group[T], context.Context)` |
-| `WithCtxSubmitTOTraceID` | `func (g *Group[T]) WithCtxSubmitTOTraceID(ctx context.Context, submitTimeout time.Duration) (*Group[T], context.Context)` |
+---
 
-### Group[T] 选项链式方法（返回修改后的 Group）
+## 性能基准
 
-| 方法 | 完整签名 |
-|------|---------|
-| `WithTimeout` | `func (g *Group[T]) WithTimeout(d time.Duration) *Group[T]` |
-| `WithSubmitTimeout` | `func (g *Group[T]) WithSubmitTimeout(d time.Duration) *Group[T]` |
-
-### Group[T] 查询/监控方法
-
-| 方法 | 完整签名 | 说明 |
-|------|---------|------|
-| `Concurrency` | `func (g *Group[T]) Concurrency() int` | 并发槽位数 |
-| `Active` | `func (g *Group[T]) Active() int` | 活跃任务数 |
-| `Busy` | `func (g *Group[T]) Busy() int` | 繁忙槽位数 |
-| `Stats` | `func (g *Group[T]) Stats() GroupStats` | 完整统计信息 |
-
-### Group[T] 结果提取方法
-
-| 方法 | 完整签名 | 说明 |
-|------|---------|------|
-| `Values` | `func (g *Group[T]) Values() []T` | 所有成功值 |
-| `Errors` | `func (g *Group[T]) Errors() []error` | 所有非 nil 错误 |
-| `FirstError` | `func (g *Group[T]) FirstError() error` | 首个错误 |
-| `JoinErrors` | `func (g *Group[T]) JoinErrors() error` | 合并所有错误 |
-| `FailCount` | `func (g *Group[T]) FailCount() int64` | 失败数 |
-| `SuccessCount` | `func (g *Group[T]) SuccessCount() int64` | 成功数 |
-| `TotalCount` | `func (g *Group[T]) TotalCount() int64` | 总数 |
-| `HasError` | `func (g *Group[T]) HasError() bool` | 是否有错误 |
-
-### Group[T] 动态管理方法
-
-| 方法 | 完整签名 | 说明 |
-|------|---------|------|
-| `Reset` | `func (g *Group[T]) Reset() (*Group[T], error)` | 关闭旧组创建同配置新组 |
-| `EnableAutoScale` | `func (g *Group[T]) EnableAutoScale(config *core.AutoScaleConfig)` | 启用自动扩缩容（传 nil 使用默认配置） |
-| `DisableAutoScale` | `func (g *Group[T]) DisableAutoScale()` | 停止并禁用自动扩缩容 |
-| `IsAutoScaleEnabled` | `func (g *Group[T]) IsAutoScaleEnabled() bool` | 查询自动扩缩容是否已启用 |
-
-### NoResult 提交方法
-
-| 方法 | 完整签名 | 说明 |
-|------|---------|------|
-| `Go` | `func (nr *NoResult) Go(ctx context.Context, fn func(ctx context.Context) error) error` | 追加一个无返回值任务 |
-| `GoWithTimeout` | `func (nr *NoResult) GoWithTimeout(ctx context.Context, timeout time.Duration, fn func(ctx context.Context) error) error` | 追加带超时任务 |
-| `GoAt` | `func (nr *NoResult) GoAt(index int, ctx context.Context, fn func(ctx context.Context) error) error` | 指定位置添加任务 |
-| `GoAtWithTimeout` | `func (nr *NoResult) GoAtWithTimeout(index int, ctx context.Context, timeout time.Duration, fn func(ctx context.Context) error) error` | 指定位置带超时任务 |
-
-### NoResult 等待方法
-
-| 方法 | 完整签名 | 说明 |
-|------|---------|------|
-| `Wait` | `func (nr *NoResult) Wait()` | 阻塞等待所有任务完成 |
-| `WaitTimeout` | `func (nr *NoResult) WaitTimeout(d time.Duration) (completed int64, ok bool)` | 带超时等待，返回已完成数和是否全部完成 |
-| `WaitContext` | `func (nr *NoResult) WaitContext(ctx context.Context) (completed int64, ok bool)` | Context 控制等待 |
-
-### NoResult 选项链式方法
-
-（共 16 种组合，与 Group[T] 同模式，区别是返回 `*NoResult` 而非 `*Group[T]`）
-
-| 方法 | 完整签名 |
-|------|---------|
-| `WithTraceID` | `func (nr *NoResult) WithTraceID(ctx context.Context) (*NoResult, context.Context)` |
-| `WithContext` | `func (nr *NoResult) WithContext(ctx context.Context) (*NoResult, context.Context)` |
-| `WithFailFast` | `func (nr *NoResult) WithFailFast(ctx context.Context) (*NoResult, context.Context)` |
-| `WithFFCtx` | `func (nr *NoResult) WithFFCtx(ctx context.Context) (*NoResult, context.Context)` |
-| `WithTimeout` | `func (nr *NoResult) WithTimeout(d time.Duration) *NoResult` |
-| `WithSubmitTimeout` | `func (nr *NoResult) WithSubmitTimeout(d time.Duration) *NoResult` |
-| `WithFFTraceID` | `func (nr *NoResult) WithFFTraceID(ctx context.Context) (*NoResult, context.Context)` |
-| `WithFFSubmitTO` | `func (nr *NoResult) WithFFSubmitTO(ctx context.Context, submitTimeout time.Duration) (*NoResult, context.Context)` |
-| `WithFFTimeout` | `func (nr *NoResult) WithFFTimeout(ctx context.Context, timeout time.Duration) (*NoResult, context.Context)` |
-| `WithFFSubmitTOTraceID` | `func (nr *NoResult) WithFFSubmitTOTraceID(ctx context.Context, submitTimeout time.Duration) (*NoResult, context.Context)` |
-| `WithFFTimeoutTraceID` | `func (nr *NoResult) WithFFTimeoutTraceID(ctx context.Context, timeout time.Duration) (*NoResult, context.Context)` |
-| `WithFFTimeoutSubmitTO` | `func (nr *NoResult) WithFFTimeoutSubmitTO(ctx context.Context, timeout, submitTimeout time.Duration) (*NoResult, context.Context)` |
-| `WithFFTimeoutSubmitTOTraceID` | `func (nr *NoResult) WithFFTimeoutSubmitTOTraceID(ctx context.Context, timeout, submitTimeout time.Duration) (*NoResult, context.Context)` |
-| `WithCtxTraceID` | `func (nr *NoResult) WithCtxTraceID(ctx context.Context) (*NoResult, context.Context)` |
-| `WithCtxSubmitTO` | `func (nr *NoResult) WithCtxSubmitTO(ctx context.Context, submitTimeout time.Duration) (*NoResult, context.Context)` |
-| `WithCtxSubmitTOTraceID` | `func (nr *NoResult) WithCtxSubmitTOTraceID(ctx context.Context, submitTimeout time.Duration) (*NoResult, context.Context)` |
-| `WithCtxTimeout` | `func (nr *NoResult) WithCtxTimeout(ctx context.Context, timeout time.Duration) (*NoResult, context.Context)` |
-| `WithCtxTimeoutTraceID` | `func (nr *NoResult) WithCtxTimeoutTraceID(ctx context.Context, timeout time.Duration) (*NoResult, context.Context)` |
-
-### NoResult 查询/结果方法
-
-| 方法 | 完整签名 | 说明 |
-|------|---------|------|
-| `Concurrency` | `func (nr *NoResult) Concurrency() int` | 并发槽位数 |
-| `Active` | `func (nr *NoResult) Active() int` | 活跃任务数 |
-| `Busy` | `func (nr *NoResult) Busy() int` | 繁忙槽位数 |
-| `Stats` | `func (nr *NoResult) Stats() GroupStats` | 完整统计 |
-| `FailCount` | `func (nr *NoResult) FailCount() int64` | 失败数 |
-| `SuccessCount` | `func (nr *NoResult) SuccessCount() int64` | 成功数 |
-| `HasError` | `func (nr *NoResult) HasError() bool` | 是否有错误 |
-| `TotalCount` | `func (nr *NoResult) TotalCount() int64` | 总任务数 |
-| `Errors` | `func (nr *NoResult) Errors() []error` | 所有错误 |
-| `FirstError` | `func (nr *NoResult) FirstError() error` | 首个错误 |
-| `JoinErrors` | `func (nr *NoResult) JoinErrors() error` | 合并所有错误 |
-| `Reset` | `func (nr *NoResult) Reset() (*NoResult, error)` | 关闭旧组创建新组 |
-| `EnableAutoScale` | `func (nr *NoResult) EnableAutoScale(config *core.AutoScaleConfig)` | 启用自动扩缩容 |
-| `DisableAutoScale` | `func (nr *NoResult) DisableAutoScale()` | 停止自动扩缩容 |
-| `IsAutoScaleEnabled` | `func (nr *NoResult) IsAutoScaleEnabled() bool` | 是否已启用 |
-
-### 顶层便捷函数
-
-| 函数 | 完整签名 | 说明 |
-|------|---------|------|
-| `EnableGroupAutoScale[T]` | `func EnableGroupAutoScale[T any](g *Group[T], config *AutoScaleConfig)` | 启用 Group 自动扩缩容 |
-| `DisableGroupAutoScale[T]` | `func DisableGroupAutoScale[T any](g *Group[T])` | 停止 Group 自动扩缩容 |
-| `EnableNoResultAutoScale` | `func EnableNoResultAutoScale(nr *NoResult, config *AutoScaleConfig)` | 启用 NoResult 自动扩缩容 |
-| `DisableNoResultAutoScale` | `func DisableNoResultAutoScale(nr *NoResult)` | 停止 NoResult 自动扩缩容 |
-| `BuildAggregateNoResult(nr)` | `func BuildAggregateNoResult(nr *NoResult) AggregatedNoResult` | 从 NoResult 构建聚合的统计信息（成功/失败/跳过计数） |
-| `FillNoResultSkipped(nr, total)` | `func FillNoResultSkipped(nr *NoResult, total int)` | 为 NoResult 填充跳过任务的占位（FailFast 场景） |
-
-### 类型定义
-
-| 类型 | 定义 |
-|------|------|
-| `Group[T]` | `type Group[T any] = group.Group[T]` |
-| `NoResult` | `type NoResult = group.NoResult` |
-| `GroupStats` | `struct{ Concurrency, Active, Busy int; TotalTask, SuccessTask, FailTask int64 }` |
+| 场景 | 吞吐量 |
+|------|--------|
+| Group AutoScale 10M | **788K ops/s** |
+| NoResult AutoScale 10M | **805K ops/s** |
+| Group AutoScale 200K | **970K ops/s** |
