@@ -11,6 +11,18 @@ Pipeline 模块支持多阶段串行数据处理管道，每个阶段可以指�
 - Metadata 携带（`ExecuteWithMeta`）
 - Context 取消传播
 
+> **⚠️ Pipeline 元素顺序保证**
+>
+> `Pipeline`（非分片）保证输出结果顺序与输入一致。`ParallelPipeline`（分片模式下）不保证全局顺序，如果顺序重要请使用非分片版本或设置 `shards=0`。
+>
+> **⚠️ 阶段间数据量膨胀**
+>
+> 如果某阶段对每个元素产生多个输出（如 1→N 映射），需在 fn 中自己控制数据量，管道本身不会处理数据膨胀。
+>
+> **⚠️ Shard 不保序**
+>
+> `ParallelPipeline` 分片后各分片独立执行，最终结果不保证与输入顺序一致。
+
 ---
 
 ## 目录
@@ -18,6 +30,10 @@ Pipeline 模块支持多阶段串行数据处理管道，每个阶段可以指�
 - [类型速查](#类型速查)
 - [Pipeline（串行管道）](#pipeline串行管道)
   - [NewPipeline / Run / WithTraceID / Stages](#newpipeline)
+- [ParallelPipeline（并行分片管道）](#parallelpipeline并行分片管道)
+  - [NewParallelPipeline / Shard / DefaultShard / ShardCount](#newparallelpipeline)
+  - [Execute / ExecuteWithMeta](#parallelpipeline-execute)
+  - [ShardParallelPipeline / DefaultShardParallelPipeline](#shardparallelpipeline--defaultshardparallelpipeline)
 - [Stage（阶段定义）](#stage阶段定义)
   - [Stage / ResultWithMeta](#stage)
 - [Execute（执行管道）](#execute执行管道)
@@ -35,6 +51,7 @@ Pipeline 模块支持多阶段串行数据处理管道，每个阶段可以指�
 | `Stage[T]` | 管道阶段定义 |
 | `ResultWithMeta[T]` | 带阶段信息的 Result |
 | `Pipeline[T]` | 串行管道，各阶段严格顺序执行 |
+| `ParallelPipeline[T]` | **新增** — 并行分片管道，水平分片降低锁竞争 |
 | `Execute[T]` | 执行多阶段管道 |
 | `ExecuteWithMeta[T]` | 执行管道并返回阶段元信息 |
 | `ExecuteWithGroup[T]` | 使用 Group 并发执行所有元素 |
@@ -130,6 +147,296 @@ func (p *Pipeline[T]) Stages() int
 ```go
 p := async.NewPipeline[int](ctx, stage1, stage2, stage3)
 fmt.Println(p.Stages()) // 3
+```
+
+---
+
+## ParallelPipeline（并行分片管道）
+
+`ParallelPipeline` 是支持水平分片的多阶段并行数据处理管道，每个阶段内部使用 `MultiGroup` 进行水平分片以降低锁竞争和 goroutine 创建开销。
+
+**与串行 Pipeline 的区别**：
+
+| 特性 | `Pipeline`（串行） | `ParallelPipeline`（分片） |
+|------|-------------------|--------------------------|
+| 阶段内执行 | goroutine 分块处理 | MultiGroup 分片执行 |
+| 元素顺序 | 严格保序 | 不保证全局顺序 |
+| 锁竞争 | 单 mutex 写结果 | 多分片独立，降低竞争 |
+| 适用场景 | 数据量适中、需保序 | 极限高并发、千万级元素 |
+| goroutine 数 | 每阶段 conc 个 | 每阶段 conc×shards 个 |
+
+**核心类型**：
+
+```go
+type ParallelPipeline[T any] = pipeline.Pipeline[T]
+```
+
+> `ParallelPipeline` 是 `Pipeline[T]` 的类型别名，所有 Pipeline 方法均可用。
+
+### NewParallelPipeline
+
+创建并行管道实例。
+
+```go
+// 语法
+func NewParallelPipeline[T any](stages []Stage[T]) *ParallelPipeline[T]
+```
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `stages` | `[]Stage[T]` | 管道阶段定义列表，按声明顺序执行 |
+
+| 返回值 | 类型 | 说明 |
+|--------|------|------|
+| `*ParallelPipeline[T]` | `*pipeline.Pipeline[T]` | 并行管道实例 |
+
+```go
+stages := []pipeline.Stage[int]{
+    {Name: "parse", Concurrency: 100},
+    {Name: "validate", Concurrency: 50},
+}
+
+p := pipeline.NewParallelPipeline(stages)
+
+// 通过 async 顶层包
+p := async.NewParallelPipeline(stages)
+```
+
+---
+
+### Shard
+
+设置水平分片数，返回自身以支持链式调用。`shards <= 1` 时不启用分片，行为与原始 `Execute()` 一致（goroutine 分块处理 + 保序）。
+
+```go
+// 语法
+func (p *ParallelPipeline[T]) Shard(shards int) *ParallelPipeline[T]
+```
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `shards` | `int` | 分片数，`<= 1` 时不启用分片 |
+
+| 返回值 | 类型 | 说明 |
+|--------|------|------|
+| `*ParallelPipeline[T]` | `*ParallelPipeline[T]` | 自身（支持链式调用） |
+
+```go
+// 8 个分片
+p := pipeline.NewParallelPipeline(stages).Shard(8)
+
+// 链式调用
+results, _ := pipeline.NewParallelPipeline(stages).Shard(16).Execute(ctx, items, fn)
+
+// 通过 async 顶层包
+results, _ := async.NewParallelPipeline(stages).Shard(8).Execute(ctx, items, fn)
+```
+
+---
+
+### DefaultShard
+
+使用默认分片数（`runtime.GOMAXPROCS(0)`，最少 2）启用分片。
+
+```go
+// 语法
+func (p *ParallelPipeline[T]) DefaultShard() *ParallelPipeline[T]
+```
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| 无 | — | — |
+
+| 返回值 | 类型 | 说明 |
+|--------|------|------|
+| `*ParallelPipeline[T]` | `*ParallelPipeline[T]` | 自身 |
+
+```go
+// 自动分片（GOMAXPROCS）
+p := pipeline.NewParallelPipeline(stages).DefaultShard()
+
+// 通过 async 顶层包
+p := async.NewParallelPipeline(stages).DefaultShard()
+```
+
+---
+
+### ShardCount
+
+返回当前设置的分片数。`shards <= 1` 时返回 1。
+
+```go
+// 语法
+func (p *ParallelPipeline[T]) ShardCount() int
+```
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| 无 | — | — |
+
+| 返回值 | 类型 | 说明 |
+|--------|------|------|
+| `int` | `int` | 当前分片数 |
+
+```go
+p := pipeline.NewParallelPipeline(stages).Shard(8)
+fmt.Println(p.ShardCount()) // 8
+
+p2 := pipeline.NewParallelPipeline(stages)
+fmt.Println(p2.ShardCount()) // 1（未分片）
+```
+
+---
+
+### ParallelPipeline Execute
+
+执行管道。当 `shards <= 1` 时，行为与顶层 `Execute()` 一致（goroutine 分块处理，保持元素顺序）。当 `shards >= 2` 时，每个阶段使用 `MultiGroup` 水平分片执行（不保证全局顺序）。
+
+```go
+// 语法
+func (p *ParallelPipeline[T]) Execute(
+    ctx context.Context,
+    items []T,
+    fn func(ctx context.Context, stage string, item T) (T, error),
+) ([]core.Result[T], error)
+```
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `ctx` | `context.Context` | 上下文 |
+| `items` | `[]T` | 输入数据切片 |
+| `fn` | `func(context.Context, string, T) (T, error)` | 处理函数（ctx、阶段名、元素） |
+
+| 返回值 | 类型 | 说明 |
+|--------|------|------|
+| `[]core.Result[T]` | `[]core.Result[T]` | 所有元素的处理结果 |
+| `error` | `error` | 管道级错误 |
+
+```go
+stages := []pipeline.Stage[int]{
+    {Name: "double", Concurrency: 100},
+    {Name: "square", Concurrency: 100},
+}
+
+items := make([]int, 10_000_000)
+for i := range items {
+    items[i] = i % 1000
+}
+
+p := pipeline.NewParallelPipeline(stages).Shard(8)
+
+results, err := p.Execute(ctx, items, func(ctx context.Context, stage string, item int) (int, error) {
+    switch stage {
+    case "double":
+        return item * 2, nil
+    case "square":
+        return item * item, nil
+    }
+    return item, nil
+})
+
+if err != nil {
+    log.Fatalf("管道执行失败: %v", err)
+}
+
+// 通过 async 顶层包
+p := async.NewParallelPipeline(stages).Shard(8)
+results, _ := p.Execute(ctx, items, fn)
+```
+
+---
+
+### ParallelPipeline ExecuteWithMeta
+
+带阶段元信息执行（分片模式下不保证全局顺序）。
+
+```go
+// 语法
+func (p *ParallelPipeline[T]) ExecuteWithMeta(
+    ctx context.Context,
+    items []T,
+    fn func(ctx context.Context, stage string, item T) (T, error),
+) []ResultWithMeta[T]
+```
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `ctx` | `context.Context` | 上下文 |
+| `items` | `[]T` | 输入数据切片 |
+| `fn` | `func(context.Context, string, T) (T, error)` | 处理函数 |
+
+| 返回值 | 类型 | 说明 |
+|--------|------|------|
+| `[]ResultWithMeta[T]` | `[]ResultWithMeta[T]` | 带阶段元信息的结果切片 |
+
+```go
+stages := []pipeline.Stage[int]{
+    {Name: "a", Concurrency: 2},
+    {Name: "b", Concurrency: 2},
+}
+
+p := pipeline.NewParallelPipeline(stages).Shard(2)
+
+meta := p.ExecuteWithMeta(ctx, []int{1, 2, 3}, func(ctx context.Context, stage string, item int) (int, error) {
+    return item, nil
+})
+// 返回 6 条记录：3×2 阶段
+for _, mr := range meta {
+    fmt.Printf("阶段=%s 值=%v 错误=%v\n", mr.Stage, mr.Value, mr.Err)
+}
+```
+
+---
+
+### ShardParallelPipeline / DefaultShardParallelPipeline
+
+便捷函数，在创建 `ParallelPipeline` 后直接设置分片数。
+
+#### ShardParallelPipeline
+
+对并行管道设置指定的分片数。
+
+```go
+// 语法
+func ShardParallelPipeline[T any](p *ParallelPipeline[T], shards int) *ParallelPipeline[T]
+```
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `p` | `*ParallelPipeline[T]` | 并行管道实例 |
+| `shards` | `int` | 分片数 |
+
+| 返回值 | 类型 | 说明 |
+|--------|------|------|
+| `*ParallelPipeline[T]` | `*ParallelPipeline[T]` | 管道自身 |
+
+```go
+p := async.NewParallelPipeline(stages)
+p = async.ShardParallelPipeline(p, 16)
+results, _ := p.Execute(ctx, items, fn)
+```
+
+#### DefaultShardParallelPipeline
+
+使用默认分片数（`GOMAXPROCS`，最少 2）对并行管道进行分片。
+
+```go
+// 语法
+func DefaultShardParallelPipeline[T any](p *ParallelPipeline[T]) *ParallelPipeline[T]
+```
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `p` | `*ParallelPipeline[T]` | 并行管道实例 |
+
+| 返回值 | 类型 | 说明 |
+|--------|------|------|
+| `*ParallelPipeline[T]` | `*ParallelPipeline[T]` | 管道自身 |
+
+```go
+p := async.NewParallelPipeline(stages)
+p = async.DefaultShardParallelPipeline(p)
+results, _ := p.Execute(ctx, items, fn)
 ```
 
 ---
@@ -448,3 +755,5 @@ results, _ := pipeline.ExecuteWithGroup(ctx, items, func(ctx context.Context, s 
 | 场景 | 数据量 | 吞吐量 |
 |------|--------|--------|
 | Pipeline 2 阶段 | 10M | **85M ops/s** |
+| ParallelPipeline 2阶段×8分片 | 10M | **724K ops/s** |
+| ParallelPipeline 4阶段×8分片 | 5M | — |

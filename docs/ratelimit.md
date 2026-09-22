@@ -11,6 +11,18 @@ async 提供四种限流器，覆盖不同场景：
 | `SlidingWindow` | 滑动窗口 | 精确窗口限制 | **159万/s** |
 | `AdaptiveRateLimiter` | 自适应 | 动态负载调整 | — |
 
+> **⚠️ RateLimiter 需手动 Close**
+>
+> `RateLimiter` 内部有 ticker goroutine，使用完毕后必须调用 `Close()` 或 `Stop()` 释放资源，否则 goroutine 泄漏。
+>
+> **⚠️ Wait 会阻塞**
+>
+> `Wait()` 在令牌不足时会阻塞等待，可能导致 goroutine 堆积。如果不想阻塞，使用 `Allow()` / `Acquire()`。
+>
+> **⚠️ Burst 不是缓存**
+>
+> `Burst` 是瞬时突发的最大令牌数，不是长期可用量。突发后需等待令牌补充才能继续消耗。
+
 ---
 
 ## 目录

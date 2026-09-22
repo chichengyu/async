@@ -191,7 +191,7 @@ func logFatal(msg string, fields ...LogField) {
 }
 
 func getTraceIDFromCtx(ctx context.Context) string {
-	if v := ctx.Value(TraceIDKey); v != nil {
+	if v := ctx.Value(getTraceIDKey()); v != nil {
 		if s, ok := v.(string); ok {
 			return s
 		}

@@ -629,10 +629,53 @@ func WithConfig(configured int) int {
 // TraceIDKeyType 是 context 中 trace_id 的 key 类型。
 type TraceIDKeyType struct{}
 
-// TraceIDKey 是 context 中存储 trace_id 的 key。
+// TraceIDKey 是 context 中存储 trace_id 的 key（默认值）。
+// 可通过 SetTraceIDKey 自定义。
 var TraceIDKey TraceIDKeyType
 
 var traceIDFallbackCounter atomic.Int64
+
+// traceIDKeyStore 存储用户自定义的 trace_id context key。
+var traceIDKeyStore atomic.Value
+
+func init() {
+	traceIDKeyStore.Store(TraceIDKey)
+}
+
+// getTraceIDKey 返回当前生效的 trace_id context key。
+func getTraceIDKey() interface{} {
+	return traceIDKeyStore.Load()
+}
+
+// SetTraceIDKey 自定义 trace_id 的 context key。
+// 设置后将替换默认的 TraceIDKey，EnsureTraceID/GetTraceID/WithTraceID 都会使用新 key。
+//
+// 使用场景：对接已有链路追踪系统（如 trpc、go-zero、自定义中间件），
+// 这些系统通常使用自己的 key 类型存储 trace_id。
+//
+// 参数：
+//   - key：自定义 context key，通常为框架中存储 trace_id 的 key
+//
+// 使用示例：
+//
+//	// trpc 场景：对接 trpc 的 trace_id key
+//	core.SetTraceIDKey(trpc.TraceIDKey)
+//
+//	// go-zero 场景
+//	core.SetTraceIDKey(trace.TraceKey)
+//
+//	// 自定义字符串 key
+//	core.SetTraceIDKey("X-Trace-Id")
+//
+// 注意：请在最早期（init 或 main 开头）调用，避免并发读写导致的瞬时不一致。
+func SetTraceIDKey(key interface{}) {
+	traceIDKeyStore.Store(key)
+}
+
+// GetTraceIDKey 返回当前生效的 trace_id context key。
+func GetTraceIDKey() interface{} {
+	return traceIDKeyStore.Load()
+}
 
 // EnsureTraceID 确保 ctx 中有 trace_id，没有则自动生成并注入。
 // 如果启用了 TraceLog，会将 trace_id 注入到 logger 上下文中。
@@ -646,7 +689,7 @@ var traceIDFallbackCounter atomic.Int64
 //	// 后续所有使用该 ctx 的操作都会携带相同的 trace_id
 //	traceID := core.GetTraceID(ctx) // 如 "a1b2c3d4e5f6..."
 func EnsureTraceID(ctx context.Context) context.Context {
-	if ctx.Value(TraceIDKey) != nil {
+	if ctx.Value(getTraceIDKey()) != nil {
 		return ctx
 	}
 	traceID := NewTraceID()
@@ -654,7 +697,7 @@ func EnsureTraceID(ctx context.Context) context.Context {
 		logger := GetLogger().With(Str("trace_id", traceID))
 		ctx = logger.WithContext(ctx)
 	}
-	ctx = context.WithValue(ctx, TraceIDKey, traceID)
+	ctx = context.WithValue(ctx, getTraceIDKey(), traceID)
 	return ctx
 }
 
@@ -663,7 +706,7 @@ func EnsureTraceID(ctx context.Context) context.Context {
 // 参数：
 //   - ctx：上下文
 func GetTraceID(ctx context.Context) string {
-	if v := ctx.Value(TraceIDKey); v != nil {
+	if v := ctx.Value(getTraceIDKey()); v != nil {
 		return v.(string)
 	}
 	return ""
@@ -689,7 +732,7 @@ func WithTraceID(ctx context.Context, id string) context.Context {
 		logger := GetLogger().With(Str("trace_id", id))
 		ctx = logger.WithContext(ctx)
 	}
-	ctx = context.WithValue(ctx, TraceIDKey, id)
+	ctx = context.WithValue(ctx, getTraceIDKey(), id)
 	return ctx
 }
 

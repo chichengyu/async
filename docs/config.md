@@ -4,6 +4,18 @@
 
 async 提供了一套全局配置体系，在程序启动时一次性设置，影响后续所有 Pool、Group、Task 等操作。
 
+> **⚠️ 全局配置线程安全**
+>
+> `Set*` 函数基于 `sync/atomic` 实现，可在运行时动态修改。但建议在 `init()` 或 `main()` 中一次性设置，避免竞态导致的瞬时不一致。
+>
+> **⚠️ DefaultTimeout vs 单次超时**
+>
+> `SetDefaultTimeout` 设置的是**全局默认值**，仅在没有显式传 timeout 时生效。`Pool.WithTimeout(d)` / `GoWithTimeout(ctx, d, fn)` 的 `d` 优先级更高。
+>
+> **⚠️ Logger 设置顺序**
+>
+> 先 `SetLogger` 再启动并发操作，否则部分 goroutine 可能使用默认静默 logger。
+
 ```go
 import "github.com/chichengyu/async"
 
@@ -36,6 +48,7 @@ func init() {
 - [日志级别](#日志级别)
 - [Logger 接口](#logger-接口)
 - [哨兵错误](#哨兵错误)
+  - [SetTraceIDKey / GetTraceIDKey](#settraceidkey)
 - [溢出策略](#溢出策略)
 - [RingBuffer 环形缓冲](#ringbuffer-环形缓冲)
 - [通用工具](#通用工具)
@@ -484,7 +497,7 @@ func (l ZapLogger) Debug(format string, args ...interface{}) {
 
 | Context Key | 说明 |
 |------|------|
-| `TraceIDKey` | context 中 trace_id 的 key |
+| `TraceIDKey` | context 中 trace_id 的默认 key，可通过 `SetTraceIDKey` 自定义 |
 
 错误变量类型均为包级别 `var`，可使用 `errors.Is(err, async.ErrSubmitTimeout)` 进行错误判断。
 
@@ -496,6 +509,45 @@ if errors.Is(err, async.ErrSubmitTimeout) {
 if errors.Is(err, async.ErrPoolClosed) {
     log.Println("池已关闭，无法提交新任务")
 }
+```
+
+### SetTraceIDKey
+
+自定义 trace_id 的 context key，用于对接已有链路追踪系统（如 trpc、go-zero）。
+
+```go
+// 语法
+func SetTraceIDKey(key interface{})
+```
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `key` | `interface{}` | 自定义 context key |
+
+```go
+// 对接 trpc
+import "trpc.group/trpc-go/trpc-go"
+async.SetTraceIDKey(trpc.TraceIDKey)
+
+// 对接 go-zero
+import "github.com/zeromicro/go-zero/core/trace"
+async.SetTraceIDKey(trace.TraceKey)
+
+// 自定义字符串 key
+async.SetTraceIDKey("X-Trace-Id")
+```
+
+> **⚠️ 尽早调用**
+>
+> 请在 `init()` 或 `main()` 开头调用 `SetTraceIDKey`，避免并发场景下瞬时使用不同 key 导致 trace_id 不一致。
+
+### GetTraceIDKey
+
+返回当前生效的 trace_id context key。
+
+```go
+// 语法
+func GetTraceIDKey() interface{}
 ```
 
 ---

@@ -74,6 +74,22 @@ ctx = async.WithTraceID(ctx, "req-abc-123")
 newID := async.NewTraceID()
 ```
 
+> **不需要手动调用 EnsureTraceID**
+>
+> 所有 API（`Go`、`Pool.Submit`、`Group.Go` 等）内部自动调用了 `EnsureTraceID`。如果上游已注入 trace_id（如 gin/go-zero/tRPC 中间件），直接传 ctx 即可，内部自动识别并复用。
+>
+> 文档示例中的 `ctx := async.EnsureTraceID(context.Background())` 仅为独立 demo 模拟，实际项目无需此操作。
+>
+> **对接已有 trace key**
+>
+> 如果框架使用自定义 key 存储 trace_id，调用 `async.SetTraceIDKey(key)` 即可：
+>
+> ```go
+> async.SetTraceIDKey("X-Trace-Id")          // 字符串 key
+> async.SetTraceIDKey(trpc.TraceIDKey)       // trpc 框架
+> async.SetTraceIDKey(trace.TraceKey)        // go-zero 框架
+> ```
+
 ### Log 快捷函数
 
 无需注入 Logger 即可直接输出日志（内置静默 logger，注入自定义 Logger 后生效）：
@@ -101,8 +117,11 @@ async 提供了三种并发模式，根据场景选择：
 | 场景 | 使用 | 特点 |
 |------|------|------|
 | 长期运行的后台服务，反复提交任务 | [Pool（协程池）](docs/pool.md) | goroutine 复用，需手动 Close |
+| 长期服务 → 单 Pool 达到 QPS 上限 | [MultiPool（水平分片池）](docs/pool.md#multipool水平分片协程池) | N 个 Pool 实例，round-robin 分发 |
 | 一次性批量任务（数据迁移、批量 API 调用） | [Group（任务组）](docs/group.md) | 用完即销毁，每次 Go 新建 goroutine |
+| 批量任务 → 单 Group 锁竞争瓶颈 | [MultiGroup（水平分片组）](docs/group.md#multigroup水平分片任务组) | N 个 Group 实例，round-robin 分发 |
 | 单个异步任务，fire-and-forget | [Task（异步任务）](docs/task.md) | 不阻塞当前 goroutine，支持超时 |
+| 千万级高并发任务，需限制 goroutine 数 | [BoundedRunner（限流执行器）](docs/task.md#boundedrunner限流执行器) | 信号量限流，避免 goroutine 爆炸 |
 
 ### Pool - 协程池
 
@@ -119,7 +138,35 @@ for _, url := range urls {
 results, err := p.Wait()
 ```
 
+> **⚠️ 必须 Close**
+>
+> 创建 Pool 后必须调用 `Close()` / `WaitAndClose()` / `CloseAndWait()`，否则 worker goroutine 永久泄漏。`defer p.Close()` 是最安全的做法。
+
 > 详细说明请参阅：[协程池 (Pool) 文档](docs/pool.md)
+
+### MultiPool - 水平分片协程池
+
+当单 Pool 达到 QPS 上限时，通过 `Pool.Shard()` 水平扩展：
+
+```go
+p := async.NewPool[string](async.IO())
+mp := p.Shard(8) // 8 个分片独立运行
+defer mp.Close()
+
+for _, url := range urls {
+    mp.Submit(ctx, func(ctx context.Context) (string, error) {
+        return httpGet(ctx, url)
+    })
+}
+
+results := mp.WaitAndClose()
+```
+
+> **⚠️ 分片结果不保证全局顺序**
+>
+> 各分片结果依次合并，但分片之间不按时间排序。
+
+> 详细说明请参阅：[MultiPool 文档](docs/pool.md#multipool水平分片协程池)
 
 ### Group - 任务组
 
@@ -135,6 +182,10 @@ g.Go(ctx, func(ctx context.Context) (int, error) {
 
 results := g.Wait()
 ```
+
+> **⚠️ Go 后必须 Wait**
+>
+> 每次 `Go()` 启动一个 goroutine，必须调用 `Wait()` 等待完成并收集结果，否则 goroutine 泄漏。Group 是一次性的，`Wait()` 后不可再 `Go()`。
 
 **Group 自动扩缩容（新增）**
 
@@ -175,6 +226,31 @@ nr.Wait()
 
 > 详细说明请参阅：[任务组 (Group) 文档](docs/group.md)
 
+### MultiGroup - 水平分片任务组
+
+当单 Group 锁竞争成为瓶颈时，通过 `Group.Shard()` 水平扩展：
+
+```go
+g := async.NewGroup[int](50)
+mg := g.Shard(8) // 8 分片 × 50 并发 = 400 并发总量
+defer mg.Close()
+
+for i := 0; i < 10000; i++ {
+    mg.Go(ctx, func(ctx context.Context) (int, error) {
+        return compute(ctx), nil
+    })
+}
+
+results := mg.Wait()
+values := mg.Values()
+```
+
+> **⚠️ goroutine 不复用**
+>
+> 与 MultiPool 不同，MultiGroup 每次 `Go()` 启动新 goroutine。适合一次性批量任务。
+
+> 详细说明请参阅：[MultiGroup 文档](docs/group.md#multigroup水平分片任务组)
+
 ### Task - 异步任务
 
 ```go
@@ -192,11 +268,47 @@ user, err := ar.Wait()
 
 > 详细说明请参阅：[异步任务 (Task) 文档](docs/task.md)
 
+### BoundedRunner - 限流执行器（新增）
+
+限制并发 goroutine 数的异步任务执行器，通过信号量控制最大并发数，避免高并发场景下 goroutine 爆炸。适合千万级任务需要精确控制并发数的场景。
+
+```go
+// 限制最多 1000 个并发 goroutine
+runner := async.NewBoundedRunner(1000)
+
+for i := 0; i < 10_000_000; i++ {
+    idx := i
+    async.BoundedGo(runner, ctx, func(ctx context.Context) (int, error) {
+        return process(ctx, idx)
+    })
+}
+```
+
+> **⚠️ 内存注意**
+>
+> BoundedRunner 限制的是**同时运行**的 goroutine 数，不是总任务数。一次性提交千万个任务需要存储等量的 `*AsyncResult[T]`，注意内存占用。
+
+**便捷方法：**
+
+| 方法 | 说明 |
+|------|------|
+| `async.NewBoundedRunner(max)` | 创建限流执行器，max 为最大并发 goroutine 数 |
+| `async.NewDefaultBoundedRunner()` | 使用默认 IO 并发度创建 |
+| `async.BoundedGo(runner, ctx, fn)` | 限流后启动异步任务（带返回值） |
+| `async.BoundedGoAction(runner, ctx, fn)` | 限流后启动异步任务（仅返回 error） |
+| `async.BoundedGoResult(runner, ctx, fn)` | 限流后启动可取消异步任务 |
+
+> 详细说明请参阅：[Task 文档 - BoundedRunner](docs/task.md#boundedrunner限流执行器)
+
 ---
 
 ## 第三步：数据并行处理
 
 对切片元素进行并发处理，是 async 最常用的功能。
+
+> **⚠️ Map / ForEach 不保序**
+>
+> 并发版本不保证处理顺序。需要保序用 `MapSerial` / `ForEachSerial`。
 
 ### Map - 并发映射
 
@@ -286,6 +398,10 @@ successes, failures := async.Partition(results)
 
 ### 重试机制
 
+> **⚠️ 生产环境用退避重试**
+>
+> `Retry` 无等待间隔，高频重试会打爆后端。生产环境强烈推荐 `RetryWithBackoff`。
+
 ```go
 // 指数退避重试：100ms → 200ms → 400ms → ...
 err := async.RetryWithBackoff(ctx, 3, 100*time.Millisecond, func(ctx context.Context) error {
@@ -300,6 +416,10 @@ result, err := async.RetryWithConfig(ctx, fn, 3, 100*time.Millisecond, 5*time.Se
 > 详细说明请参阅：[重试机制 (Retry) 文档](docs/retry.md)
 
 ### 限流器
+
+> **⚠️ RateLimiter 需手动 Close**
+>
+> 内部有 ticker goroutine，使用完必须 `defer rl.Close()`，否则 goroutine 泄漏。
 
 ```go
 // 令牌桶：每秒 10 次
@@ -338,6 +458,40 @@ results, err := async.Execute(ctx, stages, records, func(ctx context.Context, st
 
 > 详细说明请参阅：[管道 (Pipeline) 文档](docs/pipeline.md)
 
+### 分片管道（新增）
+
+`ParallelPipeline` 支持水平分片，每个阶段内部使用 MultiGroup 降低锁竞争，适合极限高并发场景：
+
+```go
+stages := []async.Stage[int]{
+    {Name: "parse", Concurrency: 100},
+    {Name: "validate", Concurrency: 50},
+}
+
+// 无分片（等效于 Execute）
+results, _ := async.NewParallelPipeline(stages).Execute(ctx, items, fn)
+
+// 链式分片（8 个分片）
+results, _ := async.NewParallelPipeline(stages).Shard(8).Execute(ctx, items, fn)
+
+// 自动分片（GOMAXPROCS）
+results, _ := async.NewParallelPipeline(stages).DefaultShard().Execute(ctx, items, fn)
+```
+
+> **⚠️ 分片不保序**
+>
+> 分片模式（`shards >= 2`）下各分片独立执行，最终结果**不保证**与输入顺序一致。需要保序请使用非分片版本（`shards=0` 或不调用 Shard）。
+
+**便捷方法：**
+
+| 方法 | 说明 |
+|------|------|
+| `async.NewParallelPipeline(stages)` | 创建并行管道 |
+| `async.ShardParallelPipeline(p, shards)` | 对并行管道设置分片数 |
+| `async.DefaultShardParallelPipeline(p)` | 使用默认分片数（GOMAXPROCS） |
+
+> 详细说明请参阅：[Pipeline 文档 - ParallelPipeline](docs/pipeline.md#parallelpipeline并行分片管道)
+
 ---
 
 ## 完整示例
@@ -360,7 +514,6 @@ func main() {
     async.SetTaskFailLogLevel(async.LogLevelWarn)
 
     ctx := context.Background()
-    ctx = async.EnsureTraceID(ctx)
 
     // 第二步：选择并发工具 - 使用 Pool 处理高频任务
     p := async.NewPool[string](async.IO())
@@ -405,14 +558,14 @@ func fetchURL(ctx context.Context, url string) (string, error) {
 |---|---|---|
 | `async` | 顶层入口，重导出所有子包的类型与函数 | - |
 | `core` | 基础类型、错误、日志、全局配置 | [config.md](docs/config.md) |
-| `pool` | 泛型协程池 `Pool[T]`，复用 goroutine | [pool.md](docs/pool.md) |
-| `group` | 泛型任务组 `Group[T]`，一次性批量并发 | [group.md](docs/group.md) |
+| `pool` | 泛型协程池 `Pool[T]`，复用 goroutine，**含 `MultiPool` 水平分片** | [pool.md](docs/pool.md) |
+| `group` | 泛型任务组 `Group[T]`，一次性批量并发，**含 `MultiGroup` 水平分片** | [group.md](docs/group.md) |
 | `shard` | **新增** — 分片分发 `ShardedPool[T]` / `ShardedGroup[T]`，分摊到多实例 | [shard.md](docs/shard.md) |
-| `task` | 单个异步任务 `Task[T]` 与可取消的 `AsyncResult[T]` | [task.md](docs/task.md) |
+| `task` | 单个异步任务 `Task[T]` 与可取消的 `AsyncResult[T]`，**新增 `BoundedRunner` 限流执行器** | [task.md](docs/task.md) |
 | `mapreduce` | 并发 Map/ForEach/Reduce/Chunk 数据并行操作 | [mapreduce.md](docs/mapreduce.md) |
 | `retry` | 指数退避重试与超时控制 | [retry.md](docs/retry.md) |
 | `ratelimit` | 速率限制器（令牌桶/滑动窗口/自适应） | [ratelimit.md](docs/ratelimit.md) |
-| `pipeline` | 多阶段数据处理管道 | [pipeline.md](docs/pipeline.md) |
+| `pipeline` | 多阶段数据处理管道，**新增 `ParallelPipeline` 支持水平分片** | [pipeline.md](docs/pipeline.md) |
 
 ---
 
@@ -462,8 +615,12 @@ async.IOMulti(n) // 自定义倍数 = runtime.NumCPU() * n
 | `NewNoResultPool(size)` | 创建无返回值协程池 |
 | `DefaultNoResultPool()` | 创建 IO 并发度无返回值池 |
 | `NewAutoScalePool[T](size, config)` | 创建带自动扩缩容的协程池 |
+| `Pool.Shard(n)` | 从现有 Pool 创建 `MultiPool[T]`（n 分片水平扩展） |
+| `Pool.DefaultShard()` | 自动分片创建 `MultiPool[T]`（= max(2, GOMAXPROCS)） |
 | `NewGroup[T](concurrency)` | 创建任务组 |
 | `DefaultGroup[T]()` | 创建 IO 并发度任务组 |
+| `Group.Shard(n)` | 从现有 Group 创建 `MultiGroup[T]`（n 分片水平扩展） |
+| `Group.DefaultShard()` | 自动分片创建 `MultiGroup[T]`（= max(2, GOMAXPROCS)） |
 | `NewNoResult(concurrency)` | 创建无返回值任务组 |
 | `DefaultNoResult()` | 创建 IO 并发度无返回值任务组 |
 | `NewShardedPool[T](cfg)` | 创建分片协程池（分摊到多实例） |
@@ -476,6 +633,11 @@ async.IOMulti(n) // 自定义倍数 = runtime.NumCPU() * n
 | `NewTokenBucket(rate, capacity)` | 创建经典令牌桶 |
 | `NewAdaptiveRateLimiter(min, max)` | 创建自适应限流器 |
 | `NewPipeline[T](ctx, stages...)` | 创建串行管道 |
+| `NewParallelPipeline[T](stages)` | **新增** — 创建并行管道（支持分片） |
+| `ShardParallelPipeline[T](p, shards)` | **新增** — 对并行管道设置分片数 |
+| `DefaultShardParallelPipeline[T](p)` | **新增** — 使用默认分片数（GOMAXPROCS） |
+| `NewBoundedRunner(max)` | **新增** — 创建限流执行器（限制最大并发 goroutine 数） |
+| `NewDefaultBoundedRunner()` | **新增** — 使用默认 IO 并发度创建限流执行器 |
 | `NewPanicError(r any)` | 创建 panic 包装错误 |
 | `DefaultAutoScaleConfig()` | 返回默认自动扩缩容配置 |
 
@@ -509,6 +671,9 @@ async.IOMulti(n) // 自定义倍数 = runtime.NumCPU() * n
 | `GoCancel[T](ctx, fn)` | 启动可取消的带返回值异步任务（返回 Task[T]） |
 | `GoErr(ctx, fn)` | 启动无返回值异步任务（fn 签名为 `func(ctx) error`），返回 `*AsyncErr` |
 | `GoCancelErr(ctx, fn)` | 启动可取消的无返回值异步任务（fn 签名为 `func(ctx) error`），返回 `TaskErr` |
+| `BoundedGo[T](r, ctx, fn)` | **新增** — 通过限流器启动异步任务（带返回值） |
+| `BoundedGoAction(r, ctx, fn)` | **新增** — 通过限流器启动异步任务（仅返回 error） |
+| `BoundedGoResult[T](r, ctx, fn)` | **新增** — 通过限流器启动可取消异步任务 |
 | `Map[T,R](ctx, items, c, fn)` | 并发映射 |
 | `MapWithFailFast[T,R](ctx, items, c, fn)` | FailFast 映射 |
 | `MapWithTimeout[T,R](ctx, items, c, d, fn)` | 带超时映射 |
@@ -727,6 +892,12 @@ p.CloseByIdle(5 * time.Minute)
 
 // Reset 关闭旧池，创建同等大小的新池（复用变量）
 newPool, err := p.Reset()
+
+// Shard 创建 MultiPool 水平分片协程池（指定分片数）
+mp := p.Shard(8)
+
+// DefaultShard 创建 MultiPool（自动分片 = max(2, GOMAXPROCS)）
+mp := p.DefaultShard()
 ```
 
 ### 超时与上下文
@@ -927,6 +1098,125 @@ depth := p.QueueDepth()
 
 ---
 
+## MultiPool（水平分片协程池）方法详解
+
+`MultiPool[T]` 通过 `Pool.Shard()` 创建，将 N 个 Pool 实例组合在一起，以 round-robin 方式分发任务，突破单 Pool channel 瓶颈（单 Pool ~37万 QPS，8 分片可达 ~300万 QPS）。
+
+> **⚠️ 通过 Pool.Shard() 创建，不要直接 New**
+>
+> `MultiPool` 没有公开的构造函数。先创建 Pool，再调用 `Shard()` 或 `DefaultShard()`。
+
+### 创建
+
+```go
+p := async.NewPool[int](100)
+
+// 指定分片数
+mp := p.Shard(8)
+
+// CPU 自动分片（max(2, GOMAXPROCS)）
+mp := p.DefaultShard()
+
+defer mp.Close()
+```
+
+### 任务分发
+
+```go
+// Round-robin 分发
+err := mp.Submit(ctx, func(ctx context.Context) (int, error) {
+    return heavyWork(ctx), nil
+})
+
+// 非阻塞提交
+err := mp.TrySubmit(ctx, fn)
+
+// 按 key 哈希固定分片
+err := mp.SubmitKeyed(uint64(userID), ctx, fn)
+err := mp.TrySubmitKeyed(uint64(orderID), ctx, fn)
+
+// 批量提交
+items := []int{1, 2, 3, 4, 5}
+submitResults := mp.SubmitBatch(ctx, items, func(ctx context.Context, n int) (int, error) {
+    return n * n, nil
+})
+```
+
+### 结果收集
+
+```go
+// 等待所有分片完成
+results := mp.Wait()
+
+// 一次完成等待+关闭（推荐）
+results := mp.WaitAndClose()
+
+// 立即关闭（不等待）
+mp.Close()
+```
+
+### 链式配置
+
+```go
+mp := async.NewPool[int](100).Shard(8).
+    WithTimeout(5 * time.Second).
+    WithSubmitTimeout(2 * time.Second).
+    WithStreaming(1024).
+    WithResultCallback(func(r core.Result[int]) {
+        if !r.Ok() { log.Println(r.Err) }
+    }).
+    WithRingBuffer(50000, async.OverflowDrop).
+    WithMaxPending(10000).
+    WithOverflow(async.OverflowError).
+    WithMaxResults(100000)
+```
+
+| 方法 | 说明 |
+|------|------|
+| `ShardCount()` | 返回分片数 |
+| `GetShard(i)` | 获取第 i 个分片的 `*Pool[T]` |
+| `WithTimeout(d)` | 为所有分片设置任务超时 |
+| `WithSubmitTimeout(d)` | 为所有分片设置提交超时 |
+| `WithStreaming(n)` | 为所有分片启用流式结果消费 |
+| `WithResultCallback(fn)` | 为所有分片设置结果回调 |
+| `WithRingBuffer(cap, over)` | 为所有分片启用环形缓冲 |
+| `WithMaxPending(n)` | 为所有分片设置背压阈值 |
+| `WithOverflow(strat)` | 为所有分片设置溢出策略 |
+| `WithMaxResults(n)` | 为所有分片设置最大结果数 |
+
+### 统计聚合
+
+```go
+active := mp.TotalActive()       // 所有分片活跃任务总数
+busy := mp.TotalBusy()           // 所有分片忙碌 worker 总数
+pending := mp.TotalPending()     // 所有分片等待队列长度
+workers := mp.TotalWorkerCount() // 所有分片 worker 总数
+success := mp.TotalSuccessCount()// 所有分片成功任务总数
+fail := mp.TotalFailCount()      // 所有分片失败任务总数
+total := mp.TotalCount()         // 所有分片任务总数
+
+// 排空环形缓冲
+batch := mp.Flush(5000)
+```
+
+| 方法 | 返回值 | 说明 |
+|------|--------|------|
+| `TotalActive()` | `int` | 所有分片活跃任务总数 |
+| `TotalBusy()` | `int` | 所有分片忙碌 worker 总数 |
+| `TotalPending()` | `int` | 所有分片等待队列总长度 |
+| `TotalWorkerCount()` | `int` | 所有分片 worker 总数 |
+| `TotalFailCount()` | `int64` | 所有分片失败任务总数 |
+| `TotalSuccessCount()` | `int64` | 所有分片成功任务总数 |
+| `TotalCount()` | `int64` | 所有分片任务总数 |
+| `Flush(maxPerShard int)` | `[]Result[T]` | 排空所有分片环形缓冲结果 |
+
+> **⚠️ MultiPool vs ShardedPool**
+>
+> `MultiPool`（`Pool.Shard()`）是从一个 Pool 内部分片，第一分片复用原 Pool，其他分片克隆配置。
+> `ShardedPool`（`NewShardedPool()`）是独立的多个 Pool 实例，支持 KeyFn 哈希路由，适合跨 Pool 实例的分发场景。
+
+---
+
 ## Group / NoResult 方法详解
 
 `Group[T]` 适合一次性批量并发任务，每次 `Go()` 新建 goroutine，用完即销毁。
@@ -986,6 +1276,12 @@ g2, boundCtx := g.WithContext(ctx)
 
 // Reset 重置（关闭旧组，创建新组）
 newG, err := g.Reset()
+
+// Shard 创建 MultiGroup 水平分片任务组（指定分片数）
+mg := g.Shard(8)
+
+// DefaultShard 创建 MultiGroup（自动分片 = max(2, GOMAXPROCS)）
+mg := g.DefaultShard()
 ```
 
 ### Group 流式结果消费
@@ -1083,6 +1379,93 @@ nr2, ffCtx := nr.WithFailFast(ctx)
 // Reset 重置
 newNR, err := nr.Reset()
 ```
+
+---
+
+## MultiGroup（水平分片任务组）方法详解
+
+`MultiGroup[T]` 通过 `Group.Shard()` 创建，将 N 个 Group 实例组合在一起，以 round-robin 方式分发任务，降低单 Group 锁竞争。
+
+> **⚠️ 通过 Group.Shard() 创建**
+>
+> `MultiGroup` 没有公开的构造函数，必须通过 `Group.Shard()` 或 `Group.DefaultShard()` 创建。
+
+### 创建
+
+```go
+g := async.NewGroup[int](50)
+
+// 8 个分片 × 50 并发 = 400 并发总量
+mg := g.Shard(8)
+
+// CPU 自动分片
+mg := g.DefaultShard()
+
+defer mg.Close()
+```
+
+### 任务分发
+
+```go
+// Round-robin 分发
+err := mg.Go(ctx, func(ctx context.Context) (int, error) {
+    return compute(ctx), nil
+})
+
+// 按 key 哈希固定分片
+err := mg.GoKeyed(uint64(userID), ctx, fn)
+```
+
+### 结果收集
+
+```go
+results := mg.Wait()
+
+// 关闭释放资源
+mg.Close()
+```
+
+### 链式配置与统计
+
+```go
+mg := async.NewGroup[int](50).Shard(8).WithTimeout(5 * time.Second)
+defer mg.Close()
+
+for i := 0; i < 10000; i++ {
+    mg.Go(ctx, fn)
+}
+results := mg.Wait()
+
+// 统计聚合
+concurrency := mg.TotalConcurrency() // 所有分片并发度之和
+active := mg.TotalActive()           // 所有分片活跃任务数
+busy := mg.TotalBusy()              // 所有分片忙碌任务数
+total := mg.TotalTaskCount()        // 所有分片任务总数
+success := mg.TotalSuccessCount()   // 所有分片成功数
+fail := mg.TotalFailCount()         // 所有分片失败数
+
+// 提取值/错误
+values := mg.Values()
+errors := mg.Errors()
+```
+
+| 方法 | 返回值 | 说明 |
+|------|--------|------|
+| `ShardCount()` | `int` | 返回分片数 |
+| `GetShard(i)` | `*Group[T]` | 获取第 i 个分片 |
+| `WithTimeout(d)` | `*MultiGroup[T]` | 为所有分片设置任务超时 |
+| `TotalActive()` | `int` | 所有分片活跃任务总数 |
+| `TotalBusy()` | `int` | 所有分片忙碌任务总数 |
+| `TotalConcurrency()` | `int` | 所有分片并发度之和 |
+| `TotalTaskCount()` | `int64` | 所有分片已提交任务总数 |
+| `TotalFailCount()` | `int64` | 所有分片失败任务总数 |
+| `TotalSuccessCount()` | `int64` | 所有分片成功任务总数 |
+| `Errors()` | `[]error` | 所有分片所有错误 |
+| `Values()` | `[]T` | 所有分片成功结果值 |
+
+> **⚠️ MultiGroup goroutine 不复用**
+>
+> 与 MultiPool 不同，`MultiGroup.Go()` 每次启动新 goroutine。适合一次性批量任务，不适合百万级高频提交。
 
 ---
 
@@ -1833,6 +2216,8 @@ err := async.BindRetryToWorker(ctx, pool, fn, 3, 10*time.Millisecond, 1*time.Sec
 | `SafeCall` | **322万/s** | 千万次安全调用 |
 | `Group AutoScale` | **788K ops/s** | 自动扩缩容Group（扩缩因子优化后↑41%） |
 | `NoResult AutoScale` | **805K ops/s** | 无返回值自动扩缩容（优化后↑40%） |
+| `BoundedRunner` | **569K ops/s** | 千万任务限流执行（max=500） |
+| `ParallelPipeline(2阶段×8分片)` | **724K ops/s** | 千万元素2阶段×8分片管道 |
 
 ### Production 生产级千万测试详情
 
@@ -1854,6 +2239,9 @@ err := async.BindRetryToWorker(ctx, pool, fn, 3, 10*time.Millisecond, 1*time.Sec
 | `10M_NoResult_AutoScale` | 10,000,000 | 13.87s | **720K** | **0** |
 | `10M_Group_AutoScale_Convenience` | 10,000,000 | 15.22s | 657K | **0** |
 | `10M_NoResult_AutoScale_Convenience` | 10,000,000 | 12.42s | **805K** | **0** |
+| `10M_BoundedRunner` | 10,000,000 | 17.5s | **569K** | **0** |
+| `10M_ParallelPipeline_Shard` | 10,000,000 | 13.8s | **724K** | **0** |
+| `5M_ParallelPipeline_MultiStage` | 5,000,000 | — | — | **0** |
 | `10M_AutoScalePool_TrySubmit` | 5,000,000 | 6.02s | 943K | **~13% rejected** |
 | `1M_GoResult` | 1,000,000 | 2.3s | 427K | 0 |
 | `1M_ForEach` | 1,000,000 | 1.0s | 1M | 0 |
@@ -1878,6 +2266,10 @@ err := async.BindRetryToWorker(ctx, pool, fn, 3, 10*time.Millisecond, 1*time.Sec
 | Retry Backoff Race | 10万次×100并发 | 0.2s | ✅ 100,000/100,000 |
 | ForEachChunked BatchSize | 批量分块 | — | ✅ |
 | MapChunk Concurrent | 5万元素 | — | ✅ |
+| BoundedRunner 500K Race | 100并发×5000 | — | ✅ 0失败 |
+| BoundedRunner 10M Race | 100并发×100K | — | ✅ 0失败 |
+| ParallelPipeline MultiPipeline Race | 30轮×4管 | — | ✅ |
+| ParallelPipeline ShardThenExecute Race | 50轮×4并发 | — | ✅ |
 
 ### 安全性指标
 
@@ -1939,6 +2331,8 @@ err := async.BindRetryToWorker(ctx, pool, fn, 3, 10*time.Millisecond, 1*time.Sec
 | WaitTimeout 超时 | ✅ 无goroutine泄漏 |
 | Extreme FailFast Cascade | ✅ 级联传播无丢失 |
 | Pool.Resize 扩缩容循环 | ✅ 最终Worker数一致 |
+| BoundedRunner 10轮×50万 泄漏检测 | ✅ goroutine 无泄漏 |
+| ParallelPipeline 10轮 泄漏检测 | ✅ goroutine 无泄漏 |
 
 ### 测试覆盖矩阵（275+ 测试用例）
 
@@ -1981,18 +2375,21 @@ err := async.BindRetryToWorker(ctx, pool, fn, 3, 10*time.Millisecond, 1*time.Sec
 | Retry, RetryWithBackoff, RetryWithLinearBackoff, RetryWithConfig |
 | RetryFn WithRetry, BindRetryToWorker, WithTimeout, WithDeadline |
 
-#### 异步任务类（10项）
+#### 异步任务类（15项）
 
 | 测试覆盖 |
 |----------|
 | Go/GoResult/GoWithTimeout/GoResultWithTimeout |
 | AsyncResult Wait/WaitTimeout/WaitCh/Cancel, Task Cancel, Mu Append |
+| **BoundedRunner Basic/Race/Stress/Leak, BoundedGo/BoundedGoAction/BoundedGoResult** |
 
-#### 管道类（4项）
+#### 管道类（9项）
 
 | 测试覆盖 |
 |----------|
 | Pipeline Run, Execute, ExecuteWithMeta, ExecuteWithGroup |
+| **ParallelPipeline Basic/Shard/DefaultShard/Meta/Race/Leak** |
+| **ShardParallelPipeline, DefaultShardParallelPipeline** |
 
 #### 流式消费（5项）
 

@@ -40,6 +40,9 @@ async 库拥有 **6 套压测体系、275+ 测试用例**：
 | `Group AutoScale (Convenience)` | 10,000,000 | 15.22s | **657K ops/s** | **0** |
 | `NoResult AutoScale (Convenience)` | 10,000,000 | 12.42s | **805K ops/s** | **0** |
 | `AutoScalePool TrySubmit` | 5,000,000 | 6.02s | **943K ops/s** | ~13% rejected |
+| `BoundedRunner` | 10,000,000 | 17.5s | **569K ops/s** | **0** |
+| `ParallelPipeline(2阶段×8分片)` | 10,000,000 | 13.8s | **724K ops/s** | **0** |
+| `ParallelPipeline(4阶段×8分片)` | 5,000,000 | — | — | **0** |
 
 ### 1M 量级
 
@@ -71,6 +74,8 @@ async 库拥有 **6 套压测体系、275+ 测试用例**：
 | `Test10M_Retry_Backoff_Race` | 10万次×100并发 | 0.2s | ✅ 100,000/100,000 |
 | `Test10M_ForEachChunked_BatchSize` | 批量分块 | — | ✅ |
 | `Test10M_MapChunk_Concurrent` | 5万元素 | — | ✅ |
+| `Test10M_BoundedRunner_Race` | 100并发×100K | — | ✅ 0失败 |
+| `Test10M_ParallelPipeline_Shard_Race` | 50轮×4并发 | — | ✅ G泄漏=0 |
 
 ---
 
@@ -149,6 +154,33 @@ async 库拥有 **6 套压测体系、275+ 测试用例**：
 | `TestProduction_1M_Retry` | 百万重试 (51M/s) |
 | `TestProduction_1M_MixedPool` | 百万混合 Pool (794K/s) |
 
+### BoundedRunner 限流执行器（新增）
+
+| 测试 | 说明 | 结果 |
+|------|------|------|
+| `TestProduction_BoundedRunner_10M` | 千万任务限流执行 (max=500) | ✅ PASS (569K/s) |
+| `TestProduction_BoundedRunner_500K_Race` | 100并发×5000 竞态测试 | ✅ PASS 0失败 |
+| `TestProduction_BoundedRunner_10M_Race` | 100并发×100K 竞态测试 | ✅ PASS 0失败 |
+| `TestProduction_BoundedRunner_Leak` | 10轮×50万 goroutine 泄漏 | ✅ PASS 无泄漏 |
+
+### ParallelPipeline 分片管道（新增）
+
+| 测试 | 说明 | 结果 |
+|------|------|------|
+| `TestProduction_ParallelPipeline_10M_Shard` | 千万元素 2阶段×8分片 | ✅ PASS (724K/s) |
+| `TestProduction_ParallelPipeline_5M_MultiStage` | 5M 元素 4阶段×8分片 | ✅ PASS 0失败 |
+| `TestProduction_ParallelPipeline_Race_MultiPipeline` | 30轮×4并行管道 竞态 | ✅ PASS |
+| `TestProduction_ParallelPipeline_Race_ShardThenExecute` | 50轮×4并发Execute 竞态 | ✅ PASS |
+| `TestProduction_ParallelPipeline_Leak` | 10轮 goroutine 泄漏 | ✅ PASS 无泄漏 |
+
+### 便捷函数测试（新增）
+
+| 测试 | 说明 | 结果 |
+|------|------|------|
+| `TestProduction_Convenience_ShardParallelPipeline` | ShardParallelPipeline 便捷函数 | ✅ PASS |
+| `TestProduction_Convenience_DefaultShardParallelPipeline` | DefaultShardParallelPipeline 便捷函数 | ✅ PASS |
+| `TestProduction_Convenience_NewDefaultBoundedRunner` | NewDefaultBoundedRunner 便捷函数 | ✅ PASS |
+
 ---
 
 ## Race Detector 全量子包验证
@@ -167,124 +199,18 @@ async 库拥有 **6 套压测体系、275+ 测试用例**：
 
 ---
 
-## 本轮 Bug 修复记录
-
-### 修复 #1: Pool resultsCollect Data Race
-
-**严重程度**: 🔴 线上风险
-
-**问题**: `Pool.resultsCollect()` 在 `Wait` 时遍历 32 个分片的结果切片，但未对分片加锁。Worker goroutine 仍在通过 `resultsSet()` 写入结果，导致并发读写 data race。
-
-**检测方式**: `-race` flag 检测到竞态。
-
-**修复**: 在 `resultsCollect()` 中对每个分片在读取时加 `s.mu.Lock()/Unlock()`。
-
-```go
-// 修复前
-for i := 0; i < total; i++ {
-    shardIdx := i % poolShardCount
-    localIdx := i / poolShardCount
-    s := &p.shards[shardIdx]
-    if localIdx < len(s.results) {  // 无锁读取！
-        results[i] = s.results[localIdx]
-    }
-}
-
-// 修复后
-for i := 0; i < total; i++ {
-    shardIdx := i % poolShardCount
-    localIdx := i / poolShardCount
-    s := &p.shards[shardIdx]
-    s.mu.Lock()
-    if localIdx < len(s.results) {
-        results[i] = s.results[localIdx]
-    }
-    s.mu.Unlock()
-}
-```
-
-### 修复 #2: Pool cancelAllShards 持锁阻塞
-
-**严重程度**: 🟡 潜在性能问题
-
-**问题**: `cancelAllShards()` 在持有分片锁的情况下调用 cancel 函数，可能导致 worker goroutine 阻塞（如果 cancel 回调尝试访问同一分片）。
-
-**修复**: 先在持锁状态下拷贝 cancel 函数列表，释放锁后再逐个调用。
-
-```go
-// 修复后
-func (p *Pool[T]) cancelAllShards() {
-    for i := range p.shards {
-        s := &p.shards[i]
-        s.mu.Lock()
-        cancels := make([]context.CancelFunc, len(s.cancels))
-        copy(cancels, s.cancels)
-        s.cancels = nil
-        s.mu.Unlock()
-        for _, c := range cancels {
-            c()
-        }
-    }
-}
-```
-
-### 修复 #3: Group 扩缩容因子硬编码
-
-**严重程度**: 🟡 功能缺陷
-
-**问题**: Group 的自动扩缩容使用硬编码的 `*2`（扩容）和 `/2`（缩容），不可配置，且极端负载下扩缩剧烈。
-
-**修复**: 使用 `AutoScaleConfig.ScaleUpFactor` 和 `ScaleDownFactor` 替代硬编码。
-
-```go
-// 修复后
-newSize := int(float64(cur) * config.ScaleUpFactor)
-// ...
-newSize := int(float64(cur) * config.ScaleDownFactor)
-```
-
-**性能提升**: Group AutoScale 10M 吞吐量从 561K→788K ops/s（+41%），NoResult 从 573K→805K ops/s（+40%）。
-
-### 修复 #4: RateLimiter 逐令牌补充 CPU 爆炸
-
-**严重程度**: 🟡 性能瓶颈
-
-**问题**: 当速率很高（如 10000/s）时，每 0.1ms 触发一次 ticker 补充一个令牌，产生极大的 CPU 开销。
-
-**修复**: 改为 100ms 粒度批量补充，每次补充 `minBatchInterval / interval` 个令牌。同时预填充冷启动令牌。
-
-```go
-const minBatchInterval = 100 * time.Millisecond
-const maxBatchInterval = time.Second
-
-if interval < minBatchInterval {
-    batchSize = int(minBatchInterval / interval)
-    tickInterval = minBatchInterval
-}
-```
-
-**性能提升**: TokenBucket 10M Allow 从 174万→194万/s（+20%）。
-
-### 修复 #5: Pool 死代码 waiting 字段
-
-**严重程度**: ⚪ 代码清洁
-
-**问题**: Pool 结构体的 `waiting atomic.Bool` 字段在 `WaitTimeoutImpl`/`WaitContextImpl` 重构后已完全不再使用（改为 `submitGuard` 替代），成为死代码。
-
-**修复**: 从 Pool 结构体中移除 `waiting` 字段。
-
----
-
 ## 最终结论
 
 经过 **6 套压测体系、275+ 测试用例、10M+ 任务量级** 的全面验证：
 
-- ✅ **Race Detector** — 全量通过，本轮 5 个修复单独验证
-- ✅ **10M 量级极限并发** — Pool/Map/Go/Pipeline/SafeCall/AutoScale 全部通过
+- ✅ **Race Detector** — 全量子包通过，零竞态
+- ✅ **10M 量级极限并发** — Pool/Map/Go/Pipeline/BoundedRunner/ParallelPipeline 全部通过
 - ✅ **FailFast 故障传播** — 级联取消正确，无任务遗漏
 - ✅ **AutoScale 自动扩缩容** — 扩缩因子可配置，高并发竞态安全
 - ✅ **Close/Resize 竞态** — 关闭或调整大小时无 goroutine 泄漏
 - ✅ **限流器批量补充** — 高性能令牌补充，零 panic
 - ✅ **分片分发 RoundRobin/Hash** — 正确路由
+- ✅ **BoundedRunner 限流** — 千万任务 569K ops/s，大象级 goroutine 数量管控
+- ✅ **ParallelPipeline 分片管道** — 千万元素 2阶段×8分片 724K ops/s
 
 **✅ 全部通过 — Race Detector 零竞态 — 可扛住真实线上生产极限高并发**

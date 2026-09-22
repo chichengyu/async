@@ -1,5 +1,39 @@
 # MapReduce（数据并行）文档
 
+## 概述
+
+MapReduce 模块对集合数据并行处理，灵感来自函数式编程，但使用 goroutine 并发执行。
+
+**核心特性**:
+- 并发 Map / ForEach / Reduce
+- Chunk（分块）处理大数据集
+- Chunked（逐元素分块）精细控制内存
+- FailFast 快速失败模式
+- Timeout 超时控制
+- FailFast + Timeout 组合（FFTimeout）
+- 串行版本（Serial）
+- Result 辅助函数
+
+> **⚠️ Map / ForEach 不保序**
+>
+> `Map()` / `ForEach()` 并发执行不保证元素处理顺序。如果顺序重要，使用 `MapSerial()` / `ForEachSerial()`。
+>
+> **⚠️ Chunk 分块粒度**
+>
+> `Chunk` 将原始切片按块大小拆分，`Chunked` 是逐元素均匀分配。大数据集推荐 `Chunked` 避免某块过大导致内存峰值。
+>
+> **⚠️ FailFast 立即返回**
+>
+> `MapWithFailFast` / `ForEachWithFailFast` 任意一个元素失败即中断所有并发任务并返回错误，其他成功的结果会被丢弃。
+>
+> **⚠️ 零元素切片**
+>
+> 传入空切片时所有 Map / ForEach 函数返回空的 `[]Result[T]`，不会报错。
+
+**包路径**: `github.com/chichengyu/async/mapreduce`
+
+**顶层便捷封装**: 所有函数同时通过 `async.*` 在顶层包中暴露，使用方式为 `async.Map(...)`、`async.ForEach(...)` 等。
+
 ## 目录
 
 - [概述](#概述)
@@ -98,26 +132,6 @@
 - [变体选择指南](#变体选择指南)
 - [完整示例](#完整示例)
 - [性能基准](#性能基准)
-
----
-
-## 概述
-
-MapReduce 模块对集合数据并行处理，灵感来自函数式编程，但使用 goroutine 并发执行。
-
-**核心特性**:
-- 并发 Map / ForEach / Reduce
-- Chunk（分块）处理大数据集
-- Chunked（逐元素分块）精细控制内存
-- FailFast 快速失败模式
-- Timeout 超时控制
-- FailFast + Timeout 组合（FFTimeout）
-- 串行版本（Serial）
-- Result 辅助函数
-
-**包路径**: `github.com/chichengyu/async/mapreduce`
-
-**顶层便捷封装**: 所有函数同时通过 `async.*` 在顶层包中暴露，使用方式为 `async.Map(...)`、`async.ForEach(...)` 等。
 
 ---
 
@@ -1795,11 +1809,47 @@ func MapChunk[T any, R any](
 **使用示例**:
 
 ```go
+results := mapreduce.MapChunk(ctx, items, 8, 100, fn)
+
+// 通过 async 顶层包
+results := async.MapChunk(ctx, items, 8, 100, fn)
+```
+
+---
+
+### DefaultMapChunk
+
+```go
+func DefaultMapChunk[T any, R any](
+    ctx context.Context,
+    items []T,
+    batchSize int,
+    fn func(ctx context.Context, chunk []T) (R, error),
+) []core.Result[R]
+```
+
+使用默认并发度（= `len(chunkedItems)`，即 chunk 数量）的分块 Map。无需手动指定并发度。
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `ctx` | `context.Context` | 上下文 |
+| `items` | `[]T` | 待处理元素 |
+| `batchSize` | `int` | 每块大小 |
+| `fn` | `func(context.Context, []T) (R, error)` | 处理函数，接收整个 chunk |
+| 返回 | `[]core.Result[R]` | 结果切片（每个 chunk 一个结果） |
+
+**使用示例**:
+
+```go
 results := mapreduce.DefaultMapChunk(ctx, items, 100, fn)
 
 // 通过 async 顶层包
 results := async.DefaultMapChunk(ctx, items, 100, fn)
 ```
+
+> **⚠️ 默认并发度等于 chunk 数**
+>
+> `DefaultMapChunk` 使用 `len(chunkedItems)` 作为并发度。如果数据量大、chunk 数多（如 100 万条数据分 10000 个 chunk），会瞬间启动大量 goroutine。此时建议用 `MapChunk` 手动控制并发度。
 
 ---
 

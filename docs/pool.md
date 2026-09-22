@@ -13,6 +13,22 @@
 - FailFast 快速失败
 - 丰富的 With* 链式配置组合方法
 
+> **⚠️ 生命周期必须成对**
+>
+> 创建 Pool 后必须调用 `Close()`、`WaitAndClose()` 或 `CloseAndWait()`，否则 worker goroutine 将永久泄漏。
+>
+> **⚠️ Wait 一次性**
+>
+> `Wait()` 只能调用一次，调用后不可再 Submit。如需重复提交+等待，请使用 `Reset()`。
+>
+> **⚠️ Submit 后必须收集**
+>
+> Submit 后必须调用 Wait / WaitAndClose / CloseAndWait 中的一种来收集结果，否则创建的 goroutine 会泄漏。
+>
+> **⚠️ Close 不等待**
+>
+> `Close()` 会立即停止 worker，不等待正在执行的任务完成。生产环境推荐 `CloseAndWait()`。
+
 ## 目录
 
 - [创建](#创建)
@@ -50,6 +66,16 @@
   - [BuildAggregateNoResult / FillNoResultSkipped](#buildaggregatenoresult-1)
 - [Pool 便捷函数](#pool-便捷函数)
   - [Submit / SubmitN / SubmitSafeN / SubmitBatch / MapPool / ForEachPool](#submit-便捷)
+- [MultiPool（水平分片协程池）](#multipool水平分片协程池)
+  - [创建：Shard / DefaultShard](#创建shard--defaultshard)
+  - [基础查询：ShardCount / GetShard](#基础查询shardcount--getshard)
+  - [任务分发：Submit / TrySubmit / SubmitKeyed / TrySubmitKeyed / SubmitBatch](#任务分发submit--trysubmit--submitkeyed--trysubmitkeyed--submitbatch)
+  - [结果收集：Wait / WaitAndClose / Close](#结果收集wait--waitandclose--close)
+  - [链式配置：WithTimeout / WithSubmitTimeout / WithStreaming / WithResultCallback](#链式配置withtimeout--withsubmittimeout--withstreaming--withresultcallback)
+  - [链式配置：WithRingBuffer / WithMaxPending / WithOverflow / WithMaxResults](#链式配置withringbuffer--withmaxpending--withoverflow--withmaxresults)
+  - [统计聚合：TotalActive / TotalBusy / TotalPending / TotalWorkerCount](#统计聚合totalactive--totalbusy--totalpending--totalworkercount)
+  - [统计聚合：TotalFailCount / TotalSuccessCount / TotalCount](#统计聚合totalfailcount--totalsuccesscount--totalcount)
+  - [Flush](#flush-multi)
 - [架构说明](#架构说明)
 - [性能基准](#性能基准)
 
@@ -1442,6 +1468,242 @@ func ForEachPool[T any](ctx context.Context, items []T, fn func(context.Context,
 ```
 
 Pool 版 ForEach。
+
+---
+
+## MultiPool（水平分片协程池）
+
+`MultiPool[T]` 通过将 N 个 Pool 实例组合在一起，以 round-robin 方式分发任务，实现水平扩展。每个分片池独立运行，互不影响，可突破单 Pool 的 channel 瓶颈（单 Pool 约 37万 QPS，8 分片可达 ~300万 QPS）。
+
+**核心特性**：
+- Round-robin 分发（利用 `submitIdx` 原子递增）
+- Keyed 分发（按 key 哈希固定分片）
+- 批量提交（SubmitBatch）
+- 所有链式配置代理到各分片
+- 统计聚合（汇总所有分片数据）
+
+> **⚠️ 分片结果不保证全局顺序**
+>
+> `MultiPool.Wait()` 依次合并各分片的结果，分片 A 的全部结果在分片 B 之前。但分片之间并未按时间排序，因此不保证全局提交顺序。
+>
+> **⚠️ 通过 Pool.Shard() 创建，不要直接 New**
+>
+> `MultiPool` 没有公开的构造函数，必须通过 `Pool.Shard()` 或 `Pool.DefaultShard()` 创建。第一个分片复用原 Pool，其余自动克隆配置。
+>
+> **⚠️ 分片数不能超过 CPU 核心数的 16 倍**
+>
+> `shards > runtime.GOMAXPROCS(0) * 16` 时返回只有当前 Pool 的单分片 MultiPool。过多分片会增加调度开销，适得其反。
+
+### 创建：Shard / DefaultShard
+
+```go
+// 方法签名
+func (p *Pool[T]) Shard(shards int) *MultiPool[T]
+func (p *Pool[T]) DefaultShard() *MultiPool[T]
+```
+
+| 方法 | 说明 |
+|------|------|
+| `p.Shard(n)` | 创建 n 个分片的 MultiPool，`n <= 1` 返回单分片 |
+| `p.DefaultShard()` | 使用 `max(2, GOMAXPROCS)` 作为分片数 |
+
+```go
+// 基本用法
+mp := async.NewPool[int](100).Shard(8)
+defer mp.Close()
+
+// 配合自动扩缩容：8 分片 × 每个 4 worker（32 worker 初始）→ 按需扩缩
+mp := async.NewPool[int](4).
+    WithMaxPending(10000).
+    Shard(8)
+defer mp.Close()
+
+// 配合背压控制：16 分片，每个 50 worker，溢出丢弃
+mp := async.NewPool[int](50).
+    WithMaxPending(5000).
+    WithOverflow(core.OverflowDrop).
+    Shard(16)
+defer mp.Close()
+
+// CPU 自动分片
+mp := async.NewPool[int](100).DefaultShard()
+```
+
+### 基础查询：ShardCount / GetShard
+
+```go
+func (mp *MultiPool[T]) ShardCount() int
+func (mp *MultiPool[T]) GetShard(idx int) *Pool[T]
+```
+
+| 方法 | 说明 |
+|------|------|
+| `ShardCount()` | 返回分片数 |
+| `GetShard(i)` | 获取第 i 个分片的 Pool 实例，可对其单独配置 AutoScale 等 |
+
+```go
+mp := pool.NewPool[int](4).
+    WithMaxPending(5000).
+    Shard(4)
+
+// 为每个分片单独开启 AutoScale
+for i := 0; i < mp.ShardCount(); i++ {
+    mp.GetShard(i).EnableAutoScale(nil)
+}
+```
+
+### 任务分发
+
+```go
+func (mp *MultiPool[T]) Submit(ctx context.Context, fn func(context.Context) (T, error)) error
+func (mp *MultiPool[T]) TrySubmit(ctx context.Context, fn func(context.Context) (T, error)) error
+func (mp *MultiPool[T]) SubmitKeyed(key uint64, ctx context.Context, fn func(context.Context) (T, error)) error
+func (mp *MultiPool[T]) TrySubmitKeyed(key uint64, ctx context.Context, fn func(context.Context) (T, error)) error
+func (mp *MultiPool[T]) SubmitBatch(ctx context.Context, items []T, fn func(context.Context, T) (T, error)) []SubmitResult
+```
+
+| 方法 | 分发策略 | 说明 |
+|------|----------|------|
+| `Submit` | Round-robin | 阻塞提交 |
+| `TrySubmit` | Round-robin | 非阻塞提交 |
+| `SubmitKeyed` | Hash(key) | 同一 key 固定分片，阻塞 |
+| `TrySubmitKeyed` | Hash(key) | 同一 key 固定分片，非阻塞 |
+| `SubmitBatch` | 逐元素 Round-robin | 批量提交，返回 `[]SubmitResult` |
+
+```go
+mp := async.NewPool[int](100).Shard(8)
+defer mp.Close()
+
+// Round-robin 分发
+for i := 0; i < 10_000_000; i++ {
+    mp.Submit(ctx, func(ctx context.Context) (int, error) {
+        return i * 2, nil
+    })
+}
+results := mp.Wait()
+
+// Keyed 分发：相同 key 落到同一分片（保证顺序）
+for _, userID := range userIDs {
+    mp.SubmitKeyed(uint64(userID), ctx, func(ctx context.Context) (int, error) {
+        return processUser(ctx, userID)
+    })
+}
+
+// 批量提交
+items := []int{1, 2, 3, 4, 5}
+submitResults := mp.SubmitBatch(ctx, items, func(ctx context.Context, n int) (int, error) {
+    return n * n, nil
+})
+for _, sr := range submitResults {
+    if sr.Err != nil {
+        log.Printf("submit index %d failed: %v", sr.Index, sr.Err)
+    }
+}
+```
+
+### 结果收集：Wait / WaitAndClose / Close
+
+```go
+func (mp *MultiPool[T]) Wait() []core.Result[T]
+func (mp *MultiPool[T]) WaitAndClose() []core.Result[T]
+func (mp *MultiPool[T]) Close()
+```
+
+| 方法 | 说明 |
+|------|------|
+| `Wait()` | 等待所有分片完成，合并结果 |
+| `WaitAndClose()` | 等待完成 + 关闭所有分片 |
+| `Close()` | 立即关闭所有分片（不等待） |
+
+```go
+mp := async.NewPool[int](100).Shard(8)
+
+// 方式一：先 Wait 再 Close
+results := mp.Wait()
+mp.Close()
+
+// 方式二：一步完成（推荐）
+results := mp.WaitAndClose()
+```
+
+### 链式配置
+
+MultiPool 的所有 With* 方法代理到内部每个分片：
+
+```go
+func (mp *MultiPool[T]) WithTimeout(d time.Duration) *MultiPool[T]
+func (mp *MultiPool[T]) WithSubmitTimeout(d time.Duration) *MultiPool[T]
+func (mp *MultiPool[T]) WithStreaming(bufSize int) *MultiPool[T]
+func (mp *MultiPool[T]) WithResultCallback(fn func(core.Result[T])) *MultiPool[T]
+func (mp *MultiPool[T]) WithRingBuffer(capacity int, overflow core.OverflowStrategy) *MultiPool[T]
+func (mp *MultiPool[T]) WithMaxPending(n int) *MultiPool[T]
+func (mp *MultiPool[T]) WithOverflow(strategy core.OverflowStrategy) *MultiPool[T]
+func (mp *MultiPool[T]) WithMaxResults(n int) *MultiPool[T]
+```
+
+| 方法 | 说明 |
+|------|------|
+| `WithTimeout(d)` | 为所有分片设置任务超时 |
+| `WithSubmitTimeout(d)` | 为所有分片设置提交超时 |
+| `WithStreaming(n)` | 为所有分片启用流式结果消费（各分片 channel 独立） |
+| `WithResultCallback(fn)` | 为所有分片设置结果回调 |
+| `WithRingBuffer(cap, over)` | 为所有分片启用环形缓冲 |
+| `WithMaxPending(n)` | 为所有分片设置最大等待数（背压控制） |
+| `WithOverflow(strat)` | 为所有分片设置溢出策略 |
+| `WithMaxResults(n)` | 为所有分片设置最大结果数 |
+
+```go
+mp := async.NewPool[int](100).Shard(8).
+    WithTimeout(5 * time.Second).
+    WithMaxPending(10000).
+    WithOverflow(core.OverflowDrop)
+defer mp.Close()
+```
+
+> **⚠️ WithStreaming 各分片独立**
+>
+> 启用流式后，每个分片有独立的 channel。如需统一消费，推荐使用 `WithResultCallback`。
+
+### 统计聚合
+
+```go
+func (mp *MultiPool[T]) TotalActive() int
+func (mp *MultiPool[T]) TotalBusy() int
+func (mp *MultiPool[T]) TotalPending() int
+func (mp *MultiPool[T]) TotalWorkerCount() int
+func (mp *MultiPool[T]) TotalFailCount() int64
+func (mp *MultiPool[T]) TotalSuccessCount() int64
+func (mp *MultiPool[T]) TotalCount() int64
+func (mp *MultiPool[T]) Flush(maxPerShard int) []core.Result[T]
+```
+
+| 方法 | 说明 |
+|------|------|
+| `TotalActive()` | 所有分片活跃任务总数 |
+| `TotalBusy()` | 所有分片忙碌 worker 总数 |
+| `TotalPending()` | 所有分片等待队列总长度 |
+| `TotalWorkerCount()` | 所有分片 worker 总数 |
+| `TotalFailCount()` | 所有分片失败任务总数 |
+| `TotalSuccessCount()` | 所有分片成功任务总数 |
+| `TotalCount()` | 所有分片任务总数 |
+| `Flush(maxPerShard)` | 排空所有分片环形缓冲区结果 |
+
+```go
+mp := async.NewPool[int](100).Shard(8)
+defer mp.Close()
+
+// 提交任务...
+for i := 0; i < 100000; i++ {
+    mp.Submit(ctx, fn)
+}
+
+// 监控分片状态
+fmt.Printf("workers: %d, active: %d, busy: %d, pending: %d\n",
+    mp.TotalWorkerCount(), mp.TotalActive(), mp.TotalBusy(), mp.TotalPending())
+
+// 排空环形缓冲区
+results := mp.Flush(1000)
+```
 
 ---
 

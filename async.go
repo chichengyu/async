@@ -233,6 +233,12 @@ var (
 	// NewTraceID 生成新的随机 trace_id（32 位十六进制字符串）。
 	NewTraceID = core.NewTraceID
 
+	// SetTraceIDKey 自定义 trace_id 的 context key，用于对接已有链路追踪系统。
+	SetTraceIDKey = core.SetTraceIDKey
+
+	// GetTraceIDKey 返回当前生效的 trace_id context key。
+	GetTraceIDKey = core.GetTraceIDKey
+
 	// NewPanicError 创建 PanicError，捕获 panic 值和当前调用栈。
 	NewPanicError = core.NewPanicError
 

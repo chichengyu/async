@@ -13,6 +13,22 @@ Retry 模块提供灵活的重试机制，支持多种退避策略、超时控�
 - Panic 自动恢复
 - Worker 池提交重试
 
+> **⚠️ 无退避慎用**
+>
+> `Retry` / `RetryVoid` 无等待间隔立即重试，高频失败会瞬间打爆后端。生产环境强烈推荐 `RetryWithBackoff`。
+>
+> **⚠️ MaxRetries=0 不重试**
+>
+> 设置 `MaxRetries=0` 表示不重试，直接返回首次调用的结果（成功或失败都返回）。
+>
+> **⚠️ Context 取消会中止**
+>
+> 重试过程中如果 ctx 被取消（超时或手动取消），会立即返回 `ctx.Err()`，不会继续重试。
+>
+> **⚠️ Panic 恢复**
+>
+> 所有重试函数内置 panic 恢复，panic 不会导致重试中断。panic 次数达到 MaxRetries + 1 次后返回 `*PanicError`。
+
 ---
 
 ## 目录

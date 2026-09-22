@@ -12,6 +12,22 @@
 - NoResult 无返回值模式
 - 丰富的 With* 链式配置组合方法
 
+> **⚠️ Go 后必须 Wait**
+>
+> 每调用一次 `Group.Go()` 就会创建一个 goroutine，必须调用 `Wait()` 等待全部完成并收集结果，否则 goroutine 泄漏。
+>
+> **⚠️ Wait 一次性**
+>
+> `Wait()` 只能调用一次，调用后不可再 `Go()`。如需复用，请使用 `Reset()` 重置 Group。
+>
+> **⚠️ goroutine 不复用**
+>
+> 与 Pool 不同，Group 不会复用 goroutine。每个 `Go()` 启动一个新 goroutine，适合几千到几万量级的批量任务，不适合百万级高频提交。
+>
+> **⚠️ Concurrency 控制**
+>
+> 并发度限制的是同时运行的 goroutine 数，超出部分会阻塞等待，不是排队丢弃。
+
 **与 Pool 的区别**:
 
 | 特性 | Pool | Group |
@@ -52,6 +68,15 @@
   - [任务提交 / 等待 / 状态查询 / 错误提取 / 配置](#noresult-完整方法)
 - [NoResult 辅助函数](#noresult-辅助函数)
   - [BuildAggregateNoResult / FillNoResultSkipped](#buildaggregatenoresult)
+- [MultiGroup（水平分片任务组）](#multigroup水平分片任务组)
+  - [创建：Shard / DefaultShard](#创建shard--defaultshard)
+  - [基础查询：ShardCount / GetShard](#基础查询shardcount--getshard)
+  - [任务分发：Go / GoKeyed](#任务分发go--gokeyed)
+  - [结果收集：Wait / Close](#结果收集wait--close)
+  - [链式配置：WithTimeout](#链式配置withtimeout)
+  - [统计聚合：TotalActive / TotalBusy / TotalConcurrency](#统计聚合totalactive--totalbusy--totalconcurrency)
+  - [统计聚合：TotalTaskCount / TotalFailCount / TotalSuccessCount](#统计聚合totaltaskcount--totalfailcount--totalsuccesscount)
+  - [错误/值提取：Errors / Values](#错误值提取errors--values)
 - [性能基准](#性能基准)
 
 ## 创建
@@ -1014,6 +1039,193 @@ nr.Wait()
 group.FillNoResultSkipped(nr, 6)
 fmt.Println(nr.TotalCount()) // 输出: 6
 fmt.Println(nr.FailCount())  // 输出: 4（1-4 为 ErrSkipped）
+```
+
+---
+
+## MultiGroup（水平分片任务组）
+
+`MultiGroup[T]` 通过将 N 个 Group 实例组合在一起，以 round-robin 方式分发任务，实现极限高并发。每个分片独立运行，互不影响，可突破单 Group 的锁竞争瓶颈。
+
+**核心特性**：
+- Round-robin 分发（原子递增路由）
+- Keyed 分发（按 key 哈希固定分片）
+- 链式配置代理（WithTimeout）
+- 统计聚合和结果合并
+
+> **⚠️ 分片结果不保证全局顺序**
+>
+> `MultiGroup.Wait()` 依次合并各分片的结果，但分片间不按时间排序。
+>
+> **⚠️ 通过 Group.Shard() 创建**
+>
+> `MultiGroup` 没有公开的构造函数，必须通过 `Group.Shard()` 或 `Group.DefaultShard()` 创建。第一个分片复用原 Group，其余自动克隆配置。
+>
+> **⚠️ goroutine 不复用**
+>
+> 与 MultiPool 不同，MultiGroup 不会复用 goroutine。每个 `Go()` 启动一个新 goroutine，适合一次性批量任务，不适合百万级高频提交。
+
+### 创建：Shard / DefaultShard
+
+```go
+func (g *Group[T]) Shard(shards int) *MultiGroup[T]
+func (g *Group[T]) DefaultShard() *MultiGroup[T]
+```
+
+| 方法 | 说明 |
+|------|------|
+| `g.Shard(n)` | 创建 n 个分片，`n <= 1` 返回单分片 |
+| `g.DefaultShard()` | 使用 `max(2, GOMAXPROCS)` 作为分片数 |
+
+```go
+// 8 个分片 × 每个 50 并发 = 400 并发总量
+mg := async.NewGroup[int](50).Shard(8)
+defer mg.Close()
+
+// CPU 自动分片
+mg := async.NewGroup[int](100).DefaultShard()
+defer mg.Close()
+
+// 配合 FailFast
+mg := async.NewGroup[int](50).Shard(8)
+g0 := mg.GetShard(0)
+g0.WithFailFast(ctx) // 只对第一个分片启用 FF
+```
+
+### 基础查询：ShardCount / GetShard
+
+```go
+func (mg *MultiGroup[T]) ShardCount() int
+func (mg *MultiGroup[T]) GetShard(idx int) *Group[T]
+```
+
+| 方法 | 说明 |
+|------|------|
+| `ShardCount()` | 返回分片数 |
+| `GetShard(i)` | 获取第 i 个分片的 Group 实例 |
+
+```go
+mg := async.NewGroup[int](50).Shard(8)
+for i := 0; i < mg.ShardCount(); i++ {
+    mg.GetShard(i).WithFailFast(ctx)
+}
+```
+
+### 任务分发：Go / GoKeyed
+
+```go
+func (mg *MultiGroup[T]) Go(ctx context.Context, fn func(context.Context) (T, error)) error
+func (mg *MultiGroup[T]) GoKeyed(key uint64, ctx context.Context, fn func(context.Context) (T, error)) error
+```
+
+| 方法 | 分发策略 | 说明 |
+|------|----------|------|
+| `Go` | Round-robin | 阻塞提交，取到信号量后启动 goroutine |
+| `GoKeyed` | Hash(key) | 同一 key 固定分片，适合需要同类任务顺序的场景 |
+
+```go
+mg := async.NewGroup[int](50).Shard(8)
+
+// Round-robin 分发
+for i := 0; i < 10000; i++ {
+    mg.Go(ctx, func(ctx context.Context) (int, error) {
+        return i * i, nil
+    })
+}
+results := mg.Wait()
+
+// Keyed 分发
+for _, userID := range userIDs {
+    mg.GoKeyed(uint64(userID), ctx, func(ctx context.Context) (int, error) {
+        return processUser(ctx, userID)
+    })
+}
+```
+
+### 结果收集：Wait / Close
+
+```go
+func (mg *MultiGroup[T]) Wait() []core.Result[T]
+func (mg *MultiGroup[T]) Close()
+```
+
+| 方法 | 说明 |
+|------|------|
+| `Wait()` | 等待所有分片完成，合并结果 |
+| `Close()` | 关闭所有分片，释放资源 |
+
+```go
+mg := async.NewGroup[int](50).Shard(8)
+defer mg.Close()
+
+for i := 0; i < 10000; i++ {
+    mg.Go(ctx, fn)
+}
+results := mg.Wait()
+for _, r := range results {
+    if r.Ok() {
+        fmt.Println(r.Value)
+    }
+}
+```
+
+### 链式配置：WithTimeout
+
+```go
+func (mg *MultiGroup[T]) WithTimeout(d time.Duration) *MultiGroup[T]
+```
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `d` | `time.Duration` | 任务超时时间 |
+
+```go
+mg := async.NewGroup[int](50).Shard(8).WithTimeout(5 * time.Second)
+defer mg.Close()
+```
+
+### 统计聚合
+
+```go
+func (mg *MultiGroup[T]) TotalActive() int
+func (mg *MultiGroup[T]) TotalBusy() int
+func (mg *MultiGroup[T]) TotalConcurrency() int
+func (mg *MultiGroup[T]) TotalTaskCount() int64
+func (mg *MultiGroup[T]) TotalFailCount() int64
+func (mg *MultiGroup[T]) TotalSuccessCount() int64
+func (mg *MultiGroup[T]) Errors() []error
+func (mg *MultiGroup[T]) Values() []T
+```
+
+| 方法 | 说明 |
+|------|------|
+| `TotalActive()` | 所有分片活跃任务总数 |
+| `TotalBusy()` | 所有分片忙碌任务总数 |
+| `TotalConcurrency()` | 所有分片并发度之和 |
+| `TotalTaskCount()` | 所有分片已提交任务总数 |
+| `TotalFailCount()` | 所有分片失败任务总数 |
+| `TotalSuccessCount()` | 所有分片成功任务总数 |
+| `Errors()` | 所有分片所有任务的错误切片 |
+| `Values()` | 所有分片成功任务的结果值 |
+
+```go
+mg := async.NewGroup[int](50).Shard(8)
+defer mg.Close()
+
+for i := 0; i < 10000; i++ {
+    mg.Go(ctx, fn)
+}
+mg.Wait()
+
+fmt.Printf("concurrency: %d, active: %d, busy: %d\n",
+    mg.TotalConcurrency(), mg.TotalActive(), mg.TotalBusy())
+fmt.Printf("success: %d, fail: %d, total: %d\n",
+    mg.TotalSuccessCount(), mg.TotalFailCount(), mg.TotalTaskCount())
+
+// 提取所有值
+values := mg.Values()
+// 提取所有错误
+errors := mg.Errors()
 ```
 
 ---

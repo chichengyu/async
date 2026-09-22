@@ -14,6 +14,26 @@ Task 提供多种异步任务模式，适合 fire-and-forget 场景。所有函�
 | 可取消 + 返回值 | `GoCancel[T]()` | `*Task[T]` | 支持取消 |
 | 可取消 (err only) | `GoCancelErr()` | `*TaskErr` | 可取消 + 只关心错误 |
 
+> **⚠️ Fire-and-Forget 并非真遗忘**
+>
+> `Go()` / `GoWithTimeout()` 返回 `*TaskVoid`，虽无返回值但 goroutine 仍在运行。如果完全不等待任务完成就退出主函数，goroutine 会随进程结束而终止，不会泄漏。
+>
+> **⚠️ GoResult 必须 Wait**
+>
+> `GoResult` 内部启动了 goroutine，必须调用 `Wait()` 或 `WaitTimeout()` 获取结果，否则 goroutine 会一直运行直到结果被取出，造成 goroutine 泄漏。
+>
+> **⚠️ GoCancel 必须配对**
+>
+> 使用 `GoCancel` / `GoCancelErr` 后，如果不 Cancel 也不获取结果，内部的 goroutine 会一直存在。确保 Cancel 或取结果二选一。
+>
+> **⚠️ BoundedRunner 内存注意**
+>
+> `BoundedGo` 本身不限制 goroutine 数量，只限制同时运行的 goroutine 数。如果一次性提交千万个任务，每个 `*AsyncResult[T]` 都会在内存中等待，需注意内存占用。
+>
+> **⚠️ ctx 自动注入 TraceID**
+>
+> 所有函数内部自动调用 `EnsureTraceID(ctx)`，如果上游已注入 trace_id，直接传 ctx 即可，无需手动调用 `EnsureTraceID`。
+
 ---
 
 ## 目录
@@ -33,6 +53,10 @@ Task 提供多种异步任务模式，适合 fire-and-forget 场景。所有函�
 - [TaskErr 方法](#taskerr-方法)
 - [安全调用](#安全调用)
   - [SafeCall / SafeCallVoid / SafeCallWithResult](#safecallwithresult)
+- [BoundedRunner（限流执行器）](#boundedrunner限流执行器)
+  - [NewBoundedRunner / NewDefaultBoundedRunner](#newboundedrunner)
+  - [BoundedRunner 方法：Max / Available / Busy](#boundedrunner-方法maxavailablebusy)
+  - [BoundedGo / BoundedGoAction / BoundedGoResult](#boundedgo)
 - [通用工具](#通用工具)
   - [Mu[T] 并发安全容器：Append / Snapshot](#mut-方法详解)
 - [完整示例](#完整示例)
@@ -547,6 +571,284 @@ if err != nil {
 
 ---
 
+## BoundedRunner（限流执行器）
+
+`BoundedRunner` 是限制并发 goroutine 数的异步任务执行器，通过内部信号量控制最大并发 goroutine 数。适合千万级高并发场景下需要精确控制 goroutine 数量的场景。
+
+**与 `task.Go()` 的区别**：
+
+| 特性 | `task.Go()` | `BoundedRunner` |
+|------|------------|-----------------|
+| goroutine 数量 | 每次调用创建 1 个 | 最多创建 max 个 |
+| 1 千万次调用 | 1 千万 goroutine | 最多 500 goroutine |
+| 调度方式 | 直接新 goroutine | 信号量限流 + 公平等待 |
+| ctx 取消 | 不受影响 | 阻塞等待 slot 时响应 ctx 取消 |
+
+**核心类型**：
+
+```go
+type BoundedRunner struct {
+    sem chan struct{}
+}
+```
+
+### NewBoundedRunner
+
+创建一个限制并发 goroutine 数的执行器。
+
+```go
+// 语法
+func NewBoundedRunner(max int) *BoundedRunner
+```
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `max` | `int` | 最大并发 goroutine 数，`<= 0` 时使用默认 IO 并发度 |
+
+| 返回值 | 类型 | 说明 |
+|--------|------|------|
+| `*BoundedRunner` | `*BoundedRunner` | 限流执行器实例 |
+
+```go
+// 限制最多 500 个并发 goroutine
+runner := task.NewBoundedRunner(500)
+
+// 使用默认 IO 并发度（推荐）
+runner := task.NewBoundedRunner(0)
+
+// 通过 async 顶层包
+runner := async.NewBoundedRunner(1000)
+```
+
+### NewDefaultBoundedRunner
+
+使用默认 IO 并发度（`runtime.NumCPU() * 2`）创建执行器。
+
+```go
+// 语法
+func NewDefaultBoundedRunner() *BoundedRunner
+```
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| 无 | — | — |
+
+| 返回值 | 类型 | 说明 |
+|--------|------|------|
+| `*BoundedRunner` | `*BoundedRunner` | 使用默认并发度的限流执行器 |
+
+```go
+// 等效于 NewBoundedRunner(core.IO())
+runner := task.NewDefaultBoundedRunner()
+
+// 通过 async 顶层包
+runner := async.NewDefaultBoundedRunner()
+```
+
+---
+
+### BoundedRunner 方法：Max / Available / Busy
+
+`BoundedRunner` 提供三个运行时查询方法，用于监控当前并发状态。
+
+#### Max
+
+返回最大并发 goroutine 数（创建时指定的 max）。
+
+```go
+// 语法
+func (r *BoundedRunner) Max() int
+```
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| 无 | — | — |
+
+| 返回值 | 类型 | 说明 |
+|--------|------|------|
+| `int` | `int` | 最大并发 goroutine 数 |
+
+```go
+runner := task.NewBoundedRunner(500)
+fmt.Println(runner.Max()) // 500
+```
+
+#### Available
+
+返回当前可用的并发槽位数。
+
+```go
+// 语法
+func (r *BoundedRunner) Available() int
+```
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| 无 | — | — |
+
+| 返回值 | 类型 | 说明 |
+|--------|------|------|
+| `int` | `int` | 当前可用的槽位数 |
+
+```go
+fmt.Printf("可用槽位: %d / %d\n", runner.Available(), runner.Max())
+```
+
+#### Busy
+
+返回当前正在执行任务的 goroutine 数。
+
+```go
+// 语法
+func (r *BoundedRunner) Busy() int
+```
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| 无 | — | — |
+
+| 返回值 | 类型 | 说明 |
+|--------|------|------|
+| `int` | `int` | 当前忙碌的 goroutine 数 |
+
+```go
+fmt.Printf("正在执行: %d / %d\n", runner.Busy(), runner.Max())
+```
+
+---
+
+### BoundedGo
+
+通过限流器启动异步任务，返回 `*AsyncResult[T]`。当并发 goroutine 数已达上限时，**阻塞等待** slot 释放或 ctx 取消。
+
+```go
+// 语法
+func BoundedGo[T any](r *BoundedRunner, ctx context.Context, fn func(context.Context) (T, error)) *AsyncResult[T]
+```
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `r` | `*BoundedRunner` | 限流执行器 |
+| `ctx` | `context.Context` | 上下文（若 ctx 取消时正在等 slot，返回 ctx.Err()） |
+| `fn` | `func(context.Context) (T, error)` | 异步执行的函数（带返回值） |
+
+| 返回值 | 类型 | 说明 |
+|--------|------|------|
+| `*AsyncResult[T]` | `*AsyncResult[T]` | 异步结果句柄 |
+
+```go
+runner := task.NewBoundedRunner(1000)
+ctx := context.Background()
+
+// 限流后启动任务
+ar := task.BoundedGo(runner, ctx, func(ctx context.Context) (int, error) {
+    return processItem(ctx, itemID)
+})
+
+// 等待结果
+result, err := ar.Wait()
+
+// 通过 async 顶层包
+ar := async.BoundedGo(runner, ctx, fn)
+```
+
+**千万级使用示例**：
+
+```go
+runner := async.NewBoundedRunner(500)
+ctx := async.EnsureTraceID(context.Background())
+
+var ars []*async.AsyncResult[int]
+for i := 0; i < 10_000_000; i++ {
+    idx := i
+    ars = append(ars, async.BoundedGo(runner, ctx, func(ctx context.Context) (int, error) {
+        return idx, nil
+    }))
+}
+
+for _, ar := range ars {
+    _, err := ar.Wait()
+    if err != nil {
+        log.Printf("任务失败: %v", err)
+    }
+}
+```
+
+---
+
+### BoundedGoAction
+
+通过限流器启动无返回值的异步任务，返回 `*AsyncResultNoResult`。
+
+```go
+// 语法
+func BoundedGoAction(r *BoundedRunner, ctx context.Context, fn func(context.Context) error) *AsyncResultNoResult
+```
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `r` | `*BoundedRunner` | 限流执行器 |
+| `ctx` | `context.Context` | 上下文 |
+| `fn` | `func(context.Context) error` | 异步执行的函数（只返回 error） |
+
+| 返回值 | 类型 | 说明 |
+|--------|------|------|
+| `*AsyncResultNoResult` | `*task.AsyncResultNoResult` | 异步结果句柄（通过 async 顶层包返回 `*AsyncErr`） |
+
+```go
+runner := task.NewBoundedRunner(200)
+
+ar := task.BoundedGoAction(runner, ctx, func(ctx context.Context) error {
+    return sendNotification(ctx, userID, msg)
+})
+
+// 只关心 error
+_, err := ar.Wait()
+
+// 通过 async 顶层包
+ar := async.BoundedGoAction(runner, ctx, fn)
+```
+
+---
+
+### BoundedGoResult
+
+通过限流器启动可取消的异步任务，返回 `Task[T]`。与 `BoundedGo` 的区别：返回可取消的 `Task[T]`，可通过 `task.Cancel()` 主动取消。
+
+```go
+// 语法
+func BoundedGoResult[T any](r *BoundedRunner, ctx context.Context, fn func(context.Context) (T, error)) Task[T]
+```
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `r` | `*BoundedRunner` | 限流执行器 |
+| `ctx` | `context.Context` | 上下文 |
+| `fn` | `func(context.Context) (T, error)` | 异步执行的函数（带返回值） |
+
+| 返回值 | 类型 | 说明 |
+|--------|------|------|
+| `Task[T]` | `task.Task[T]` | 可取消的任务句柄 |
+
+```go
+runner := task.NewBoundedRunner(500)
+
+t := task.BoundedGoResult(runner, ctx, func(ctx context.Context) (string, error) {
+    return fetchData(ctx, url)
+})
+
+// 超时后主动取消
+time.AfterFunc(5*time.Second, t.Cancel)
+
+// 获取结果
+result, err := t.Result()
+
+// 通过 async 顶层包
+t := async.BoundedGoResult(runner, ctx, fn)
+```
+
+---
+
 ## Mu[T] 方法详解
 
 `Mu[T]` 是线程安全的泛型切片容器，基于 `sync.Mutex` 实现。nil receiver 安全，所有方法在 nil 值上调用不会 panic。
@@ -692,3 +994,10 @@ for i, t := range tasks {
 | `GoCancel` | `GoCancel[T](ctx, fn)` | `*Task[T]` | 可取消+返回值 |
 | `GoErr` | `GoErr(ctx, fn)` | `*AsyncErr` | 只关心错误 |
 | `GoCancelErr` | `GoCancelErr(ctx, fn)` | `*TaskErr` | 可取消+错误 |
+| `GoAction` | `GoAction(ctx, fn)` | `*AsyncResult[NoResult]` | 无返回值（fn 只返回 error） |
+| `GoResultAction` | `GoResultAction(ctx, fn)` | `Task[NoResult]` | 可取消无返回值 |
+| `NewBoundedRunner` | `NewBoundedRunner(max)` | `*BoundedRunner` | 创建限流执行器 |
+| `NewDefaultBoundedRunner` | `NewDefaultBoundedRunner()` | `*BoundedRunner` | 默认并发度限流执行器 |
+| `BoundedGo` | `BoundedGo[T](r, ctx, fn)` | `*AsyncResult[T]` | 限流后启动异步任务 |
+| `BoundedGoAction` | `BoundedGoAction(r, ctx, fn)` | `*AsyncResult[NoResult]` | 限流无返回值异步 |
+| `BoundedGoResult` | `BoundedGoResult[T](r, ctx, fn)` | `Task[T]` | 限流可取消异步 |

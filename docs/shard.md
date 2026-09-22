@@ -10,6 +10,22 @@ Shard 模块提供分片化并发，将任务按 key 路由到不同的 Pool/Gro
 - 流式消费、环形缓冲、背压控制等高级特性全支持
 - 高并发竞态安全
 
+> **⚠️ 资源复用**
+>
+> 每个 ShardedPool / ShardedGroup 管理 N 个底层 Pool / Group，worker 总数是分片数 × 每分片 worker 数，创建时注意总 goroutine 数量。
+>
+> **⚠️ Close 必须关闭所有分片**
+>
+> `ShardedPool.Close()` 会逐一关闭所有分片 Pool，`ShardedGroup` 同理。忘记 Close 会导致底层 goroutine 泄漏。
+>
+> **⚠️ Hash 路由不保证均匀**
+>
+> Hash 策略依赖 key 的哈希分布，如果 key 分布不均（如少量热点 key），部分分片会过载。
+>
+> **⚠️ RoundRobin 与 Keyed**
+>
+> `RoundRobin` 在不同 Submit 中轮询不同分片。同一次 `Wait()` 返回的是全部分片结果的**合并视图**，不是单分片。`SubmitKeyed` 基于 key 哈希固定路由到同一分片。
+
 **与 Pool 的关系**:
 
 | 特性 | Pool | ShardedPool |
