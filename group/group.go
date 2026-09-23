@@ -1375,6 +1375,19 @@ func (nr *NoResult) WithCtxTimeoutTraceID(ctx context.Context, timeout time.Dura
 	return (*NoResult)(g), ctx
 }
 
+// WithStreaming 启用流式结果消费，结果通过 channel 实时发送。
+// bufSize 控制 channel 缓冲大小，0 使用 concurrency*2 的默认值。
+func (nr *NoResult) WithStreaming(bufSize int) *NoResult {
+	(*Group[struct{}])(nr).WithStreaming(bufSize)
+	return nr
+}
+
+// WithResultCallback 设置结果回调，每个任务完成时同步调用。
+func (nr *NoResult) WithResultCallback(fn func(core.Result[struct{}])) *NoResult {
+	(*Group[struct{}])(nr).WithResultCallback(fn)
+	return nr
+}
+
 // Go 提交无返回值任务。
 //
 // 参数：
@@ -1712,6 +1725,22 @@ func (mg *MultiGroup[T]) Values() []T {
 func (mg *MultiGroup[T]) WithTimeout(d time.Duration) *MultiGroup[T] {
 	for _, g := range mg.groups {
 		g.WithTimeout(d)
+	}
+	return mg
+}
+
+// WithStreaming 为所有分片启用流式结果消费。
+func (mg *MultiGroup[T]) WithStreaming(bufSize int) *MultiGroup[T] {
+	for _, g := range mg.groups {
+		g.WithStreaming(bufSize)
+	}
+	return mg
+}
+
+// WithResultCallback 为所有分片设置结果回调。
+func (mg *MultiGroup[T]) WithResultCallback(fn func(core.Result[T])) *MultiGroup[T] {
+	for _, g := range mg.groups {
+		g.WithResultCallback(fn)
 	}
 	return mg
 }
