@@ -66,6 +66,8 @@ type RateLimiter struct {
 	perDuration time.Duration // 令牌补充周期
 	refillStop  chan struct{} // 停止令牌补充 goroutine 的信号
 	refillDone  chan struct{} // 令牌补充 goroutine 已退出的信号
+
+	cond *sync.Cond // BlockForce 策略下用于高效阻塞等待令牌，替代 busy-wait
 }
 
 // NewRateLimiter 创建定时补充令牌的限流器。
@@ -94,6 +96,7 @@ func NewRateLimiter(rate int, perDuration time.Duration) *RateLimiter {
 		refillStop:  make(chan struct{}),
 		refillDone:  make(chan struct{}),
 	}
+	rl.cond = sync.NewCond(&rl.mu)
 	rl.strat.Store(Block)
 	for i := 0; i < rate; i++ {
 		rl.tokens <- struct{}{}
@@ -130,6 +133,7 @@ func NewRateLimiterWithBurst(rate int, perDuration time.Duration, burst int) *Ra
 		refillStop:  make(chan struct{}),
 		refillDone:  make(chan struct{}),
 	}
+	rl.cond = sync.NewCond(&rl.mu)
 	rl.strat.Store(Block)
 	for i := 0; i < burst; i++ {
 		rl.tokens <- struct{}{}
@@ -147,6 +151,7 @@ func newRateLimiterSimple(rate int) *RateLimiter {
 		size:   int32(rate),
 		ctx:    context.Background(),
 	}
+	rl.cond = sync.NewCond(&rl.mu)
 	rl.strat.Store(Block)
 	for i := 0; i < rate; i++ {
 		rl.tokens <- struct{}{}
@@ -290,22 +295,21 @@ func (rl *RateLimiter) Acquire(ctx context.Context) error {
 			return core.ErrRateLimitExceeded
 		}
 	case BlockForce:
+		rl.mu.Lock()
+		defer rl.mu.Unlock()
 		for {
-			rl.resizeMu.RLock()
 			select {
 			case _, ok := <-rl.tokens:
-				rl.resizeMu.RUnlock()
 				if ok {
 					return nil
 				}
 				continue
 			default:
 			}
-			rl.resizeMu.RUnlock()
 			if rl.closed.Load() {
 				return core.ErrRateLimiterStopped
 			}
-			runtime.Gosched()
+			rl.cond.Wait()
 		}
 	default:
 		for {
@@ -345,6 +349,7 @@ func (rl *RateLimiter) Release() {
 	rl.resizeMu.RLock()
 	select {
 	case rl.tokens <- struct{}{}:
+		rl.cond.Signal()
 	default:
 	}
 	rl.resizeMu.RUnlock()
@@ -369,6 +374,7 @@ func (rl *RateLimiter) Close() {
 		}
 	}
 	close(rl.tokens)
+	rl.cond.Broadcast()
 	rl.mu.Unlock()
 }
 
@@ -416,6 +422,7 @@ func (rl *RateLimiter) Resize(newRate int) {
 		newTokens <- struct{}{}
 	}
 	close(oldTokens)
+	rl.cond.Broadcast()
 }
 
 // Size 返回当前速率限制值（每秒允许的操作数）。

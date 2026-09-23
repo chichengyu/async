@@ -15,6 +15,7 @@ type RingBuffer[T any] struct {
 	writeIdx atomic.Uint64 // 全局写入序号，用于分片路由
 	readIdx  atomic.Uint64 // 全局读取序号
 	dropped  atomic.Int64  // 因 OverflowDrop 被覆盖的元素数
+	resetMu  sync.RWMutex  // 保护 Reset 与其他操作之间的并发安全
 }
 
 const ringBufShardCount = 16
@@ -55,6 +56,8 @@ func NewRingBuffer[T any](capacity int, overflow OverflowStrategy) *RingBuffer[T
 // OverflowBlock：返回 false
 // OverflowError：返回 false
 func (rb *RingBuffer[T]) Push(val T) bool {
+	rb.resetMu.RLock()
+	defer rb.resetMu.RUnlock()
 	widx := rb.writeIdx.Add(1) - 1
 	shardIdx := int(widx % ringBufShardCount)
 	s := &rb.shards[shardIdx]
@@ -85,6 +88,12 @@ func (rb *RingBuffer[T]) Push(val T) bool {
 
 // Pop 读取并移除最旧元素。空时返回零值和 false。
 func (rb *RingBuffer[T]) Pop() (T, bool) {
+	rb.resetMu.RLock()
+	defer rb.resetMu.RUnlock()
+	return rb.popUnsafe()
+}
+
+func (rb *RingBuffer[T]) popUnsafe() (T, bool) {
 	ridx := rb.readIdx.Load()
 	widx := rb.writeIdx.Load()
 	if ridx >= widx {
@@ -114,6 +123,8 @@ func (rb *RingBuffer[T]) Pop() (T, bool) {
 
 // Peek 读取最旧元素但不移除。
 func (rb *RingBuffer[T]) Peek() (T, bool) {
+	rb.resetMu.RLock()
+	defer rb.resetMu.RUnlock()
 	ridx := rb.readIdx.Load()
 	widx := rb.writeIdx.Load()
 	if ridx >= widx {
@@ -137,6 +148,8 @@ func (rb *RingBuffer[T]) Peek() (T, bool) {
 
 // Len 返回当前元素数。
 func (rb *RingBuffer[T]) Len() int {
+	rb.resetMu.RLock()
+	defer rb.resetMu.RUnlock()
 	widx := rb.writeIdx.Load()
 	ridx := rb.readIdx.Load()
 	return int(widx - ridx)
@@ -159,7 +172,11 @@ func (rb *RingBuffer[T]) Dropped() int64 {
 
 // IsFull 返回是否已满。
 func (rb *RingBuffer[T]) IsFull() bool {
-	return rb.Len() >= rb.capacity
+	rb.resetMu.RLock()
+	defer rb.resetMu.RUnlock()
+	widx := rb.writeIdx.Load()
+	ridx := rb.readIdx.Load()
+	return int(widx-ridx) >= rb.capacity
 }
 
 // Flush 排空并返回所有元素（FIFO 顺序）。
@@ -170,7 +187,11 @@ func (rb *RingBuffer[T]) Flush() []T {
 // FlushN 排空并返回最多 n 个元素（FIFO 顺序，保留超出的元素）。
 // n <= 0 取出全部。
 func (rb *RingBuffer[T]) FlushN(n int) []T {
-	total := rb.Len()
+	rb.resetMu.RLock()
+	defer rb.resetMu.RUnlock()
+	widx := rb.writeIdx.Load()
+	ridx := rb.readIdx.Load()
+	total := int(widx - ridx)
 	if total == 0 {
 		return nil
 	}
@@ -180,7 +201,7 @@ func (rb *RingBuffer[T]) FlushN(n int) []T {
 
 	result := make([]T, 0, n)
 	for i := 0; i < n; i++ {
-		if val, ok := rb.Pop(); ok {
+		if val, ok := rb.popUnsafe(); ok {
 			result = append(result, val)
 		} else {
 			break
@@ -191,6 +212,8 @@ func (rb *RingBuffer[T]) FlushN(n int) []T {
 
 // Reset 清空缓冲区。
 func (rb *RingBuffer[T]) Reset() {
+	rb.resetMu.Lock()
+	defer rb.resetMu.Unlock()
 	rb.readIdx.Store(0)
 	rb.writeIdx.Store(0)
 	rb.dropped.Store(0)

@@ -120,7 +120,15 @@ func (ar *AsyncResult[T]) Wait() (T, error) {
 //	    fmt.Println("上下文取消")
 //	}
 func (ar *AsyncResult[T]) WaitCh() <-chan core.Result[T] {
-	return ar.results
+	ch := make(chan core.Result[T], 1)
+	go func() {
+		<-ar.ready
+		ar.mu.Lock()
+		ch <- ar.result
+		ar.mu.Unlock()
+		close(ch)
+	}()
+	return ch
 }
 
 // Cancel 尝试取消等待：如果结果已就绪则返回结果，否则返回 context.Canceled 错误。
@@ -453,6 +461,11 @@ func (r *BoundedRunner) Busy() int {
 
 // BoundedGo 通过信号量限流后启动异步任务，返回 AsyncResult[T]。
 // 当并发 goroutine 数已达上限时，阻塞等待 slot 释放或 ctx 取消。
+//
+// 重要：fn 必须正确响应 ctx.Done() 以按时释放信号量槽位。
+// 如果 fn 忽略 ctx 取消而持续阻塞（例如未在 HTTP 请求中使用 ctx），
+// 对应的信号量槽位将永久占用，最终耗尽所有槽位导致 BoundedRunner 完全阻塞。
+// 建议在 fn 内部所有 I/O 操作中传递 ctx，或设置合理的业务超时。
 func BoundedGo[T any](r *BoundedRunner, ctx context.Context, fn func(context.Context) (T, error)) *AsyncResult[T] {
 	select {
 	case r.sem <- struct{}{}:
@@ -471,6 +484,7 @@ func BoundedGo[T any](r *BoundedRunner, ctx context.Context, fn func(context.Con
 }
 
 // BoundedGoAction 带限流的无返回值异步任务，返回 AsyncResultNoResult。
+// 关于 ctx 响应的注意事项与 BoundedGo 相同。
 func BoundedGoAction(r *BoundedRunner, ctx context.Context, fn func(context.Context) error) *AsyncResultNoResult {
 	select {
 	case r.sem <- struct{}{}:
@@ -488,6 +502,7 @@ func BoundedGoAction(r *BoundedRunner, ctx context.Context, fn func(context.Cont
 }
 
 // BoundedGoResult 带限流的可取消异步任务，返回 Task[T]。
+// 关于 ctx 响应的注意事项与 BoundedGo 相同。
 func BoundedGoResult[T any](r *BoundedRunner, ctx context.Context, fn func(context.Context) (T, error)) Task[T] {
 	select {
 	case r.sem <- struct{}{}:

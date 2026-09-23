@@ -182,6 +182,12 @@ func MapStreamWithFailFast[T any, R any](ctx context.Context, items []T, fn func
 		for i := range items {
 			idx := i
 			g.Go(ffCtx, func(ctx context.Context) (R, error) {
+				defer func() {
+					if r := recover(); r != nil {
+						ffCancel()
+						panic(r)
+					}
+				}()
 				val, err := fn(ctx, items[idx])
 				if err != nil {
 					ffCancel()

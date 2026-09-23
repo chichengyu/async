@@ -59,6 +59,7 @@ type Pool[T any] struct {
 	shards        [poolShardCount]resultShard[T] // 分片结果存储
 	submitIdx     atomic.Int64                   // 原子提交序号（用于分片路由）
 	submitGuard   atomic.Bool                    // 提交保护：Wait期间禁止新提交
+	addInFlight   atomic.Int64                   // 处于 precheck 通过后、wg.Add(1) 前的协程数，用于与 Wait 同步
 	errCnt        int64                          // 失败任务计数（atomic 原子操作）
 	cancel        context.CancelFunc             // 全局取消函数
 	failFast      atomic.Bool                    // 是否启用 FailFast 模式
@@ -807,7 +808,12 @@ func (p *Pool[T]) totalResultsCount() int64 {
 }
 
 func (p *Pool[T]) submitIndexed(ctx context.Context, fn func(context.Context) (T, error)) (index int, err error) {
+	// 进入临界区：标记本协程正在 precheck 与 wg.Add(1) 之间，
+	// 防止 Wait 系列方法在 submitGuard 设置后立即调用 wg.Wait() 产生竞态。
+	p.addInFlight.Add(1)
+
 	if err := p.poolPrecheck(ctx, "Submit"); err != nil {
+		p.addInFlight.Add(-1)
 		idx := p.submitIdx.Add(1) - 1
 		p.resultsSet(idx, core.Result[T]{Err: err, Occupied: true})
 		return -1, err
@@ -816,11 +822,13 @@ func (p *Pool[T]) submitIndexed(ctx context.Context, fn func(context.Context) (T
 	if mp := p.maxPending; mp > 0 && p.Pending() >= int(mp) {
 		switch p.overflowStrat {
 		case core.OverflowDrop:
+			p.addInFlight.Add(-1)
 			idx := p.submitIdx.Add(1) - 1
 			p.resultsSet(idx, core.Result[T]{Err: core.ErrQueueOverflow, Occupied: true})
 			atomic.AddInt64(&p.errCnt, 1)
 			return -1, nil
 		case core.OverflowError:
+			p.addInFlight.Add(-1)
 			idx := p.submitIdx.Add(1) - 1
 			p.resultsSet(idx, core.Result[T]{Err: core.ErrQueueOverflow, Occupied: true})
 			atomic.AddInt64(&p.errCnt, 1)
@@ -831,6 +839,7 @@ func (p *Pool[T]) submitIndexed(ctx context.Context, fn func(context.Context) (T
 
 	// 二次检查：防止 poolPrecheck 与这里之间 Close() 被调用导致 wg 泄漏
 	if p.closed.Load() {
+		p.addInFlight.Add(-1)
 		taskCancel()
 		idx := p.submitIdx.Add(1) - 1
 		p.resultsSet(idx, core.Result[T]{Err: core.ErrPoolClosed, Occupied: true})
@@ -841,6 +850,8 @@ func (p *Pool[T]) submitIndexed(ctx context.Context, fn func(context.Context) (T
 
 	p.pending.Add(1)
 	p.wg.Add(1)
+	// wg.Add(1) 已完成，退出临界区
+	p.addInFlight.Add(-1)
 
 	record := func(r core.Result[T], _ int) {
 		p.resultsSet(idx, r)
@@ -883,7 +894,9 @@ func (p *Pool[T]) submitIndexed(ctx context.Context, fn func(context.Context) (T
 //	    })
 //	}
 func (p *Pool[T]) SubmitAt(index int, ctx context.Context, fn func(context.Context) (T, error)) error {
+	p.addInFlight.Add(1)
 	if err := p.poolPrecheck(ctx, "SubmitAt"); err != nil {
+		p.addInFlight.Add(-1)
 		if int64(index) >= p.submitIdx.Load() {
 			p.submitIdx.Store(int64(index) + 1)
 		}
@@ -899,6 +912,7 @@ func (p *Pool[T]) SubmitAt(index int, ctx context.Context, fn func(context.Conte
 
 	p.pending.Add(1)
 	p.wg.Add(1)
+	p.addInFlight.Add(-1)
 
 	record := func(r core.Result[T], idx int) {
 		i := int64(idx)
@@ -937,16 +951,20 @@ func (p *Pool[T]) SubmitAt(index int, ctx context.Context, fn func(context.Conte
 //	    log.Println("队列已满，任务被丢弃")
 //	}
 func (p *Pool[T]) TrySubmit(ctx context.Context, fn func(context.Context) (T, error)) error {
+	p.addInFlight.Add(1)
 	if p.closed.Load() {
+		p.addInFlight.Add(-1)
 		return core.ErrPoolClosed
 	}
 	if p.submitGuard.Load() || p.waited.Load() {
+		p.addInFlight.Add(-1)
 		return core.ErrPoolWaiting
 	}
 	taskCtx, taskCancel := context.WithCancel(ctx)
 
 	// 二次检查：防止检查通过后 Close() 被调用导致 wg 泄漏
 	if p.closed.Load() {
+		p.addInFlight.Add(-1)
 		taskCancel()
 		return core.ErrPoolClosed
 	}
@@ -955,6 +973,7 @@ func (p *Pool[T]) TrySubmit(ctx context.Context, fn func(context.Context) (T, er
 
 	p.pending.Add(1)
 	p.wg.Add(1)
+	p.addInFlight.Add(-1)
 
 	record := func(r core.Result[T], _ int) {
 		p.resultsSet(idx, r)
@@ -1042,6 +1061,9 @@ func (p *Pool[T]) sendQuitSignal() {
 //	p.ResizeAndWaitTimeout(5, 10*time.Second)
 func (p *Pool[T]) ResizeAndWaitTimeout(newSize int, timeout time.Duration) {
 	p.Resize(newSize)
+	p.submitGuard.Store(true)
+	defer p.submitGuard.Store(false)
+	p.waitAddInFlight()
 	done := make(chan struct{})
 	go func() {
 		p.wg.Wait()
@@ -1191,6 +1213,14 @@ func (p *Pool[T]) discardTask(record core.PoolRecordFunc[T], idx int, taskCancel
 	p.wg.Done()
 }
 
+// waitAddInFlight 等待所有处于 precheck 与 wg.Add(1) 之间的协程完成 wg.Add(1)。
+// 必须在 submitGuard 设为 true 之后、wg.Wait() 之前调用，保证二者之间的同步。
+func (p *Pool[T]) waitAddInFlight() {
+	for p.addInFlight.Load() > 0 {
+		runtime.Gosched()
+	}
+}
+
 // Wait 阻塞等待所有已提交的任务完成，返回按提交顺序排列的结果。
 // Wait 只能调用一次，多次调用返回空切片。
 //
@@ -1207,6 +1237,8 @@ func (p *Pool[T]) discardTask(record core.PoolRecordFunc[T], idx int, taskCancel
 func (p *Pool[T]) Wait() []core.Result[T] {
 	// 设置提交保护，禁止新 Submit
 	p.submitGuard.Store(true)
+	// 等待所有已通过 precheck 的协程完成 wg.Add(1)，避免与 wg.Wait() 竞态
+	p.waitAddInFlight()
 	p.wg.Wait()
 	p.waited.Store(true)
 	p.submitGuard.Store(false)
@@ -1494,6 +1526,7 @@ func (p *Pool[T]) JoinErrors() error {
 //	}
 func (p *Pool[T]) WaitTimeout(d time.Duration) ([]core.Result[T], bool) {
 	p.submitGuard.Store(true)
+	p.waitAddInFlight()
 	results, ok := core.WaitTimeoutImpl(d, &p.wg, p.cancel, &p.submitGuard, &p.waited, func() {
 		p.cancelAllShards()
 	}, func() []core.Result[T] {
@@ -1514,6 +1547,7 @@ func (p *Pool[T]) WaitTimeout(d time.Duration) ([]core.Result[T], bool) {
 //	results, ok := p.WaitContext(ctx)
 func (p *Pool[T]) WaitContext(ctx context.Context) ([]core.Result[T], bool) {
 	p.submitGuard.Store(true)
+	p.waitAddInFlight()
 	return core.WaitContextImpl(ctx, &p.wg, p.cancel, &p.submitGuard, &p.waited, func() {
 		p.cancelAllShards()
 	}, func() []core.Result[T] {

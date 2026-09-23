@@ -3790,11 +3790,13 @@ func TestStress_Pool_ExtremeResizeDuringSubmit(t *testing.T) {
 	var submitWg sync.WaitGroup
 	n := 200
 	var submitted atomic.Int64
+	var attempted atomic.Int64
 	submitWg.Add(n)
 	for i := 0; i < n; i++ {
 		go func(idx int) {
 			defer submitWg.Done()
 			for j := 0; j < 50; j++ {
+				attempted.Add(1)
 				err := p.Submit(ctx, func(ctx context.Context) (int, error) {
 					time.Sleep(1 * time.Microsecond)
 					return idx*100 + j, nil
@@ -3824,10 +3826,12 @@ func TestStress_Pool_ExtremeResizeDuringSubmit(t *testing.T) {
 
 	results := p.Wait()
 	p.Close()
-	if len(results) != int(submitted.Load()) {
-		t.Fatalf("expected %d results, got %d", submitted.Load(), len(results))
+	// 每次 Submit 调用都会在结果中占一个槽位（包括被 submitGuard 拒绝的），
+	// 因此 results 数应等于尝试提交总数，而非仅成功数。
+	if len(results) != int(attempted.Load()) {
+		t.Fatalf("expected %d results (all attempts), got %d", attempted.Load(), len(results))
 	}
-	t.Logf("Extreme resize: submitted=%d, results=%d", submitted.Load(), len(results))
+	t.Logf("Extreme resize: attempted=%d, submitted=%d, results=%d", attempted.Load(), submitted.Load(), len(results))
 }
 
 // TestStress_Pool_SubmitClose_ExtremeRace Submit 和 Close 的极限竞态

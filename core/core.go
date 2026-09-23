@@ -450,11 +450,12 @@ func WaitTimeoutImpl[T any](
 
 			var maxTimer *time.Timer
 			var maxCh <-chan time.Time
-			if maxDur > 0 {
-				maxTimer = time.NewTimer(maxDur)
-				defer maxTimer.Stop()
-				maxCh = maxTimer.C
+			if maxDur <= 0 {
+				maxDur = WaitContextCleanupError
 			}
+			maxTimer = time.NewTimer(maxDur)
+			defer maxTimer.Stop()
+			maxCh = maxTimer.C
 
 			tickCount := 0
 			for {
@@ -534,11 +535,12 @@ func WaitContextImpl[T any](
 
 			var maxTimer *time.Timer
 			var maxCh <-chan time.Time
-			if maxDur > 0 {
-				maxTimer = time.NewTimer(maxDur)
-				defer maxTimer.Stop()
-				maxCh = maxTimer.C
+			if maxDur <= 0 {
+				maxDur = WaitContextCleanupError
 			}
+			maxTimer = time.NewTimer(maxDur)
+			defer maxTimer.Stop()
+			maxCh = maxTimer.C
 
 			tickCount := 0
 			for {
