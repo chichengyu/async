@@ -340,8 +340,9 @@ func TestStreaming_1M_SlowConsumer_DropsGracefully(t *testing.T) {
 
 func TestStreaming_1M_FastConsumer_NoDrops(t *testing.T) {
 	ctx := context.Background()
+	n := 1_000_000
 	g := NewGroup[int](128)
-	g.WithStreaming(4096)
+	g.WithStreaming(n)
 
 	ch := g.StreamResults()
 
@@ -362,7 +363,6 @@ func TestStreaming_1M_FastConsumer_NoDrops(t *testing.T) {
 		close(consumerDone)
 	}()
 
-	n := 1_000_000
 	for i := 0; i < n; i++ {
 		idx := i
 		_ = g.Go(ctx, func(ctx context.Context) (int, error) {
@@ -525,11 +525,10 @@ func TestNoResult_Callback_1M_Stress(t *testing.T) {
 
 func TestMultiGroup_Streaming_1M_Shard8(t *testing.T) {
 	ctx := context.Background()
+	n := 1_000_000
 	mg := NewGroup[int](64).Shard(8)
 
-	mg.WithStreaming(131072)
-
-	n := 1_000_000
+	mg.WithStreaming(n)
 	for i := 0; i < n; i++ {
 		idx := i
 		_ = mg.Go(ctx, func(ctx context.Context) (int, error) {
