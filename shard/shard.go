@@ -260,6 +260,30 @@ func (sp *ShardedPool[T]) WithResultCallback(fn func(core.Result[T])) *ShardedPo
 	return sp
 }
 
+// StreamResults 返回合并所有分片流式结果的只读 channel。
+// 每个分片的流式结果被 fan-in 到此 channel，所有分片 channel 关闭后自动关闭此 channel。
+func (sp *ShardedPool[T]) StreamResults() <-chan core.Result[T] {
+	merged := make(chan core.Result[T], len(sp.pools)*256)
+	var wg sync.WaitGroup
+	for _, p := range sp.pools {
+		ch := p.StreamResults()
+		if ch != nil {
+			wg.Add(1)
+			go func(c <-chan core.Result[T]) {
+				defer wg.Done()
+				for r := range c {
+					merged <- r
+				}
+			}(ch)
+		}
+	}
+	go func() {
+		wg.Wait()
+		close(merged)
+	}()
+	return merged
+}
+
 // WithRingBuffer 为所有分片启用环形缓冲区。
 func (sp *ShardedPool[T]) WithRingBuffer(capacity int, overflow core.OverflowStrategy) *ShardedPool[T] {
 	for _, p := range sp.pools {
@@ -635,6 +659,30 @@ func (sg *ShardedGroup[T]) WithResultCallback(fn func(core.Result[T])) *ShardedG
 		g.WithResultCallback(fn)
 	}
 	return sg
+}
+
+// StreamResults 返回合并所有分片流式结果的只读 channel。
+// 每个分片的流式结果被 fan-in 到此 channel，所有分片 channel 关闭后自动关闭此 channel。
+func (sg *ShardedGroup[T]) StreamResults() <-chan core.Result[T] {
+	merged := make(chan core.Result[T], len(sg.groups)*256)
+	var wg sync.WaitGroup
+	for _, g := range sg.groups {
+		ch := g.StreamResults()
+		if ch != nil {
+			wg.Add(1)
+			go func(c <-chan core.Result[T]) {
+				defer wg.Done()
+				for r := range c {
+					merged <- r
+				}
+			}(ch)
+		}
+	}
+	go func() {
+		wg.Wait()
+		close(merged)
+	}()
+	return merged
 }
 
 // ──────────────────────────── 统计聚合 ────────────────────────────

@@ -247,6 +247,140 @@ func ExecuteWithGroup[T any](
 	return results, nil
 }
 
+// ExecuteStream 执行多阶段管道，通过 channel 流式返回最终阶段的结果，实现边执行边消费。
+// 非最终阶段的处理方式与 Execute() 一致（分批并发、保序），最终阶段使用 Group 流式消费，
+// 结果逐条发送到 channel，消费者可实时处理。
+//
+// 参数：
+//   - ctx：上下文
+//   - stages：阶段定义列表
+//   - initialItems：初始数据
+//   - fn：处理函数，接收 ctx、阶段名和当前元素
+//   - bufSize：channel 缓冲区大小，<=0 时自动计算
+//
+// 返回的 channel 在最终阶段所有任务完成后自动关闭。
+//
+// 使用示例：
+//
+//	stages := []pipeline.Stage[Record]{
+//	    {Name: "parse", Concurrency: 4},
+//	    {Name: "validate", Concurrency: 2},
+//	}
+//	ch := pipeline.ExecuteStream(ctx, stages, records, func(ctx context.Context, stage string, r Record) (Record, error) {
+//	    switch stage {
+//	    case "parse":
+//	        return parseRecord(ctx, r)
+//	    case "validate":
+//	        return validateRecord(ctx, r)
+//	    }
+//	    return r, nil
+//	}, 1024)
+//	for r := range ch {
+//	    if r.Ok() {
+//	        saveRecord(r.Value)
+//	    }
+//	}
+func ExecuteStream[T any](
+	ctx context.Context,
+	stages []Stage[T],
+	initialItems []T,
+	fn func(ctx context.Context, stage string, item T) (T, error),
+	bufSize int,
+) <-chan core.Result[T] {
+	if len(stages) == 0 || len(initialItems) == 0 {
+		ch := make(chan core.Result[T])
+		close(ch)
+		return ch
+	}
+
+	resultsList := make([]core.Result[T], len(initialItems))
+	for i, item := range initialItems {
+		resultsList[i] = core.Result[T]{Value: item}
+	}
+
+	// 非最终阶段：与 Execute() 相同的分块并发处理
+	for si := 0; si < len(stages)-1; si++ {
+		stage := stages[si]
+		nextResults := make([]core.Result[T], len(resultsList))
+		concurrency := stage.Concurrency
+		if concurrency <= 0 {
+			concurrency = core.IO()
+		}
+		if concurrency > len(resultsList) {
+			concurrency = len(resultsList)
+		}
+		if concurrency <= 0 {
+			concurrency = 1
+		}
+
+		chunkSize := (len(resultsList) + concurrency - 1) / concurrency
+		var wg sync.WaitGroup
+		var mu sync.Mutex
+		for c := 0; c < concurrency; c++ {
+			start := c * chunkSize
+			end := start + chunkSize
+			if start >= len(resultsList) {
+				break
+			}
+			if end > len(resultsList) {
+				end = len(resultsList)
+			}
+			wg.Add(1)
+			go func(start, end int) {
+				defer wg.Done()
+				for j := start; j < end; j++ {
+					val, err := fn(ctx, stage.Name, resultsList[j].Value)
+					mu.Lock()
+					nextResults[j] = core.Result[T]{Value: val, Err: err}
+					mu.Unlock()
+				}
+			}(start, end)
+		}
+		wg.Wait()
+		resultsList = nextResults
+	}
+
+	// 最终阶段：使用 Group + ResultCallback 流式消费（异步提交，防止死锁）
+	finalStage := stages[len(stages)-1]
+	finalConcurrency := finalStage.Concurrency
+	if finalConcurrency <= 0 {
+		finalConcurrency = core.IO()
+	}
+	if finalConcurrency > len(resultsList) {
+		finalConcurrency = len(resultsList)
+	}
+	if finalConcurrency <= 0 {
+		finalConcurrency = 1
+	}
+	if bufSize <= 0 {
+		if len(resultsList) <= 16384 {
+			bufSize = len(resultsList)
+		} else {
+			bufSize = 16384
+		}
+	}
+
+	outCh := make(chan core.Result[T], bufSize)
+
+	g := group.NewGroup[T](finalConcurrency)
+	g.WithResultCallback(func(r core.Result[T]) {
+		outCh <- r
+	})
+
+	go func() {
+		for _, r := range resultsList {
+			item := r.Value
+			stageName := finalStage.Name
+			g.Go(ctx, func(ctx context.Context) (T, error) {
+				return fn(ctx, stageName, item)
+			})
+		}
+		g.Wait()
+		close(outCh)
+	}()
+	return outCh
+}
+
 // ──────────────────────────── Pipeline 链式分片 ────────────────────────────
 
 // Pipeline 多阶段数据处理管道，支持水平分片以提升极限高并发性能。
@@ -516,4 +650,23 @@ func (p *Pipeline[T]) executeWithMetaSharded(
 	}
 
 	return results
+}
+
+// ExecuteStream 使用流式 channel 执行管道，最终阶段的结果逐条实时发送到 channel。
+// 非最终阶段的处理方式与 Execute() 一致；最终阶段使用 Group 流式消费。
+//
+// 参数：
+//   - ctx：上下文
+//   - items：初始数据
+//   - fn：处理函数，接收 ctx、阶段名和当前元素
+//   - bufSize：channel 缓冲区大小，<=0 时自动计算
+//
+// 返回的 channel 在最终阶段所有任务完成后自动关闭。
+func (p *Pipeline[T]) ExecuteStream(
+	ctx context.Context,
+	items []T,
+	fn func(ctx context.Context, stage string, item T) (T, error),
+	bufSize int,
+) <-chan core.Result[T] {
+	return ExecuteStream(ctx, p.stages, items, fn, bufSize)
 }

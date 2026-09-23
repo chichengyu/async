@@ -1099,6 +1099,49 @@ func MapSerialFailFast[T any, R any](ctx context.Context, items []T, fn func(con
 	return mapreduce.MapSerialFailFast(ctx, items, fn)
 }
 
+// ──────────────────────────── MapStream 流式 Map ────────────────────────────
+
+// MapStream 并发处理切片元素，通过 channel 流式返回结果，实现边执行边消费。
+// 返回的 channel 在所有任务完成后自动关闭，可直接用于 for range 遍历。
+//
+// 适用场景：需要对千万级数据进行实时处理的场景，如批量 RPC 调用逐条入库、流式 ETL。
+//
+// 参数：
+//   - ctx：上下文
+//   - items：输入元素切片
+//   - concurrency：并发度（建议 async.IO()）
+//   - fn：处理函数
+//   - bufSize：channel 缓冲区大小，<=0 时自动计算
+//
+// 示例：
+//
+//	ch := async.MapStream(ctx, urls, async.IO(), func(ctx context.Context, url string) (*Resp, error) {
+//	    return httpGet(ctx, url)
+//	}, 1024)
+//	for r := range ch {
+//	    if r.Ok() {
+//	        saveToDB(r.Value)
+//	    }
+//	}
+func MapStream[T any, R any](ctx context.Context, items []T, concurrency int, fn func(context.Context, T) (R, error), bufSize int) <-chan Result[R] {
+	return mapreduce.MapStream(ctx, items, fn, concurrency, bufSize)
+}
+
+// MapStreamWithFailFast 带 FailFast 的流式 Map：首个失败立即取消其余任务。
+func MapStreamWithFailFast[T any, R any](ctx context.Context, items []T, concurrency int, fn func(context.Context, T) (R, error), bufSize int) <-chan Result[R] {
+	return mapreduce.MapStreamWithFailFast(ctx, items, fn, concurrency, bufSize)
+}
+
+// DefaultMapStream 使用默认 IO 并发度和自适应缓冲区的流式 Map。
+func DefaultMapStream[T any, R any](ctx context.Context, items []T, fn func(context.Context, T) (R, error)) <-chan Result[R] {
+	return mapreduce.MapStream(ctx, items, fn, core.IO(), 0)
+}
+
+// DefaultMapStreamWithFF 使用默认 IO 并发度的流式 FailFast Map。
+func DefaultMapStreamWithFF[T any, R any](ctx context.Context, items []T, fn func(context.Context, T) (R, error)) <-chan Result[R] {
+	return mapreduce.MapStreamWithFailFast(ctx, items, fn, core.IO(), 0)
+}
+
 // ──────────────────────────── ForEach 并发遍历 ────────────────────────────
 
 // ForEach 并发遍历切片元素，只关心错误。
@@ -1219,6 +1262,40 @@ func ForEachWithFFTimeout[T any](ctx context.Context, items []T, concurrency int
 // DefaultForEachWithFFTimeout 使用默认 IO 并发度的带 FailFast 和超时 ForEach。
 func DefaultForEachWithFFTimeout[T any](ctx context.Context, items []T, timeout time.Duration, fn func(context.Context, T) error) (*NoResult, error) {
 	return ForEachWithFFTimeout(ctx, items, core.IO(), timeout, fn)
+}
+
+// ──────────────────────────── ForEachStream 流式 ForEach ────────────────────────────
+
+// ForEachStream 并发遍历元素，通过 channel 流式返回每个元素的错误结果，实现边执行边消费。
+// 返回的 Result[struct{}] 中 Err 为 nil 表示成功，非 nil 表示失败。
+//
+// 示例：
+//
+//	ch := async.ForEachStream(ctx, records, async.IO(), func(ctx context.Context, r Record) error {
+//	    return saveToDB(ctx, r)
+//	}, 1024)
+//	for res := range ch {
+//	    if res.Err != nil {
+//	        log.Printf("处理失败: %v", res.Err)
+//	    }
+//	}
+func ForEachStream[T any](ctx context.Context, items []T, concurrency int, fn func(context.Context, T) error, bufSize int) <-chan Result[struct{}] {
+	return mapreduce.ForEachStream(ctx, items, fn, concurrency, bufSize)
+}
+
+// ForEachStreamWithFailFast 带 FailFast 的流式 ForEach：首个错误立即取消其余任务。
+func ForEachStreamWithFailFast[T any](ctx context.Context, items []T, concurrency int, fn func(context.Context, T) error, bufSize int) <-chan Result[struct{}] {
+	return mapreduce.ForEachStreamWithFailFast(ctx, items, fn, concurrency, bufSize)
+}
+
+// DefaultForEachStream 使用默认 IO 并发度的流式 ForEach。
+func DefaultForEachStream[T any](ctx context.Context, items []T, fn func(context.Context, T) error) <-chan Result[struct{}] {
+	return mapreduce.ForEachStream(ctx, items, fn, core.IO(), 0)
+}
+
+// DefaultForEachStreamWithFF 使用默认 IO 并发度的流式 FailFast ForEach。
+func DefaultForEachStreamWithFF[T any](ctx context.Context, items []T, fn func(context.Context, T) error) <-chan Result[struct{}] {
+	return mapreduce.ForEachStreamWithFailFast(ctx, items, fn, core.IO(), 0)
 }
 
 // ──────────────────────────── Chunk 分块 ────────────────────────────
@@ -2016,6 +2093,42 @@ func ExecuteWithMeta[T any](ctx context.Context, stages []Stage[T], items []T, f
 // ExecuteWithGroup 使用 Group 执行管道，支持错误聚合。
 func ExecuteWithGroup[T any](ctx context.Context, items []T, fn func(context.Context, T) (T, error), concurrency int) ([]core.Result[T], error) {
 	return pipeline.ExecuteWithGroup(ctx, items, fn, concurrency)
+}
+
+// ExecuteStream 执行多阶段管道，通过 channel 流式返回最终阶段结果，实现边执行边消费。
+// 非最终阶段与 Execute() 行为一致（分批并发、保序），最终阶段结果逐条实时发送到 channel。
+//
+// 适用场景：多阶段数据处理后逐条实时入库、流式验证管道等。
+//
+// 参数：
+//   - ctx：上下文
+//   - stages：阶段定义列表
+//   - items：初始数据
+//   - fn：处理函数，接收 ctx、阶段名和当前元素
+//   - bufSize：channel 缓冲区大小，<=0 时自动计算
+//
+// 示例：
+//
+//	stages := []async.Stage[Record]{
+//	    {Name: "parse", Concurrency: 4},
+//	    {Name: "validate", Concurrency: 2},
+//	}
+//	ch := async.ExecuteStream(ctx, stages, records, func(ctx context.Context, stage string, r Record) (Record, error) {
+//	    switch stage {
+//	    case "parse":
+//	        return parseRecord(ctx, r)
+//	    case "validate":
+//	        return validateRecord(ctx, r)
+//	    }
+//	    return r, nil
+//	}, 1024)
+//	for r := range ch {
+//	    if r.Ok() {
+//	        saveToDB(r.Value)
+//	    }
+//	}
+func ExecuteStream[T any](ctx context.Context, stages []Stage[T], items []T, fn func(context.Context, string, T) (T, error), bufSize int) <-chan core.Result[T] {
+	return pipeline.ExecuteStream(ctx, stages, items, fn, bufSize)
 }
 
 // ── ParallelPipeline：链式分片管道 ──

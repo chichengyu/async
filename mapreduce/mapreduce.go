@@ -81,6 +81,122 @@ func MapWithFailFast[T any, R any](ctx context.Context, items []T, fn func(conte
 	return mapImpl[T, R](ctx, items, fn, concurrency, true)
 }
 
+// ──────────────────────────── MapStream ────────────────────────────
+
+// MapStream 并发处理切片元素，通过 channel 流式返回结果，实现边执行边消费。
+// 返回的 channel 在所有任务完成后自动关闭。
+//
+// 适用场景：需要实时处理大量数据的场景，如批量请求结果逐条处理、流式 ETL。
+//
+// 参数：
+//   - ctx：上下文
+//   - items：待处理的元素切片
+//   - fn：处理函数
+//   - concurrency：并发度
+//   - bufSize：channel 缓冲区大小，<=0 时使用 len(items)/concurrency
+//
+// 使用示例：
+//
+//	ch := mapreduce.MapStream(ctx, urls, func(ctx context.Context, url string) (*http.Response, error) {
+//	    return httpGet(ctx, url)
+//	}, 8, 1024)
+//	for r := range ch {
+//	    if r.Ok() {
+//	        processResponse(r.Value)
+//	    } else {
+//	        log.Printf("请求失败: %v", r.Err)
+//	    }
+//	}
+func MapStream[T any, R any](ctx context.Context, items []T, fn func(context.Context, T) (R, error), concurrency int, bufSize int) <-chan core.Result[R] {
+	ctx = core.EnsureTraceID(ctx)
+	n := len(items)
+	if concurrency <= 0 {
+		concurrency = core.IO()
+	}
+	if concurrency > n && n > 0 {
+		concurrency = n
+	}
+	if concurrency <= 0 {
+		concurrency = 1
+	}
+	if bufSize <= 0 {
+		if n <= 16384 {
+			bufSize = n
+		} else {
+			bufSize = 16384
+		}
+	}
+
+	outCh := make(chan core.Result[R], bufSize)
+
+	g := group.NewGroup[R](concurrency)
+	g.WithResultCallback(func(r core.Result[R]) {
+		outCh <- r
+	})
+
+	go func() {
+		for i := range items {
+			idx := i
+			g.Go(ctx, func(ctx context.Context) (R, error) {
+				return fn(ctx, items[idx])
+			})
+		}
+		g.Wait()
+		close(outCh)
+	}()
+
+	return outCh
+}
+
+// MapStreamWithFailFast 与 MapStream 相同，但第一个任务失败时取消其余任务。
+func MapStreamWithFailFast[T any, R any](ctx context.Context, items []T, fn func(context.Context, T) (R, error), concurrency int, bufSize int) <-chan core.Result[R] {
+	ctx = core.EnsureTraceID(ctx)
+	n := len(items)
+	if concurrency <= 0 {
+		concurrency = core.IO()
+	}
+	if concurrency > n && n > 0 {
+		concurrency = n
+	}
+	if concurrency <= 0 {
+		concurrency = 1
+	}
+	if bufSize <= 0 {
+		if n <= 16384 {
+			bufSize = n
+		} else {
+			bufSize = 16384
+		}
+	}
+
+	ffCtx, ffCancel := context.WithCancel(ctx)
+
+	outCh := make(chan core.Result[R], bufSize)
+
+	g := group.NewGroup[R](concurrency)
+	g.WithResultCallback(func(r core.Result[R]) {
+		outCh <- r
+	})
+
+	go func() {
+		for i := range items {
+			idx := i
+			g.Go(ffCtx, func(ctx context.Context) (R, error) {
+				val, err := fn(ctx, items[idx])
+				if err != nil {
+					ffCancel()
+				}
+				return val, err
+			})
+		}
+		g.Wait()
+		ffCancel()
+		close(outCh)
+	}()
+
+	return outCh
+}
+
 func mapImpl[T any, R any](ctx context.Context, items []T, fn func(context.Context, T) (R, error), concurrency int, failFast bool) ([]core.Result[R], error) {
 	n := len(items)
 	if n == 0 {
@@ -360,6 +476,120 @@ func ForEachWithFailFast[T any](ctx context.Context, items []T, fn func(context.
 	}
 	g.Wait()
 	return group.BuildAggregateNoResult(g)
+}
+
+// ──────────────────────────── ForEachStream ────────────────────────────
+
+// ForEachStream 并发遍历元素，通过 channel 流式返回每个元素的错误结果，实现边执行边消费。
+// 返回的 Result[struct{}] 中 Err 为 nil 表示成功，非 nil 表示失败。
+//
+// 适用场景：需要实时处理批量操作结果的场景，如逐条记录日志、实时告警。
+//
+// 参数：
+//   - ctx：上下文
+//   - items：输入元素切片
+//   - fn：处理函数，只返回 error
+//   - concurrency：并发度
+//   - bufSize：channel 缓冲区大小，<=0 时自动计算
+//
+// 使用示例：
+//
+//	ch := mapreduce.ForEachStream(ctx, records, func(ctx context.Context, r Record) error {
+//	    return saveToDB(ctx, r)
+//	}, 64, 1024)
+//	for res := range ch {
+//	    if res.Err != nil {
+//	        log.Printf("处理失败: %v", res.Err)
+//	    }
+//	}
+func ForEachStream[T any](ctx context.Context, items []T, fn func(context.Context, T) error, concurrency int, bufSize int) <-chan core.Result[struct{}] {
+	ctx = core.EnsureTraceID(ctx)
+	n := len(items)
+	if concurrency <= 0 {
+		concurrency = core.IO()
+	}
+	if concurrency > n && n > 0 {
+		concurrency = n
+	}
+	if concurrency <= 0 {
+		concurrency = 1
+	}
+	if bufSize <= 0 {
+		if n <= 16384 {
+			bufSize = n
+		} else {
+			bufSize = 16384
+		}
+	}
+
+	outCh := make(chan core.Result[struct{}], bufSize)
+
+	nr := group.NewNoResult(concurrency)
+	nr.WithResultCallback(func(r core.Result[struct{}]) {
+		outCh <- r
+	})
+
+	go func() {
+		for i := range items {
+			idx := i
+			nr.Go(ctx, func(ctx context.Context) error {
+				return fn(ctx, items[idx])
+			})
+		}
+		nr.Wait()
+		close(outCh)
+	}()
+
+	return outCh
+}
+
+// ForEachStreamWithFailFast 带 FailFast 的流式 ForEach：首个错误立即取消其余任务。
+func ForEachStreamWithFailFast[T any](ctx context.Context, items []T, fn func(context.Context, T) error, concurrency int, bufSize int) <-chan core.Result[struct{}] {
+	ctx = core.EnsureTraceID(ctx)
+	n := len(items)
+	if concurrency <= 0 {
+		concurrency = core.IO()
+	}
+	if concurrency > n && n > 0 {
+		concurrency = n
+	}
+	if concurrency <= 0 {
+		concurrency = 1
+	}
+	if bufSize <= 0 {
+		if n <= 16384 {
+			bufSize = n
+		} else {
+			bufSize = 16384
+		}
+	}
+
+	ffCtx, ffCancel := context.WithCancel(ctx)
+
+	outCh := make(chan core.Result[struct{}], bufSize)
+
+	nr := group.NewNoResult(concurrency)
+	nr.WithResultCallback(func(r core.Result[struct{}]) {
+		outCh <- r
+	})
+
+	go func() {
+		for i := range items {
+			idx := i
+			nr.Go(ffCtx, func(ctx context.Context) error {
+				err := fn(ctx, items[idx])
+				if err != nil {
+					ffCancel()
+				}
+				return err
+			})
+		}
+		nr.Wait()
+		ffCancel()
+		close(outCh)
+	}()
+
+	return outCh
 }
 
 // ──────────────────────────── Reduce ────────────────────────────

@@ -1388,6 +1388,11 @@ func (nr *NoResult) WithResultCallback(fn func(core.Result[struct{}])) *NoResult
 	return nr
 }
 
+// StreamResults 返回流式结果的只读 channel，实时消费任务完成事件。
+func (nr *NoResult) StreamResults() <-chan core.Result[struct{}] {
+	return (*Group[struct{}])(nr).StreamResults()
+}
+
 // Go 提交无返回值任务。
 //
 // 参数：
@@ -1743,6 +1748,30 @@ func (mg *MultiGroup[T]) WithResultCallback(fn func(core.Result[T])) *MultiGroup
 		g.WithResultCallback(fn)
 	}
 	return mg
+}
+
+// StreamResults 返回合并所有分片流式结果的只读 channel。
+// 每个分片的流式结果会被 fan-in 到此 channel，所有分片的 channel 关闭后自动关闭此 channel。
+func (mg *MultiGroup[T]) StreamResults() <-chan core.Result[T] {
+	merged := make(chan core.Result[T], len(mg.groups)*256)
+	var wg sync.WaitGroup
+	for _, g := range mg.groups {
+		ch := g.StreamResults()
+		if ch != nil {
+			wg.Add(1)
+			go func(c <-chan core.Result[T]) {
+				defer wg.Done()
+				for r := range c {
+					merged <- r
+				}
+			}(ch)
+		}
+	}
+	go func() {
+		wg.Wait()
+		close(merged)
+	}()
+	return merged
 }
 
 // ──────────────────────────── Group.Shard ────────────────────────────
