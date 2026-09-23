@@ -73,8 +73,11 @@ func (rb *RingBuffer[T]) Push(val T) bool {
 			s.mu.Unlock()
 			return true
 		default:
-			// Block/Error 策略：写失败不推进写入序号（回退）
-			rb.writeIdx.Add(^uint64(0)) // -1
+			// Block/Error 策略：写失败尝试回退写入序号。
+			// 使用 CAS 保证回退不会错误地撤销其他 goroutine 的递增。
+			// 若 CAS 失败（其他 writer 已推进 writeIdx），则不回退，
+			// 由 Pop 侧的空洞跳过机制处理这个"空隙"。
+			rb.tryRollbackWriteIdx(widx)
 			s.mu.Unlock()
 			return false
 		}
@@ -86,6 +89,24 @@ func (rb *RingBuffer[T]) Push(val T) bool {
 	return true
 }
 
+// tryRollbackWriteIdx 尝试将 writeIdx 从 widx+1 回退到 widx。
+// 仅当 writeIdx 未被其他 goroutine 修改时才执行回退。
+// 这保证了不会错误撤销其他 goroutine 的递增。
+func (rb *RingBuffer[T]) tryRollbackWriteIdx(widx uint64) {
+	for {
+		cur := rb.writeIdx.Load()
+		expected := widx + 1
+		if cur != expected {
+			// 其他 writer 已推进 writeIdx，不需要回退（Pop 侧会跳过空洞）
+			return
+		}
+		if rb.writeIdx.CompareAndSwap(cur, cur-1) {
+			return
+		}
+		// CAS 失败（cur 恰好又被改了），重试
+	}
+}
+
 // Pop 读取并移除最旧元素。空时返回零值和 false。
 func (rb *RingBuffer[T]) Pop() (T, bool) {
 	rb.resetMu.RLock()
@@ -94,31 +115,38 @@ func (rb *RingBuffer[T]) Pop() (T, bool) {
 }
 
 func (rb *RingBuffer[T]) popUnsafe() (T, bool) {
-	ridx := rb.readIdx.Load()
-	widx := rb.writeIdx.Load()
-	if ridx >= widx {
+	for {
+		ridx := rb.readIdx.Load()
+		widx := rb.writeIdx.Load()
+		if ridx >= widx {
+			var zero T
+			return zero, false
+		}
+
+		shardIdx := int(ridx % ringBufShardCount)
+		s := &rb.shards[shardIdx]
+
+		s.mu.Lock()
+		if s.size == 0 {
+			s.mu.Unlock()
+			// 空洞：当前 readIdx 对应的分片为空（Push 回退失败留下的空隙）。
+			// 使用 CAS 将 readIdx 推进 1，跳过这个空洞。
+			if rb.readIdx.CompareAndSwap(ridx, ridx+1) {
+				continue
+			}
+			// CAS 失败表示其他 Pop 已推进 readIdx，重试
+			continue
+		}
+		val := s.buf[s.head]
 		var zero T
-		return zero, false
-	}
-
-	shardIdx := int(ridx % ringBufShardCount)
-	s := &rb.shards[shardIdx]
-
-	s.mu.Lock()
-	if s.size == 0 {
+		s.buf[s.head] = zero
+		s.head = (s.head + 1) % s.capacity
+		s.size--
 		s.mu.Unlock()
-		var zero T
-		return zero, false
-	}
-	val := s.buf[s.head]
-	var zero T
-	s.buf[s.head] = zero
-	s.head = (s.head + 1) % s.capacity
-	s.size--
-	s.mu.Unlock()
 
-	rb.readIdx.Add(1)
-	return val, true
+		rb.readIdx.Add(1)
+		return val, true
+	}
 }
 
 // Peek 读取最旧元素但不移除。
@@ -132,18 +160,27 @@ func (rb *RingBuffer[T]) Peek() (T, bool) {
 		return zero, false
 	}
 
-	shardIdx := int(ridx % ringBufShardCount)
-	s := &rb.shards[shardIdx]
+	// 使用本地变量跳过空洞，不修改 readIdx
+	for {
+		if ridx >= widx {
+			var zero T
+			return zero, false
+		}
+		shardIdx := int(ridx % ringBufShardCount)
+		s := &rb.shards[shardIdx]
 
-	s.mu.Lock()
-	if s.size == 0 {
+		s.mu.Lock()
+		if s.size == 0 {
+			s.mu.Unlock()
+			ridx++
+			// 重新读取 widx 以反映最新状态
+			widx = rb.writeIdx.Load()
+			continue
+		}
+		val := s.buf[s.head]
 		s.mu.Unlock()
-		var zero T
-		return zero, false
+		return val, true
 	}
-	val := s.buf[s.head]
-	s.mu.Unlock()
-	return val, true
 }
 
 // Len 返回当前元素数。
