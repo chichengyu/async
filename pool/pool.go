@@ -73,6 +73,7 @@ type Pool[T any] struct {
 	busy          atomic.Int32                   // 当前忙碌任务数
 	pending       atomic.Int32                   // 等待中的任务数
 	waited        atomic.Bool                    // 是否已完成 Wait
+	waitInvoked   atomic.Bool                    // Wait 幂等保护：确保 Wait/WaitTimeout/WaitContext 只执行一次
 	quitting      atomic.Int32                   // 正在退出的 worker 计数
 	quitCh        chan struct{}                  // 缩容广播信号，close 通知空闲 worker 检查 quitting
 	quitMu        sync.RWMutex                   // 保护 quitCh 读写的并发安全
@@ -1286,13 +1287,16 @@ func (p *Pool[T]) discardTask(record core.PoolRecordFunc[T], idx int, taskCancel
 // 使用 CAS 循环保证"检查上限→递增计数"的原子性，消除传统"先读后写"带来的 TOCTOU 竞态窗口。
 // 返回 true 表示获取成功（pending 已递增），false 表示已达上限。
 func (p *Pool[T]) tryAcquirePendingSlot(limit int32) bool {
-	for {
+	for i := 0; ; i++ {
 		cur := p.pending.Load()
 		if cur >= limit {
 			return false
 		}
 		if p.pending.CompareAndSwap(cur, cur+1) {
 			return true
+		}
+		if i >= 3 {
+			runtime.Gosched()
 		}
 	}
 }
@@ -1330,6 +1334,10 @@ func (p *Pool[T]) waitAddInFlight() {
 //	    }
 //	}
 func (p *Pool[T]) Wait() []core.Result[T] {
+	if !p.waitInvoked.CompareAndSwap(false, true) {
+		core.LogCtxWarn(p.ctx, "async: Pool.Wait called multiple times, returning nil")
+		return nil
+	}
 	// 设置提交保护，禁止新 Submit
 	p.submitGuard.Store(true)
 	// 等待所有已通过 precheck 的协程完成 wg.Add(1)，避免与 wg.Wait() 竞态
@@ -1626,6 +1634,10 @@ func (p *Pool[T]) JoinErrors() error {
 //	    log.Println("等待超时")
 //	}
 func (p *Pool[T]) WaitTimeout(d time.Duration) ([]core.Result[T], bool) {
+	if !p.waitInvoked.CompareAndSwap(false, true) {
+		core.LogCtxWarn(p.ctx, "async: Pool.WaitTimeout called after a Wait variant already completed")
+		return nil, false
+	}
 	p.submitGuard.Store(true)
 	p.waitAddInFlight()
 	results, ok := core.WaitTimeoutImpl(d, &p.wg, p.cancel, &p.submitGuard, &p.waited, func() {
@@ -1647,6 +1659,10 @@ func (p *Pool[T]) WaitTimeout(d time.Duration) ([]core.Result[T], bool) {
 //	defer cancel()
 //	results, ok := p.WaitContext(ctx)
 func (p *Pool[T]) WaitContext(ctx context.Context) ([]core.Result[T], bool) {
+	if !p.waitInvoked.CompareAndSwap(false, true) {
+		core.LogCtxWarn(p.ctx, "async: Pool.WaitContext called after a Wait variant already completed")
+		return nil, false
+	}
 	p.submitGuard.Store(true)
 	p.waitAddInFlight()
 	return core.WaitContextImpl(ctx, &p.wg, p.cancel, &p.submitGuard, &p.waited, func() {
@@ -1917,6 +1933,7 @@ func (p *Pool[T]) Reset() (*Pool[T], error) {
 	// 先替换 taskCh 再开放 Submit 入口，防止 Submit 向已关闭的 oldTaskCh 发送导致任务丢失
 	p.submitGuard.Store(false)
 	p.waited.Store(false)
+	p.waitInvoked.Store(false)
 	p.closed.Store(false)
 	p.quitMu.Lock()
 	p.quitCh = make(chan struct{})
