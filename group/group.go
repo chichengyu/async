@@ -32,7 +32,7 @@ type Group[T any] struct {
 	limit         atomic.Pointer[chan struct{}] // 并发控制信号量（支持动态替换）
 	concurrency   atomic.Int32                  // 当前最大并发数
 	wg            sync.WaitGroup                // 等待所有任务完成
-	addMu         sync.Mutex                    // 保护 wg.Add 和 Wait 的竞态，避免 data race
+	addInFlight   atomic.Int64                  // precheck通过后、wg.Add(1)前的协程数，与Wait同步
 	mu            sync.Mutex                    // 保护 results/cancels/waited/freeIndices
 	results       []core.Result[T]              // 任务结果切片（按提交顺序）
 	freeIndices   []int                         // 空闲索引栈（GoAt 扩容产生的空洞），LIFO 实现 O(1) addResult
@@ -415,9 +415,17 @@ func (g *Group[T]) groupPrecheck(ctx context.Context, record GroupRecordFunc[T],
 	default:
 	}
 
-	g.addMu.Lock()
+	g.addInFlight.Add(1)
+	defer g.addInFlight.Add(-1)
+
+	if g.waited.Load() {
+		core.LogCtxError(ctx, fmt.Sprintf("async: Group.%s called after Group.Wait completed, task discarded", caller))
+		record(core.Result[T]{Err: core.ErrGroupWaited, Occupied: true})
+		atomic.AddInt64(&g.errCnt, 1)
+		var cancel context.CancelFunc
+		return ctx, cancel, core.ErrGroupWaited
+	}
 	if g.waiting.Load() {
-		g.addMu.Unlock()
 		core.LogCtxError(ctx, fmt.Sprintf("async: Group.%s called while Group.Wait is in progress, task discarded", caller))
 		record(core.Result[T]{Err: core.ErrGroupWaiting})
 		atomic.AddInt64(&g.errCnt, 1)
@@ -425,7 +433,6 @@ func (g *Group[T]) groupPrecheck(ctx context.Context, record GroupRecordFunc[T],
 		return ctx, cancel, core.ErrGroupWaiting
 	}
 	g.wg.Add(1)
-	g.addMu.Unlock()
 	g.active.Add(1)
 	taskCtx, taskCancel := context.WithCancel(ctx)
 
@@ -778,9 +785,8 @@ func (g *Group[T]) setResultAt(index int, r core.Result[T]) {
 //	    }
 //	}
 func (g *Group[T]) Wait() []core.Result[T] {
-	g.addMu.Lock()
 	g.waiting.Store(true)
-	g.addMu.Unlock()
+	g.waitAddInFlight()
 	g.wg.Wait()
 	g.mu.Lock()
 	g.waited.Store(true)
@@ -796,6 +802,25 @@ func (g *Group[T]) Wait() []core.Result[T] {
 	g.signalDone()
 	g.drainStreaming()
 	return results
+}
+
+// waitAddInFlight 等待所有处于 precheck 与 wg.Add(1) 之间的协程完成 wg.Add(1)。
+// 必须在 waiting 设为 true 之后、wg.Wait() 之前调用，保证二者之间的同步。
+//
+// 采用渐进退避：绝大多数场景下 addInFlight 在微秒级降为 0，
+// 前几次迭代用 Gosched 快速轮询，超时后逐步放大等待间隔，
+// 避免极端高并发下 CPU 空转。
+func (g *Group[T]) waitAddInFlight() {
+	for i := 0; g.addInFlight.Load() > 0; i++ {
+		switch {
+		case i < 4:
+			runtime.Gosched()
+		case i < 32:
+			time.Sleep(time.Microsecond)
+		default:
+			time.Sleep(100 * time.Microsecond)
+		}
+	}
 }
 
 func (g *Group[T]) signalDone() {
@@ -1041,9 +1066,8 @@ func (g *Group[T]) Reset() (*Group[T], error) {
 //	    log.Println("部分任务未完成")
 //	}
 func (g *Group[T]) WaitTimeout(d time.Duration) ([]core.Result[T], bool) {
-	g.addMu.Lock()
 	g.waiting.Store(true)
-	g.addMu.Unlock()
+	g.waitAddInFlight()
 	results, ok := core.WaitTimeoutImpl(d, &g.wg, g.cancel, nil, &g.waited, func() {
 		g.mu.Lock()
 		g.cancelAll()
@@ -1071,9 +1095,8 @@ func (g *Group[T]) WaitTimeout(d time.Duration) ([]core.Result[T], bool) {
 //	defer cancel()
 //	results, ok := g.WaitContext(ctx)
 func (g *Group[T]) WaitContext(ctx context.Context) ([]core.Result[T], bool) {
-	g.addMu.Lock()
 	g.waiting.Store(true)
-	g.addMu.Unlock()
+	g.waitAddInFlight()
 	results, ok := core.WaitContextImpl(ctx, &g.wg, g.cancel, nil, &g.waited, func() {
 		g.mu.Lock()
 		g.cancelAll()
