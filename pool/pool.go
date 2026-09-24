@@ -21,6 +21,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -72,7 +73,9 @@ type Pool[T any] struct {
 	busy          atomic.Int32                   // 当前忙碌任务数
 	pending       atomic.Int32                   // 等待中的任务数
 	waited        atomic.Bool                    // 是否已完成 Wait
-	quitting      atomic.Int32                   // 是否正在退出中
+	quitting      atomic.Int32                   // 正在退出的 worker 计数
+	quitCh        chan struct{}                  // 缩容广播信号，close 通知空闲 worker 检查 quitting
+	quitMu        sync.RWMutex                   // 保护 quitCh 读写的并发安全
 	ctx           context.Context                // 池级别的上下文
 
 	// ──────── 自动扩缩容（可选，默认关闭）────────
@@ -132,6 +135,7 @@ func NewPool[T any](size int) *Pool[T] {
 		timeout: core.GetDefaultTimeout(),
 		ctx:     context.Background(),
 		done:    make(chan struct{}),
+		quitCh:  make(chan struct{}),
 	}
 	p.size.Store(int32(size))
 	p.workerWg.Add(size)
@@ -544,6 +548,9 @@ func (p *Pool[T]) drainStreaming() {
 
 func (p *Pool[T]) worker() {
 	defer p.workerWg.Done()
+	p.quitMu.RLock()
+	quitCh := p.quitCh
+	p.quitMu.RUnlock()
 	for {
 		select {
 		case task, ok := <-p.taskCh:
@@ -571,6 +578,21 @@ func (p *Pool[T]) worker() {
 					}
 				}
 			}
+		case <-quitCh:
+			if p.quitting.Load() > 0 {
+				for {
+					v := p.quitting.Load()
+					if v <= 0 {
+						break
+					}
+					if p.quitting.CompareAndSwap(v, v-1) {
+						return
+					}
+				}
+			}
+			p.quitMu.RLock()
+			quitCh = p.quitCh
+			p.quitMu.RUnlock()
 		case <-p.done:
 			for {
 				select {
@@ -760,6 +782,10 @@ func (p *Pool[T]) resultsPrecheckSet(idx int64, r core.Result[T]) {
 }
 
 // resultsCollect 收集所有分片的结果，按提交顺序合并。
+//
+// 优化：不再对每个元素逐一加锁（lock-per-element），
+// 改为对每个分片加锁一次并批量拷贝（lock-per-shard）。
+// 锁次数从 O(N) 降到 O(poolShardCount)，百万任务下从百万次降到 32 次。
 func (p *Pool[T]) resultsCollect() []core.Result[T] {
 	total := int(p.submitIdx.Load())
 	maxR := int(p.maxResults)
@@ -767,13 +793,16 @@ func (p *Pool[T]) resultsCollect() []core.Result[T] {
 		total = maxR
 	}
 	results := make([]core.Result[T], total)
-	for i := 0; i < total; i++ {
-		shardIdx := i % poolShardCount
-		localIdx := i / poolShardCount
+
+	// 按分片批量拷贝：每个分片锁定一次，将所有结果写入交错排列的位置
+	for shardIdx := 0; shardIdx < poolShardCount; shardIdx++ {
 		s := &p.shards[shardIdx]
 		s.mu.Lock()
-		if localIdx < len(s.results) {
-			results[i] = s.results[localIdx]
+		for localIdx := range s.results {
+			globalIdx := localIdx*poolShardCount + shardIdx
+			if globalIdx < total {
+				results[globalIdx] = s.results[localIdx]
+			}
 		}
 		s.mu.Unlock()
 	}
@@ -819,45 +848,63 @@ func (p *Pool[T]) submitIndexed(ctx context.Context, fn func(context.Context) (T
 		return -1, err
 	}
 
-	if mp := p.maxPending; mp > 0 && p.Pending() >= int(mp) {
-		switch p.overflowStrat {
-		case core.OverflowDrop:
-			p.addInFlight.Add(-1)
-			idx := p.submitIdx.Add(1) - 1
-			p.resultsSet(idx, core.Result[T]{Err: core.ErrQueueOverflow, Occupied: true})
-			atomic.AddInt64(&p.errCnt, 1)
-			return -1, nil
-		case core.OverflowError:
-			p.addInFlight.Add(-1)
-			idx := p.submitIdx.Add(1) - 1
-			p.resultsSet(idx, core.Result[T]{Err: core.ErrQueueOverflow, Occupied: true})
-			atomic.AddInt64(&p.errCnt, 1)
-			return -1, core.ErrQueueOverflow
-		}
-	}
-	taskCtx, taskCancel := context.WithCancel(ctx)
-
-	// 二次检查：防止 poolPrecheck 与这里之间 Close() 被调用导致 wg 泄漏
+	// 二次检查：防止 poolPrecheck 与 wg.Add 之间 Close() 被调用导致泄漏。
+	// 必须在 CAS 背压检查之前执行，否则若 CAS 已递增 pending 后再检测到 Close，
+	// 需要在返回路径中回退 pending，增加复杂度且降低性能。
 	if p.closed.Load() {
 		p.addInFlight.Add(-1)
-		taskCancel()
 		idx := p.submitIdx.Add(1) - 1
 		p.resultsSet(idx, core.Result[T]{Err: core.ErrPoolClosed, Occupied: true})
 		return -1, core.ErrPoolClosed
 	}
 
+	// 原子化背压检查：对 Drop/Error 策略使用 CAS 保证"检查上限→递增计数"的原子性，
+	// 消除传统"先读后写"带来的 TOCTOU 竞态窗口。
+	// Block 策略或未设置限制时，TOCTOU 无害（任务本身就会排队等待），保持简单递增。
+	var pendingAcquired bool
+	if mp := p.maxPending; mp > 0 {
+		switch p.overflowStrat {
+		case core.OverflowDrop:
+			if !p.tryAcquirePendingSlot(mp) {
+				p.addInFlight.Add(-1)
+				idx := p.submitIdx.Add(1) - 1
+				p.resultsSet(idx, core.Result[T]{Err: core.ErrQueueOverflow, Occupied: true})
+				atomic.AddInt64(&p.errCnt, 1)
+				return -1, nil
+			}
+			pendingAcquired = true
+		case core.OverflowError:
+			if !p.tryAcquirePendingSlot(mp) {
+				p.addInFlight.Add(-1)
+				idx := p.submitIdx.Add(1) - 1
+				p.resultsSet(idx, core.Result[T]{Err: core.ErrQueueOverflow, Occupied: true})
+				atomic.AddInt64(&p.errCnt, 1)
+				return -1, core.ErrQueueOverflow
+			}
+			pendingAcquired = true
+		}
+	}
+
+	taskCtx, taskCancel := context.WithCancel(ctx)
+
 	idx := p.resultsAppend(taskCancel)
 
-	p.pending.Add(1)
+	if !pendingAcquired {
+		p.pending.Add(1)
+	}
 	p.wg.Add(1)
 	// wg.Add(1) 已完成，退出临界区
 	p.addInFlight.Add(-1)
 
+	maxR := int(p.maxResults)
 	record := func(r core.Result[T], _ int) {
 		p.resultsSet(idx, r)
 		p.recordToStream(r)
 		if p.ringBufFlag.Load() && p.ringBuf != nil {
-			p.ringBuf.Push(r)
+			// maxR<=0 时全量镜像写入；maxR>0 时仅写入溢出部分，避免与分片存储重复
+			if maxR <= 0 || int(idx) >= maxR {
+				p.ringBuf.Push(r)
+			}
 		}
 	}
 
@@ -914,6 +961,7 @@ func (p *Pool[T]) SubmitAt(index int, ctx context.Context, fn func(context.Conte
 	p.wg.Add(1)
 	p.addInFlight.Add(-1)
 
+	maxR := int(p.maxResults)
 	record := func(r core.Result[T], idx int) {
 		i := int64(idx)
 		if i >= 0 {
@@ -921,7 +969,9 @@ func (p *Pool[T]) SubmitAt(index int, ctx context.Context, fn func(context.Conte
 		}
 		p.recordToStream(r)
 		if p.ringBufFlag.Load() && p.ringBuf != nil {
-			p.ringBuf.Push(r)
+			if maxR <= 0 || int(i) >= maxR {
+				p.ringBuf.Push(r)
+			}
 		}
 	}
 
@@ -975,11 +1025,14 @@ func (p *Pool[T]) TrySubmit(ctx context.Context, fn func(context.Context) (T, er
 	p.wg.Add(1)
 	p.addInFlight.Add(-1)
 
+	maxR := int(p.maxResults)
 	record := func(r core.Result[T], _ int) {
 		p.resultsSet(idx, r)
 		p.recordToStream(r)
 		if p.ringBufFlag.Load() && p.ringBuf != nil {
-			p.ringBuf.Push(r)
+			if maxR <= 0 || int(idx) >= maxR {
+				p.ringBuf.Push(r)
+			}
 		}
 	}
 
@@ -1017,6 +1070,16 @@ func (p *Pool[T]) TrySubmit(ctx context.Context, fn func(context.Context) (T, er
 //	removed := p.Resize(2) // 缩容到 2 个 worker
 //	fmt.Printf("移除 %d 个 worker\n", removed)
 func (p *Pool[T]) Resize(newSize int) int {
+	// 更新 AutoScale 边界，保持手动 resize 后的范围合理
+	if p.IsAutoScaleEnabled() && p.autoScale != nil {
+		if newSize < p.autoScale.MinWorkers {
+			p.autoScale.MinWorkers = newSize
+		}
+		if newSize > p.autoScale.MaxWorkers {
+			p.autoScale.MaxWorkers = newSize
+		}
+	}
+
 	current := int(p.size.Load())
 	if newSize > current {
 		added := newSize - current
@@ -1031,6 +1094,10 @@ func (p *Pool[T]) Resize(newSize int) int {
 		p.size.Store(int32(newSize))
 		p.quitting.Add(int32(quit))
 		if !p.closed.Load() {
+			p.quitMu.Lock()
+			close(p.quitCh)
+			p.quitCh = make(chan struct{})
+			p.quitMu.Unlock()
 			for i := 0; i < quit; i++ {
 				p.sendQuitSignal()
 			}
@@ -1120,8 +1187,9 @@ func (p *Pool[T]) enqueueTask(ctx context.Context, taskCtx context.Context, task
 		} else if errors.Is(err, core.ErrSubmitTimeout) {
 			core.LogCtxWarn(ctx, "async: Pool.Submit blocking on task queue, consider setting WithSubmitTimeout",
 				core.Dur("elapsed", core.SlotAcquireWarnTimeout))
+			jitter := time.Duration(rand.Int63n(int64(backoff)))
 			select {
-			case <-time.After(backoff):
+			case <-time.After(backoff/2 + jitter):
 			case <-p.done:
 				p.discardTask(record, idx, taskCancel, core.ErrPoolClosed)
 				return core.ErrPoolClosed
@@ -1210,14 +1278,41 @@ func (p *Pool[T]) discardTask(record core.PoolRecordFunc[T], idx int, taskCancel
 	record(core.Result[T]{Value: zero, Err: err, Occupied: true}, idx)
 	atomic.AddInt64(&p.errCnt, 1)
 	taskCancel()
+	p.pending.Add(-1)
 	p.wg.Done()
+}
+
+// tryAcquirePendingSlot 原子地检查并获取一个等待槽位。
+// 使用 CAS 循环保证"检查上限→递增计数"的原子性，消除传统"先读后写"带来的 TOCTOU 竞态窗口。
+// 返回 true 表示获取成功（pending 已递增），false 表示已达上限。
+func (p *Pool[T]) tryAcquirePendingSlot(limit int32) bool {
+	for {
+		cur := p.pending.Load()
+		if cur >= limit {
+			return false
+		}
+		if p.pending.CompareAndSwap(cur, cur+1) {
+			return true
+		}
+	}
 }
 
 // waitAddInFlight 等待所有处于 precheck 与 wg.Add(1) 之间的协程完成 wg.Add(1)。
 // 必须在 submitGuard 设为 true 之后、wg.Wait() 之前调用，保证二者之间的同步。
+//
+// 采用渐进退避：绝大多数场景下 addInFlight 在微秒级降为 0，
+// 前几次迭代用 Gosched 快速轮询，超时后逐步放大等待间隔，
+// 避免极端高并发下 CPU 空转。
 func (p *Pool[T]) waitAddInFlight() {
-	for p.addInFlight.Load() > 0 {
-		runtime.Gosched()
+	for i := 0; p.addInFlight.Load() > 0; i++ {
+		switch {
+		case i < 4:
+			runtime.Gosched()
+		case i < 32:
+			time.Sleep(time.Microsecond)
+		default:
+			time.Sleep(100 * time.Microsecond)
+		}
 	}
 }
 
@@ -1246,6 +1341,13 @@ func (p *Pool[T]) Wait() []core.Result[T] {
 	p.cancelAllShards()
 
 	results := p.resultsCollect()
+
+	// 环形缓冲作为溢出区时（maxResults>0），将溢出结果也纳入 Wait 返回，
+	// 保证调用方通过 Wait() 拿到完整结果集。
+	if p.ringBufFlag.Load() && p.ringBuf != nil && p.maxResults > 0 {
+		overflow := p.ringBuf.Flush()
+		results = append(results, overflow...)
+	}
 
 	if cancel := p.cancel; cancel != nil {
 		cancel()
@@ -1293,7 +1395,6 @@ func (p *Pool[T]) drainOrphanTasks() {
 			if task.Quit || task.Record == nil {
 				continue
 			}
-			p.pending.Add(-1)
 			p.discardTask(task.Record, task.Index, task.Cancel, core.ErrPoolClosed)
 		default:
 			return
@@ -1776,8 +1877,6 @@ func (p *Pool[T]) Reset() (*Pool[T], error) {
 	}
 
 	p.submitIdx.Store(0)
-	p.submitGuard.Store(false)
-	p.waited.Store(false)
 	savedTimeout := p.timeout
 	savedSubmitTimeout := p.submitTimeout
 	savedMaxPending := p.maxPending
@@ -1786,11 +1885,17 @@ func (p *Pool[T]) Reset() (*Pool[T], error) {
 	savedRingBuf := p.ringBuf
 	savedStreamCh := p.streamCh
 	savedResultCb := p.resultCb
+	savedFailFast := p.failFast.Load()
 	p.ctx = context.Background()
 	p.errCnt = 0
-	p.failFast.Store(false)
-	p.cancel = nil
-	p.closed.Store(false)
+	p.failFast.Store(savedFailFast)
+	if savedFailFast {
+		ctx, cancel := context.WithCancel(context.Background())
+		p.ctx = ctx
+		p.cancel = cancel
+	} else {
+		p.cancel = nil
+	}
 	p.quitting.Store(0)
 	p.streamDropped.Store(0)
 	if savedStreamCh != nil {
@@ -1808,6 +1913,14 @@ func (p *Pool[T]) Reset() (*Pool[T], error) {
 
 	newTaskCh := make(chan core.PoolTask[T], newSize*2)
 	p.taskCh = newTaskCh
+
+	// 先替换 taskCh 再开放 Submit 入口，防止 Submit 向已关闭的 oldTaskCh 发送导致任务丢失
+	p.submitGuard.Store(false)
+	p.waited.Store(false)
+	p.closed.Store(false)
+	p.quitMu.Lock()
+	p.quitCh = make(chan struct{})
+	p.quitMu.Unlock()
 	p.timeout = savedTimeout
 	p.submitTimeout = savedSubmitTimeout
 	p.maxPending = savedMaxPending

@@ -111,7 +111,7 @@ func Execute[T any](
 
 		chunkSize := (len(resultsList) + concurrency - 1) / concurrency
 		var wg sync.WaitGroup
-		var mu sync.Mutex
+
 		for c := 0; c < concurrency; c++ {
 			start := c * chunkSize
 			end := start + chunkSize
@@ -124,11 +124,19 @@ func Execute[T any](
 			wg.Add(1)
 			go func(start, end int) {
 				defer wg.Done()
+				defer func() {
+					if r := recover(); r != nil {
+						for j := start; j < end; j++ {
+							var zero T
+							nextResults[j] = core.Result[T]{Value: zero, Err: core.NewPanicError(r)}
+						}
+					}
+				}()
 				for j := start; j < end; j++ {
 					val, err := fn(ctx, stage.Name, resultsList[j].Value)
-					mu.Lock()
+
 					nextResults[j] = core.Result[T]{Value: val, Err: err}
-					mu.Unlock()
+
 				}
 			}(start, end)
 		}
@@ -179,7 +187,7 @@ func ExecuteWithMeta[T any](
 		stageResults := make([]core.Result[T], len(items))
 		chunkSize := (len(items) + concurrency - 1) / concurrency
 		var wg sync.WaitGroup
-		var mu sync.Mutex
+
 		for c := 0; c < concurrency; c++ {
 			start := c * chunkSize
 			end := start + chunkSize
@@ -192,11 +200,19 @@ func ExecuteWithMeta[T any](
 			wg.Add(1)
 			go func(start, end int) {
 				defer wg.Done()
+				defer func() {
+					if r := recover(); r != nil {
+						for j := start; j < end; j++ {
+							var zero T
+							stageResults[j] = core.Result[T]{Value: zero, Err: core.NewPanicError(r)}
+						}
+					}
+				}()
 				for j := start; j < end; j++ {
 					val, err := fn(ctx, stage.Name, items[j])
-					mu.Lock()
+
 					stageResults[j] = core.Result[T]{Value: val, Err: err}
-					mu.Unlock()
+
 				}
 			}(start, end)
 		}
@@ -315,7 +331,7 @@ func ExecuteStream[T any](
 
 		chunkSize := (len(resultsList) + concurrency - 1) / concurrency
 		var wg sync.WaitGroup
-		var mu sync.Mutex
+
 		for c := 0; c < concurrency; c++ {
 			start := c * chunkSize
 			end := start + chunkSize
@@ -328,11 +344,19 @@ func ExecuteStream[T any](
 			wg.Add(1)
 			go func(start, end int) {
 				defer wg.Done()
+				defer func() {
+					if r := recover(); r != nil {
+						for j := start; j < end; j++ {
+							var zero T
+							nextResults[j] = core.Result[T]{Value: zero, Err: core.NewPanicError(r)}
+						}
+					}
+				}()
 				for j := start; j < end; j++ {
 					val, err := fn(ctx, stage.Name, resultsList[j].Value)
-					mu.Lock()
+
 					nextResults[j] = core.Result[T]{Value: val, Err: err}
-					mu.Unlock()
+
 				}
 			}(start, end)
 		}
@@ -480,7 +504,7 @@ func (p *Pipeline[T]) executeNative(
 
 		chunkSize := (len(resultsList) + concurrency - 1) / concurrency
 		var wg sync.WaitGroup
-		var mu sync.Mutex
+
 		for c := 0; c < concurrency; c++ {
 			start := c * chunkSize
 			end := start + chunkSize
@@ -493,11 +517,19 @@ func (p *Pipeline[T]) executeNative(
 			wg.Add(1)
 			go func(start, end int) {
 				defer wg.Done()
+				defer func() {
+					if r := recover(); r != nil {
+						for j := start; j < end; j++ {
+							var zero T
+							nextResults[j] = core.Result[T]{Value: zero, Err: core.NewPanicError(r)}
+						}
+					}
+				}()
 				for j := start; j < end; j++ {
 					val, err := fn(ctx, stage.Name, resultsList[j].Value)
-					mu.Lock()
+
 					nextResults[j] = core.Result[T]{Value: val, Err: err}
-					mu.Unlock()
+
 				}
 			}(start, end)
 		}
@@ -579,7 +611,7 @@ func (p *Pipeline[T]) executeWithMetaNative(
 		stageResults := make([]core.Result[T], len(elems))
 		chunkSize := (len(elems) + concurrency - 1) / concurrency
 		var wg sync.WaitGroup
-		var mu sync.Mutex
+
 		for c := 0; c < concurrency; c++ {
 			start := c * chunkSize
 			end := start + chunkSize
@@ -592,11 +624,19 @@ func (p *Pipeline[T]) executeWithMetaNative(
 			wg.Add(1)
 			go func(start, end int) {
 				defer wg.Done()
+				defer func() {
+					if r := recover(); r != nil {
+						for j := start; j < end; j++ {
+							var zero T
+							stageResults[j] = core.Result[T]{Value: zero, Err: core.NewPanicError(r)}
+						}
+					}
+				}()
 				for j := start; j < end; j++ {
 					val, err := fn(ctx, stage.Name, elems[j])
-					mu.Lock()
+
 					stageResults[j] = core.Result[T]{Value: val, Err: err}
-					mu.Unlock()
+
 				}
 			}(start, end)
 		}

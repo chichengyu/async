@@ -33,6 +33,7 @@ package core
 import (
 	"context"
 	"os"
+	"sync/atomic"
 	"time"
 )
 
@@ -146,7 +147,15 @@ func (n nopLogger) Log(_ context.Context, _ LogLevel, _ string, _ ...LogField) {
 func (n nopLogger) With(_ ...LogField) Logger                                  { return n }
 func (n nopLogger) WithContext(ctx context.Context) context.Context            { return ctx }
 
-var defaultLogger Logger = &nopLogger{}
+var defaultLogger atomic.Value // 存储 *loggerHolder，保证 Store 的具体类型始终一致
+
+type loggerHolder struct {
+	l Logger
+}
+
+func init() {
+	defaultLogger.Store(&loggerHolder{&nopLogger{}})
+}
 
 // SetLogger 注入自定义日志实现。传入 nil 则恢复为默认空日志实现。
 //
@@ -159,15 +168,15 @@ var defaultLogger Logger = &nopLogger{}
 //	core.SetLogger(nil)
 func SetLogger(l Logger) {
 	if l == nil {
-		defaultLogger = &nopLogger{}
+		defaultLogger.Store(&loggerHolder{&nopLogger{}})
 	} else {
-		defaultLogger = l
+		defaultLogger.Store(&loggerHolder{l})
 	}
 }
 
 // GetLogger 返回当前日志器。
 func GetLogger() Logger {
-	return defaultLogger
+	return defaultLogger.Load().(*loggerHolder).l
 }
 
 func logCtx(ctx context.Context, level LogLevel, msg string, fields ...LogField) {
@@ -178,15 +187,15 @@ func logCtx(ctx context.Context, level LogLevel, msg string, fields ...LogField)
 		}
 	}
 	all = append(all, fields...)
-	defaultLogger.Log(ctx, level, msg, all...)
+	GetLogger().Log(ctx, level, msg, all...)
 }
 
 func logGlobal(level LogLevel, msg string, fields ...LogField) {
-	defaultLogger.Log(context.Background(), level, msg, fields...)
+	GetLogger().Log(context.Background(), level, msg, fields...)
 }
 
 func logFatal(msg string, fields ...LogField) {
-	defaultLogger.Log(context.Background(), LevelError, msg, fields...)
+	GetLogger().Log(context.Background(), LevelError, msg, fields...)
 	os.Exit(1)
 }
 

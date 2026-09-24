@@ -6,48 +6,29 @@ import (
 )
 
 // RingBuffer 固定容量环形缓冲区，线程安全。
-// 使用分片设计降低锁竞争：内部按 16 个分片组织数据，
-// 每个分片有独立的 mutex，写操作均匀分布到各分片。
+// 使用单一 mutex 保证所有操作的可线性化，消除分片设计中读写路由不一致的根本矛盾。
 type RingBuffer[T any] struct {
-	shards   [ringBufShardCount]ringBufShard[T]
-	capacity int
-	overflow OverflowStrategy
-	writeIdx atomic.Uint64 // 全局写入序号，用于分片路由
-	readIdx  atomic.Uint64 // 全局读取序号
-	dropped  atomic.Int64  // 因 OverflowDrop 被覆盖的元素数
-	resetMu  sync.RWMutex  // 保护 Reset 与其他操作之间的并发安全
-}
-
-const ringBufShardCount = 16
-
-type ringBufShard[T any] struct {
 	mu       sync.Mutex
 	buf      []T
 	head     int
 	tail     int
 	size     int
-	capacity int // 每个分片的容量
+	capacity int
+	overflow OverflowStrategy
+	dropped  atomic.Int64 // 因 OverflowDrop 被覆盖的元素数
+	resetMu  sync.RWMutex // 保护 Reset 与 Push/Pop 之间的并发安全
 }
 
 // NewRingBuffer 创建指定容量的环形缓冲区。
-// capacity 会被向上取整到 ringBufShardCount 的倍数。
 func NewRingBuffer[T any](capacity int, overflow OverflowStrategy) *RingBuffer[T] {
 	if capacity < 1 {
 		capacity = 1024
 	}
-	// 向上取整到分片数的倍数，每个分片至少 1 个槽位
-	perShard := (capacity + ringBufShardCount - 1) / ringBufShardCount
-	if perShard < 1 {
-		perShard = 1
-	}
 	rb := &RingBuffer[T]{
-		capacity: perShard * ringBufShardCount,
+		capacity: capacity,
 		overflow: overflow,
 	}
-	for i := range rb.shards {
-		rb.shards[i].buf = make([]T, perShard)
-		rb.shards[i].capacity = perShard
-	}
+	rb.buf = make([]T, capacity)
 	return rb
 }
 
@@ -58,162 +39,83 @@ func NewRingBuffer[T any](capacity int, overflow OverflowStrategy) *RingBuffer[T
 func (rb *RingBuffer[T]) Push(val T) bool {
 	rb.resetMu.RLock()
 	defer rb.resetMu.RUnlock()
-	widx := rb.writeIdx.Add(1) - 1
-	shardIdx := int(widx % ringBufShardCount)
-	s := &rb.shards[shardIdx]
 
-	s.mu.Lock()
-	if s.size == s.capacity {
-		switch rb.overflow {
-		case OverflowDrop:
-			rb.dropped.Add(1)
-			s.buf[s.head] = val
-			s.head = (s.head + 1) % s.capacity
-			s.tail = (s.tail + 1) % s.capacity
-			s.mu.Unlock()
-			return true
-		default:
-			// Block/Error 策略：写失败尝试回退写入序号。
-			// 使用 CAS 保证回退不会错误地撤销其他 goroutine 的递增。
-			// 若 CAS 失败（其他 writer 已推进 writeIdx），则不回退，
-			// 由 Pop 侧的空洞跳过机制处理这个"空隙"。
-			rb.tryRollbackWriteIdx(widx)
-			s.mu.Unlock()
-			return false
-		}
+	rb.mu.Lock()
+	defer rb.mu.Unlock()
+
+	if rb.size < rb.capacity {
+		rb.buf[rb.tail] = val
+		rb.tail = (rb.tail + 1) % rb.capacity
+		rb.size++
+		return true
 	}
-	s.buf[s.tail] = val
-	s.tail = (s.tail + 1) % s.capacity
-	s.size++
-	s.mu.Unlock()
-	return true
+
+	if rb.overflow == OverflowDrop {
+		rb.dropped.Add(1)
+		rb.buf[rb.head] = val
+		rb.head = (rb.head + 1) % rb.capacity
+		rb.tail = (rb.tail + 1) % rb.capacity
+		return true
+	}
+
+	return false
 }
 
-// tryRollbackWriteIdx 尝试将 writeIdx 从 widx+1 回退到 widx。
-// 仅当 writeIdx 未被其他 goroutine 修改时才执行回退。
-// 这保证了不会错误撤销其他 goroutine 的递增。
-func (rb *RingBuffer[T]) tryRollbackWriteIdx(widx uint64) {
-	for {
-		cur := rb.writeIdx.Load()
-		expected := widx + 1
-		if cur != expected {
-			// 其他 writer 已推进 writeIdx，不需要回退（Pop 侧会跳过空洞）
-			return
-		}
-		if rb.writeIdx.CompareAndSwap(cur, cur-1) {
-			return
-		}
-		// CAS 失败（cur 恰好又被改了），重试
-	}
-}
-
-// Pop 读取并移除最旧元素。空时返回零值和 false。
+// Pop 读取并移除最旧元素。
 func (rb *RingBuffer[T]) Pop() (T, bool) {
 	rb.resetMu.RLock()
 	defer rb.resetMu.RUnlock()
-	return rb.popUnsafe()
-}
 
-func (rb *RingBuffer[T]) popUnsafe() (T, bool) {
-	for {
-		ridx := rb.readIdx.Load()
-		widx := rb.writeIdx.Load()
-		if ridx >= widx {
-			var zero T
-			return zero, false
-		}
+	rb.mu.Lock()
+	defer rb.mu.Unlock()
 
-		shardIdx := int(ridx % ringBufShardCount)
-		s := &rb.shards[shardIdx]
-
-		s.mu.Lock()
-		if s.size == 0 {
-			s.mu.Unlock()
-			// 空洞：当前 readIdx 对应的分片为空（Push 回退失败留下的空隙）。
-			// 使用 CAS 将 readIdx 推进 1，跳过这个空洞。
-			if rb.readIdx.CompareAndSwap(ridx, ridx+1) {
-				continue
-			}
-			// CAS 失败表示其他 Pop 已推进 readIdx，重试
-			continue
-		}
-		val := s.buf[s.head]
+	if rb.size == 0 {
 		var zero T
-		s.buf[s.head] = zero
-		s.head = (s.head + 1) % s.capacity
-		s.size--
-		s.mu.Unlock()
-
-		rb.readIdx.Add(1)
-		return val, true
+		return zero, false
 	}
+
+	val := rb.buf[rb.head]
+	var zero T
+	rb.buf[rb.head] = zero
+	rb.head = (rb.head + 1) % rb.capacity
+	rb.size--
+	return val, true
 }
 
 // Peek 读取最旧元素但不移除。
 func (rb *RingBuffer[T]) Peek() (T, bool) {
 	rb.resetMu.RLock()
 	defer rb.resetMu.RUnlock()
-	ridx := rb.readIdx.Load()
-	widx := rb.writeIdx.Load()
-	if ridx >= widx {
+
+	rb.mu.Lock()
+	defer rb.mu.Unlock()
+
+	if rb.size == 0 {
 		var zero T
 		return zero, false
 	}
 
-	// 使用本地变量跳过空洞，不修改 readIdx
-	for {
-		if ridx >= widx {
-			var zero T
-			return zero, false
-		}
-		shardIdx := int(ridx % ringBufShardCount)
-		s := &rb.shards[shardIdx]
-
-		s.mu.Lock()
-		if s.size == 0 {
-			s.mu.Unlock()
-			ridx++
-			// 重新读取 widx 以反映最新状态
-			widx = rb.writeIdx.Load()
-			continue
-		}
-		val := s.buf[s.head]
-		s.mu.Unlock()
-		return val, true
-	}
+	return rb.buf[rb.head], true
 }
 
-// Len 返回当前元素数。
+// Len 返回缓冲区中当前元素数量。
 func (rb *RingBuffer[T]) Len() int {
 	rb.resetMu.RLock()
 	defer rb.resetMu.RUnlock()
-	widx := rb.writeIdx.Load()
-	ridx := rb.readIdx.Load()
-	return int(widx - ridx)
+
+	rb.mu.Lock()
+	defer rb.mu.Unlock()
+	return rb.size
 }
 
-// Cap 返回容量。
-func (rb *RingBuffer[T]) Cap() int {
-	return rb.capacity
-}
-
-// OverflowStrategy 返回溢出策略。
-func (rb *RingBuffer[T]) OverflowStrategy() OverflowStrategy {
-	return rb.overflow
-}
-
-// Dropped 返回因 OverflowDrop 策略被覆盖丢弃的元素数。
-func (rb *RingBuffer[T]) Dropped() int64 {
-	return rb.dropped.Load()
-}
-
-// IsFull 返回是否已满。
+// IsFull 返回缓冲区是否已满。
 func (rb *RingBuffer[T]) IsFull() bool {
 	rb.resetMu.RLock()
 	defer rb.resetMu.RUnlock()
-	widx := rb.writeIdx.Load()
-	ridx := rb.readIdx.Load()
-	return int(widx-ridx) >= rb.capacity
+
+	rb.mu.Lock()
+	defer rb.mu.Unlock()
+	return rb.size >= rb.capacity
 }
 
 // Flush 排空并返回所有元素（FIFO 顺序）。
@@ -221,49 +123,63 @@ func (rb *RingBuffer[T]) Flush() []T {
 	return rb.FlushN(0)
 }
 
-// FlushN 排空并返回最多 n 个元素（FIFO 顺序，保留超出的元素）。
-// n <= 0 取出全部。
+// FlushN 批量读取最多 n 个元素。
 func (rb *RingBuffer[T]) FlushN(n int) []T {
 	rb.resetMu.RLock()
 	defer rb.resetMu.RUnlock()
-	widx := rb.writeIdx.Load()
-	ridx := rb.readIdx.Load()
-	total := int(widx - ridx)
-	if total == 0 {
-		return nil
-	}
-	if n <= 0 || n > total {
-		n = total
-	}
 
+	rb.mu.Lock()
+	defer rb.mu.Unlock()
+
+	if n <= 0 || n > rb.size {
+		n = rb.size
+	}
 	result := make([]T, 0, n)
 	for i := 0; i < n; i++ {
-		if val, ok := rb.popUnsafe(); ok {
-			result = append(result, val)
-		} else {
-			break
-		}
+		val := rb.buf[rb.head]
+		var zero T
+		rb.buf[rb.head] = zero
+		rb.head = (rb.head + 1) % rb.capacity
+		rb.size--
+		result = append(result, val)
 	}
 	return result
 }
 
-// Reset 清空缓冲区。
+// Disposed 返回因 OverflowDrop 策略而被丢弃的元素总数。
+func (rb *RingBuffer[T]) Disposed() int {
+	return int(rb.dropped.Load())
+}
+
+// Dropped Disposed 的别名，兼容旧 API。
+func (rb *RingBuffer[T]) Dropped() int64 {
+	return rb.dropped.Load()
+}
+
+// Cap 返回缓冲区总容量。
+func (rb *RingBuffer[T]) Cap() int {
+	return rb.capacity
+}
+
+// OverflowStrategy 返回当前溢出策略。
+func (rb *RingBuffer[T]) OverflowStrategy() OverflowStrategy {
+	return rb.overflow
+}
+
+// Reset 清空缓冲区，重置所有指针。
 func (rb *RingBuffer[T]) Reset() {
 	rb.resetMu.Lock()
 	defer rb.resetMu.Unlock()
-	rb.readIdx.Store(0)
-	rb.writeIdx.Store(0)
-	rb.dropped.Store(0)
-	for i := range rb.shards {
-		s := &rb.shards[i]
-		s.mu.Lock()
-		for j := range s.buf {
-			var zero T
-			s.buf[j] = zero
-		}
-		s.head = 0
-		s.tail = 0
-		s.size = 0
-		s.mu.Unlock()
+
+	rb.mu.Lock()
+	defer rb.mu.Unlock()
+
+	var zero T
+	for i := range rb.buf {
+		rb.buf[i] = zero
 	}
+	rb.head = 0
+	rb.tail = 0
+	rb.size = 0
+	rb.dropped.Store(0)
 }

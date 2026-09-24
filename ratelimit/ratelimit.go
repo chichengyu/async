@@ -35,7 +35,6 @@ package ratelimit
 import (
 	"context"
 	"math"
-	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -203,14 +202,21 @@ func (rl *RateLimiter) startRefill() {
 				return
 			case <-ticker.C:
 				rl.resizeMu.RLock()
+				added := 0
 				for i := 0; i < batchSize; i++ {
 					select {
 					case rl.tokens <- struct{}{}:
+						added++
 					default:
 						break
 					}
 				}
 				rl.resizeMu.RUnlock()
+				if added > 0 {
+					rl.mu.Lock()
+					rl.cond.Broadcast()
+					rl.mu.Unlock()
+				}
 			}
 		}
 	}()
@@ -312,24 +318,28 @@ func (rl *RateLimiter) Acquire(ctx context.Context) error {
 			rl.cond.Wait()
 		}
 	default:
+		rl.mu.Lock()
+		defer rl.mu.Unlock()
+		stop := context.AfterFunc(ctx, func() { rl.cond.Broadcast() })
+		defer stop()
 		for {
-			rl.resizeMu.RLock()
 			select {
 			case _, ok := <-rl.tokens:
-				rl.resizeMu.RUnlock()
 				if ok {
 					return nil
 				}
 				continue
 			default:
 			}
-			rl.resizeMu.RUnlock()
+			if rl.closed.Load() {
+				return core.ErrRateLimiterStopped
+			}
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
 			default:
 			}
-			runtime.Gosched()
+			rl.cond.Wait()
 		}
 	}
 }
@@ -347,12 +357,18 @@ func (rl *RateLimiter) Release() {
 		return
 	}
 	rl.resizeMu.RLock()
+	sent := false
 	select {
 	case rl.tokens <- struct{}{}:
-		rl.cond.Signal()
+		sent = true
 	default:
 	}
 	rl.resizeMu.RUnlock()
+	if sent {
+		rl.mu.Lock()
+		rl.cond.Signal()
+		rl.mu.Unlock()
+	}
 }
 
 // Close 停止限流器的令牌补充 goroutine 并关闭令牌通道。多次调用安全。
@@ -409,7 +425,7 @@ func (rl *RateLimiter) Resize(newRate int) {
 
 	oldTokens := rl.tokens
 	newTokens := make(chan struct{}, newRate)
-	for i := 0; i < current; i++ {
+	for i := 0; i < cap(oldTokens); i++ {
 		select {
 		case <-oldTokens:
 		default:

@@ -397,7 +397,7 @@ func TestRingBuffer_Original_PushFullBlock(t *testing.T) {
 	}
 }
 
-// TestRingBuffer_Original_PushFullDrop 验证 OverflowDrop 策略。
+// TestRingBuffer_Original_PushFullDrop 验证 OverflowDrop 策略（严格 FIFO 顺序）。
 func TestRingBuffer_Original_PushFullDrop(t *testing.T) {
 	rb := NewRingBuffer[int](16, OverflowDrop)
 	cap := rb.Cap()
@@ -406,26 +406,25 @@ func TestRingBuffer_Original_PushFullDrop(t *testing.T) {
 		rb.Push(i)
 	}
 
-	// Drop 策略：满时覆盖最旧元素。
-	// cap=16, perShard=1，分片 0 存的是元素 0，Push(cap=16) 路由到分片 0 覆盖元素 0。
-	// 所以 Pop 最先拿到的是 16（被覆盖写入了分片 0 的 head 位置）。
+	// Drop 策略：满时覆盖最旧元素（FIFO head），Dropped 计数递增。
 	rb.Push(cap)
 	if rb.Dropped() != 1 {
 		t.Errorf("Dropped 应为 1, got %d", rb.Dropped())
 	}
 
-	// 第一个 Pop 返回被覆盖后分片 0 的值（16），不是原始顺序的 1
-	v, ok := rb.Pop()
-	if !ok {
-		t.Fatal("Pop 应成功")
+	// 溢出覆盖了最早的元素 0，FIFO 顺序弹出：1, 2, ..., cap
+	for i := 1; i <= cap; i++ {
+		v, ok := rb.Pop()
+		if !ok {
+			t.Fatalf("Pop %d 应成功", i)
+		}
+		if v != i {
+			t.Errorf("第 %d 个 Pop 应为 %d, got %d", i, i, v)
+		}
 	}
-	if v != cap {
-		t.Errorf("最旧元素应为 %d (0 被覆盖为 cap), got %d", cap, v)
-	}
-	// 第二个 Pop 应返回 1（仍在分片 1 中未受影响）
-	v2, ok2 := rb.Pop()
-	if !ok2 || v2 != 1 {
-		t.Errorf("第二个 Pop 应为 1, got %d (ok=%v)", v2, ok2)
+
+	if rb.Len() != 0 {
+		t.Errorf("排空后 Len 应为 0, got %d", rb.Len())
 	}
 }
 
@@ -530,12 +529,12 @@ func TestRingBuffer_Original_Cap(t *testing.T) {
 		input    int
 		expected int
 	}{
-		{1, 16},
-		{15, 16},
+		{1, 1},
+		{15, 15},
 		{16, 16},
-		{17, 32},
+		{17, 17},
 		{32, 32},
-		{100, 112},
+		{100, 100},
 	}
 	for _, tc := range tests {
 		rb := NewRingBuffer[int](tc.input, OverflowBlock)

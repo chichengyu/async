@@ -4,6 +4,7 @@ import (
 	"context"
 	"hash/fnv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/chichengyu/async/core"
@@ -35,9 +36,8 @@ const (
 type ShardedPool[T any] struct {
 	pools   []*pool.Pool[T]
 	dist    Distribution
-	nextIdx uint64
+	nextIdx atomic.Uint64
 	keyFn   func(T) uint64
-	mu      sync.Mutex
 }
 
 // ShardPoolConfig 分片池配置。
@@ -450,11 +450,7 @@ func (sp *ShardedPool[T]) pick() int {
 		return 0
 	}
 	if sp.dist == RoundRobin {
-		sp.mu.Lock()
-		idx := int(sp.nextIdx % uint64(len(sp.pools)))
-		sp.nextIdx++
-		sp.mu.Unlock()
-		return idx
+		return int(sp.nextIdx.Add(1)-1) % len(sp.pools)
 	}
 	return 0
 }
@@ -465,8 +461,7 @@ func (sp *ShardedPool[T]) pick() int {
 type ShardedGroup[T any] struct {
 	groups []*group.Group[T]
 	dist   Distribution
-	next   uint64
-	mu     sync.Mutex
+	next   atomic.Uint64
 }
 
 // ShardGroupConfig 分片 Group 配置。
@@ -733,9 +728,5 @@ func (sg *ShardedGroup[T]) TotalConcurrency() int {
 }
 
 func (sg *ShardedGroup[T]) pick() int {
-	sg.mu.Lock()
-	idx := int(sg.next % uint64(len(sg.groups)))
-	sg.next++
-	sg.mu.Unlock()
-	return idx
+	return int(sg.next.Add(1)-1) % len(sg.groups)
 }
