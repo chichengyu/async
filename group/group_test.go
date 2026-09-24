@@ -650,3 +650,124 @@ func TestGroup_RaceBetweenGoAndWait(t *testing.T) {
 		wg.Wait()
 	}
 }
+
+func TestGroup_AddInFlightDefer_ExtremeRace(t *testing.T) {
+	for round := 0; round < 300; round++ {
+		g := NewGroup[int](64)
+		ctx := context.Background()
+
+		var goWg, waitWg sync.WaitGroup
+		var submitted atomic.Int64
+
+		producers := 50
+		tasks := 200
+		goWg.Add(producers)
+		for p := 0; p < producers; p++ {
+			go func(pid int) {
+				defer goWg.Done()
+				for i := 0; i < tasks; i++ {
+					if g.Go(ctx, func(ctx context.Context) (int, error) {
+						return pid*tasks + i, nil
+					}) == nil {
+						submitted.Add(1)
+					}
+				}
+			}(p)
+		}
+
+		waitWg.Add(1)
+		go func() {
+			defer waitWg.Done()
+			goWg.Wait()
+			g.Wait()
+		}()
+
+		waitWg.Wait()
+	}
+}
+
+func TestGroup_AddInFlightDefer_ConcurrentWaitRace(t *testing.T) {
+	for round := 0; round < 200; round++ {
+		g := NewGroup[int](32)
+		ctx := context.Background()
+
+		var wg sync.WaitGroup
+
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 100; i++ {
+				g.Go(ctx, func(ctx context.Context) (int, error) { return i, nil })
+			}
+		}()
+
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			time.Sleep(50 * time.Microsecond)
+			g.Wait()
+		}()
+
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			time.Sleep(80 * time.Microsecond)
+			g.Wait()
+		}()
+
+		wg.Wait()
+	}
+}
+
+func TestGroup_AddInFlightDefer_WaitTimeoutRace(t *testing.T) {
+	for round := 0; round < 100; round++ {
+		g := NewGroup[int](8)
+		ctx := context.Background()
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 500; i++ {
+				g.Go(ctx, func(ctx context.Context) (int, error) {
+					return i, nil
+				})
+			}
+		}()
+
+		go func() {
+			defer wg.Done()
+			g.WaitTimeout(500 * time.Millisecond)
+		}()
+
+		wg.Wait()
+	}
+}
+
+func TestGroup_AddInFlightDefer_WaitContextRace(t *testing.T) {
+	for round := 0; round < 100; round++ {
+		g := NewGroup[int](8)
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 500; i++ {
+				g.Go(context.Background(), func(ctx context.Context) (int, error) {
+					return i, nil
+				})
+			}
+		}()
+
+		go func() {
+			defer wg.Done()
+			ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+			defer cancel()
+			g.WaitContext(ctx)
+		}()
+
+		wg.Wait()
+	}
+}
