@@ -34,10 +34,11 @@ const (
 // ShardedPool 将任务分发到 N 个 Pool 实例，实现水平扩展。
 // 每个分片独立运行，互不影响，适合无需全局顺序的场景。
 type ShardedPool[T any] struct {
-	pools   []*pool.Pool[T]
-	dist    Distribution
-	nextIdx atomic.Uint64
-	keyFn   func(T) uint64
+	pools    []*pool.Pool[T]
+	dist     Distribution
+	nextIdx  atomic.Uint64
+	keyFn    func(T) uint64
+	ffCancel context.CancelFunc
 }
 
 // ShardPoolConfig 分片池配置。
@@ -238,10 +239,16 @@ func (sp *ShardedPool[T]) WithSubmitTimeout(d time.Duration) *ShardedPool[T] {
 // WithFailFast 为所有分片启用 FailFast 模式。
 func (sp *ShardedPool[T]) WithFailFast(ctx context.Context) (*ShardedPool[T], context.Context) {
 	ctx = core.EnsureTraceID(ctx)
-	for _, p := range sp.pools {
-		p.WithFailFast(ctx)
+	if len(sp.pools) == 0 {
+		return sp, ctx
 	}
-	return sp, ctx
+	ffCtx, ffCancel := context.WithCancel(ctx)
+	sp.ffCancel = ffCancel
+	for _, p := range sp.pools {
+		p.WithFailFast(ffCtx)
+		p.MergeFailFastCancel(ffCancel)
+	}
+	return sp, ffCtx
 }
 
 // WithStreaming 为所有分片启用流式结果消费。
@@ -459,9 +466,10 @@ func (sp *ShardedPool[T]) pick() int {
 
 // ShardedGroup 将任务分发到 N 个 Group 实例。
 type ShardedGroup[T any] struct {
-	groups []*group.Group[T]
-	dist   Distribution
-	next   atomic.Uint64
+	groups   []*group.Group[T]
+	dist     Distribution
+	next     atomic.Uint64
+	ffCancel context.CancelFunc
 }
 
 // ShardGroupConfig 分片 Group 配置。
@@ -570,28 +578,48 @@ func (sg *ShardedGroup[T]) Wait() []core.Result[T] {
 	return all
 }
 
-// WaitTimeout 等待所有分片完成或超时。
+// WaitTimeout 等待所有分片完成或超时，所有分片并行等待共享同一个超时时钟。
 func (sg *ShardedGroup[T]) WaitTimeout(d time.Duration) ([]core.Result[T], bool) {
-	var all []core.Result[T]
-	allOk := true
-	for _, g := range sg.groups {
-		results, ok := g.WaitTimeout(d)
-		all = append(all, results...)
-		if !ok {
-			allOk = false
-		}
+	if len(sg.groups) == 0 {
+		return nil, true
 	}
-	return all, allOk
+	ctx, cancel := context.WithTimeout(context.Background(), d)
+	defer cancel()
+	return sg.WaitContext(ctx)
 }
 
-// WaitContext 等待所有分片完成或 ctx 取消。
+// WaitContext 等待所有分片完成或 ctx 取消，所有分片并行等待共享同一个 ctx。
 func (sg *ShardedGroup[T]) WaitContext(ctx context.Context) ([]core.Result[T], bool) {
+	if len(sg.groups) == 0 {
+		return nil, true
+	}
+	if len(sg.groups) == 1 {
+		return sg.groups[0].WaitContext(ctx)
+	}
+
+	n := len(sg.groups)
+	type shardResult struct {
+		results []core.Result[T]
+		ok      bool
+	}
+	shardResults := make([]shardResult, n)
+	var wg sync.WaitGroup
+	wg.Add(n)
+
+	for i, g := range sg.groups {
+		go func(idx int, grp *group.Group[T]) {
+			defer wg.Done()
+			shardResults[idx].results, shardResults[idx].ok = grp.WaitContext(ctx)
+		}(i, g)
+	}
+
+	wg.Wait()
+
 	var all []core.Result[T]
 	allOk := true
-	for _, g := range sg.groups {
-		results, ok := g.WaitContext(ctx)
-		all = append(all, results...)
-		if !ok {
+	for i := range shardResults {
+		all = append(all, shardResults[i].results...)
+		if !shardResults[i].ok {
 			allOk = false
 		}
 	}
@@ -629,10 +657,16 @@ func (sg *ShardedGroup[T]) WithSubmitTimeout(d time.Duration) *ShardedGroup[T] {
 // WithFailFast 为所有分片启用 FailFast 模式。
 func (sg *ShardedGroup[T]) WithFailFast(ctx context.Context) (*ShardedGroup[T], context.Context) {
 	ctx = core.EnsureTraceID(ctx)
-	for _, g := range sg.groups {
-		g.WithFailFast(ctx)
+	if len(sg.groups) == 0 {
+		return sg, ctx
 	}
-	return sg, ctx
+	ffCtx, ffCancel := context.WithCancel(ctx)
+	sg.ffCancel = ffCancel
+	for _, g := range sg.groups {
+		g.WithFailFast(ffCtx)
+		g.MergeFailFastCancel(ffCancel)
+	}
+	return sg, ffCtx
 }
 
 // WithFFCtx 等价于 WithFailFast，缩写形式。

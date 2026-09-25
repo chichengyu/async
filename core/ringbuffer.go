@@ -16,7 +16,6 @@ type RingBuffer[T any] struct {
 	capacity int
 	overflow OverflowStrategy
 	dropped  atomic.Int64 // 因 OverflowDrop 被覆盖的元素数
-	resetMu  sync.RWMutex // 保护 Reset 与 Push/Pop 之间的并发安全
 }
 
 // NewRingBuffer 创建指定容量的环形缓冲区。
@@ -37,9 +36,6 @@ func NewRingBuffer[T any](capacity int, overflow OverflowStrategy) *RingBuffer[T
 // OverflowBlock：返回 false
 // OverflowError：返回 false
 func (rb *RingBuffer[T]) Push(val T) bool {
-	rb.resetMu.RLock()
-	defer rb.resetMu.RUnlock()
-
 	rb.mu.Lock()
 	defer rb.mu.Unlock()
 
@@ -63,9 +59,6 @@ func (rb *RingBuffer[T]) Push(val T) bool {
 
 // Pop 读取并移除最旧元素。
 func (rb *RingBuffer[T]) Pop() (T, bool) {
-	rb.resetMu.RLock()
-	defer rb.resetMu.RUnlock()
-
 	rb.mu.Lock()
 	defer rb.mu.Unlock()
 
@@ -84,9 +77,6 @@ func (rb *RingBuffer[T]) Pop() (T, bool) {
 
 // Peek 读取最旧元素但不移除。
 func (rb *RingBuffer[T]) Peek() (T, bool) {
-	rb.resetMu.RLock()
-	defer rb.resetMu.RUnlock()
-
 	rb.mu.Lock()
 	defer rb.mu.Unlock()
 
@@ -100,9 +90,6 @@ func (rb *RingBuffer[T]) Peek() (T, bool) {
 
 // Len 返回缓冲区中当前元素数量。
 func (rb *RingBuffer[T]) Len() int {
-	rb.resetMu.RLock()
-	defer rb.resetMu.RUnlock()
-
 	rb.mu.Lock()
 	defer rb.mu.Unlock()
 	return rb.size
@@ -110,9 +97,6 @@ func (rb *RingBuffer[T]) Len() int {
 
 // IsFull 返回缓冲区是否已满。
 func (rb *RingBuffer[T]) IsFull() bool {
-	rb.resetMu.RLock()
-	defer rb.resetMu.RUnlock()
-
 	rb.mu.Lock()
 	defer rb.mu.Unlock()
 	return rb.size >= rb.capacity
@@ -125,9 +109,6 @@ func (rb *RingBuffer[T]) Flush() []T {
 
 // FlushN 批量读取最多 n 个元素。
 func (rb *RingBuffer[T]) FlushN(n int) []T {
-	rb.resetMu.RLock()
-	defer rb.resetMu.RUnlock()
-
 	rb.mu.Lock()
 	defer rb.mu.Unlock()
 
@@ -168,9 +149,6 @@ func (rb *RingBuffer[T]) OverflowStrategy() OverflowStrategy {
 
 // Reset 清空缓冲区，重置所有指针。
 func (rb *RingBuffer[T]) Reset() {
-	rb.resetMu.Lock()
-	defer rb.resetMu.Unlock()
-
 	rb.mu.Lock()
 	defer rb.mu.Unlock()
 

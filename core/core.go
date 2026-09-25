@@ -75,12 +75,20 @@ const (
 	SlotAcquireWarnTimeout = 30 * time.Second
 )
 
-// ──────────────────────────── 全局超时 ────────────────────────────
+// ──────────────────────────── 全局默认值 ────────────────────────────
 
 var (
 	defaultTimeout     int64 = int64(30 * time.Second)
 	globalSubmitTimer  int64 = int64(DefaultSubmitTimeout)
 	maxCleanupDuration int64 = int64(WaitContextCleanupError)
+
+	// defaultMaxResults 全局默认最大结果数（0=无限制，保持向后兼容）。
+	// 通过 SetDefaultMaxResults 设置，长期运行的 Pool 应设置此值防止 OOM。
+	defaultMaxResults int32
+	// defaultRingBufCap 全局默认环形缓冲区容量（0=不启用，保持向后兼容）。
+	defaultRingBufCap int32
+	// defaultOverflowStrategy 全局默认环形缓冲区溢出策略。
+	defaultOverflowStrategy int32 = int32(OverflowDrop)
 )
 
 // SetMaxCleanupDuration 设置 WaitTimeout/WaitContext 超时后清理 goroutine 的最大存活时间。
@@ -151,6 +159,58 @@ func GetSubmitTimeoutValue() time.Duration {
 // GetSubmitTimeout 返回当前 Pool.Submit 等待 worker 空闲的超时时间。
 func GetSubmitTimeout() time.Duration {
 	return GetSubmitTimeoutValue()
+}
+
+// SetDefaultMaxResults 设置全局默认最大结果数，影响后续创建的 Pool。
+// 当 Pool 未通过 WithMaxResults 单独设置时，使用此全局默认值。
+// 默认值为 0（无限制），保持向后兼容。
+// 长期运行的 Pool 建议设置此值防止 results 切片无界增长导致 OOM。
+//
+// 参数：
+//   - n：全局默认最大结果数，0 表示无限制
+//
+// 使用示例：
+//
+//	core.SetDefaultMaxResults(10000)       // 全局限制
+//	p := pool.NewPool[int](8)              // maxResults=10000
+//	p := pool.NewPool[int](8).WithMaxResults(0)  // 覆盖回无限
+func SetDefaultMaxResults(n int) {
+	if n >= 0 {
+		atomic.StoreInt32(&defaultMaxResults, int32(n))
+	}
+}
+
+// GetDefaultMaxResults 返回当前全局默认最大结果数，0 表示无限制。
+func GetDefaultMaxResults() int {
+	return int(atomic.LoadInt32(&defaultMaxResults))
+}
+
+// SetDefaultRingBuffer 设置全局默认环形缓冲区配置，影响后续创建的 Pool。
+// 当 Pool 未通过 WithRingBuffer 单独设置时，使用此全局默认值。
+// 默认 capacity=0（不启用），保持向后兼容。overflow 默认 OverflowDrop。
+//
+// 参数：
+//   - capacity：环形缓冲区容量，0 表示不启用
+//   - overflow：满时策略（OverflowDrop/OverflowBlock/OverflowError）
+//
+// 使用示例：
+//
+//	core.SetDefaultRingBuffer(5000, core.OverflowDrop)  // 全局兜底
+func SetDefaultRingBuffer(capacity int, overflow OverflowStrategy) {
+	if capacity >= 0 {
+		atomic.StoreInt32(&defaultRingBufCap, int32(capacity))
+		atomic.StoreInt32(&defaultOverflowStrategy, int32(overflow))
+	}
+}
+
+// GetDefaultRingBufferCap 返回当前全局默认环形缓冲区容量，0 表示不启用。
+func GetDefaultRingBufferCap() int {
+	return int(atomic.LoadInt32(&defaultRingBufCap))
+}
+
+// GetDefaultOverflowStrategy 返回当前全局默认环形缓冲区溢出策略。
+func GetDefaultOverflowStrategy() OverflowStrategy {
+	return OverflowStrategy(atomic.LoadInt32(&defaultOverflowStrategy))
 }
 
 // ──────────────────────────── 哨兵错误 ────────────────────────────

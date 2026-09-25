@@ -127,12 +127,26 @@ func MapStream[T any, R any](ctx context.Context, items []T, fn func(context.Con
 		}
 	}
 
+	streamBuf := n
+	const maxStreamBuf = 65536
+	if streamBuf > maxStreamBuf {
+		streamBuf = maxStreamBuf
+	}
+	if streamBuf < bufSize {
+		streamBuf = bufSize
+	}
+
 	outCh := make(chan core.Result[R], bufSize)
 
 	g := group.NewGroup[R](concurrency)
-	g.WithResultCallback(func(r core.Result[R]) {
-		outCh <- r
-	})
+	g.WithStreaming(streamBuf)
+
+	go func() {
+		for r := range g.StreamResults() {
+			outCh <- r
+		}
+		close(outCh)
+	}()
 
 	go func() {
 		for i := range items {
@@ -142,7 +156,6 @@ func MapStream[T any, R any](ctx context.Context, items []T, fn func(context.Con
 			})
 		}
 		g.Wait()
-		close(outCh)
 	}()
 
 	return outCh
@@ -171,12 +184,26 @@ func MapStreamWithFailFast[T any, R any](ctx context.Context, items []T, fn func
 
 	ffCtx, ffCancel := context.WithCancel(ctx)
 
+	streamBuf := n
+	const maxStreamBuf = 65536
+	if streamBuf > maxStreamBuf {
+		streamBuf = maxStreamBuf
+	}
+	if streamBuf < bufSize {
+		streamBuf = bufSize
+	}
+
 	outCh := make(chan core.Result[R], bufSize)
 
 	g := group.NewGroup[R](concurrency)
-	g.WithResultCallback(func(r core.Result[R]) {
-		outCh <- r
-	})
+	g.WithStreaming(streamBuf)
+
+	go func() {
+		for r := range g.StreamResults() {
+			outCh <- r
+		}
+		close(outCh)
+	}()
 
 	go func() {
 		for i := range items {
@@ -197,7 +224,6 @@ func MapStreamWithFailFast[T any, R any](ctx context.Context, items []T, fn func
 		}
 		g.Wait()
 		ffCancel()
-		close(outCh)
 	}()
 
 	return outCh
@@ -477,7 +503,11 @@ func ForEachWithFailFast[T any](ctx context.Context, items []T, fn func(context.
 	g := group.NewNoResult(concurrency)
 	for i := range items {
 		g.Go(ffCtx, func(ctx context.Context) error {
-			return fn(ctx, items[i])
+			err := fn(ctx, items[i])
+			if err != nil {
+				ffCancel()
+			}
+			return err
 		})
 	}
 	g.Wait()

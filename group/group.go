@@ -29,40 +29,56 @@ import (
 //	    WithFFTimeoutTraceID(ctx, 5*time.Second)
 
 type Group[T any] struct {
-	limit         atomic.Pointer[chan struct{}] // 并发控制信号量（支持动态替换）
-	concurrency   atomic.Int32                  // 当前最大并发数
-	wg            sync.WaitGroup                // 等待所有任务完成
-	addInFlight   atomic.Int64                  // precheck通过后、wg.Add(1)前的协程数，与Wait同步
-	mu            sync.Mutex                    // 保护 results/cancels/waited/freeIndices
-	results       []core.Result[T]              // 任务结果切片（按提交顺序）
-	freeIndices   []int                         // 空闲索引栈（GoAt 扩容产生的空洞），LIFO 实现 O(1) addResult
-	cancels       []context.CancelFunc          // 所有任务的取消函数（Wait 后批量调用）
-	errCnt        int64                         // 失败任务计数（atomic 原子操作）
-	active        atomic.Int32                  // 当前活跃任务数
-	busy          atomic.Int32                  // 当前忙碌任务数
-	waiting       atomic.Bool                   // 是否正在 Wait 等待中
-	cancel        context.CancelFunc            // 全局取消函数
-	timeout       time.Duration                 // 全局任务超时时间（0=无限制）
-	submitTimeout time.Duration                 // 任务提交超时时间
-	failFast      atomic.Bool                   // 是否启用 FailFast 模式
-	waited        atomic.Bool                   // 是否已完成 Wait
-	ctx           context.Context               // 组级别的上下文
-	done          atomic.Pointer[chan struct{}] // 组结束信号（Wait 后关闭）
-	doneSignalled atomic.Bool                   // 确保 done channel 只关闭一次
+	concurrency   atomic.Int32
+	wg            sync.WaitGroup
+	addInFlight   atomic.Int64
+	mu            sync.Mutex
+	results       []core.Result[T]
+	freeIndices   []int
+	cancels       []context.CancelFunc
+	errCnt        int64
+	active        atomic.Int32
+	busy          atomic.Int32
+	waiting       atomic.Bool
+	cancel        context.CancelFunc
+	timeout       time.Duration
+	submitTimeout time.Duration
+	failFast      atomic.Bool
+	waited        atomic.Bool
+	ctx           context.Context
+	done          atomic.Pointer[chan struct{}]
+	doneSignalled atomic.Bool
 
-	// ──────── 自动扩缩容（可选，默认关闭）────────
-	autoScale        *core.AutoScaleConfig // 扩缩容配置（nil=未启用）
-	autoScaleEnabled atomic.Bool           // 是否已启用自动扩缩容
-	autoScaleStop    chan struct{}         // 停止自动扩缩容的信号
+	taskCh       chan groupTask[T]
+	workerWg     sync.WaitGroup
+	shutdownCh   chan struct{}
+	shuttingDown atomic.Bool
+	taskChClosed atomic.Bool
 
-	// ──────── 结果流式消费 ────────
-	streamCh   chan core.Result[T]  // 流式结果 channel
-	streamOnce sync.Once            // 确保 streamCh 只关闭一次
-	resultCb   func(core.Result[T]) // 结果回调
+	autoScale        *core.AutoScaleConfig
+	autoScaleEnabled atomic.Bool
+	autoScaleStop    chan struct{}
+
+	streamCh         chan core.Result[T]
+	streamOverflow   []core.Result[T]
+	streamOverflowMu sync.Mutex
+	streamOnce       sync.Once
+	resultCb         func(core.Result[T])
 }
 
 // GroupRecordFunc 记录结果的函数类型，抽象 addResult（Go）和 setResultAt（GoAt）。
 type GroupRecordFunc[T any] func(core.Result[T])
+
+type groupTask[T any] struct {
+	quit       bool
+	taskCtx    context.Context
+	taskCancel context.CancelFunc
+	record     GroupRecordFunc[T]
+	timeout    time.Duration
+	failFast   bool
+	failCancel context.CancelFunc
+	fn         func(context.Context) (T, error)
+}
 
 // NewGroup 创建一个新的任务组，限制最多 concurrency 个 goroutine 同时执行。
 // concurrency <= 0 时自动设为 1。
@@ -85,14 +101,18 @@ func NewGroup[T any](concurrency int) *Group[T] {
 		concurrency = 1
 	}
 	g := &Group[T]{
-		timeout: core.GetDefaultTimeout(),
-		ctx:     context.Background(),
+		timeout:    core.GetDefaultTimeout(),
+		ctx:        context.Background(),
+		taskCh:     make(chan groupTask[T], concurrency),
+		shutdownCh: make(chan struct{}),
 	}
 	g.concurrency.Store(int32(concurrency))
 	doneCh := make(chan struct{})
 	g.done.Store(&doneCh)
-	ch := make(chan struct{}, concurrency)
-	g.limit.Store(&ch)
+	for i := 0; i < concurrency; i++ {
+		g.workerWg.Add(1)
+		go g.worker()
+	}
 	return g
 }
 
@@ -159,6 +179,14 @@ func (g *Group[T]) WithFailFast(ctx context.Context) (*Group[T], context.Context
 //   - ctx：原始上下文
 func (g *Group[T]) WithFFCtx(ctx context.Context) (*Group[T], context.Context) {
 	return g.WithFailFast(ctx)
+}
+
+// MergeFailFastCancel 将外部 cancel 函数合并到当前 failFast 取消链中。
+// 用于 ShardedGroup 等上层组件在多个 Group 间共享 failFast 取消信号，
+// 确保任一 Group 的任务失败能取消所有 Group。
+func (g *Group[T]) MergeFailFastCancel(cancel context.CancelFunc) *Group[T] {
+	g.cancel = core.MergeCancel(g.cancel, cancel)
+	return g
 }
 
 // ─── 组合配置方法（FF=快速失败, Ctx=Context管理, Timeout=任务超时, SubmitTO=提交超时, TraceID=链路追踪）───
@@ -360,6 +388,9 @@ func (g *Group[T]) recordToStream(r core.Result[T]) {
 		select {
 		case g.streamCh <- r:
 		default:
+			g.streamOverflowMu.Lock()
+			g.streamOverflow = append(g.streamOverflow, r)
+			g.streamOverflowMu.Unlock()
 		}
 	}
 	if g.resultCb != nil {
@@ -370,9 +401,38 @@ func (g *Group[T]) recordToStream(r core.Result[T]) {
 func (g *Group[T]) drainStreaming() {
 	g.streamOnce.Do(func() {
 		if g.streamCh != nil {
+			g.streamOverflowMu.Lock()
+		drainLoop:
+			for _, r := range g.streamOverflow {
+				select {
+				case g.streamCh <- r:
+				default:
+					break drainLoop
+				}
+			}
+			g.streamOverflow = nil
+			g.streamOverflowMu.Unlock()
 			close(g.streamCh)
 		}
 	})
+}
+
+func (g *Group[T]) worker() {
+	defer g.workerWg.Done()
+	for task := range g.taskCh {
+		if task.quit {
+			return
+		}
+		g.executeTask(task)
+	}
+}
+
+func (g *Group[T]) executeTask(task groupTask[T]) {
+	g.busy.Add(1)
+	g.runTaskImpl(task.taskCtx, task.taskCancel, task.record, task.timeout, task.failFast, task.failCancel, task.fn)
+	g.busy.Add(-1)
+	g.active.Add(-1)
+	g.wg.Done()
 }
 
 // ──────────────────────────── Group 内部方法 ────────────────────────────
@@ -439,101 +499,6 @@ func (g *Group[T]) groupPrecheck(ctx context.Context, record GroupRecordFunc[T],
 	return taskCtx, taskCancel, nil
 }
 
-func (g *Group[T]) groupAcquireSlot(ctx context.Context, taskCtx context.Context, taskCancel context.CancelFunc, record GroupRecordFunc[T]) (chan struct{}, error) {
-	limitCh := *g.limit.Load()
-
-	if g.submitTimeout > 0 {
-		timer := time.NewTimer(g.submitTimeout)
-		defer timer.Stop()
-
-		// 先检查 ctx 是否已取消，避免 select 随机选到 slot 而忽略取消信号
-		select {
-		case <-taskCtx.Done():
-			g.discardTask(record, taskCancel, taskCtx.Err())
-			return nil, taskCtx.Err()
-		default:
-		}
-
-		select {
-		case limitCh <- struct{}{}:
-			// 获取槽位后再检查 ctx，防止在 select 两个 case 都就绪时随机选了 slot
-			select {
-			case <-taskCtx.Done():
-				<-limitCh
-				g.discardTask(record, taskCancel, taskCtx.Err())
-				return nil, taskCtx.Err()
-			default:
-			}
-			return limitCh, nil
-		case <-taskCtx.Done():
-			g.discardTask(record, taskCancel, taskCtx.Err())
-			return nil, taskCtx.Err()
-		case <-timer.C:
-			err := core.ErrSubmitTimeout
-			core.LogCtxWarn(ctx, "async: Group submit timeout, concurrency slot unavailable", core.Err(err))
-			g.discardTask(record, taskCancel, err)
-			return nil, err
-		}
-	}
-
-	// 快速路径：先检查 ctx 取消，再非阻塞获取槽位
-	select {
-	case <-taskCtx.Done():
-		g.discardTask(record, taskCancel, taskCtx.Err())
-		return nil, taskCtx.Err()
-	default:
-	}
-
-	select {
-	case limitCh <- struct{}{}:
-		select {
-		case <-taskCtx.Done():
-			<-limitCh
-			g.discardTask(record, taskCancel, taskCtx.Err())
-			return nil, taskCtx.Err()
-		default:
-		}
-		return limitCh, nil
-	case <-taskCtx.Done():
-		g.discardTask(record, taskCancel, taskCtx.Err())
-		return nil, taskCtx.Err()
-	default:
-	}
-
-	// 慢路径：槽位满，分配 Timer 阻塞等待
-	timer := time.NewTimer(core.SlotAcquireWarnTimeout)
-	defer timer.Stop()
-
-	for {
-		// 每轮迭代先检查取消，防止 select 随机选到 slot
-		select {
-		case <-taskCtx.Done():
-			g.discardTask(record, taskCancel, taskCtx.Err())
-			return nil, taskCtx.Err()
-		default:
-		}
-
-		select {
-		case limitCh <- struct{}{}:
-			select {
-			case <-taskCtx.Done():
-				<-limitCh
-				g.discardTask(record, taskCancel, taskCtx.Err())
-				return nil, taskCtx.Err()
-			default:
-			}
-			return limitCh, nil
-		case <-taskCtx.Done():
-			g.discardTask(record, taskCancel, taskCtx.Err())
-			return nil, taskCtx.Err()
-		case <-timer.C:
-			core.LogCtxWarn(ctx, "async: Group.Go blocking on concurrency slot, consider setting WithSubmitTimeout",
-				core.Dur("elapsed", core.SlotAcquireWarnTimeout))
-			timer.Reset(core.SlotAcquireWarnTimeout)
-		}
-	}
-}
-
 func (g *Group[T]) groupRecordCancel(taskCancel context.CancelFunc) {
 	g.mu.Lock()
 	g.cancels = append(g.cancels, taskCancel)
@@ -546,6 +511,66 @@ func (g *Group[T]) discardTask(record GroupRecordFunc[T], taskCancel context.Can
 	taskCancel()
 	g.active.Add(-1)
 	g.wg.Done()
+}
+
+func (g *Group[T]) groupSendTask(ctx context.Context, task groupTask[T], record GroupRecordFunc[T], taskCancel context.CancelFunc) error {
+	if g.shuttingDown.Load() {
+		g.discardTask(record, taskCancel, core.ErrGroupWaited)
+		return core.ErrGroupWaited
+	}
+	if g.submitTimeout > 0 {
+		timer := time.NewTimer(g.submitTimeout)
+		defer timer.Stop()
+
+		select {
+		case <-task.taskCtx.Done():
+			g.discardTask(record, taskCancel, task.taskCtx.Err())
+			return task.taskCtx.Err()
+		default:
+		}
+
+		select {
+		case g.taskCh <- task:
+			return nil
+		case <-task.taskCtx.Done():
+			g.discardTask(record, taskCancel, task.taskCtx.Err())
+			return task.taskCtx.Err()
+		case <-g.shutdownCh:
+			g.discardTask(record, taskCancel, core.ErrGroupWaited)
+			return core.ErrGroupWaited
+		case <-timer.C:
+			err := core.ErrSubmitTimeout
+			core.LogCtxWarn(ctx, "async: Group submit timeout, task queue full", core.Err(err))
+			g.discardTask(record, taskCancel, err)
+			return err
+		}
+	}
+
+	select {
+	case <-task.taskCtx.Done():
+		g.discardTask(record, taskCancel, task.taskCtx.Err())
+		return task.taskCtx.Err()
+	default:
+	}
+
+	ticker := time.NewTicker(core.SlotAcquireWarnTimeout)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case g.taskCh <- task:
+			return nil
+		case <-g.shutdownCh:
+			g.discardTask(record, taskCancel, core.ErrGroupWaited)
+			return core.ErrGroupWaited
+		case <-task.taskCtx.Done():
+			g.discardTask(record, taskCancel, task.taskCtx.Err())
+			return task.taskCtx.Err()
+		case <-ticker.C:
+			core.LogCtxWarn(ctx, "async: Group.Go blocking on task queue, consider setting WithSubmitTimeout",
+				core.Dur("elapsed", core.SlotAcquireWarnTimeout))
+		}
+	}
 }
 
 // Go 提交一个任务到 Group 中执行。fn 通过 context 支持取消和超时。
@@ -571,15 +596,19 @@ func (g *Group[T]) Go(ctx context.Context, fn func(context.Context) (T, error)) 
 		return err
 	}
 
-	limitCh, err := g.groupAcquireSlot(ctx, taskCtx, taskCancel, g.addResult)
-	if err != nil {
-		return err
+	g.groupRecordCancel(taskCancel)
+
+	task := groupTask[T]{
+		taskCtx:    taskCtx,
+		taskCancel: taskCancel,
+		record:     g.addResult,
+		timeout:    g.timeout,
+		failFast:   g.failFast.Load(),
+		failCancel: g.cancel,
+		fn:         fn,
 	}
 
-	g.groupRecordCancel(taskCancel)
-	go g.runTaskImpl(taskCtx, taskCancel, g.addResult, g.timeout, g.failFast.Load(), g.cancel, limitCh, fn)
-
-	return nil
+	return g.groupSendTask(ctx, task, g.addResult, taskCancel)
 }
 
 // GoWithTimeout 提交任务并单独设置该任务的超时时间（覆盖 Group 级别的 timeout）。
@@ -601,15 +630,19 @@ func (g *Group[T]) GoWithTimeout(ctx context.Context, timeout time.Duration, fn 
 		return err
 	}
 
-	limitCh, err := g.groupAcquireSlot(ctx, taskCtx, taskCancel, g.addResult)
-	if err != nil {
-		return err
+	g.groupRecordCancel(taskCancel)
+
+	task := groupTask[T]{
+		taskCtx:    taskCtx,
+		taskCancel: taskCancel,
+		record:     g.addResult,
+		timeout:    timeout,
+		failFast:   g.failFast.Load(),
+		failCancel: g.cancel,
+		fn:         fn,
 	}
 
-	g.groupRecordCancel(taskCancel)
-	go g.runTaskImpl(taskCtx, taskCancel, g.addResult, timeout, g.failFast.Load(), g.cancel, limitCh, fn)
-
-	return nil
+	return g.groupSendTask(ctx, task, g.addResult, taskCancel)
 }
 
 // GoAtWithTimeout 提交任务到指定索引并单独设置超时时间。
@@ -631,27 +664,23 @@ func (g *Group[T]) GoAtWithTimeout(index int, ctx context.Context, timeout time.
 		return err
 	}
 
-	limitCh, err := g.groupAcquireSlot(ctx, taskCtx, taskCancel, record)
-	if err != nil {
-		return err
+	g.groupRecordCancel(taskCancel)
+
+	task := groupTask[T]{
+		taskCtx:    taskCtx,
+		taskCancel: taskCancel,
+		record:     record,
+		timeout:    timeout,
+		failFast:   g.failFast.Load(),
+		failCancel: g.cancel,
+		fn:         fn,
 	}
 
-	g.groupRecordCancel(taskCancel)
-	go g.runTaskImpl(taskCtx, taskCancel, record, timeout, g.failFast.Load(), g.cancel, limitCh, fn)
-
-	return nil
+	return g.groupSendTask(ctx, task, record, taskCancel)
 }
 
-func (g *Group[T]) runTaskImpl(taskCtx context.Context, taskCancel context.CancelFunc, record GroupRecordFunc[T], timeout time.Duration, failFast bool, failCancel context.CancelFunc, limitCh chan struct{}, fn func(context.Context) (T, error)) {
-	defer func() {
-		<-limitCh
-		g.busy.Add(-1)
-		g.active.Add(-1)
-		g.wg.Done()
-	}()
+func (g *Group[T]) runTaskImpl(taskCtx context.Context, taskCancel context.CancelFunc, record GroupRecordFunc[T], timeout time.Duration, failFast bool, failCancel context.CancelFunc, fn func(context.Context) (T, error)) {
 	defer taskCancel()
-
-	g.busy.Add(1)
 
 	defer func() {
 		if r := recover(); r != nil {
@@ -667,7 +696,6 @@ func (g *Group[T]) runTaskImpl(taskCtx context.Context, taskCancel context.Cance
 		}
 	}()
 
-	// 获取槽位后再次检查 ctx，消除 groupAcquireSlot select 随机性带来的竞态窗口
 	select {
 	case <-taskCtx.Done():
 		record(core.Result[T]{Err: taskCtx.Err()})
@@ -734,15 +762,19 @@ func (g *Group[T]) GoAt(index int, ctx context.Context, fn func(context.Context)
 		return err
 	}
 
-	limitCh, err := g.groupAcquireSlot(ctx, taskCtx, taskCancel, record)
-	if err != nil {
-		return err
+	g.groupRecordCancel(taskCancel)
+
+	task := groupTask[T]{
+		taskCtx:    taskCtx,
+		taskCancel: taskCancel,
+		record:     record,
+		timeout:    g.timeout,
+		failFast:   g.failFast.Load(),
+		failCancel: g.cancel,
+		fn:         fn,
 	}
 
-	g.groupRecordCancel(taskCancel)
-	go g.runTaskImpl(taskCtx, taskCancel, record, g.timeout, g.failFast.Load(), g.cancel, limitCh, fn)
-
-	return nil
+	return g.groupSendTask(ctx, task, record, taskCancel)
 }
 
 func (g *Group[T]) setResultAt(index int, r core.Result[T]) {
@@ -784,10 +816,21 @@ func (g *Group[T]) setResultAt(index int, r core.Result[T]) {
 //	        fmt.Println(r.Value)
 //	    }
 //	}
+func (g *Group[T]) closeTaskCh() {
+	if g.taskChClosed.CompareAndSwap(false, true) {
+		close(g.taskCh)
+	}
+}
+
 func (g *Group[T]) Wait() []core.Result[T] {
 	g.waiting.Store(true)
 	g.waitAddInFlight()
+	if g.shuttingDown.CompareAndSwap(false, true) {
+		close(g.shutdownCh)
+	}
 	g.wg.Wait()
+	g.closeTaskCh()
+	g.workerWg.Wait()
 	g.mu.Lock()
 	g.waited.Store(true)
 	g.waiting.Store(false)
@@ -869,7 +912,7 @@ func (g *Group[T]) TotalCount() int64 {
 
 // Concurrency 返回当前最大并发数（自动扩缩容时可能动态变化）。
 func (g *Group[T]) Concurrency() int {
-	return cap(*g.limit.Load())
+	return int(g.concurrency.Load())
 }
 
 // Active 返回当前活跃（已启动未结束）的 goroutine 数。
@@ -1035,17 +1078,19 @@ func (g *Group[T]) Reset() (*Group[T], error) {
 		g.streamCh = make(chan core.Result[T], cap(savedStreamCh))
 	}
 	g.resultCb = savedResultCb
-	g.limit.Store(nil)
-	ch := make(chan struct{}, savedConcurrency)
-	g.limit.Store(&ch)
-	// Reinitialize done channel for potential auto-scale usage after reset
+	g.taskCh = make(chan groupTask[T], savedConcurrency)
+	g.shutdownCh = make(chan struct{})
+	g.shuttingDown.Store(false)
+	g.taskChClosed.Store(false)
 	doneCh := make(chan struct{})
 	g.done.Store(&doneCh)
-	// Reset auto-scale state: autoScaleLoop has exited via done channel,
-	// close the old stop channel so EnableAutoScale can create a fresh one.
 	if g.autoScaleEnabled.Load() {
 		g.autoScaleEnabled.Store(false)
 		close(g.autoScaleStop)
+	}
+	for i := 0; i < savedConcurrency; i++ {
+		g.workerWg.Add(1)
+		go g.worker()
 	}
 	core.LogCtxDebug(context.Background(), "async: Group.Reset completed, above config preserved across reset",
 		core.Dur("timeout", savedTimeout),
@@ -1068,17 +1113,42 @@ func (g *Group[T]) Reset() (*Group[T], error) {
 func (g *Group[T]) WaitTimeout(d time.Duration) ([]core.Result[T], bool) {
 	g.waiting.Store(true)
 	g.waitAddInFlight()
-	results, ok := core.WaitTimeoutImpl(d, &g.wg, g.cancel, nil, &g.waited, func() {
-		g.mu.Lock()
-		g.cancelAll()
-		g.mu.Unlock()
-	}, func() []core.Result[T] {
-		g.mu.Lock()
-		results := make([]core.Result[T], len(g.results))
-		copy(results, g.results)
-		g.mu.Unlock()
-		return results
-	}, g.ctx)
+	if g.shuttingDown.CompareAndSwap(false, true) {
+		close(g.shutdownCh)
+	}
+
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+
+	done := make(chan struct{})
+	go func() {
+		g.wg.Wait()
+		close(done)
+	}()
+
+	var ok bool
+	select {
+	case <-done:
+		ok = true
+		g.closeTaskCh()
+		g.workerWg.Wait()
+	case <-timer.C:
+		ok = false
+		g.closeTaskCh()
+		g.workerWg.Wait()
+	}
+
+	g.mu.Lock()
+	g.waited.Store(true)
+	g.waiting.Store(false)
+	g.cancelAll()
+	results := make([]core.Result[T], len(g.results))
+	copy(results, g.results)
+	cancel := g.cancel
+	g.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
 	g.signalDone()
 	g.drainStreaming()
 	return results, ok
@@ -1097,17 +1167,39 @@ func (g *Group[T]) WaitTimeout(d time.Duration) ([]core.Result[T], bool) {
 func (g *Group[T]) WaitContext(ctx context.Context) ([]core.Result[T], bool) {
 	g.waiting.Store(true)
 	g.waitAddInFlight()
-	results, ok := core.WaitContextImpl(ctx, &g.wg, g.cancel, nil, &g.waited, func() {
-		g.mu.Lock()
-		g.cancelAll()
-		g.mu.Unlock()
-	}, func() []core.Result[T] {
-		g.mu.Lock()
-		results := make([]core.Result[T], len(g.results))
-		copy(results, g.results)
-		g.mu.Unlock()
-		return results
-	}, g.ctx, "Group")
+	if g.shuttingDown.CompareAndSwap(false, true) {
+		close(g.shutdownCh)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		g.wg.Wait()
+		close(done)
+	}()
+
+	var ok bool
+	select {
+	case <-done:
+		ok = true
+		g.closeTaskCh()
+		g.workerWg.Wait()
+	case <-ctx.Done():
+		ok = false
+		g.closeTaskCh()
+		g.workerWg.Wait()
+	}
+
+	g.mu.Lock()
+	g.waited.Store(true)
+	g.waiting.Store(false)
+	g.cancelAll()
+	results := make([]core.Result[T], len(g.results))
+	copy(results, g.results)
+	cancel := g.cancel
+	g.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
 	g.signalDone()
 	g.drainStreaming()
 	return results, ok
@@ -1166,7 +1258,7 @@ func (g *Group[T]) DisableAutoScale() {
 		if g.autoScale != nil {
 			minWorkers := g.autoScale.MinWorkers
 			if minWorkers > 0 && g.Concurrency() != minWorkers {
-				g.resizeLimit(minWorkers)
+				g.resizeWorkerPool(minWorkers)
 			}
 		}
 	}
@@ -1177,16 +1269,31 @@ func (g *Group[T]) IsAutoScaleEnabled() bool {
 	return g.autoScaleEnabled.Load()
 }
 
-// resizeLimit 原子替换并发控制信号量 channel。
-// 旧 channel 中已获取令牌的任务会继续向旧 channel 释放，不影响正确性。
-// 新提交的任务使用新 channel 的容量限制。
-func (g *Group[T]) resizeLimit(newSize int) {
+// resizeWorkerPool 调整 worker goroutine 池大小。
+// Scale up：创建新的 worker goroutine。
+// Scale down：通过 taskCh 发送 quit 信号让空闲 worker 退出。
+func (g *Group[T]) resizeWorkerPool(newSize int) {
 	if newSize < 1 {
 		newSize = 1
 	}
-	newCh := make(chan struct{}, newSize)
-	g.limit.Store(&newCh)
-	g.concurrency.Store(int32(newSize))
+	cur := int(g.concurrency.Swap(int32(newSize)))
+	if newSize == cur {
+		return
+	}
+	if newSize > cur {
+		for i := 0; i < newSize-cur; i++ {
+			g.workerWg.Add(1)
+			go g.worker()
+		}
+		return
+	}
+	quit := cur - newSize
+	for i := 0; i < quit; i++ {
+		select {
+		case g.taskCh <- groupTask[T]{quit: true}:
+		default:
+		}
+	}
 }
 
 // autoScaleLoop 自动扩缩容后台检测循环。
@@ -1246,7 +1353,7 @@ func (g *Group[T]) performAutoScaleCheck(config *core.AutoScaleConfig, scaleUpCo
 				newSize = config.MaxWorkers
 			}
 			if newSize > cur {
-				g.resizeLimit(newSize)
+				g.resizeWorkerPool(newSize)
 			}
 			*scaleUpCount = 0
 		}
@@ -1262,7 +1369,7 @@ func (g *Group[T]) performAutoScaleCheck(config *core.AutoScaleConfig, scaleUpCo
 				newSize = config.MinWorkers
 			}
 			if newSize < cur {
-				g.resizeLimit(newSize)
+				g.resizeWorkerPool(newSize)
 			}
 			*scaleDownCount = 0
 		}
@@ -1671,7 +1778,12 @@ func (mg *MultiGroup[T]) Wait() []core.Result[T] {
 // Close 关闭所有分片，释放资源。
 func (mg *MultiGroup[T]) Close() {
 	for _, g := range mg.groups {
+		if g.shuttingDown.CompareAndSwap(false, true) {
+			close(g.shutdownCh)
+		}
 		g.cancelAll()
+		g.closeTaskCh()
+		g.workerWg.Wait()
 		g.signalDone()
 		g.drainStreaming()
 	}

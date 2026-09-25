@@ -72,21 +72,23 @@ type AsyncResult[T any] struct {
 	mu      sync.Mutex            // 保护 result 字段
 	ready   chan struct{}         // 结果就绪信号
 	result  core.Result[T]        // 缓存的结果
-}
-
-// startReader 启动后台 goroutine 从 results channel 读取结果并缓存，
-// 然后在 ready channel 上广播。保证多个并发 Wait 调用安全。
-func (ar *AsyncResult[T]) startReader() {
-	go func() {
-		r := <-ar.results
-		ar.mu.Lock()
-		ar.result = r
-		ar.mu.Unlock()
-		close(ar.ready)
-	}()
+	once    sync.Once             // 保证只从 channel 读取一次，消除 startReader goroutine
 }
 
 func (ar *AsyncResult[T]) getResult() core.Result[T] {
+	ar.once.Do(func() {
+		if ar.results != nil {
+			r := <-ar.results
+			ar.mu.Lock()
+			ar.result = r
+			ar.mu.Unlock()
+		}
+		select {
+		case <-ar.ready:
+		default:
+			close(ar.ready)
+		}
+	})
 	<-ar.ready
 	ar.mu.Lock()
 	r := ar.result
@@ -122,10 +124,8 @@ func (ar *AsyncResult[T]) Wait() (T, error) {
 func (ar *AsyncResult[T]) WaitCh() <-chan core.Result[T] {
 	ch := make(chan core.Result[T], 1)
 	go func() {
-		<-ar.ready
-		ar.mu.Lock()
-		ch <- ar.result
-		ar.mu.Unlock()
+		r := ar.getResult()
+		ch <- r
 		close(ch)
 	}()
 	return ch
@@ -141,6 +141,7 @@ func (ar *AsyncResult[T]) WaitCh() <-chan core.Result[T] {
 //	    fmt.Println("任务被取消")
 //	}
 func (ar *AsyncResult[T]) Cancel() (T, error) {
+	go ar.getResult()
 	select {
 	case <-ar.ready:
 		ar.mu.Lock()
@@ -179,6 +180,7 @@ func (ar *AsyncResult[T]) IsPanic() bool {
 //	    return
 //	}
 func (ar *AsyncResult[T]) WaitTimeout(timeout time.Duration) (T, error, bool) {
+	go ar.getResult()
 	select {
 	case <-ar.ready:
 		ar.mu.Lock()
@@ -212,7 +214,6 @@ func Go[T any](ctx context.Context, fn func(context.Context) (T, error)) *AsyncR
 	ctx = core.EnsureTraceID(ctx)
 	results := make(chan core.Result[T], 1)
 	ar := &AsyncResult[T]{results: results, ready: make(chan struct{})}
-	ar.startReader()
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
@@ -295,7 +296,6 @@ func GoAction(ctx context.Context, fn func(context.Context) error) *AsyncResult[
 	ctx = core.EnsureTraceID(ctx)
 	results := make(chan core.Result[NoResult], 1)
 	ar := &AsyncResult[NoResult]{results: results, ready: make(chan struct{})}
-	ar.startReader()
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
