@@ -1927,6 +1927,9 @@ func (p *Pool[T]) Reset() (*Pool[T], error) {
 	// 等待旧 worker 全部退出后再替换 taskCh，避免新旧 worker 竞争
 	p.workerWg.Wait()
 
+	// 重建 done channel：Close() 后 done 已关闭，Reset 必须重建，否则新 worker 会立即退出。
+	p.done = make(chan struct{})
+
 	newTaskCh := make(chan core.PoolTask[T], newSize*2)
 	p.taskCh = newTaskCh
 
@@ -1952,6 +1955,16 @@ func (p *Pool[T]) Reset() (*Pool[T], error) {
 		p.ringBufFlag.Store(true)
 	} else {
 		p.ringBufFlag.Store(false)
+	}
+
+	// 重启自动扩缩容 goroutine：Close() 关闭 done 后 autoScale goroutine 已退出，
+	// Reset 后若 autoScale 仍启用，需重建 stopCh 并重新启动后台检测循环。
+	if p.autoScaleEnabled.Load() && p.autoScale != nil {
+		stopCh := make(chan struct{})
+		p.autoScaleStop = stopCh
+		go func() {
+			p.autoScaleLoop(p.autoScale, stopCh)
+		}()
 	}
 
 	p.workerWg.Add(newSize)
