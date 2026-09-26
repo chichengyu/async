@@ -35,6 +35,7 @@ package ratelimit
 import (
 	"context"
 	"math"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -61,7 +62,7 @@ type RateLimiter struct {
 	resizeMu sync.RWMutex  // 保护 Resize 期间禁止并发的 Acquire/Release
 	ctx      context.Context
 
-	rate        int           // 每 perDuration 补充的令牌数
+	rate        atomic.Int32  // 每 perDuration 补充的令牌数（atomic，支持 Resize 动态更新）
 	perDuration time.Duration // 令牌补充周期
 	refillStop  chan struct{} // 停止令牌补充 goroutine 的信号
 	refillDone  chan struct{} // 令牌补充 goroutine 已退出的信号
@@ -90,11 +91,11 @@ func NewRateLimiter(rate int, perDuration time.Duration) *RateLimiter {
 		tokens:      make(chan struct{}, rate),
 		size:        int32(rate),
 		ctx:         context.Background(),
-		rate:        rate,
 		perDuration: perDuration,
 		refillStop:  make(chan struct{}),
 		refillDone:  make(chan struct{}),
 	}
+	rl.rate.Store(int32(rate))
 	rl.cond = sync.NewCond(&rl.mu)
 	rl.strat.Store(Block)
 	for i := 0; i < rate; i++ {
@@ -127,11 +128,11 @@ func NewRateLimiterWithBurst(rate int, perDuration time.Duration, burst int) *Ra
 		tokens:      make(chan struct{}, cap),
 		size:        int32(rate),
 		ctx:         context.Background(),
-		rate:        rate,
 		perDuration: perDuration,
 		refillStop:  make(chan struct{}),
 		refillDone:  make(chan struct{}),
 	}
+	rl.rate.Store(int32(rate))
 	rl.cond = sync.NewCond(&rl.mu)
 	rl.strat.Store(Block)
 	for i := 0; i < burst; i++ {
@@ -158,37 +159,52 @@ func newRateLimiterSimple(rate int) *RateLimiter {
 	return rl
 }
 
+// batchSizeForRate 根据给定速率计算每次批量补充的令牌数量。
+// tickInterval 由调用方根据速率区间决定，本方法只负责计算该速率下
+// 每次补充操作应填充的令牌数。
+func (rl *RateLimiter) batchSizeForRate(rate int) int {
+	interval := rl.perDuration / time.Duration(rate)
+	if interval <= 0 {
+		interval = time.Nanosecond
+	}
+	const minBatchInterval = 100 * time.Millisecond
+	const maxBatchInterval = time.Second
+	if interval < minBatchInterval {
+		bs := int(minBatchInterval / interval)
+		if bs < 1 {
+			return 1
+		}
+		return bs
+	}
+	if interval > maxBatchInterval {
+		bs := int(float64(rate) * maxBatchInterval.Seconds() / rl.perDuration.Seconds())
+		if bs < 1 {
+			return 1
+		}
+		return bs
+	}
+	return 1
+}
+
 func (rl *RateLimiter) startRefill() {
-	interval := rl.perDuration / time.Duration(rl.rate)
+	rate := int(rl.rate.Load())
+	if rate <= 0 {
+		rate = 1
+	}
+	interval := rl.perDuration / time.Duration(rate)
 	if interval <= 0 {
 		interval = time.Nanosecond
 	}
 
-	// 批量补充：当速率很高时（如 10000/s），逐令牌补充会产生极大的 ticker 开销。
-	// 改为按较粗粒度周期性补充，每次补充一批令牌，大幅降低 CPU 消耗。
 	const minBatchInterval = 100 * time.Millisecond
 	const maxBatchInterval = time.Second
 
-	var batchSize int
 	var tickInterval time.Duration
-
 	if interval < minBatchInterval {
-		// 高速率场景：批量补充
-		batchSize = int(minBatchInterval / interval)
-		if batchSize < 1 {
-			batchSize = 1
-		}
 		tickInterval = minBatchInterval
 	} else if interval > maxBatchInterval {
-		// 极低速率场景：最长 1 秒补充一次，每次补充少量
-		batchSize = int(float64(rl.rate) * maxBatchInterval.Seconds() / rl.perDuration.Seconds())
-		if batchSize < 1 {
-			batchSize = 1
-		}
 		tickInterval = maxBatchInterval
 	} else {
-		// 中等速率：逐令牌补充（间隔在合理范围内）
-		batchSize = 1
 		tickInterval = interval
 	}
 
@@ -201,9 +217,15 @@ func (rl *RateLimiter) startRefill() {
 				close(rl.refillDone)
 				return
 			case <-ticker.C:
+				// 动态读取最新 rate 以支持 Resize 后速率实时生效
+				r := int(rl.rate.Load())
+				if r <= 0 {
+					r = 1
+				}
+				curBatch := rl.batchSizeForRate(r)
 				rl.resizeMu.RLock()
 				added := 0
-				for i := 0; i < batchSize; i++ {
+				for i := 0; i < curBatch; i++ {
 					select {
 					case rl.tokens <- struct{}{}:
 						added++
@@ -214,7 +236,9 @@ func (rl *RateLimiter) startRefill() {
 				rl.resizeMu.RUnlock()
 				if added > 0 {
 					rl.mu.Lock()
-					rl.cond.Broadcast()
+					for i := 0; i < added; i++ {
+						rl.cond.Signal()
+					}
 					rl.mu.Unlock()
 				}
 			}
@@ -353,10 +377,13 @@ func (rl *RateLimiter) Acquire(ctx context.Context) error {
 //	defer rl.Release()
 //	doRequest()
 func (rl *RateLimiter) Release() {
+	rl.resizeMu.RLock()
+
 	if rl.closed.Load() {
+		rl.resizeMu.RUnlock()
 		return
 	}
-	rl.resizeMu.RLock()
+
 	sent := false
 	select {
 	case rl.tokens <- struct{}{}:
@@ -364,6 +391,7 @@ func (rl *RateLimiter) Release() {
 	default:
 	}
 	rl.resizeMu.RUnlock()
+
 	if sent {
 		rl.mu.Lock()
 		rl.cond.Signal()
@@ -385,13 +413,17 @@ func (rl *RateLimiter) Close() {
 	}
 	if rl.refillStop != nil {
 		close(rl.refillStop)
-		if rl.refillDone != nil {
-			<-rl.refillDone
-		}
 	}
-	close(rl.tokens)
 	rl.cond.Broadcast()
 	rl.mu.Unlock()
+
+	if rl.refillDone != nil {
+		<-rl.refillDone
+	}
+
+	rl.resizeMu.Lock()
+	close(rl.tokens)
+	rl.resizeMu.Unlock()
 }
 
 // Resize 动态调整限流速率。newRate <= 0 或等于当前值时忽略。
@@ -434,6 +466,7 @@ func (rl *RateLimiter) Resize(newRate int) {
 
 	rl.tokens = newTokens
 	rl.size = int32(newRate)
+	rl.rate.Store(int32(newRate))
 	for i := 0; i < newRate; i++ {
 		newTokens <- struct{}{}
 	}
@@ -536,14 +569,10 @@ func (sw *SlidingWindowRateLimiter) Allow() bool {
 
 	now := time.Now()
 	cutoff := now.Add(-sw.window)
-	n := 0
-	for _, ts := range sw.timestamps {
-		if ts.After(cutoff) {
-			break
-		}
-		n++
-	}
-	sw.timestamps = sw.timestamps[n:]
+	cutoffIdx := sort.Search(len(sw.timestamps), func(i int) bool {
+		return sw.timestamps[i].After(cutoff)
+	})
+	sw.timestamps = sw.timestamps[cutoffIdx:]
 	if len(sw.timestamps) < sw.limit {
 		sw.timestamps = append(sw.timestamps, now)
 		return true
@@ -561,14 +590,10 @@ func (sw *SlidingWindowRateLimiter) AllowN(n int) bool {
 
 	now := time.Now()
 	cutoff := now.Add(-sw.window)
-	i := 0
-	for _, ts := range sw.timestamps {
-		if ts.After(cutoff) {
-			break
-		}
-		i++
-	}
-	sw.timestamps = sw.timestamps[i:]
+	cutoffIdx := sort.Search(len(sw.timestamps), func(i int) bool {
+		return sw.timestamps[i].After(cutoff)
+	})
+	sw.timestamps = sw.timestamps[cutoffIdx:]
 	if len(sw.timestamps)+n <= sw.limit {
 		for j := 0; j < n; j++ {
 			sw.timestamps = append(sw.timestamps, now)
