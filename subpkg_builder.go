@@ -20,7 +20,7 @@ import (
 // 使用示例：
 //
 //	p := NewPoolBuilder[string](8).
-//	    WithTimeoutCh(5 * time.Second).
+//	    WithTimeoutCh(defaultSubmitTimeout).
 //	    WithStreamingCh(256)
 //
 //	p.Submit(ctx, fn)
@@ -34,7 +34,7 @@ type PoolBuilder[T any] struct {
 // size <= 0 使用默认 IO 并发度。
 func NewPoolBuilder[T any](size int) *PoolBuilder[T] {
 	if size <= 0 {
-		size = core.IO()
+		size = defaultIO()
 	}
 	return &PoolBuilder[T]{Pool: NewPool[T](size)}
 }
@@ -48,7 +48,7 @@ func DefaultPoolBuilder[T any]() *PoolBuilder[T] {
 // initialSize <= 0 使用默认 IO 并发度，cfg 为 nil 时使用 DefaultAutoScaleConfig。
 func NewAutoScalePoolBuilder[T any](initialSize int, cfg *core.AutoScaleConfig) *PoolBuilder[T] {
 	if initialSize <= 0 {
-		initialSize = core.IO()
+		initialSize = defaultIO()
 	}
 	if cfg == nil {
 		cfg = core.DefaultAutoScaleConfig()
@@ -58,7 +58,7 @@ func NewAutoScalePoolBuilder[T any](initialSize int, cfg *core.AutoScaleConfig) 
 
 // DefaultAutoScalePoolBuilder 使用默认配置创建自动扩缩容池（IO 并发度 + DefaultAutoScaleConfig）。
 func DefaultAutoScalePoolBuilder[T any]() *PoolBuilder[T] {
-	return NewAutoScalePoolBuilder[T](core.IO(), core.DefaultAutoScaleConfig())
+	return NewAutoScalePoolBuilder[T](defaultIO(), core.DefaultAutoScaleConfig())
 }
 
 // ── Pool 配置链式方法（覆盖嵌入方法，返回 *PoolBuilder 以保持链式） ──
@@ -82,7 +82,7 @@ func (p *PoolBuilder[T]) WithTimeoutCh(d time.Duration) *PoolBuilder[T] {
 
 // WithTimeoutChDefault 使用默认超时（30s）设置任务超时。
 func (p *PoolBuilder[T]) WithTimeoutChDefault() *PoolBuilder[T] {
-	p.Pool.WithTimeout(30 * time.Second)
+	p.Pool.WithTimeout(defaultTimeout)
 	return p
 }
 
@@ -94,7 +94,7 @@ func (p *PoolBuilder[T]) WithSubmitTimeoutCh(d time.Duration) *PoolBuilder[T] {
 
 // WithSubmitTimeoutChDefault 使用默认提交超时（5s）。
 func (p *PoolBuilder[T]) WithSubmitTimeoutChDefault() *PoolBuilder[T] {
-	p.Pool.WithSubmitTimeout(5 * time.Second)
+	p.Pool.WithSubmitTimeout(defaultSubmitTimeout)
 	return p
 }
 
@@ -124,7 +124,7 @@ func (p *PoolBuilder[T]) WithRingBufferCh(capacity int, overflow core.OverflowSt
 
 // WithRingBufferChDefault 使用默认环形缓冲区设置（4096, DropOldest）。
 func (p *PoolBuilder[T]) WithRingBufferChDefault() *PoolBuilder[T] {
-	p.Pool.WithRingBuffer(4096, core.OverflowDrop)
+	p.Pool.WithRingBuffer(defaultRingBufCap, core.OverflowDrop)
 	return p
 }
 
@@ -290,6 +290,11 @@ func (p *PoolBuilder[T]) TrySubmitCh(ctx context.Context, fn func(context.Contex
 	return p
 }
 
+func (p *PoolBuilder[T]) Run(fn func(pb *PoolBuilder[T]) error) error {
+	defer p.Pool.Close()
+	return fn(p)
+}
+
 // ============================================================
 // GroupBuilder —— 任务组构建器
 // ============================================================
@@ -299,7 +304,7 @@ func (p *PoolBuilder[T]) TrySubmitCh(ctx context.Context, fn func(context.Contex
 // 使用示例：
 //
 //	g := NewGroupBuilder[string](10).
-//	    WithTimeoutCh(5 * time.Second).
+//	    WithTimeoutCh(defaultSubmitTimeout).
 //	    WithStreamingCh(128)
 //
 //	g.Go(ctx, fn)
@@ -339,7 +344,7 @@ func (g *GroupBuilder[T]) WithTimeoutCh(d time.Duration) *GroupBuilder[T] {
 
 // WithTimeoutChDefault 使用默认超时（30s）设置任务超时。
 func (g *GroupBuilder[T]) WithTimeoutChDefault() *GroupBuilder[T] {
-	g.Group.WithTimeout(30 * time.Second)
+	g.Group.WithTimeout(defaultTimeout)
 	return g
 }
 
@@ -351,7 +356,7 @@ func (g *GroupBuilder[T]) WithSubmitTimeoutCh(d time.Duration) *GroupBuilder[T] 
 
 // WithSubmitTimeoutChDefault 使用默认提交超时（5s）。
 func (g *GroupBuilder[T]) WithSubmitTimeoutChDefault() *GroupBuilder[T] {
-	g.Group.WithSubmitTimeout(5 * time.Second)
+	g.Group.WithSubmitTimeout(defaultSubmitTimeout)
 	return g
 }
 
@@ -525,7 +530,7 @@ func (g *GroupBuilder[T]) GoAtWithTimeoutCh(index int, ctx context.Context, time
 // 使用示例：
 //
 //	sp := NewShardPoolBuilder[string](8, 4).
-//	    WithTimeoutCh(5 * time.Second).
+//	    WithTimeoutCh(defaultSubmitTimeout).
 //	    WithStreamingCh(1024)
 //
 //	sp.Submit(ctx, fn)
@@ -554,7 +559,7 @@ func NewAutoScaleShardPoolBuilder[T any](shards, initialSizePerShard int, cfg *c
 		shards = 4
 	}
 	if initialSizePerShard <= 0 {
-		initialSizePerShard = core.IO()
+		initialSizePerShard = defaultIO()
 	}
 	if cfg == nil {
 		cfg = core.DefaultAutoScaleConfig()
@@ -564,7 +569,7 @@ func NewAutoScaleShardPoolBuilder[T any](shards, initialSizePerShard int, cfg *c
 
 // DefaultAutoScaleShardPoolBuilder 使用默认配置创建自动扩缩容分片池（4 分片 + IO 并发度）。
 func DefaultAutoScaleShardPoolBuilder[T any]() *ShardPoolBuilder[T] {
-	return NewAutoScaleShardPoolBuilder[T](4, core.IO(), core.DefaultAutoScaleConfig())
+	return NewAutoScaleShardPoolBuilder[T](4, defaultIO(), core.DefaultAutoScaleConfig())
 }
 
 // ── ShardedPool 配置链式方法 ──
@@ -583,7 +588,7 @@ func (sp *ShardPoolBuilder[T]) WithTimeoutCh(d time.Duration) *ShardPoolBuilder[
 
 // WithTimeoutChDefault 使用默认超时（30s）设置任务超时。
 func (sp *ShardPoolBuilder[T]) WithTimeoutChDefault() *ShardPoolBuilder[T] {
-	sp.ShardedPool.WithTimeout(30 * time.Second)
+	sp.ShardedPool.WithTimeout(defaultTimeout)
 	return sp
 }
 
@@ -595,7 +600,7 @@ func (sp *ShardPoolBuilder[T]) WithSubmitTimeoutCh(d time.Duration) *ShardPoolBu
 
 // WithSubmitTimeoutChDefault 使用默认提交超时（5s）。
 func (sp *ShardPoolBuilder[T]) WithSubmitTimeoutChDefault() *ShardPoolBuilder[T] {
-	sp.ShardedPool.WithSubmitTimeout(5 * time.Second)
+	sp.ShardedPool.WithSubmitTimeout(defaultSubmitTimeout)
 	return sp
 }
 
@@ -625,7 +630,7 @@ func (sp *ShardPoolBuilder[T]) WithRingBufferCh(capacity int, overflow core.Over
 
 // WithRingBufferChDefault 使用默认环形缓冲区设置（4096, DropOldest）。
 func (sp *ShardPoolBuilder[T]) WithRingBufferChDefault() *ShardPoolBuilder[T] {
-	sp.ShardedPool.WithRingBuffer(4096, core.OverflowDrop)
+	sp.ShardedPool.WithRingBuffer(defaultRingBufCap, core.OverflowDrop)
 	return sp
 }
 
@@ -733,6 +738,11 @@ func (sp *ShardPoolBuilder[T]) TrySubmitBatchCh(ctx context.Context, items []T, 
 	return sp
 }
 
+func (sp *ShardPoolBuilder[T]) Run(fn func(spb *ShardPoolBuilder[T]) error) error {
+	defer sp.ShardedPool.Close()
+	return fn(sp)
+}
+
 // ============================================================
 // ShardGroupBuilder —— 分片任务组构建器
 // ============================================================
@@ -742,7 +752,7 @@ func (sp *ShardPoolBuilder[T]) TrySubmitBatchCh(ctx context.Context, items []T, 
 // 使用示例：
 //
 //	sg := NewShardGroupBuilder[string](8, 4).
-//	    WithTimeoutCh(5 * time.Second).
+//	    WithTimeoutCh(defaultSubmitTimeout).
 //	    WithStreamingCh(128)
 //
 //	sg.Go(ctx, fn)
@@ -784,7 +794,7 @@ func (sg *ShardGroupBuilder[T]) WithTimeoutCh(d time.Duration) *ShardGroupBuilde
 
 // WithTimeoutChDefault 使用默认超时（30s）设置任务超时。
 func (sg *ShardGroupBuilder[T]) WithTimeoutChDefault() *ShardGroupBuilder[T] {
-	sg.ShardedGroup.WithTimeout(30 * time.Second)
+	sg.ShardedGroup.WithTimeout(defaultTimeout)
 	return sg
 }
 
@@ -796,7 +806,7 @@ func (sg *ShardGroupBuilder[T]) WithSubmitTimeoutCh(d time.Duration) *ShardGroup
 
 // WithSubmitTimeoutChDefault 使用默认提交超时（5s）。
 func (sg *ShardGroupBuilder[T]) WithSubmitTimeoutChDefault() *ShardGroupBuilder[T] {
-	sg.ShardedGroup.WithSubmitTimeout(5 * time.Second)
+	sg.ShardedGroup.WithSubmitTimeout(defaultSubmitTimeout)
 	return sg
 }
 
@@ -929,7 +939,7 @@ func (mp *MultiPoolBuilder[T]) WithTimeoutCh(d time.Duration) *MultiPoolBuilder[
 
 // WithTimeoutChDefault 使用默认超时（30s）设置任务超时。
 func (mp *MultiPoolBuilder[T]) WithTimeoutChDefault() *MultiPoolBuilder[T] {
-	mp.MultiPool.WithTimeout(30 * time.Second)
+	mp.MultiPool.WithTimeout(defaultTimeout)
 	return mp
 }
 
@@ -941,7 +951,7 @@ func (mp *MultiPoolBuilder[T]) WithSubmitTimeoutCh(d time.Duration) *MultiPoolBu
 
 // WithSubmitTimeoutChDefault 使用默认提交超时（5s）。
 func (mp *MultiPoolBuilder[T]) WithSubmitTimeoutChDefault() *MultiPoolBuilder[T] {
-	mp.MultiPool.WithSubmitTimeout(5 * time.Second)
+	mp.MultiPool.WithSubmitTimeout(defaultSubmitTimeout)
 	return mp
 }
 
@@ -971,7 +981,7 @@ func (mp *MultiPoolBuilder[T]) WithRingBufferCh(capacity int, overflow core.Over
 
 // WithRingBufferChDefault 使用默认环形缓冲区设置（4096, DropOldest）。
 func (mp *MultiPoolBuilder[T]) WithRingBufferChDefault() *MultiPoolBuilder[T] {
-	mp.MultiPool.WithRingBuffer(4096, core.OverflowDrop)
+	mp.MultiPool.WithRingBuffer(defaultRingBufCap, core.OverflowDrop)
 	return mp
 }
 
@@ -1051,6 +1061,11 @@ func (mp *MultiPoolBuilder[T]) SubmitBatchCh(ctx context.Context, items []T, fn 
 	return mp
 }
 
+func (mp *MultiPoolBuilder[T]) Run(fn func(mpb *MultiPoolBuilder[T]) error) error {
+	defer mp.MultiPool.Close()
+	return fn(mp)
+}
+
 // ============================================================
 // MultiGroupBuilder —— 多实例任务组构建器（水平分片）
 // ============================================================
@@ -1095,7 +1110,7 @@ func (mg *MultiGroupBuilder[T]) WithTimeoutCh(d time.Duration) *MultiGroupBuilde
 
 // WithTimeoutChDefault 使用默认超时（30s）设置任务超时。
 func (mg *MultiGroupBuilder[T]) WithTimeoutChDefault() *MultiGroupBuilder[T] {
-	mg.MultiGroup.WithTimeout(30 * time.Second)
+	mg.MultiGroup.WithTimeout(defaultTimeout)
 	return mg
 }
 
@@ -1148,6 +1163,11 @@ func (mg *MultiGroupBuilder[T]) GoKeyedCh(key uint64, ctx context.Context, fn fu
 	return mg
 }
 
+func (mg *MultiGroupBuilder[T]) Run(fn func(mgb *MultiGroupBuilder[T]) error) error {
+	defer mg.MultiGroup.Close()
+	return fn(mg)
+}
+
 // ============================================================
 // NoResultPoolBuilder —— 无返回值协程池构建器
 // ============================================================
@@ -1157,7 +1177,7 @@ func (mg *MultiGroupBuilder[T]) GoKeyedCh(key uint64, ctx context.Context, fn fu
 // 使用示例：
 //
 //	p := NewNoResultPoolBuilder(8).
-//	    WithTimeoutCh(5 * time.Second).
+//	    WithTimeoutCh(defaultSubmitTimeout).
 //	    WithStreamingCh(128)
 //
 //	GoAction(p.Pool, ctx, fn)
@@ -1171,7 +1191,7 @@ type NoResultPoolBuilder struct {
 // size <= 0 使用默认 IO 并发度。
 func NewNoResultPoolBuilder(size int) *NoResultPoolBuilder {
 	if size <= 0 {
-		size = core.IO()
+		size = defaultIO()
 	}
 	return &NoResultPoolBuilder{NoResultPool: NewNoResultPool(size)}
 }
@@ -1197,7 +1217,7 @@ func (p *NoResultPoolBuilder) WithTimeoutCh(d time.Duration) *NoResultPoolBuilde
 
 // WithTimeoutChDefault 使用默认超时（30s）设置任务超时。
 func (p *NoResultPoolBuilder) WithTimeoutChDefault() *NoResultPoolBuilder {
-	p.NoResultPool.WithTimeout(30 * time.Second)
+	p.NoResultPool.WithTimeout(defaultTimeout)
 	return p
 }
 
@@ -1209,7 +1229,7 @@ func (p *NoResultPoolBuilder) WithSubmitTimeoutCh(d time.Duration) *NoResultPool
 
 // WithSubmitTimeoutChDefault 使用默认提交超时（5s）。
 func (p *NoResultPoolBuilder) WithSubmitTimeoutChDefault() *NoResultPoolBuilder {
-	p.NoResultPool.WithSubmitTimeout(5 * time.Second)
+	p.NoResultPool.WithSubmitTimeout(defaultSubmitTimeout)
 	return p
 }
 
@@ -1233,7 +1253,7 @@ func (p *NoResultPoolBuilder) WithRingBufferCh(capacity int, overflow core.Overf
 
 // WithRingBufferChDefault 使用默认环形缓冲区设置（4096, DropOldest）。
 func (p *NoResultPoolBuilder) WithRingBufferChDefault() *NoResultPoolBuilder {
-	p.NoResultPool.WithRingBuffer(4096, core.OverflowDrop)
+	p.NoResultPool.WithRingBuffer(defaultRingBufCap, core.OverflowDrop)
 	return p
 }
 
@@ -1405,6 +1425,11 @@ func (p *NoResultPoolBuilder) SubmitAtCh(index int, ctx context.Context, fn func
 	return p
 }
 
+func (p *NoResultPoolBuilder) Run(fn func(pb *NoResultPoolBuilder) error) error {
+	defer p.NoResultPool.Close()
+	return fn(p)
+}
+
 // ============================================================
 // NoResultGroupBuilder —— 无返回值任务组构建器
 // ============================================================
@@ -1414,7 +1439,7 @@ func (p *NoResultPoolBuilder) SubmitAtCh(index int, ctx context.Context, fn func
 // 使用示例：
 //
 //	nr := NewNoResultGroupBuilder(8).
-//	    WithTimeoutCh(5 * time.Second)
+//	    WithTimeoutCh(defaultSubmitTimeout)
 //
 //	nr.Go(ctx, fn)
 //	nr.Wait()
@@ -1453,7 +1478,7 @@ func (nr *NoResultGroupBuilder) WithTimeoutCh(d time.Duration) *NoResultGroupBui
 
 // WithTimeoutChDefault 使用默认超时（30s）设置任务超时。
 func (nr *NoResultGroupBuilder) WithTimeoutChDefault() *NoResultGroupBuilder {
-	nr.NoResult.WithTimeout(30 * time.Second)
+	nr.NoResult.WithTimeout(defaultTimeout)
 	return nr
 }
 
@@ -1465,7 +1490,7 @@ func (nr *NoResultGroupBuilder) WithSubmitTimeoutCh(d time.Duration) *NoResultGr
 
 // WithSubmitTimeoutChDefault 使用默认提交超时（5s）。
 func (nr *NoResultGroupBuilder) WithSubmitTimeoutChDefault() *NoResultGroupBuilder {
-	nr.NoResult.WithSubmitTimeout(5 * time.Second)
+	nr.NoResult.WithSubmitTimeout(defaultSubmitTimeout)
 	return nr
 }
 
@@ -1701,7 +1726,7 @@ type RateLimitBuilder struct {
 // rate 每 perDuration 允许的操作次数，rate <= 0 时使用 IO 并发度。
 func NewRateLimitBuilder(rate int, perDuration time.Duration) *RateLimitBuilder {
 	if rate <= 0 {
-		rate = core.IO()
+		rate = defaultIO()
 	}
 	return &RateLimitBuilder{
 		rate:        rate,
@@ -1712,7 +1737,7 @@ func NewRateLimitBuilder(rate int, perDuration time.Duration) *RateLimitBuilder 
 
 // DefaultRateLimitBuilder 使用默认的 IO 并发度和 1 秒间隔。
 func DefaultRateLimitBuilder() *RateLimitBuilder {
-	return NewRateLimitBuilder(core.IO(), time.Second)
+	return NewRateLimitBuilder(defaultIO(), time.Second)
 }
 
 // WithLoggerCh 注入自定义日志实现，全局生效，返回构建器。
@@ -1730,7 +1755,7 @@ func (b *RateLimitBuilder) WithBurst(burst int) *RateLimitBuilder {
 
 // WithBurstDefault 使用默认突发容量（1）。
 func (b *RateLimitBuilder) WithBurstDefault() *RateLimitBuilder {
-	b.burst = 1
+	b.burst = defaultRateLimitBurst
 	return b
 }
 
@@ -1759,6 +1784,12 @@ func (b *RateLimitBuilder) BuildWithBurst() *RateLimiter {
 	return NewRateLimiter(b.rate, b.perDuration)
 }
 
+func (b *RateLimitBuilder) Run(fn func(rl *RateLimiter) error) error {
+	rl := b.BuildWithBurst()
+	defer rl.Close()
+	return fn(rl)
+}
+
 // ============================================================
 // SlidingWindowBuilder —— 滑动窗口限流构建器
 // ============================================================
@@ -1778,7 +1809,7 @@ type SlidingWindowBuilder struct {
 // limit <= 0 时使用 IO 并发度，window <= 0 时使用 1 秒。
 func NewSlidingWindowBuilder(limit int, window time.Duration) *SlidingWindowBuilder {
 	if limit <= 0 {
-		limit = core.IO()
+		limit = defaultIO()
 	}
 	if window <= 0 {
 		window = time.Second
@@ -1788,7 +1819,7 @@ func NewSlidingWindowBuilder(limit int, window time.Duration) *SlidingWindowBuil
 
 // DefaultSlidingWindowBuilder 使用默认的 IO 并发度和 1 秒窗口。
 func DefaultSlidingWindowBuilder() *SlidingWindowBuilder {
-	return NewSlidingWindowBuilder(core.IO(), time.Second)
+	return NewSlidingWindowBuilder(defaultIO(), time.Second)
 }
 
 // WithLoggerCh 注入自定义日志实现，全局生效，返回构建器。
@@ -1821,7 +1852,7 @@ type TokenBucketBuilder struct {
 // rate <= 0 时使用 IO 并发度，capacity <= 0 时使用 2*rate。
 func NewTokenBucketBuilder(rate, capacity float64) *TokenBucketBuilder {
 	if rate <= 0 {
-		rate = float64(core.IO())
+		rate = float64(defaultIO())
 	}
 	if capacity <= 0 {
 		capacity = rate * 2
@@ -1831,7 +1862,7 @@ func NewTokenBucketBuilder(rate, capacity float64) *TokenBucketBuilder {
 
 // DefaultTokenBucketBuilder 使用默认的 IO 并发度和 2x 容量。
 func DefaultTokenBucketBuilder() *TokenBucketBuilder {
-	return NewTokenBucketBuilder(float64(core.IO()), 0)
+	return NewTokenBucketBuilder(float64(defaultIO()), 0)
 }
 
 // WithLoggerCh 注入自定义日志实现，全局生效，返回构建器。
@@ -1898,7 +1929,7 @@ func (b *AdaptiveRateLimitBuilder) Build() *AdaptiveRateLimiter {
 // 使用示例：
 //
 //	ar := NewTaskBuilder[int](ctx).
-//	    WithTimeout(5 * time.Second).
+//	    WithTimeout(defaultSubmitTimeout).
 //	    Run(func(ctx context.Context) (int, error) {
 //	        return doWork(ctx)
 //	    })
@@ -1933,7 +1964,7 @@ func (b *TaskBuilder[T]) WithTimeout(d time.Duration) *TaskBuilder[T] {
 
 // WithTimeoutDefault 使用默认任务超时（30s）。
 func (b *TaskBuilder[T]) WithTimeoutDefault() *TaskBuilder[T] {
-	b.timeout = 30 * time.Second
+	b.timeout = defaultTimeout
 	return b
 }
 
@@ -1989,14 +2020,14 @@ type BoundedRunnerBuilder struct {
 // max <= 0 时使用 IO 并发度。
 func NewBoundedRunnerBuilder(max int) *BoundedRunnerBuilder {
 	if max <= 0 {
-		max = core.IO()
+		max = defaultIO()
 	}
 	return &BoundedRunnerBuilder{max: max}
 }
 
 // DefaultBoundedRunnerBuilder 使用默认的 IO 并发度。
 func DefaultBoundedRunnerBuilder() *BoundedRunnerBuilder {
-	return NewBoundedRunnerBuilder(core.IO())
+	return NewBoundedRunnerBuilder(defaultIO())
 }
 
 // WithLoggerCh 注入自定义日志实现，全局生效，返回构建器。

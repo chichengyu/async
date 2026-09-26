@@ -162,6 +162,31 @@ func DefaultPool[T any]() *Pool[T] {
 	return NewPool[T](core.IO())
 }
 
+// ──────────────────────────── WithPool：自动 Close 便捷包装函数 ────────────────────────────
+
+// WithPool 创建协程池并执行 fn，fn 返回后自动 Close 释放资源。
+// size <= 0 时使用 core.IO() 作为默认并发度。
+//
+// 示例：
+//
+//	err := pool.WithPool(64, func(p *Pool[int]) error {
+//	    for _, item := range items {
+//	        p.Submit(ctx, func(ctx context.Context) (int, error) {
+//	            return process(item)
+//	        })
+//	    }
+//	    results := p.Wait()
+//	    for _, r := range results {
+//	        if r.Err != nil { return r.Err }
+//	    }
+//	    return nil
+//	})
+func WithPool[T any](size int, fn func(p *Pool[T]) error) error {
+	p := NewPool[T](size)
+	defer p.Close()
+	return fn(p)
+}
+
 // WithTraceID 设置池的上下文并注入 trace_id。
 //
 // 参数：
@@ -2533,4 +2558,32 @@ func (p *Pool[T]) performAutoScaleCheck(config *core.AutoScaleConfig, scaleUpCou
 		*scaleUpCount = 0
 		*scaleDownCount = 0
 	}
+}
+
+// ──────────────────────────── WithMultiPool：自动 Close 便捷包装函数 ────────────────────────────
+
+// WithMultiPool 创建分片协程池并执行 fn，fn 返回后自动 Close 所有分片释放资源。
+// 内部先创建 size 个 worker 的 Pool，再水平分片为 shards 份，
+// MultiPool.Close() 会关闭所有分片池。
+// size <= 0 时使用 core.IO()，shards <= 1 时等同于单 Pool。
+//
+// 示例：
+//
+//	err := pool.WithMultiPool(64, 16, func(mp *MultiPool[int]) error {
+//	    for _, item := range items {
+//	        mp.Submit(ctx, func(ctx context.Context) (int, error) {
+//	            return process(item)
+//	        })
+//	    }
+//	    results := mp.Wait()
+//	    for _, r := range results {
+//	        if r.Err != nil { return r.Err }
+//	    }
+//	    return nil
+//	})
+func WithMultiPool[T any](size int, shards int, fn func(mp *MultiPool[T]) error) error {
+	p := NewPool[T](size)
+	mp := p.Shard(shards)
+	defer mp.Close()
+	return fn(mp)
 }

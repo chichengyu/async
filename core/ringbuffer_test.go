@@ -817,7 +817,7 @@ func TestRingBuffer_Stress_ProductionPattern(t *testing.T) {
 
 				if tc.strategy == OverflowBlock || tc.strategy == OverflowError {
 					successExpected := successCount.Load()
-					_ = failCount
+					_ = failCount.Load()
 
 					popped := int64(0)
 					seen := make(map[int]bool)

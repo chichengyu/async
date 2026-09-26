@@ -1963,3 +1963,30 @@ func (g *Group[T]) DefaultShard() *MultiGroup[T] {
 	}
 	return g.Shard(shards)
 }
+
+// ──────────────────────────── WithMultiGroup：自动 Close 便捷包装函数 ────────────────────────────
+
+// WithMultiGroup 创建分片任务组并执行 fn，fn 返回后自动 Close 所有分片释放资源。
+// 内部先创建并发度为 concurrency 的 Group，再水平分片为 shards 份。
+// concurrency <= 0 时默认 1，shards <= 1 时等同于单 Group。
+// 注意：Group 本身没有 Close()，仅分片后的 MultiGroup 有后台资源需要释放。
+//
+// 示例：
+//
+//	err := group.WithMultiGroup(64, 16, func(mg *MultiGroup[string]) error {
+//	    for _, item := range items {
+//	        mg.Go(ctx, func(ctx context.Context) (string, error) {
+//	            return process(item)
+//	        })
+//	    }
+//	    results, firstErr := mg.Wait()
+//	    if firstErr != nil { return firstErr }
+//	    _ = results
+//	    return nil
+//	})
+func WithMultiGroup[T any](concurrency int, shards int, fn func(mg *MultiGroup[T]) error) error {
+	g := NewGroup[T](concurrency)
+	mg := g.Shard(shards)
+	defer mg.Close()
+	return fn(mg)
+}

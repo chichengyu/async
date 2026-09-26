@@ -28,6 +28,7 @@ type MapBuilder[T any, R any] struct {
 	concurrency int
 	timeout     time.Duration
 	failFast    bool
+	shards      int
 }
 
 // NewMapBuilder 创建 Map 操作构建器。
@@ -35,7 +36,7 @@ func NewMapBuilder[T any, R any](ctx context.Context, items []T) *MapBuilder[T, 
 	return &MapBuilder[T, R]{
 		ctx:         core.EnsureTraceID(ctx),
 		items:       items,
-		concurrency: core.IO(),
+		concurrency: defaultIO(),
 	}
 }
 
@@ -60,7 +61,7 @@ func (m *MapBuilder[T, R]) WithConcurrency(n int) *MapBuilder[T, R] {
 
 // WithConcurrencyDefault 使用默认 IO 并发度。
 func (m *MapBuilder[T, R]) WithConcurrencyDefault() *MapBuilder[T, R] {
-	m.concurrency = core.IO()
+	m.concurrency = defaultIO()
 	return m
 }
 
@@ -73,6 +74,21 @@ func (m *MapBuilder[T, R]) WithTimeout(d time.Duration) *MapBuilder[T, R] {
 // WithFailFast 启用 FailFast 模式：任一任务失败即终止。
 func (m *MapBuilder[T, R]) WithFailFast() *MapBuilder[T, R] {
 	m.failFast = true
+	return m
+}
+
+// WithShards 设置水平分片数，启用时 RunSharded 会将任务分发到 N 个 Group 实例并行执行。
+// shards <= 0 时使用默认自动分片数（runtime.GOMAXPROCS(0)，最少 2）。
+func (m *MapBuilder[T, R]) WithShards(shards int) *MapBuilder[T, R] {
+	m.shards = shards
+	return m
+}
+
+// WithShardsDefault 使用默认水平分片数（runtime.GOMAXPROCS(0)，最少 2）。
+// 生产环境中分片数等于可用的 P 数量，适合 IO 密集型服务（如 API 网关、消息消费）。
+// 高并发推荐显式设置 WithShards(16) 或 WithShards(32) 来匹配实例规格。
+func (m *MapBuilder[T, R]) WithShardsDefault() *MapBuilder[T, R] {
+	m.shards = 0
 	return m
 }
 
@@ -158,6 +174,25 @@ func (m *MapBuilder[T, R]) RunPoolWithError(fn func(context.Context, T) (R, erro
 	return MapPool(m.ctx, m.items, fn, m.concurrency)
 }
 
+// RunSharded 使用水平分片执行 Map，将任务分发到 N 个 Group 实例并行执行。
+// 适合极限高并发场景（百万~千万 QPS），通过分片降低锁竞争。
+//
+// 分片数由 WithShards 设置，未设置时自动使用 runtime.GOMAXPROCS(0)（最少 2）。
+func (m *MapBuilder[T, R]) RunSharded(fn func(context.Context, T) (R, error)) ([]Result[R], error) {
+	return MapSharded(m.ctx, m.items, m.concurrency, fn, m.shards)
+}
+
+// RunStream 流式 Map，通过 channel 边执行边返回结果，适合千万级数据的实时处理。
+// bufSize <= 0 时自适应计算缓冲区（取 len(items)/concurrency 和 256 的较小值，最少 64）。
+//
+// 若已调用 WithFailFast，等价于 MapStreamWithFailFast：首个失败立即取消其余任务。
+func (m *MapBuilder[T, R]) RunStream(fn func(context.Context, T) (R, error), bufSize int) <-chan Result[R] {
+	if m.failFast {
+		return MapStreamWithFailFast(m.ctx, m.items, m.concurrency, fn, bufSize)
+	}
+	return MapStream(m.ctx, m.items, m.concurrency, fn, bufSize)
+}
+
 // ──────────────────────────── ForEachBuilder ────────────────────────────
 
 // ForEachBuilder 链式构建 ForEach 操作，一个 Builder 覆盖所有 ForEach 变体。
@@ -177,6 +212,7 @@ type ForEachBuilder[T any] struct {
 	concurrency int
 	timeout     time.Duration
 	failFast    bool
+	shards      int
 }
 
 // NewForEachBuilder 创建 ForEach 操作构建器。
@@ -184,7 +220,7 @@ func NewForEachBuilder[T any](ctx context.Context, items []T) *ForEachBuilder[T]
 	return &ForEachBuilder[T]{
 		ctx:         core.EnsureTraceID(ctx),
 		items:       items,
-		concurrency: core.IO(),
+		concurrency: defaultIO(),
 	}
 }
 
@@ -209,7 +245,7 @@ func (f *ForEachBuilder[T]) WithConcurrency(n int) *ForEachBuilder[T] {
 
 // WithConcurrencyDefault 使用默认 IO 并发度。
 func (f *ForEachBuilder[T]) WithConcurrencyDefault() *ForEachBuilder[T] {
-	f.concurrency = core.IO()
+	f.concurrency = defaultIO()
 	return f
 }
 
@@ -222,6 +258,21 @@ func (f *ForEachBuilder[T]) WithTimeout(d time.Duration) *ForEachBuilder[T] {
 // WithFailFast 启用 FailFast 模式：任一任务失败即终止。
 func (f *ForEachBuilder[T]) WithFailFast() *ForEachBuilder[T] {
 	f.failFast = true
+	return f
+}
+
+// WithShards 设置水平分片数，启用时 RunSharded 会将任务分发到 N 个 Group 实例并行执行。
+// shards <= 0 时使用默认自动分片数（runtime.GOMAXPROCS(0)，最少 2）。
+func (f *ForEachBuilder[T]) WithShards(shards int) *ForEachBuilder[T] {
+	f.shards = shards
+	return f
+}
+
+// WithShardsDefault 使用默认水平分片数（runtime.GOMAXPROCS(0)，最少 2）。
+// 生产环境中分片数等于可用的 P 数量，适合 IO 密集型服务（如消息队列消费、批量写入）。
+// 高并发推荐显式设置 WithShards(16) 或 WithShards(32) 来匹配实例规格。
+func (f *ForEachBuilder[T]) WithShardsDefault() *ForEachBuilder[T] {
+	f.shards = 0
 	return f
 }
 
@@ -280,6 +331,31 @@ func (f *ForEachBuilder[T]) RunPool(fn func(context.Context, T) error) (*NoResul
 	return ForEachPool(f.ctx, f.items, fn, f.concurrency)
 }
 
+// RunSharded 使用水平分片执行 ForEach，将任务分发到 N 个 Group 实例并行执行。
+// 适合极限高并发场景（百万~千万 QPS），通过分片降低锁竞争。
+//
+// 分片数由 WithShards 设置，未设置时自动使用 runtime.GOMAXPROCS(0)（最少 2）。
+//
+// 返回值：
+//   - total：接收到的任务总数
+//   - failCnt：失败任务数
+//   - firstErr：第一个错误（含 panic）
+//   - results：所有任务结果，长度 = total
+func (f *ForEachBuilder[T]) RunSharded(fn func(context.Context, T) error) (total int64, failCnt int64, firstErr error, results []Result[struct{}]) {
+	return ForEachSharded(f.ctx, f.items, f.concurrency, fn, f.shards)
+}
+
+// RunStream 流式 ForEach，通过 channel 边执行边返回每个元素的错误结果，适合千万级数据的实时处理。
+// bufSize <= 0 时自适应计算缓冲区（取 len(items)/concurrency 和 256 的较小值，最少 64）。
+//
+// 若已调用 WithFailFast，等价于 ForEachStreamWithFailFast：首个错误立即取消其余任务。
+func (f *ForEachBuilder[T]) RunStream(fn func(context.Context, T) error, bufSize int) <-chan Result[struct{}] {
+	if f.failFast {
+		return ForEachStreamWithFailFast(f.ctx, f.items, f.concurrency, fn, bufSize)
+	}
+	return ForEachStream(f.ctx, f.items, f.concurrency, fn, bufSize)
+}
+
 // ──────────────────────────── RetryBuilder ────────────────────────────
 
 // RetryBuilder 链式构建重试操作，一个 Builder 覆盖所有 Retry 变体。
@@ -309,7 +385,7 @@ type RetryBuilder[T any] struct {
 func NewRetryBuilder[T any](ctx context.Context) *RetryBuilder[T] {
 	return &RetryBuilder[T]{
 		ctx:        core.EnsureTraceID(ctx),
-		maxRetries: 3,
+		maxRetries: defaultMaxRetries,
 	}
 }
 
@@ -334,7 +410,7 @@ func (r *RetryBuilder[T]) WithMaxRetries(n int) *RetryBuilder[T] {
 
 // WithMaxRetriesDefault 使用默认最大重试次数（3）。
 func (r *RetryBuilder[T]) WithMaxRetriesDefault() *RetryBuilder[T] {
-	r.maxRetries = 3
+	r.maxRetries = defaultMaxRetries
 	return r
 }
 
@@ -348,8 +424,8 @@ func (r *RetryBuilder[T]) WithExponentialBackoff(initial, max time.Duration) *Re
 
 // WithExponentialBackoffDefault 使用默认指数退避（100ms 起步，10s 上限）。
 func (r *RetryBuilder[T]) WithExponentialBackoffDefault() *RetryBuilder[T] {
-	r.initialBackoff = 100 * time.Millisecond
-	r.maxBackoff = 10 * time.Second
+	r.initialBackoff = defaultInitialBackoff
+	r.maxBackoff = defaultMaxBackoff
 	r.useLinear = false
 	return r
 }
@@ -363,7 +439,7 @@ func (r *RetryBuilder[T]) WithLinearBackoff(d time.Duration) *RetryBuilder[T] {
 
 // WithLinearBackoffDefault 使用默认线性退避（1s）。
 func (r *RetryBuilder[T]) WithLinearBackoffDefault() *RetryBuilder[T] {
-	r.linearBackoff = 1 * time.Second
+	r.linearBackoff = defaultLinearBackoff
 	r.useLinear = true
 	return r
 }
@@ -376,7 +452,7 @@ func (r *RetryBuilder[T]) WithPerCallTimeout(d time.Duration) *RetryBuilder[T] {
 
 // WithPerCallTimeoutDefault 使用默认每次调用超时（5s）。
 func (r *RetryBuilder[T]) WithPerCallTimeoutDefault() *RetryBuilder[T] {
-	r.perCallTimeout = 5 * time.Second
+	r.perCallTimeout = defaultPerCallTimeout
 	return r
 }
 
@@ -461,7 +537,7 @@ func NewReduceBuilder[T any, R any](ctx context.Context, items []T) *ReduceBuild
 	return &ReduceBuilder[T, R]{
 		ctx:         core.EnsureTraceID(ctx),
 		items:       items,
-		concurrency: core.IO(),
+		concurrency: defaultIO(),
 	}
 }
 
@@ -486,7 +562,7 @@ func (r *ReduceBuilder[T, R]) WithConcurrency(n int) *ReduceBuilder[T, R] {
 
 // WithConcurrencyDefault 使用默认 IO 并发度。
 func (r *ReduceBuilder[T, R]) WithConcurrencyDefault() *ReduceBuilder[T, R] {
-	r.concurrency = core.IO()
+	r.concurrency = defaultIO()
 	return r
 }
 

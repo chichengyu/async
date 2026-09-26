@@ -784,3 +784,145 @@ func OnlyErrors[T any](results []core.Result[T]) []error {
 	}
 	return out
 }
+
+// ──────────────────────────── MapSharded：极限高并发 Map ────────────────────────────
+//
+// MapSharded 将并发任务水平分片到 N 个 Group 实例中执行，解决单 Group 在高并发下
+// 的 taskCh channel 瓶颈问题。适合百万级元素的超大规模 Map 操作。
+//
+// 参数：
+//   - ctx：上下文
+//   - items：待处理的元素切片
+//   - fn：处理函数
+//   - concurrency：每个分片的并发度
+//   - shards：分片数，<=0 时使用 runtime.GOMAXPROCS(0)
+//
+// 使用示例：
+//
+//	// 100 万元素，16 分片 × 64 并发
+//	results, err := mapreduce.MapSharded(ctx, items, fn, 64, 16)
+func MapSharded[T any, R any](ctx context.Context, items []T, fn func(context.Context, T) (R, error), concurrency int, shards int) ([]core.Result[R], error) {
+	ctx = core.EnsureTraceID(ctx)
+	n := len(items)
+	if n == 0 {
+		return nil, nil
+	}
+	if shards <= 0 {
+		shards = core.IO()
+		if shards < 2 {
+			shards = 2
+		}
+	}
+	if concurrency <= 0 {
+		concurrency = core.IO()
+	}
+	if shards > n {
+		shards = n
+	}
+	if concurrency > (n+shards-1)/shards {
+		concurrency = (n + shards - 1) / shards
+	}
+	if concurrency <= 0 {
+		concurrency = 1
+	}
+
+	groups := make([]*group.Group[R], shards)
+	results := make([]core.Result[R], n)
+
+	for i := 0; i < shards; i++ {
+		groups[i] = group.NewGroup[R](concurrency)
+	}
+
+	for i, item := range items {
+		idx := i % shards
+		j := i
+		it := item
+		groups[idx].Go(ctx, func(ctx context.Context) (R, error) {
+			return fn(ctx, it)
+		})
+		_ = j
+	}
+
+	offset := 0
+	for i := 0; i < shards; i++ {
+		shardResults := groups[i].Wait()
+		for k, r := range shardResults {
+			origIdx := i + k*shards
+			if origIdx < n {
+				results[origIdx] = r
+			}
+		}
+		offset += len(shardResults)
+	}
+	_ = offset
+
+	var firstErr error
+	for _, r := range results {
+		if r.Err != nil && firstErr == nil {
+			firstErr = r.Err
+		}
+	}
+	return results, firstErr
+}
+
+// ForEachSharded 将 ForEach 任务水平分片到 N 个 Group 实例，适合极限高并发下的批量无返回值操作。
+//
+// 参数：
+//   - ctx：上下文
+//   - items：待处理的元素切片
+//   - fn：处理函数（只返回 error）
+//   - concurrency：每个分片的并发度
+//   - shards：分片数，<=0 时使用 runtime.GOMAXPROCS(0)
+//
+// 使用示例：
+//
+//	total, failCnt, firstErr, _ := mapreduce.ForEachSharded(ctx, msgs, fn, 64, 16)
+func ForEachSharded[T any](ctx context.Context, items []T, fn func(context.Context, T) error, concurrency int, shards int) (total int64, failCnt int64, firstErr error, results []core.Result[struct{}]) {
+	ctx = core.EnsureTraceID(ctx)
+	n := len(items)
+	if n == 0 {
+		return 0, 0, nil, nil
+	}
+	if shards <= 0 {
+		shards = core.IO()
+		if shards < 2 {
+			shards = 2
+		}
+	}
+	if concurrency <= 0 {
+		concurrency = core.IO()
+	}
+	if shards > n {
+		shards = n
+	}
+	if concurrency > (n+shards-1)/shards {
+		concurrency = (n + shards - 1) / shards
+	}
+	if concurrency <= 0 {
+		concurrency = 1
+	}
+
+	groups := make([]*group.NoResult, shards)
+	for i := 0; i < shards; i++ {
+		groups[i] = group.NewNoResult(concurrency)
+	}
+
+	for i, item := range items {
+		idx := i % shards
+		it := item
+		groups[idx].Go(ctx, func(ctx context.Context) error {
+			return fn(ctx, it)
+		})
+	}
+
+	var totalFail int64
+	var first error
+	for _, g := range groups {
+		g.Wait()
+		totalFail += int64(g.FailCount())
+		if err := g.FirstError(); err != nil && first == nil {
+			first = err
+		}
+	}
+	return int64(n), totalFail, first, nil
+}

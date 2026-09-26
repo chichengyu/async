@@ -30,6 +30,7 @@ type Chain[T any] struct {
 	concurrency int
 	timeout     time.Duration
 	failFast    bool
+	shards      int
 	firstErr    error
 }
 
@@ -39,7 +40,7 @@ func ChainSlice[T any](ctx context.Context, items []T) *Chain[T] {
 	return &Chain[T]{
 		ctx:         core.EnsureTraceID(ctx),
 		items:       items,
-		concurrency: core.IO(),
+		concurrency: defaultIO(),
 	}
 }
 
@@ -54,7 +55,7 @@ func (c *Chain[T]) WithConcurrency(n int) *Chain[T] {
 
 // WithConcurrencyDefault 使用默认 IO 并发度。
 func (c *Chain[T]) WithConcurrencyDefault() *Chain[T] {
-	c.concurrency = core.IO()
+	c.concurrency = defaultIO()
 	return c
 }
 
@@ -66,7 +67,7 @@ func (c *Chain[T]) WithTimeout(d time.Duration) *Chain[T] {
 
 // WithTimeoutDefault 使用默认超时（30s）。
 func (c *Chain[T]) WithTimeoutDefault() *Chain[T] {
-	c.timeout = 30 * time.Second
+	c.timeout = defaultTimeout
 	return c
 }
 
@@ -79,6 +80,21 @@ func (c *Chain[T]) WithFailFast() *Chain[T] {
 // WithContext 替换链的上下文，自动注入 trace_id。
 func (c *Chain[T]) WithContext(ctx context.Context) *Chain[T] {
 	c.ctx = core.EnsureTraceID(ctx)
+	return c
+}
+
+// WithShards 设置水平分片数，启用时 ForEachSharded / ChainMapSharded 会将任务分发到 N 个 Group 实例并行执行。
+// shards <= 0 时使用默认自动分片数（runtime.GOMAXPROCS(0)，最少 2）。
+func (c *Chain[T]) WithShards(shards int) *Chain[T] {
+	c.shards = shards
+	return c
+}
+
+// WithShardsDefault 使用默认水平分片数（runtime.GOMAXPROCS(0)，最少 2）。
+// 生产环境中分片数等于可用的 P 数量，适合 IO 密集型链式处理（如 ETL 管道）。
+// 高并发推荐显式设置 WithShards(16) 或 WithShards(32) 来匹配实例规格。
+func (c *Chain[T]) WithShardsDefault() *Chain[T] {
+	c.shards = 0
 	return c
 }
 
@@ -336,6 +352,88 @@ func (c *Chain[T]) DefaultForEachChunked(batchSize int, fn func(context.Context,
 	return c.ForEachChunked(0, batchSize, fn)
 }
 
+// ForEachStream 流式并发遍历每个元素，通过 channel 边执行边返回错误结果。
+// 适合千万级数据的实时处理，内存效率高。
+// bufSize <= 0 时自适应计算（取 len(items)/concurrency 和 256 的较小值，最少 64）。
+//
+// concurrency <= 0 时使用链的默认并发度。
+// 操作完成后阻塞等待所有任务结束。
+// 无论内部是否失败，链的元素保持不变，可通过 Error() 检查错误。
+//
+// 示例：
+//
+//	c.ChainSlice(ctx, hugeItems).
+//	    WithConcurrency(64).
+//	    ForEachStream(0, 1024, func(ctx context.Context, item MyType) error {
+//	        return saveToDB(ctx, item)
+//	    })
+func (c *Chain[T]) ForEachStream(concurrency int, bufSize int, fn func(context.Context, T) error) *Chain[T] {
+	if c.failFast && c.firstErr != nil {
+		return c
+	}
+	if len(c.items) == 0 {
+		return c
+	}
+
+	conc := concurrency
+	if conc <= 0 {
+		conc = c.concurrency
+	}
+
+	var ch <-chan Result[struct{}]
+	if c.failFast {
+		ch = ForEachStreamWithFailFast(c.ctx, c.items, conc, fn, bufSize)
+	} else {
+		ch = ForEachStream(c.ctx, c.items, conc, fn, bufSize)
+	}
+
+	for r := range ch {
+		if r.Err != nil && c.firstErr == nil {
+			c.firstErr = r.Err
+		}
+	}
+	return c
+}
+
+// DefaultForEachStream 使用链的默认并发度执行流式 ForEach。
+func (c *Chain[T]) DefaultForEachStream(bufSize int, fn func(context.Context, T) error) *Chain[T] {
+	return c.ForEachStream(0, bufSize, fn)
+}
+
+// ForEachSharded 使用水平分片执行 ForEach，将任务分发到 N 个 Group 实例并行执行。
+// concurrency <= 0 时使用链的默认并发度。shards <= 0 时由 DefaultShardCount 自动决定。
+// 适合极限高并发场景（百万~千万 QPS），通过分片降低锁竞争。
+// 无论内部是否失败，链的元素保持不变，可通过 Error() 检查错误。
+func (c *Chain[T]) ForEachSharded(concurrency int, shards int, fn func(context.Context, T) error) *Chain[T] {
+	if c.failFast && c.firstErr != nil {
+		return c
+	}
+	if len(c.items) == 0 {
+		return c
+	}
+
+	conc := concurrency
+	if conc <= 0 {
+		conc = c.concurrency
+	}
+	s := shards
+	if s <= 0 {
+		s = c.shards
+	}
+
+	total, _, firstErr, _ := ForEachSharded(c.ctx, c.items, conc, fn, s)
+	if firstErr != nil && c.firstErr == nil {
+		c.firstErr = firstErr
+	}
+	_ = total
+	return c
+}
+
+// DefaultForEachSharded 使用链的默认并发度和分片数执行 ForEachSharded。
+func (c *Chain[T]) DefaultForEachSharded(fn func(context.Context, T) error) *Chain[T] {
+	return c.ForEachSharded(0, 0, fn)
+}
+
 // Filter 同步过滤元素，保留满足条件的元素。
 // 此操作不涉及并发，是纯内存操作。
 func (c *Chain[T]) Filter(fn func(T) bool) *Chain[T] {
@@ -369,7 +467,7 @@ func ChainChunk[T any](c *Chain[T], size int) *Chain[[]T] {
 	chunks := mapreduce.Chunk(c.items, size)
 	return &Chain[[]T]{
 		ctx: c.ctx, items: chunks,
-		concurrency: c.concurrency, timeout: c.timeout, failFast: c.failFast,
+		concurrency: c.concurrency, timeout: c.timeout, failFast: c.failFast, shards: c.shards,
 		firstErr: c.firstErr,
 	}
 }
@@ -379,9 +477,19 @@ func ChainChunkN[T any](c *Chain[T], n int) *Chain[[]T] {
 	chunks := mapreduce.ChunkN(c.items, n)
 	return &Chain[[]T]{
 		ctx: c.ctx, items: chunks,
-		concurrency: c.concurrency, timeout: c.timeout, failFast: c.failFast,
+		concurrency: c.concurrency, timeout: c.timeout, failFast: c.failFast, shards: c.shards,
 		firstErr: c.firstErr,
 	}
+}
+
+// ChainDefaultChunk 使用默认分块大小（100）进行分块。
+func ChainDefaultChunk[T any](c *Chain[T]) *Chain[[]T] {
+	return ChainChunk(c, defaultBatchSize)
+}
+
+// ChainDefaultChunkN 使用链的并发度作为分块数进行均分。
+func ChainDefaultChunkN[T any](c *Chain[T]) *Chain[[]T] {
+	return ChainChunkN(c, c.concurrency)
 }
 
 // ──────────────────────────── 终端操作 ────────────────────────────
@@ -474,10 +582,10 @@ func (c *Chain[T]) Items() []T {
 //	result := c2.Values() // ["val-1", "val-2", "val-3"]
 func ChainMap[T any, R any](c *Chain[T], concurrency int, fn func(context.Context, T) (R, error)) *Chain[R] {
 	if c.failFast && c.firstErr != nil {
-		return &Chain[R]{ctx: c.ctx, firstErr: c.firstErr, failFast: true, concurrency: c.concurrency, timeout: c.timeout}
+		return &Chain[R]{ctx: c.ctx, firstErr: c.firstErr, failFast: true, concurrency: c.concurrency, timeout: c.timeout, shards: c.shards}
 	}
 	if len(c.items) == 0 {
-		return &Chain[R]{ctx: c.ctx, concurrency: c.concurrency, timeout: c.timeout, failFast: c.failFast}
+		return &Chain[R]{ctx: c.ctx, concurrency: c.concurrency, timeout: c.timeout, failFast: c.failFast, shards: c.shards}
 	}
 
 	conc := concurrency
@@ -503,7 +611,7 @@ func ChainMap[T any, R any](c *Chain[T], concurrency int, fn func(context.Contex
 	values := mapreduce.ResultValues(results)
 	nc := &Chain[R]{
 		ctx: c.ctx, items: values,
-		concurrency: c.concurrency, timeout: c.timeout, failFast: c.failFast,
+		concurrency: c.concurrency, timeout: c.timeout, failFast: c.failFast, shards: c.shards,
 	}
 	if ffErr != nil {
 		nc.firstErr = ffErr
@@ -528,10 +636,10 @@ func ChainDefaultMap[T any, R any](c *Chain[T], fn func(context.Context, T) (R, 
 //	})
 func ChainMapSerial[T any, R any](c *Chain[T], fn func(context.Context, T) (R, error)) *Chain[R] {
 	if c.failFast && c.firstErr != nil {
-		return &Chain[R]{ctx: c.ctx, firstErr: c.firstErr, failFast: true, concurrency: c.concurrency, timeout: c.timeout}
+		return &Chain[R]{ctx: c.ctx, firstErr: c.firstErr, failFast: true, concurrency: c.concurrency, timeout: c.timeout, shards: c.shards}
 	}
 	if len(c.items) == 0 {
-		return &Chain[R]{ctx: c.ctx, concurrency: c.concurrency, timeout: c.timeout, failFast: c.failFast}
+		return &Chain[R]{ctx: c.ctx, concurrency: c.concurrency, timeout: c.timeout, failFast: c.failFast, shards: c.shards}
 	}
 
 	var values []R
@@ -551,7 +659,7 @@ func ChainMapSerial[T any, R any](c *Chain[T], fn func(context.Context, T) (R, e
 
 	return &Chain[R]{
 		ctx: c.ctx, items: values,
-		concurrency: c.concurrency, timeout: c.timeout, failFast: c.failFast,
+		concurrency: c.concurrency, timeout: c.timeout, failFast: c.failFast, shards: c.shards,
 		firstErr: firstErr,
 	}
 }
@@ -574,7 +682,7 @@ func ChainFlatMap[T any, R any](c *Chain[T], concurrency int, fn func(context.Co
 	}
 	return &Chain[R]{
 		ctx: c.ctx, items: flat,
-		concurrency: c.concurrency, timeout: c.timeout, failFast: c.failFast,
+		concurrency: c.concurrency, timeout: c.timeout, failFast: c.failFast, shards: c.shards,
 		firstErr: mapped.firstErr,
 	}
 }
@@ -612,7 +720,29 @@ func ChainReduce[T any, R any](c *Chain[T], initial R, fn func(R, T) R) R {
 //	    func(acc, n int) int { return acc + n },
 //	)
 func ChainMapReduce[T any, R any](c *Chain[T], concurrency int, mapFn func(context.Context, T) (R, error), initial R, reduceFn func(R, R) R) (R, error) {
-	return Reduce(c.ctx, c.items, concurrency, mapFn, initial, reduceFn)
+	if c.failFast && c.firstErr != nil {
+		return initial, c.firstErr
+	}
+	if len(c.items) == 0 {
+		return initial, nil
+	}
+
+	conc := concurrency
+	if conc <= 0 {
+		conc = c.concurrency
+	}
+	conc = core.WithConfig(conc)
+
+	switch {
+	case c.timeout > 0 && c.failFast:
+		return ReduceWithFFTimeout(c.ctx, c.items, conc, c.timeout, mapFn, initial, reduceFn)
+	case c.timeout > 0:
+		return ReduceWithTimeout(c.ctx, c.items, conc, c.timeout, mapFn, initial, reduceFn)
+	case c.failFast:
+		return ReduceWithFailFast(c.ctx, c.items, conc, mapFn, initial, reduceFn)
+	default:
+		return Reduce(c.ctx, c.items, conc, mapFn, initial, reduceFn)
+	}
 }
 
 // ChainDefaultMapReduce 使用链的默认并发度执行 MapReduce。
@@ -630,22 +760,82 @@ func ChainDefaultMapReduce[T any, R any](c *Chain[T], mapFn func(context.Context
 //	        return db.BatchInsert(ctx, batch)
 //	    })
 func ChainMapChunk[T any, R any](c *Chain[T], concurrency int, batchSize int, fn func(context.Context, []T) (R, error)) *Chain[R] {
-	results := MapChunk(c.ctx, c.items, concurrency, batchSize, fn)
-	values := mapreduce.ResultValues(results)
-	return &Chain[R]{
-		ctx: c.ctx, items: values,
-		concurrency: c.concurrency, timeout: c.timeout, failFast: c.failFast,
+	if c.failFast && c.firstErr != nil {
+		return &Chain[R]{ctx: c.ctx, firstErr: c.firstErr, failFast: true, concurrency: c.concurrency, timeout: c.timeout, shards: c.shards}
 	}
+	if len(c.items) == 0 {
+		return &Chain[R]{ctx: c.ctx, concurrency: c.concurrency, timeout: c.timeout, failFast: c.failFast, shards: c.shards}
+	}
+
+	conc := concurrency
+	if conc <= 0 {
+		conc = c.concurrency
+	}
+	conc = core.WithConfig(conc)
+
+	var results []core.Result[R]
+	var ffErr error
+
+	switch {
+	case c.timeout > 0 && c.failFast:
+		results, ffErr = MapChunkWithFFTimeout(c.ctx, c.items, conc, batchSize, c.timeout, fn)
+	case c.timeout > 0:
+		results = MapChunkWithTimeout(c.ctx, c.items, conc, batchSize, c.timeout, fn)
+	case c.failFast:
+		results, ffErr = MapChunkWithFailFast(c.ctx, c.items, conc, batchSize, fn)
+	default:
+		results = MapChunk(c.ctx, c.items, conc, batchSize, fn)
+	}
+
+	values := mapreduce.ResultValues(results)
+	nc := &Chain[R]{
+		ctx: c.ctx, items: values,
+		concurrency: c.concurrency, timeout: c.timeout, failFast: c.failFast, shards: c.shards,
+	}
+	if ffErr != nil {
+		nc.firstErr = ffErr
+	}
+	return nc
 }
 
 // ChainMapChunked 分块后并发 Map，fn 接收单个元素（内部自动分块管理）。
 func ChainMapChunked[T any, R any](c *Chain[T], concurrency int, batchSize int, fn func(context.Context, T) (R, error)) *Chain[R] {
-	results := MapChunked(c.ctx, c.items, concurrency, batchSize, fn)
-	values := mapreduce.ResultValues(results)
-	return &Chain[R]{
-		ctx: c.ctx, items: values,
-		concurrency: c.concurrency, timeout: c.timeout, failFast: c.failFast,
+	if c.failFast && c.firstErr != nil {
+		return &Chain[R]{ctx: c.ctx, firstErr: c.firstErr, failFast: true, concurrency: c.concurrency, timeout: c.timeout, shards: c.shards}
 	}
+	if len(c.items) == 0 {
+		return &Chain[R]{ctx: c.ctx, concurrency: c.concurrency, timeout: c.timeout, failFast: c.failFast, shards: c.shards}
+	}
+
+	conc := concurrency
+	if conc <= 0 {
+		conc = c.concurrency
+	}
+	conc = core.WithConfig(conc)
+
+	var results []core.Result[R]
+	var ffErr error
+
+	switch {
+	case c.timeout > 0 && c.failFast:
+		results, ffErr = MapChunkedWithFFTimeout(c.ctx, c.items, conc, batchSize, c.timeout, fn)
+	case c.timeout > 0:
+		results = MapChunkedWithTimeout(c.ctx, c.items, conc, batchSize, c.timeout, fn)
+	case c.failFast:
+		results, ffErr = MapChunkedWithFailFast(c.ctx, c.items, conc, batchSize, fn)
+	default:
+		results = MapChunked(c.ctx, c.items, conc, batchSize, fn)
+	}
+
+	values := mapreduce.ResultValues(results)
+	nc := &Chain[R]{
+		ctx: c.ctx, items: values,
+		concurrency: c.concurrency, timeout: c.timeout, failFast: c.failFast, shards: c.shards,
+	}
+	if ffErr != nil {
+		nc.firstErr = ffErr
+	}
+	return nc
 }
 
 // ChainDefaultMapChunk 使用链的默认并发度分块 Map（fn 接收 chunk）。
@@ -662,18 +852,135 @@ func ChainDefaultMapChunked[T any, R any](c *Chain[T], batchSize int, fn func(co
 // 底层使用 Pool 而非 Group，适合对协程生命周期有精细控制需求的场景。
 func ChainMapPool[T any, R any](c *Chain[T], concurrency int, fn func(context.Context, T) (R, error)) *Chain[R] {
 	if c.failFast && c.firstErr != nil {
-		return &Chain[R]{ctx: c.ctx, firstErr: c.firstErr, failFast: true, concurrency: c.concurrency, timeout: c.timeout}
+		return &Chain[R]{ctx: c.ctx, firstErr: c.firstErr, failFast: true, concurrency: c.concurrency, timeout: c.timeout, shards: c.shards}
 	}
 	if len(c.items) == 0 {
-		return &Chain[R]{ctx: c.ctx, concurrency: c.concurrency, timeout: c.timeout, failFast: c.failFast}
+		return &Chain[R]{ctx: c.ctx, concurrency: c.concurrency, timeout: c.timeout, failFast: c.failFast, shards: c.shards}
 	}
 
-	_, results, _ := MapPool(c.ctx, c.items, fn, concurrency)
+	conc := concurrency
+	if conc <= 0 {
+		conc = c.concurrency
+	}
+
+	ctx := c.ctx
+	if c.timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(c.ctx, c.timeout)
+		defer cancel()
+	}
+
+	_, results, poolErr := MapPool(ctx, c.items, fn, conc)
 	values := mapreduce.ResultValues(results)
 	return &Chain[R]{
 		ctx: c.ctx, items: values,
-		concurrency: c.concurrency, timeout: c.timeout, failFast: c.failFast,
+		concurrency: c.concurrency, timeout: c.timeout, failFast: c.failFast, shards: c.shards,
+		firstErr: poolErr,
 	}
+}
+
+// ChainDefaultMapPool 使用链的默认并发度执行协程池 Map。
+func ChainDefaultMapPool[T any, R any](c *Chain[T], fn func(context.Context, T) (R, error)) *Chain[R] {
+	return ChainMapPool(c, 0, fn)
+}
+
+// ChainMapSharded 使用水平分片并发映射每个元素到新类型，返回新类型的链。
+// 适合极限高并发场景（百万~千万 QPS），通过分片降低锁竞争。
+// concurrency <= 0 时使用链的默认并发度。shards <= 0 时使用链的默认分片数。
+// 非 FailFast 模式下，失败的元素会被丢弃，只保留成功值。
+// FailFast 模式下，首个错误会导致后续操作全部跳过。
+//
+// 使用示例：
+//
+//	c := async.ChainSlice(ctx, items).WithShards(16)
+//	c2 := async.ChainMapSharded(c, 64, 0, processFn)
+//	result := c2.Values()
+func ChainMapSharded[T any, R any](c *Chain[T], concurrency int, shards int, fn func(context.Context, T) (R, error)) *Chain[R] {
+	if c.failFast && c.firstErr != nil {
+		return &Chain[R]{ctx: c.ctx, firstErr: c.firstErr, failFast: true, concurrency: c.concurrency, timeout: c.timeout, shards: c.shards}
+	}
+	if len(c.items) == 0 {
+		return &Chain[R]{ctx: c.ctx, concurrency: c.concurrency, timeout: c.timeout, failFast: c.failFast, shards: c.shards}
+	}
+
+	conc := concurrency
+	if conc <= 0 {
+		conc = c.concurrency
+	}
+	s := shards
+	if s <= 0 {
+		s = c.shards
+	}
+
+	results, shardErr := MapSharded(c.ctx, c.items, conc, fn, s)
+	values := mapreduce.ResultValues(results)
+	return &Chain[R]{
+		ctx: c.ctx, items: values,
+		concurrency: c.concurrency, timeout: c.timeout, failFast: c.failFast, shards: c.shards,
+		firstErr: shardErr,
+	}
+}
+
+// ChainDefaultMapSharded 使用链的默认并发度和分片数执行 MapSharded。
+func ChainDefaultMapSharded[T any, R any](c *Chain[T], fn func(context.Context, T) (R, error)) *Chain[R] {
+	return ChainMapSharded(c, 0, 0, fn)
+}
+
+// ChainMapStream 流式并发映射每个元素到新类型，通过 channel 边执行边返回结果。
+// 适合千万级数据的实时处理，内存效率高。
+// bufSize <= 0 时自适应计算（取 len(items)/concurrency 和 256 的较小值，最少 64）。
+//
+// concurrency <= 0 时使用链的默认并发度。
+// 非 FailFast 模式下，失败的元素会被丢弃，只保留成功值。
+// FailFast 模式下，首个错误会导致后续操作全部跳过。
+//
+// 使用示例：
+//
+//	c := async.ChainSlice(ctx, hugeItems)
+//	c2 := async.ChainMapStream(c, 64, 1024, processFn)
+//	result := c2.Values()
+func ChainMapStream[T any, R any](c *Chain[T], concurrency int, bufSize int, fn func(context.Context, T) (R, error)) *Chain[R] {
+	if c.failFast && c.firstErr != nil {
+		return &Chain[R]{ctx: c.ctx, firstErr: c.firstErr, failFast: true, concurrency: c.concurrency, timeout: c.timeout, shards: c.shards}
+	}
+	if len(c.items) == 0 {
+		return &Chain[R]{ctx: c.ctx, concurrency: c.concurrency, timeout: c.timeout, failFast: c.failFast, shards: c.shards}
+	}
+
+	conc := concurrency
+	if conc <= 0 {
+		conc = c.concurrency
+	}
+
+	var ch <-chan Result[R]
+	if c.failFast {
+		ch = MapStreamWithFailFast(c.ctx, c.items, conc, fn, bufSize)
+	} else {
+		ch = MapStream(c.ctx, c.items, conc, fn, bufSize)
+	}
+
+	var values []R
+	var firstErr error
+	for r := range ch {
+		if r.Err != nil {
+			if firstErr == nil {
+				firstErr = r.Err
+			}
+			continue
+		}
+		values = append(values, r.Value)
+	}
+
+	return &Chain[R]{
+		ctx: c.ctx, items: values,
+		concurrency: c.concurrency, timeout: c.timeout, failFast: c.failFast, shards: c.shards,
+		firstErr: firstErr,
+	}
+}
+
+// ChainDefaultMapStream 使用链的默认并发度执行流式 Map。
+func ChainDefaultMapStream[T any, R any](c *Chain[T], bufSize int, fn func(context.Context, T) (R, error)) *Chain[R] {
+	return ChainMapStream(c, 0, bufSize, fn)
 }
 
 // ChainResultValues 从链中提取值并返回新类型切片，是终端操作。

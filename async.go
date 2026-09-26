@@ -537,6 +537,42 @@ func DefaultShardPool[T any](p *Pool[T]) *MultiPool[T] {
 	return p.DefaultShard()
 }
 
+// ── WithPool / WithMultiPool：自动 Close 便捷包装函数 ──
+
+// WithPool 创建协程池并执行 fn，fn 返回后自动 Close。
+//
+// 示例：
+//
+//	err := async.WithPool(64, func(p *Pool[int]) error {
+//	    for _, item := range items {
+//	        p.Submit(ctx, func(ctx context.Context) (int, error) {
+//	            return process(item)
+//	        })
+//	    }
+//	    results := p.Wait()
+//	    return check(results)
+//	})
+func WithPool[T any](size int, fn func(p *Pool[T]) error) error {
+	return pool.WithPool[T](size, fn)
+}
+
+// WithMultiPool 创建分片协程池并执行 fn，fn 返回后自动 Close 所有分片。
+//
+// 示例：
+//
+//	err := async.WithMultiPool(64, 16, func(mp *MultiPool[int]) error {
+//	    for i := 0; i < 10_000_000; i++ {
+//	        mp.Submit(ctx, func(ctx context.Context) (int, error) {
+//	            return process(i)
+//	        })
+//	    }
+//	    results := mp.Wait()
+//	    return check(results)
+//	})
+func WithMultiPool[T any](size int, shards int, fn func(mp *MultiPool[T]) error) error {
+	return pool.WithMultiPool[T](size, shards, fn)
+}
+
 // ── 分片池（多实例水平扩展）──
 
 // ShardedPool 将任务分发到 N 个 Pool 实例的分片池。
@@ -609,6 +645,23 @@ func NewAutoScaleShardedPool[T any](shards int, initialSizePerShard int, config 
 	return shard.NewAutoScaleShardedPool[T](shards, initialSizePerShard, config)
 }
 
+// WithShardedPool 创建分片池并执行 fn，fn 返回后自动 Close。
+//
+// 示例：
+//
+//	err := async.WithShardedPool(16, 64, func(sp *ShardedPool[int]) error {
+//	    for _, item := range items {
+//	        sp.Submit(ctx, func(ctx context.Context) (int, error) {
+//	            return process(item)
+//	        })
+//	    }
+//	    results := sp.Wait()
+//	    return check(results)
+//	})
+func WithShardedPool[T any](shards int, sizePerShard int, fn func(sp *ShardedPool[T]) error) error {
+	return shard.WithShardedPool[T](shards, sizePerShard, fn)
+}
+
 // SubmitBatchResult 分片池批量提交的单条结果。
 type SubmitBatchResult = shard.SubmitBatchResult
 
@@ -676,6 +729,27 @@ func ShardGroup[T any](g *Group[T], shards int) *MultiGroup[T] {
 //	defer mg.Close()
 func DefaultShardGroup[T any](g *Group[T]) *MultiGroup[T] {
 	return g.DefaultShard()
+}
+
+// ── WithMultiGroup：自动 Close 便捷包装函数 ──
+
+// WithMultiGroup 创建分片任务组并执行 fn，fn 返回后自动 Close。
+//
+// 示例：
+//
+//	err := async.WithMultiGroup(64, 16, func(mg *MultiGroup[string]) error {
+//	    for _, item := range items {
+//	        mg.Go(ctx, func(ctx context.Context) (string, error) {
+//	            return process(item)
+//	        })
+//	    }
+//	    results, firstErr := mg.Wait()
+//	    if firstErr != nil { return firstErr }
+//	    _ = results
+//	    return nil
+//	})
+func WithMultiGroup[T any](concurrency int, shards int, fn func(mg *MultiGroup[T]) error) error {
+	return group.WithMultiGroup[T](concurrency, shards, fn)
 }
 
 // GoBatchResult 分片 Group 批量分发结果。
@@ -1296,6 +1370,49 @@ func DefaultForEachStream[T any](ctx context.Context, items []T, fn func(context
 // DefaultForEachStreamWithFF 使用默认 IO 并发度的流式 FailFast ForEach。
 func DefaultForEachStreamWithFF[T any](ctx context.Context, items []T, fn func(context.Context, T) error) <-chan Result[struct{}] {
 	return mapreduce.ForEachStreamWithFailFast(ctx, items, fn, core.IO(), 0)
+}
+
+// ──────────────────────────── MapSharded / ForEachSharded：极限高并发 ────────────────────────────
+
+// MapSharded 并发 Map 的水平分片版本，将任务分发到 N 个 Group 实例并行执行。
+// 解决单 Group 的 taskCh channel 瓶颈，适合百万级元素的超大规模并发处理。
+// shards<=0 时自动使用 DefaultShardCount()。
+//
+// 示例：
+//
+//	// 100 万元素，16 分片 × 64 并发 = 1024 并发
+//	results, err := async.MapSharded(ctx, items, 64, fn, 16)
+func MapSharded[T any, R any](ctx context.Context, items []T, concurrency int, fn func(context.Context, T) (R, error), shards int) ([]Result[R], error) {
+	return mapreduce.MapSharded(ctx, items, fn, concurrency, shards)
+}
+
+// DefaultMapSharded 使用默认 IO 并发度和自动分片数的 MapSharded。
+//
+// 示例：
+//
+//	results, err := async.DefaultMapSharded(ctx, items, fn)
+func DefaultMapSharded[T any, R any](ctx context.Context, items []T, fn func(context.Context, T) (R, error)) ([]Result[R], error) {
+	return mapreduce.MapSharded(ctx, items, fn, core.IO(), 0)
+}
+
+// ForEachSharded 无返回值 ForEach 的水平分片版本，适合极限高并发下的批量副作用操作。
+// shards<=0 时自动使用 DefaultShardCount()。
+//
+// 示例：
+//
+//	// 分布式消息发送
+//	total, fail, first, _ := async.ForEachSharded(ctx, msgs, 64, fn, 16)
+func ForEachSharded[T any](ctx context.Context, items []T, concurrency int, fn func(context.Context, T) error, shards int) (total int64, failCnt int64, firstErr error, results []Result[struct{}]) {
+	return mapreduce.ForEachSharded(ctx, items, fn, concurrency, shards)
+}
+
+// DefaultForEachSharded 使用默认 IO 并发度和自动分片数的 ForEachSharded。
+//
+// 示例：
+//
+//	total, fail, first, _ := async.DefaultForEachSharded(ctx, items, fn)
+func DefaultForEachSharded[T any](ctx context.Context, items []T, fn func(context.Context, T) error) (total int64, failCnt int64, firstErr error, results []Result[struct{}]) {
+	return mapreduce.ForEachSharded(ctx, items, fn, core.IO(), 0)
 }
 
 // ──────────────────────────── Chunk 分块 ────────────────────────────
@@ -1962,17 +2079,30 @@ type Strategy = ratelimit.Strategy
 // RateLimiter 基于令牌桶的速率限制器。
 type RateLimiter = ratelimit.RateLimiter
 
+// ShardedRateLimiter 分片限流器，将 N 个 RateLimiter 水平分片，支持极限高并发。
+// 通过 async.NewShardedRateLimiter 创建。
+type ShardedRateLimiter = ratelimit.ShardedRateLimiter
+
 // Token 自动释放的令牌包装器，配合 defer 使用。
 type Token = ratelimit.Token
 
 // SlidingWindowRateLimiter 滑动窗口限流器。
 type SlidingWindowRateLimiter = ratelimit.SlidingWindowRateLimiter
 
+// ShardedSlidingWindowRateLimiter 分片滑动窗口限流器，极限高并发场景。
+type ShardedSlidingWindowRateLimiter = ratelimit.ShardedSlidingWindowRateLimiter
+
 // TokenBucket 经典令牌桶限流器。
 type TokenBucket = ratelimit.TokenBucket
 
+// ShardedTokenBucket 分片令牌桶，极限高并发场景。
+type ShardedTokenBucket = ratelimit.ShardedTokenBucket
+
 // AdaptiveRateLimiter 自适应限流器，根据成功率自动调整并发度。
 type AdaptiveRateLimiter = ratelimit.AdaptiveRateLimiter
+
+// ShardedAdaptiveRateLimiter 分片自适应限流器，极限高并发场景。
+type ShardedAdaptiveRateLimiter = ratelimit.ShardedAdaptiveRateLimiter
 
 const (
 	Block      = ratelimit.Block      // 阻塞等待令牌
@@ -2031,6 +2161,88 @@ var (
 	//   }
 	//   al.Release()
 	NewAdaptiveRateLimiter = ratelimit.NewAdaptiveRateLimiter
+
+	// ── Sharded（分片）极限高并发便捷构造函数 ──
+
+	// DefaultShardCount 返回默认分片数（runtime.GOMAXPROCS(0)，最少 2）。
+	DefaultShardCount = ratelimit.DefaultShardCount
+
+	// NewShardedRateLimiter 创建分片限流器，shards<=0 自动使用 DefaultShardCount()。
+	// 总速率 = rate，各分片平均分配。
+	//
+	// 示例：
+	//   // 16 片 × 每秒 625 = 总计 10000/s
+	//   rl := async.NewShardedRateLimiter(16, 10000, time.Second)
+	//   defer rl.Close()
+	//   rl.Wait(ctx)
+	//   doRequest()
+	//   rl.Release()
+	NewShardedRateLimiter = ratelimit.NewShardedRateLimiter
+
+	// NewShardedRateLimiterWithBurst 创建支持突发容量的分片限流器。
+	NewShardedRateLimiterWithBurst = ratelimit.NewShardedRateLimiterWithBurst
+
+	// NewShardedTokenBucket 创建分片令牌桶，shards<=0 自动使用 DefaultShardCount()。
+	//
+	// 示例：
+	//   // 16 片，每片 100/s，总 ≈1600/s
+	//   tb := async.NewShardedTokenBucket(16, 100, 200)
+	//   if tb.Allow() { doRequest() }
+	NewShardedTokenBucket = ratelimit.NewShardedTokenBucket
+
+	// NewShardedSlidingWindowRateLimiter 创建分片滑动窗口限流器。
+	//
+	// 示例：
+	//   sw := async.NewShardedSlidingWindowRateLimiter(16, 10000, time.Second)
+	//   if sw.Allow() { doRequest() }
+	NewShardedSlidingWindowRateLimiter = ratelimit.NewShardedSlidingWindowRateLimiter
+
+	// NewShardedAdaptiveRateLimiter 创建分片自适应限流器。
+	//
+	// 示例：
+	//   al := async.NewShardedAdaptiveRateLimiter(16, 32, 800)
+	//   al.Acquire(ctx)
+	//   if err := doRequest(); err == nil { al.RecordSuccess() } else { al.RecordFailure() }
+	//   al.Release()
+	NewShardedAdaptiveRateLimiter = ratelimit.NewShardedAdaptiveRateLimiter
+
+	// ── With*：自动 Close 便捷包装函数 ──
+
+	// WithRateLimiter 创建限流器并执行 fn，fn 返回后自动 Close。
+	//
+	// 示例：
+	//   err := async.WithRateLimiter(1000, time.Second, func(rl *async.RateLimiter) error {
+	//       rl.Wait(ctx)
+	//       return doRequest()
+	//   })
+	WithRateLimiter = ratelimit.WithRateLimiter
+
+	// WithRateLimiterWithBurst 带突发容量的自动 Close 限流器。
+	WithRateLimiterWithBurst = ratelimit.WithRateLimiterWithBurst
+
+	// WithShardedRateLimiter 创建分片限流器并执行 fn，fn 返回后自动 Close。
+	//
+	// 示例：
+	//   err := async.WithShardedRateLimiter(16, 10000, time.Second, func(rl *async.ShardedRateLimiter) error {
+	//       rl.Wait(ctx)
+	//       return doRequest()
+	//   })
+	WithShardedRateLimiter = ratelimit.WithShardedRateLimiter
+
+	// WithShardedRateLimiterWithBurst 带突发容量的自动 Close 分片限流器。
+	WithShardedRateLimiterWithBurst = ratelimit.WithShardedRateLimiterWithBurst
+
+	// WithShardedAdaptiveRateLimiter 创建分片自适应限流器并执行 fn，fn 返回后自动 Close。
+	//
+	// 示例：
+	//   err := async.WithShardedAdaptiveRateLimiter(16, 32, 800, func(sa *async.ShardedAdaptiveRateLimiter) error {
+	//       sa.Acquire(ctx)
+	//       err := doRequest()
+	//       if err != nil { sa.RecordFailure() } else { sa.RecordSuccess() }
+	//       sa.Release()
+	//       return err
+	//   })
+	WithShardedAdaptiveRateLimiter = ratelimit.WithShardedAdaptiveRateLimiter
 )
 
 // ──────────────────────────── Pipeline 管道 ────────────────────────────

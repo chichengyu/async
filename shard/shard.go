@@ -764,3 +764,28 @@ func (sg *ShardedGroup[T]) TotalConcurrency() int {
 func (sg *ShardedGroup[T]) pick() int {
 	return int(sg.next.Add(1)-1) % len(sg.groups)
 }
+
+// ──────────────────────────── WithShardedPool：自动 Close 便捷包装函数 ────────────────────────────
+
+// WithShardedPool 创建分片池并执行 fn，fn 返回后自动 Close 所有分片释放资源。
+// shards <= 0 时使用默认分片数，sizePerShard <= 0 时使用 IO 并发度。
+//
+// 示例：
+//
+//	err := shard.WithShardedPool(16, 64, func(sp *ShardedPool[int]) error {
+//	    for _, item := range items {
+//	        sp.Submit(ctx, func(ctx context.Context) (int, error) {
+//	            return process(item)
+//	        })
+//	    }
+//	    results := sp.Wait()
+//	    for _, r := range results {
+//	        if r.Err != nil { return r.Err }
+//	    }
+//	    return nil
+//	})
+func WithShardedPool[T any](shards int, sizePerShard int, fn func(sp *ShardedPool[T]) error) error {
+	sp := NewShardedPoolSimple[T](shards, sizePerShard)
+	defer sp.Close()
+	return fn(sp)
+}
