@@ -1430,6 +1430,36 @@ func (p *Pool[T]) WaitAndClose() []core.Result[T] {
 	return results
 }
 
+// ResetWait 轻量复位池的 Wait/submit 状态以支持复用。
+// 不会重启 worker，仅清零计数器与结果存储。
+// 必须在 Wait() 之后、下次 Submit() 之前调用。
+//
+// 示例：
+//
+//	p.Submit(ctx, task1)
+//	r1 := p.Wait()
+//	p.ResetWait()
+//	p.Submit(ctx, task2)
+//	r2 := p.Wait()
+func (p *Pool[T]) ResetWait() *Pool[T] {
+	p.waitInvoked.Store(false)
+	p.waited.Store(false)
+	p.submitIdx.Store(0)
+	p.errCnt = 0
+	p.submitGuard.Store(false)
+	p.addInFlight.Store(0)
+	for i := range p.shards {
+		p.shards[i].mu.Lock()
+		p.shards[i].results = nil
+		p.shards[i].cancels = nil
+		p.shards[i].mu.Unlock()
+	}
+	if p.ringBuf != nil {
+		p.ringBuf.Reset()
+	}
+	return p
+}
+
 // Close 关闭协程池，等待所有 worker 退出后返回。
 // 关闭后不能再提交新任务。
 //

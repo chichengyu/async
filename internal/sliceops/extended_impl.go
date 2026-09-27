@@ -1,35 +1,6 @@
-// Package mapreduce 的扩展函数。
-//
-// 扩展函数命名约定：
-//
-//	Default*           - 使用 core.IO() 作为默认并发度
-//	*WithTimeout       - 支持单任务超时
-//	*WithFailFast      - 支持快速失败
-//	*WithFFTimeout     - 既快速失败又带超时
-//	*Chunk             - 分块处理（fn 接收整个 chunk）
-//	*Chunked           - 分块后每个元素单独调用 fn
-//
-// 使用示例：
-//
-//	// Default* 便捷方法
-//	results := mapreduce.DefaultMap(ctx, ids, fetchFunc)
-//
-//	// MapChunk：分块批量处理
-//	results := mapreduce.MapChunk(ctx, items, 4, 100, func(ctx context.Context, batch []Item) ([]Result, error) {
-//	    return batchProcess(ctx, batch)
-//	})
-//
-//	// MapChunked：分块后逐元素处理（适合元素数量大、单次处理轻量的场景）
-//	results := mapreduce.MapChunked(ctx, items, 8, 100, func(ctx context.Context, item Item) (Result, error) {
-//	    return process(ctx, item)
-//	})
-//
-//	// Result 辅助函数
-//	vals := mapreduce.ResultValues(results)   // 提取成功值
-//	errs := mapreduce.ResultErrors(results)   // 提取错误
-//	allOk := mapreduce.Every(results)         // 是否全部成功
-//	hasErr := mapreduce.AnyError(results)     // 是否有失败
-package mapreduce
+// Package sliceops 扩展函数实现（搬迁自原 mapreduce 包）。
+// 包含 Default*/WithTimeout/Chunk/Chunked 系列扩展函数及 Result 辅助函数。
+package sliceops
 
 import (
 	"context"

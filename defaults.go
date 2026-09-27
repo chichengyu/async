@@ -14,8 +14,11 @@ func defaultIO() int { return core.IO() }
 // defaultShards 水平分片默认值，0 表示运行时自动决定（runtime.GOMAXPROCS(0)，最少 2）。
 const defaultShards = 0
 
-// defaultTimeout 默认总超时时间（Chain、Task、所有 Pool/Group 共用）。
+// defaultTimeout 默认单任务超时（Map/ForEach/Group/Pool 共用）。
 const defaultTimeout = 30 * time.Second
+
+// defaultFailFast 默认 FailFast 开关。
+const defaultFailFast = false
 
 // defaultSubmitTimeout 默认提交超时（提交任务到池的等待上限）。
 const defaultSubmitTimeout = 5 * time.Second
