@@ -10,10 +10,10 @@ import (
 // 三个构建器（SliceBuilder、ParallelSlice、SerialSlice）通过嵌入 *sliceBase 复用所有纯数据操作方法。
 // 新增数据操作方法只需在 sliceBase 上添加一次即可。
 type sliceBase[T any, S any] struct {
-	ctx    context.Context
-	items  []T
-	policy sliceops.Policy
-	self   S
+	ctx    context.Context // 上下文，自动注入 TraceID，用于超时控制和日志追踪
+	items  []T             // 当前持有的切片数据，所有数据操作方法在此切片上原地或复制操作
+	policy sliceops.Policy // 策略配置（并发度/分片/超时/FailFast 等），由各 Builder 的配置方法更新
+	self   S               // 自引用指针，使链式方法返回具体构建器类型而非 *sliceBase
 }
 
 // newSliceBase 创建 sliceBase 实例。

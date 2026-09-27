@@ -36,9 +36,9 @@ func collectFailValues[T any, R any](items []T, results []core.Result[R]) []any 
 //	}
 //	vals := r.Values()
 type SliceResult[R any] struct {
-	results    []core.Result[R]
-	err        error
-	failValues []any
+	results    []core.Result[R] // Map 输出的完整结果切片（含成功和失败），顺序与输入一致
+	err        error            // 结构级错误（如 panic、context 超时），优先级高于 results 中的元素错误
+	failValues []any            // 失败元素对应的原始输入值，类型为 []any，需自行断言为具体类型
 }
 
 // Error 返回操作中的第一个错误（FailFast 错误优先于元素错误）。
@@ -180,9 +180,9 @@ func (r *SliceResult[R]) First() (R, bool) {
 //	}
 //	log.Printf("ok=%d fail=%d", r.SuccessCount(), r.FailCount())
 type ForEachResult struct {
-	total    int64
-	failCnt  int64
-	firstErr error
+	total    int64 // 总任务数，即输入切片长度
+	failCnt  int64 // 失败任务数
+	firstErr error // 第一个错误（FailFast 模式及时上报，非 FailFast 为遍历结束后首个错误）
 }
 
 // Error 返回第一个错误，无错返回 nil。
