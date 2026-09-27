@@ -851,6 +851,39 @@ func TestSlice_Chain_Map_SerialSlice(t *testing.T) {
 	}
 }
 
+func TestSlice_Chain_Map_SerialSlice_FailFast(t *testing.T) {
+	for _, tier := range allTiers {
+		t.Run(tier.name, func(t *testing.T) {
+			skipIfTooLarge(t, tier.size)
+			data := genInts(tier.size)
+			// 成功路径：FailFast 模式无错误时所有结果正确
+			r := Slice(freshCtx(), data).Serial().FailFast().Map(func(ctx context.Context, v int) (int, error) {
+				return v * 2, nil
+			})
+			if r.IsErr() {
+				t.Fatalf("Map Serial FF: unexpected error: %v", r.Error())
+			}
+			vals := r.Values()
+			if len(vals) != tier.size {
+				t.Fatalf("Map Serial FF: expected %d values, got %d", tier.size, len(vals))
+			}
+			// 失败路径：FailFast 模式下首个错误立即返回
+			r2 := Slice(freshCtx(), data).Serial().FailFast().Map(func(ctx context.Context, v int) (int, error) {
+				if v == tier.size/2 {
+					return 0, errors.New("injected error")
+				}
+				return v * 2, nil
+			})
+			if !r2.IsErr() {
+				t.Fatalf("Map Serial FF: expected error but got none")
+			}
+			if r2.Len() != tier.size {
+				t.Fatalf("Map Serial FF: expected results len %d, got %d", tier.size, r2.Len())
+			}
+		})
+	}
+}
+
 func TestSlice_Chain_Map_SliceWith(t *testing.T) {
 	for _, tier := range allTiers {
 		t.Run(tier.name, func(t *testing.T) {
@@ -943,6 +976,37 @@ func TestSlice_Chain_ForEach_SerialSlice(t *testing.T) {
 			}
 			if r.SuccessCount() != int64(tier.size) {
 				t.Fatalf("ForEach SuccessCount: expected %d, got %d", tier.size, r.SuccessCount())
+			}
+		})
+	}
+}
+
+func TestSlice_Chain_ForEach_SerialSlice_FailFast(t *testing.T) {
+	for _, tier := range allTiers {
+		t.Run(tier.name, func(t *testing.T) {
+			skipIfTooLarge(t, tier.size)
+			data := genInts(tier.size)
+			// 成功路径：FailFast 模式无错误时所有任务成功
+			var counter int64
+			r := Slice(freshCtx(), data).Serial().FailFast().ForEach(func(ctx context.Context, v int) error {
+				atomic.AddInt64(&counter, 1)
+				return nil
+			})
+			if r.IsErr() {
+				t.Fatalf("ForEach Serial FF: unexpected error: %v", r.Error())
+			}
+			if r.SuccessCount() != int64(tier.size) {
+				t.Fatalf("ForEach Serial FF: expected %d, got %d", tier.size, r.SuccessCount())
+			}
+			// 失败路径：FailFast 模式下首个错误立即返回
+			r2 := Slice(freshCtx(), data).Serial().FailFast().ForEach(func(ctx context.Context, v int) error {
+				if v == tier.size/2 {
+					return errors.New("injected error")
+				}
+				return nil
+			})
+			if !r2.IsErr() {
+				t.Fatalf("ForEach Serial FF: expected error but got none")
 			}
 		})
 	}
@@ -2913,6 +2977,23 @@ func TestSlice_Chain_Race_SerialMode(t *testing.T) {
 			}
 			if r.Len() != tier.size {
 				t.Fatalf("Race Serial: expected %d, got %d", tier.size, r.Len())
+			}
+		})
+	}
+}
+
+func TestSlice_Chain_Race_SerialMode_FailFast(t *testing.T) {
+	for _, tier := range allTiers {
+		t.Run(tier.name, func(t *testing.T) {
+			data := genInts(tier.size)
+			r := Slice(freshCtx(), data).Serial().FailFast().Map(func(ctx context.Context, v int) (int, error) {
+				return v, nil
+			})
+			if r.IsErr() {
+				t.Fatalf("Race Serial FF: %v", r.Error())
+			}
+			if r.Len() != tier.size {
+				t.Fatalf("Race Serial FF: expected %d, got %d", tier.size, r.Len())
 			}
 		})
 	}
