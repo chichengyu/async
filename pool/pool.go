@@ -162,7 +162,70 @@ func DefaultPool[T any]() *Pool[T] {
 	return NewPool[T](core.IO())
 }
 
-// ──────────────────────────── WithPool：自动 Close 便捷包装函数 ────────────────────────────
+// ──────────────────────────── Config：Pool 配置结构体与链式设置 ────────────────────────────
+
+// Config 汇集 Pool 的所有可配置项，支持一次性传入或链式设置。
+// 零值字段表示"使用默认值"，不影响已有行为。
+//
+// 使用方式一：完整传入
+//
+//	err := pool.WithCfg[string](ctx, pool.Config{
+//	    Size: 64, Timeout: 5 * time.Second, FailFast: true,
+//	}, func(p *Pool[string]) error { ... })
+//
+// 使用方式二：链式设置
+//
+//	cfg := pool.DefaultConfig().
+//	    WithSize(64).
+//	    WithTimeout(5 * time.Second).
+//	    WithFailFast()
+//	err := pool.WithCfg[string](ctx, cfg, func(p *Pool[string]) error { ... })
+type Config struct {
+	Size          int
+	Timeout       time.Duration
+	SubmitTimeout time.Duration
+	FailFast      bool
+	MaxPending    int
+	Overflow      core.OverflowStrategy
+	RingBufCap    int
+	MaxResults    int
+	Streaming     int
+}
+
+// DefaultConfig 返回使用默认 Size（core.IO()）的 Config。
+func DefaultConfig() Config {
+	return Config{Size: core.IO()}
+}
+
+// WithSize 设置 worker 数量。
+func (c Config) WithSize(n int) Config { c.Size = n; return c }
+
+// WithTimeout 设置每个任务的超时时间。
+func (c Config) WithTimeout(d time.Duration) Config { c.Timeout = d; return c }
+
+// WithSubmitTimeout 设置任务提交超时时间。
+func (c Config) WithSubmitTimeout(d time.Duration) Config { c.SubmitTimeout = d; return c }
+
+// WithFailFast 启用 FailFast 模式（任一任务失败即取消其余任务）。
+func (c Config) WithFailFast() Config { c.FailFast = true; return c }
+
+// WithMaxPending 设置最大等待任务数（背压控制）。
+func (c Config) WithMaxPending(n int) Config { c.MaxPending = n; return c }
+
+// WithOverflow 设置队列溢出策略。
+func (c Config) WithOverflow(s core.OverflowStrategy) Config { c.Overflow = s; return c }
+
+// WithRingBuf 启用环形缓冲区，capacity 为容量。
+// 溢出策略使用默认值 core.GetDefaultOverflowStrategy()。
+func (c Config) WithRingBuf(capacity int) Config { c.RingBufCap = capacity; return c }
+
+// WithMaxResults 设置结果切片的容量上限（0=无限）。
+func (c Config) WithMaxResults(n int) Config { c.MaxResults = n; return c }
+
+// WithStreaming 启用流式结果消费，bufSize 为 channel 缓冲大小。
+func (c Config) WithStreaming(bufSize int) Config { c.Streaming = bufSize; return c }
+
+// ──────────────────────────── WithPool / WithCfg：自动 Close 便捷包装函数 ────────────────────────────
 
 // WithPool 创建协程池并执行 fn，fn 返回后自动 Close 释放资源。
 // size <= 0 时使用 core.IO() 作为默认并发度。
@@ -184,6 +247,34 @@ func DefaultPool[T any]() *Pool[T] {
 func WithPool[T any](size int, fn func(p *Pool[T]) error) error {
 	p := NewPool[T](size)
 	defer p.Close()
+	return fn(p)
+}
+
+// WithCfg 使用 Config 创建协程池并执行 fn，fn 返回后自动 Close 释放资源。
+// 支持完整 Config 传入或链式设置后传入。
+//
+// 使用方式一：完整传入
+//
+//	err := pool.WithCfg[string](ctx, pool.Config{
+//	    Size: 64, Timeout: 5 * time.Second, FailFast: true,
+//	}, func(p *Pool[string]) error {
+//	    for _, item := range items {
+//	        p.Submit(p.Ctx(), func(ctx context.Context) (string, error) {
+//	            return process(item)
+//	        })
+//	    }
+//	    results := p.Wait()
+//	    return check(results)
+//	})
+//
+// 使用方式二：链式设置
+//
+//	cfg := pool.DefaultConfig().WithSize(64).WithTimeout(5 * time.Second).WithFailFast()
+//	err := pool.WithCfg[string](ctx, cfg, func(p *Pool[string]) error { ... })
+func WithCfg[T any](ctx context.Context, cfg Config, fn func(p *Pool[T]) error) error {
+	p := NewPool[T](cfg.Size)
+	defer p.Close()
+	p.applyConfig(ctx, cfg)
 	return fn(p)
 }
 
@@ -216,6 +307,42 @@ func (p *Pool[T]) WithContext(ctx context.Context) (*Pool[T], context.Context) {
 	p.cancel = core.MergeCancel(p.cancel, cancel)
 	p.ctx = ctx
 	return p, ctx
+}
+
+// Ctx 返回 Pool 内部存储的上下文。
+// 当使用 WithFailFast / WithContext 后，此上下文为可取消的子 context；
+// 当使用 Config 的 FailFast: true 后，通过此方法获取 ffCtx 以传递给 Submit。
+func (p *Pool[T]) Ctx() context.Context {
+	return p.ctx
+}
+
+// applyConfig 将 Config 中的非零值配置应用到 Pool 上。
+// 全部复用已有的 WithXxx 方法，不引入新逻辑。
+func (p *Pool[T]) applyConfig(ctx context.Context, cfg Config) {
+	if cfg.Timeout > 0 {
+		p.WithTimeout(cfg.Timeout)
+	}
+	if cfg.FailFast {
+		p.WithFailFast(ctx)
+	}
+	if cfg.SubmitTimeout > 0 {
+		p.WithSubmitTimeout(cfg.SubmitTimeout)
+	}
+	if cfg.MaxPending > 0 {
+		p.WithMaxPending(cfg.MaxPending)
+	}
+	if cfg.Overflow != 0 {
+		p.WithOverflow(cfg.Overflow)
+	}
+	if cfg.RingBufCap > 0 {
+		p.WithRingBuffer(cfg.RingBufCap, core.GetDefaultOverflowStrategy())
+	}
+	if cfg.MaxResults >= 0 {
+		p.WithMaxResults(cfg.MaxResults)
+	}
+	if cfg.Streaming > 0 {
+		p.WithStreaming(cfg.Streaming)
+	}
 }
 
 // WithFailFast 启用 FailFast 模式：任一任务失败后立即取消其余任务。

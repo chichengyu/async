@@ -47,6 +47,7 @@ type ShardPoolConfig[T any] struct {
 	SizePerShard int
 	Distribution Distribution
 	KeyFn        func(T) uint64
+	PoolCfg      pool.Config
 }
 
 // DefaultShardedPool 使用默认配置创建分片池。
@@ -57,6 +58,20 @@ func DefaultShardedPool[T any]() *ShardedPool[T] {
 		SizePerShard: DefaultSizePerShard,
 		Distribution: DefaultDistribution,
 	})
+}
+
+// DefaultShardConfig 返回使用默认值（4 分片、IO 并发度、RoundRobin）的 ShardPoolConfig。
+// 配合链式设置使用：
+//
+//	cfg := shard.DefaultShardConfig[string]().
+//	    WithTimeout(5 * time.Second).
+//	    WithFailFast()
+func DefaultShardConfig[T any]() ShardPoolConfig[T] {
+	return ShardPoolConfig[T]{
+		Shards:       DefaultShardCount,
+		SizePerShard: DefaultSizePerShard,
+		Distribution: DefaultDistribution,
+	}
 }
 
 // NewShardedPool 创建分片池。
@@ -78,6 +93,59 @@ func NewShardedPool[T any](cfg ShardPoolConfig[T]) *ShardedPool[T] {
 		dist:  cfg.Distribution,
 		keyFn: cfg.KeyFn,
 	}
+}
+
+// ──────────────────────────── Config 链式设置 ────────────────────────────
+
+// WithPoolCfg 设置分片内 Pool 级别的配置。
+func (c ShardPoolConfig[T]) WithPoolCfg(pc pool.Config) ShardPoolConfig[T] { c.PoolCfg = pc; return c }
+
+// WithTimeout 为所有分片设置任务超时（Config 级别，需配合 WithShardCfg 使用）。
+func (c ShardPoolConfig[T]) WithTimeout(d time.Duration) ShardPoolConfig[T] {
+	c.PoolCfg.Timeout = d
+	return c
+}
+
+// WithFailFast 启用 FailFast 模式（Config 级别，需配合 WithShardCfg 使用）。
+func (c ShardPoolConfig[T]) WithFailFast() ShardPoolConfig[T] {
+	c.PoolCfg.FailFast = true
+	return c
+}
+
+// WithShardSubmitTimeout 设置提交超时。
+func (c ShardPoolConfig[T]) WithShardSubmitTimeout(d time.Duration) ShardPoolConfig[T] {
+	c.PoolCfg.SubmitTimeout = d
+	return c
+}
+
+// WithShardMaxPending 设置最大等待任务数（背压控制）。
+func (c ShardPoolConfig[T]) WithShardMaxPending(n int) ShardPoolConfig[T] {
+	c.PoolCfg.MaxPending = n
+	return c
+}
+
+// WithShardOverflow 设置溢出策略。
+func (c ShardPoolConfig[T]) WithShardOverflow(s core.OverflowStrategy) ShardPoolConfig[T] {
+	c.PoolCfg.Overflow = s
+	return c
+}
+
+// WithShardRingBuf 启用环形缓冲区。
+func (c ShardPoolConfig[T]) WithShardRingBuf(capacity int) ShardPoolConfig[T] {
+	c.PoolCfg.RingBufCap = capacity
+	return c
+}
+
+// WithShardMaxResults 设置结果切片容量上限。
+func (c ShardPoolConfig[T]) WithShardMaxResults(n int) ShardPoolConfig[T] {
+	c.PoolCfg.MaxResults = n
+	return c
+}
+
+// WithShardStreaming 启用流式结果消费。
+func (c ShardPoolConfig[T]) WithShardStreaming(bufSize int) ShardPoolConfig[T] {
+	c.PoolCfg.Streaming = bufSize
+	return c
 }
 
 // ──────────────────────────── 基础 API ────────────────────────────
@@ -313,6 +381,15 @@ func (sp *ShardedPool[T]) WithOverflow(strategy core.OverflowStrategy) *ShardedP
 		p.WithOverflow(strategy)
 	}
 	return sp
+}
+
+// Ctx 返回第一个分片 Pool 的内部上下文。
+// 当使用 WithFailFast 后，可通过此方法获取 ffCtx 以传递给 Submit。
+func (sp *ShardedPool[T]) Ctx() context.Context {
+	if len(sp.pools) > 0 {
+		return sp.pools[0].Ctx()
+	}
+	return context.Background()
 }
 
 // ──────────────────────────── 统计聚合 ────────────────────────────
@@ -787,5 +864,57 @@ func (sg *ShardedGroup[T]) pick() int {
 func WithShardedPool[T any](shards int, sizePerShard int, fn func(sp *ShardedPool[T]) error) error {
 	sp := NewShardedPoolSimple[T](shards, sizePerShard)
 	defer sp.Close()
+	return fn(sp)
+}
+
+// WithShardCfg 使用 ShardPoolConfig 创建分片池并执行 fn，fn 返回后自动 Close。
+// 支持完整 Config 传入或链式设置后传入。
+//
+// 使用方式一：完整传入
+//
+//	err := shard.WithShardCfg(ctx, shard.ShardPoolConfig[string]{
+//	    Shards: 8, SizePerShard: 16,
+//	    PoolCfg: pool.Config{Timeout: 5 * time.Second, FailFast: true},
+//	}, func(sp *ShardedPool[string]) error {
+//	    for _, item := range items {
+//	        sp.Submit(sp.Ctx(), func(ctx context.Context) (string, error) {
+//	            return process(item)
+//	        })
+//	    }
+//	    results := sp.Wait()
+//	    return check(results)
+//	})
+//
+// 使用方式二：链式设置（通过 NewShardedPoolConfig 便捷构造）
+//
+//	cfg := shard.DefaultShardConfig[string]().
+//	    WithTimeout(5 * time.Second).
+//	    WithFailFast()
+//	err := shard.WithShardCfg(ctx, cfg, func(sp *ShardedPool[string]) error { ... })
+func WithShardCfg[T any](ctx context.Context, cfg ShardPoolConfig[T], fn func(sp *ShardedPool[T]) error) error {
+	sp := NewShardedPool(cfg)
+	defer sp.Close()
+	pc := cfg.PoolCfg
+	if pc.Timeout > 0 {
+		sp.WithTimeout(pc.Timeout)
+	}
+	if pc.FailFast {
+		sp.WithFailFast(ctx)
+	}
+	if pc.SubmitTimeout > 0 {
+		sp.WithSubmitTimeout(pc.SubmitTimeout)
+	}
+	if pc.MaxPending > 0 {
+		sp.WithMaxPending(pc.MaxPending)
+	}
+	if pc.Overflow != 0 {
+		sp.WithOverflow(pc.Overflow)
+	}
+	if pc.RingBufCap > 0 {
+		sp.WithRingBuffer(pc.RingBufCap, core.GetDefaultOverflowStrategy())
+	}
+	if pc.Streaming > 0 {
+		sp.WithStreaming(pc.Streaming)
+	}
 	return fn(sp)
 }

@@ -526,6 +526,35 @@ func WithMultiPool[T any](size int, shards int, fn func(mp *MultiPool[T]) error)
 	return pool.WithMultiPool[T](size, shards, fn)
 }
 
+// ── Pool Config：自动 Close 便捷包装函数（支持完整配置或链式设置）──
+
+// PoolConfig 汇集 Pool 的所有可配置项。
+// 支持一次性传入或链式设置：
+//
+//	// 方式一：完整 Config
+//	cfg := async.PoolConfig{Size: 64, Timeout: 5 * time.Second, FailFast: true}
+//
+//	// 方式二：链式设置
+//	cfg := async.DefaultPoolConfig().WithSize(64).WithTimeout(5*time.Second).WithFailFast()
+type PoolConfig = pool.Config
+
+// DefaultPoolConfig 返回使用默认 Size（core.IO()）的 PoolConfig。
+var DefaultPoolConfig = pool.DefaultConfig
+
+// WithPoolCfg 使用 PoolConfig 创建协程池并执行 fn，fn 返回后自动 Close。
+//
+//	cfg := async.DefaultPoolConfig().WithSize(64).WithFailFast()
+//	err := async.WithPoolCfg[int](ctx, cfg, func(p *Pool[int]) error {
+//	    for _, item := range items {
+//	        p.Submit(p.Ctx(), func(ctx context.Context) (int, error) { return process(ctx, item) })
+//	    }
+//	    results := p.Wait()
+//	    return check(results)
+//	})
+func WithPoolCfg[T any](ctx context.Context, cfg PoolConfig, fn func(p *Pool[T]) error) error {
+	return pool.WithCfg[T](ctx, cfg, fn)
+}
+
 // ── 分片池（多实例水平扩展）──
 
 // ShardedPool 将任务分发到 N 个 Pool 实例的分片池。
@@ -617,6 +646,33 @@ func WithShardedPool[T any](shards int, sizePerShard int, fn func(sp *ShardedPoo
 
 // SubmitBatchResult 分片池批量提交的单条结果。
 type SubmitBatchResult = shard.SubmitBatchResult
+
+// ── ShardedPool Config：自动 Close 便捷包装函数 ──
+
+// DefaultShardConfig 返回使用默认值的 ShardPoolConfig。
+// 配合链式设置使用：
+//
+//	cfg := async.DefaultShardConfig[string]().
+//	    WithTimeout(5 * time.Second).
+//	    WithFailFast()
+func DefaultShardConfig[T any]() ShardPoolConfig[T] {
+	return shard.DefaultShardConfig[T]()
+}
+
+// WithShardedPoolCfg 使用 ShardPoolConfig 创建分片池并执行 fn，fn 返回后自动 Close。
+//
+//	cfg := async.DefaultShardConfig[string]().
+//	    WithTimeout(5 * time.Second).WithFailFast()
+//	err := async.WithShardedPoolCfg[string](ctx, cfg, func(sp *ShardedPool[string]) error {
+//	    for _, item := range items {
+//	        sp.Submit(sp.Ctx(), func(ctx context.Context) (string, error) { return process(ctx, item) })
+//	    }
+//	    results := sp.Wait()
+//	    return check(results)
+//	})
+func WithShardedPoolCfg[T any](ctx context.Context, cfg ShardPoolConfig[T], fn func(sp *ShardedPool[T]) error) error {
+	return shard.WithShardCfg[T](ctx, cfg, fn)
+}
 
 // ── 分片 Group（多实例水平扩展）──
 
