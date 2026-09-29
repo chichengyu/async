@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/chichengyu/async/ratelimit"
+	"github.com/chichengyu/async/internal/ratelimit"
 )
 
 // limitMode 限流模式枚举。

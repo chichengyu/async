@@ -33,11 +33,11 @@ import (
 	"github.com/chichengyu/async/internal/core"
 	"github.com/chichengyu/async/internal/group"
 	"github.com/chichengyu/async/internal/pool"
+	"github.com/chichengyu/async/internal/ratelimit"
 	"github.com/chichengyu/async/internal/retry"
 	"github.com/chichengyu/async/internal/shard"
 	"github.com/chichengyu/async/internal/sliceops"
 	"github.com/chichengyu/async/pipeline"
-	"github.com/chichengyu/async/ratelimit"
 	"github.com/chichengyu/async/task"
 )
 
@@ -1161,140 +1161,65 @@ const (
 	BlockForce = ratelimit.BlockForce // 强制阻塞忽略 ctx 取消
 )
 
-var (
-	// NewRateLimiter 创建定时补充令牌的限流器。
-	//
-	// 示例：
-	//   // 每秒最多 100 个请求
-	//   rl := async.NewRateLimiter(100, time.Second)
-	//   rl.Wait(ctx) // 获取令牌
-	//   doRequest()
-	//   rl.Release() // 释放令牌
-	NewRateLimiter = ratelimit.NewRateLimiter
+// ── Ratelimit 链式 API ──
 
-	// NewRateLimiterWithBurst 创建支持突发容量的限流器。
-	//
-	// 示例：
-	//   // 每秒 50 个，最多突发 200 个
-	//   rl := async.NewRateLimiterWithBurst(50, time.Second, 200)
-	NewRateLimiterWithBurst = ratelimit.NewRateLimiterWithBurst
+// RatelimitBuilder 限流器链式构建器入口，通过 Ratelimit(ctx) 创建。
+type RatelimitBuilder = ratelimit.RatelimitBuilder
 
-	// NewSlidingWindowRateLimiter 创建滑动窗口限流器。
-	//
-	// 示例：
-	//   // 每 10 秒最多 100 次
-	//   sw := async.NewSlidingWindowRateLimiter(100, 10*time.Second)
-	//   if sw.Allow() {
-	//       doRequest()
-	//   }
-	NewSlidingWindowRateLimiter = ratelimit.NewSlidingWindowRateLimiter
+// RatelimiterSubBuilder RateLimiter 模式子构建器，设置 Rate/Per/Burst 后 Build()。
+type RatelimiterSubBuilder = ratelimit.RatelimiterSubBuilder
 
-	// NewTokenBucket 创建经典令牌桶。
-	//
-	// 示例：
-	//   // 每秒生成 10 个令牌，最多存储 20 个
-	//   tb := async.NewTokenBucket(10, 20)
-	//   if tb.Allow() {
-	//       doRequest()
-	//   }
-	NewTokenBucket = ratelimit.NewTokenBucket
+// TokenBucketSubBuilder TokenBucket 模式子构建器，设置 Rate/Capacity 后 Build()。
+type TokenBucketSubBuilder = ratelimit.TokenBucketSubBuilder
 
-	// NewAdaptiveRateLimiter 创建自适应限流器，根据成功率自动调整。
-	//
-	// 示例：
-	//   // 并发度范围 5-100，初始 50
-	//   al := async.NewAdaptiveRateLimiter(5, 100)
-	//   al.Acquire(ctx)
-	//   if err := doRequest(); err == nil {
-	//       al.RecordSuccess()
-	//   } else {
-	//       al.RecordFailure()
-	//   }
-	//   al.Release()
-	NewAdaptiveRateLimiter = ratelimit.NewAdaptiveRateLimiter
+// SlidingWindowSubBuilder SlidingWindow 模式子构建器，设置 Limit/Window 后 Build()。
+type SlidingWindowSubBuilder = ratelimit.SlidingWindowSubBuilder
 
-	// ── Sharded（分片）极限高并发便捷构造函数 ──
+// AdaptiveSubBuilder Adaptive 模式子构建器，设置 MinConcurrency/MaxConcurrency 后 Build()。
+type AdaptiveSubBuilder = ratelimit.AdaptiveSubBuilder
 
-	// DefaultShardCount 返回默认分片数（runtime.GOMAXPROCS(0)，最少 2）。
-	DefaultShardCount = ratelimit.DefaultShardCount
+// ShardedRatelimitBuilder 分片限流器入口构建器，通过 RatelimitBuilder.Sharded() 创建。
+type ShardedRatelimitBuilder = ratelimit.ShardedRatelimitBuilder
 
-	// NewShardedRateLimiter 创建分片限流器，shards<=0 自动使用 DefaultShardCount()。
-	// 总速率 = rate，各分片平均分配。
-	//
-	// 示例：
-	//   // 16 片 × 每秒 625 = 总计 10000/s
-	//   rl := async.NewShardedRateLimiter(16, 10000, time.Second)
-	//   defer rl.Close()
-	//   rl.Wait(ctx)
-	//   doRequest()
-	//   rl.Release()
-	NewShardedRateLimiter = ratelimit.NewShardedRateLimiter
+// ShardedRatelimiterSubBuilder 分片 RateLimiter 子构建器，设置 Shards/Rate/Per/Burst 后 Build()。
+type ShardedRatelimiterSubBuilder = ratelimit.ShardedRatelimiterSubBuilder
 
-	// NewShardedRateLimiterWithBurst 创建支持突发容量的分片限流器。
-	NewShardedRateLimiterWithBurst = ratelimit.NewShardedRateLimiterWithBurst
+// ShardedTokenBucketSubBuilder 分片 TokenBucket 子构建器，设置 Shards/Rate/Capacity 后 Build()。
+type ShardedTokenBucketSubBuilder = ratelimit.ShardedTokenBucketSubBuilder
 
-	// NewShardedTokenBucket 创建分片令牌桶，shards<=0 自动使用 DefaultShardCount()。
-	//
-	// 示例：
-	//   // 16 片，每片 100/s，总 ≈1600/s
-	//   tb := async.NewShardedTokenBucket(16, 100, 200)
-	//   if tb.Allow() { doRequest() }
-	NewShardedTokenBucket = ratelimit.NewShardedTokenBucket
+// ShardedSlidingWindowSubBuilder 分片 SlidingWindow 子构建器，设置 Shards/Limit/Window 后 Build()。
+type ShardedSlidingWindowSubBuilder = ratelimit.ShardedSlidingWindowSubBuilder
 
-	// NewShardedSlidingWindowRateLimiter 创建分片滑动窗口限流器。
-	//
-	// 示例：
-	//   sw := async.NewShardedSlidingWindowRateLimiter(16, 10000, time.Second)
-	//   if sw.Allow() { doRequest() }
-	NewShardedSlidingWindowRateLimiter = ratelimit.NewShardedSlidingWindowRateLimiter
+// ShardedAdaptiveSubBuilder 分片 Adaptive 子构建器，设置 Shards/MinConcurrency/MaxConcurrency 后 Build()。
+type ShardedAdaptiveSubBuilder = ratelimit.ShardedAdaptiveSubBuilder
 
-	// NewShardedAdaptiveRateLimiter 创建分片自适应限流器。
-	//
-	// 示例：
-	//   al := async.NewShardedAdaptiveRateLimiter(16, 32, 800)
-	//   al.Acquire(ctx)
-	//   if err := doRequest(); err == nil { al.RecordSuccess() } else { al.RecordFailure() }
-	//   al.Release()
-	NewShardedAdaptiveRateLimiter = ratelimit.NewShardedAdaptiveRateLimiter
-
-	// ── With*：自动 Close 便捷包装函数 ──
-
-	// WithRateLimiter 创建限流器并执行 fn，fn 返回后自动 Close。
-	//
-	// 示例：
-	//   err := async.WithRateLimiter(1000, time.Second, func(rl *async.RateLimiter) error {
-	//       rl.Wait(ctx)
-	//       return doRequest()
-	//   })
-	WithRateLimiter = ratelimit.WithRateLimiter
-
-	// WithRateLimiterWithBurst 带突发容量的自动 Close 限流器。
-	WithRateLimiterWithBurst = ratelimit.WithRateLimiterWithBurst
-
-	// WithShardedRateLimiter 创建分片限流器并执行 fn，fn 返回后自动 Close。
-	//
-	// 示例：
-	//   err := async.WithShardedRateLimiter(16, 10000, time.Second, func(rl *async.ShardedRateLimiter) error {
-	//       rl.Wait(ctx)
-	//       return doRequest()
-	//   })
-	WithShardedRateLimiter = ratelimit.WithShardedRateLimiter
-
-	// WithShardedRateLimiterWithBurst 带突发容量的自动 Close 分片限流器。
-	WithShardedRateLimiterWithBurst = ratelimit.WithShardedRateLimiterWithBurst
-
-	// WithShardedAdaptiveRateLimiter 创建分片自适应限流器并执行 fn，fn 返回后自动 Close。
-	//
-	// 示例：
-	//   err := async.WithShardedAdaptiveRateLimiter(16, 32, 800, func(sa *async.ShardedAdaptiveRateLimiter) error {
-	//       sa.Acquire(ctx)
-	//       err := doRequest()
-	//       if err != nil { sa.RecordFailure() } else { sa.RecordSuccess() }
-	//       sa.Release()
-	//       return err
-	//   })
-	WithShardedAdaptiveRateLimiter = ratelimit.WithShardedAdaptiveRateLimiter
-)
+// Ratelimit 创建限流器链式构建器，统一入口。
+// 每个模式有独立的子构建器，只暴露对应模式的参数方法，Go 类型系统天然隔离不通用参数。
+//
+// 示例：
+//
+//	// RateLimiter 模式：Rate / Per / Burst + Default*()
+//	rl := async.Ratelimit(ctx).RateLimiter().Rate(100).Per(time.Second).Burst(200).Build()
+//	rl := async.Ratelimit(ctx).RateLimiter().DefaultRate().DefaultPer().Build()
+//
+//	// TokenBucket 模式：Rate / Capacity + Default*()
+//	tb := async.Ratelimit(ctx).TokenBucket().Rate(10).Capacity(20).Build()
+//	tb := async.Ratelimit(ctx).TokenBucket().DefaultRate().DefaultCapacity().Build()
+//
+//	// SlidingWindow 模式：Limit / Window + Default*()
+//	sw := async.Ratelimit(ctx).SlidingWindow().Limit(100).Window(10*time.Second).Build()
+//	sw := async.Ratelimit(ctx).SlidingWindow().DefaultLimit().DefaultWindow().Build()
+//
+//	// Adaptive 模式：MinConcurrency / MaxConcurrency + Default*()
+//	al := async.Ratelimit(ctx).Adaptive().MinConcurrency(5).MaxConcurrency(100).Build()
+//	al := async.Ratelimit(ctx).Adaptive().DefaultMinConcurrency().DefaultMaxConcurrency().Build()
+//
+//	// Sharded 模式：Shards + 模式参数 + Default*()
+//	srl := async.Ratelimit(ctx).Sharded().RateLimiter().Shards(16).Rate(10000).Per(time.Second).Build()
+//	srl := async.Ratelimit(ctx).Sharded().RateLimiter().DefaultShards().DefaultRate().DefaultPer().Build()
+func Ratelimit(ctx context.Context) *RatelimitBuilder {
+	return ratelimit.NewRatelimitBuilder(ctx)
+}
 
 // ──────────────────────────── Retry 链式 API ────────────────────────────
 
