@@ -1,44 +1,30 @@
-package async
+package shard
 
 import (
 	"context"
 	"time"
 
 	"github.com/chichengyu/async/internal/core"
-	"github.com/chichengyu/async/internal/shard"
 )
 
-// ──────────────────────────── ShardedPool 分片池 ────────────────────────────
-
-// ShardPoolBuilder 分片池构造器，统一入口为 ShardedPool[T](ctx)。
+// ShardPoolBuilder 分片池构造器，统一入口为 async.ShardedPool[T](ctx)。
 // 支持链式配置和函数式配置，Run 自动创建分片池→执行→Close。
-//
-// 示例：
-//
-//	async.ShardedPool[string](ctx).
-//	    Shards(8).
-//	    Worker(16).
-//	    FailFast().
-//	    Run(func(ctx context.Context, sp *shard.ShardedPool[string]) error {
-//	        sp.Submit(ctx, process)
-//	        return check(sp.Wait())
-//	    })
 type ShardPoolBuilder[T any] struct {
 	ctx context.Context
-	cfg shard.ShardPoolConfig[T]
+	cfg ShardPoolConfig[T]
 }
 
-// ShardedPool 创建分片池构造器，内部自动注入 trace_id。
-func ShardedPool[T any](ctx context.Context) *ShardPoolBuilder[T] {
+// NewPoolBuilder 创建分片池构造器，内部自动注入 trace_id。
+func NewPoolBuilder[T any](ctx context.Context) *ShardPoolBuilder[T] {
 	return &ShardPoolBuilder[T]{
 		ctx: core.EnsureTraceID(ctx),
-		cfg: shard.DefaultShardConfig[T](),
+		cfg: DefaultShardConfig[T](),
 	}
 }
 
 // DefaultShardPoolConfig 重置为默认配置
 func (b *ShardPoolBuilder[T]) DefaultShardPoolConfig() *ShardPoolBuilder[T] {
-	b.cfg = shard.DefaultShardConfig[T]()
+	b.cfg = DefaultShardConfig[T]()
 	return b
 }
 
@@ -91,8 +77,8 @@ func (b *ShardPoolBuilder[T]) MaxPending(n int) *ShardPoolBuilder[T] {
 }
 
 // Run 终端方法：创建分片池，执行 fn，fn 返回后自动 Close 所有分片。
-func (b *ShardPoolBuilder[T]) Run(fn func(ctx context.Context, sp *shard.ShardedPool[T]) error) error {
-	return shard.WithShardCfg[T](b.ctx, b.cfg, func(sp *shard.ShardedPool[T]) error {
+func (b *ShardPoolBuilder[T]) Run(fn func(ctx context.Context, sp *ShardedPool[T]) error) error {
+	return WithShardCfg[T](b.ctx, b.cfg, func(sp *ShardedPool[T]) error {
 		return fn(b.ctx, sp)
 	})
 }

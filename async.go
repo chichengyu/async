@@ -33,11 +33,11 @@ import (
 	"github.com/chichengyu/async/internal/core"
 	"github.com/chichengyu/async/internal/group"
 	"github.com/chichengyu/async/internal/pool"
+	"github.com/chichengyu/async/internal/retry"
 	"github.com/chichengyu/async/internal/shard"
 	"github.com/chichengyu/async/internal/sliceops"
 	"github.com/chichengyu/async/pipeline"
 	"github.com/chichengyu/async/ratelimit"
-	"github.com/chichengyu/async/retry"
 	"github.com/chichengyu/async/task"
 )
 
@@ -446,6 +446,64 @@ func DataSlice[T any](items []T) *SliceData[T, T] {
 	return sliceops.New(items)
 }
 
+// ── Slice 链式 API ──
+
+// SliceBuilder 切片操作链式构建器类型。
+type SliceBuilder[T any, R any] = sliceops.SliceBuilder[T, R]
+
+// ParallelSlice 并行模式切片构建器类型。
+type ParallelSlice[T any, R any] = sliceops.ParallelSlice[T, R]
+
+// SerialSlice 串行模式切片构建器类型。
+type SerialSlice[T any, R any] = sliceops.SerialSlice[T, R]
+
+// SliceResult Map 操作结果容器。
+type SliceResult[R any] = sliceops.SliceResult[R]
+
+// ForEachResult ForEach 操作结果容器。
+type ForEachResult = sliceops.ForEachResult
+
+// ParallelBuilder 并行构建器（向后兼容别名，等价于 SliceBuilder）。
+type ParallelBuilder[T any, R any] = sliceops.SliceBuilder[T, R]
+
+// SerialBuilder 串行构建器（向后兼容别名，等价于 SliceBuilder）。
+type SerialBuilder[T any, R any] = sliceops.SliceBuilder[T, R]
+
+// Slice 创建同类型切片构建器（R=T），默认为并行模式。
+//
+//	ctx:   上下文（自动注入 TraceID）。
+//	items: 原始切片数据。
+//
+//	go async.Slice(ctx, []int{1, 2, 3}).Sort(cmp).Map(fn)
+func Slice[T any](ctx context.Context, items []T) *SliceBuilder[T, T] {
+	return sliceops.NewSliceBuilder[T](ctx, items)
+}
+
+// SliceWith 创建跨类型切片构建器（T→R），显式指定输出类型 R，输入类型 T 由 items 自动推断。
+// 默认为并行模式。
+//
+//	go async.SliceWith[string](ctx, []int{1, 2, 3}).Map(func(ctx ctx, n int) (string, error) {
+//	    return strconv.Itoa(n), nil
+//	})
+func SliceWith[R any, T any](ctx context.Context, items []T) *SliceBuilder[T, R] {
+	return sliceops.NewSliceWithBuilder[R, T](ctx, items)
+}
+
+// ── MultiPoolBuilder 链式 API ──
+
+// MultiPoolBuilder 分片协程池构造器类型。
+type MultiPoolBuilder[T any] = pool.MultiPoolBuilder[T]
+
+// MultiPool 创建分片协程池构造器，内部自动注入 trace_id。
+func MultiPool[T any](ctx context.Context) *MultiPoolBuilder[T] {
+	return pool.NewMultiBuilder[T](ctx)
+}
+
+// MultiPoolBG 无上下文快捷构造，内部使用 context.Background()。
+func MultiPoolBG[T any]() *MultiPoolBuilder[T] {
+	return pool.NewMultiBuilderBG[T]()
+}
+
 // ── MultiPool：Pool 水平分片，极限高并发 ──
 
 // ShardPool 将 Pool 水平分片为 N 个实例的便捷函数。
@@ -512,6 +570,30 @@ func WithMultiPool[T any](size int, shards int, fn func(mp *pool.MultiPool[T]) e
 	return pool.WithMultiPool[T](size, shards, fn)
 }
 
+// ── PoolBuilder 链式 API ──
+
+// PoolBuilder 协程池构造器类型。
+type PoolBuilder[T any] = pool.PoolBuilder[T]
+
+// Pool 创建协程池构造器，内部自动注入 trace_id。
+// 通过链式方法配置后调用 Run 执行。
+//
+// 示例：
+//
+//	async.Pool[string](ctx).
+//	    Worker(64).FailFast().Timeout(5*time.Second).
+//	    Run(func(ctx context.Context, p *pool.Pool[string]) error {
+//	        for _, item := range items {
+//	            p.Submit(ctx, func(ctx context.Context) (string, error) {
+//	                return process(ctx, item)
+//	            })
+//	        }
+//	        return check(p.Wait())
+//	    })
+func Pool[T any](ctx context.Context) *PoolBuilder[T] {
+	return pool.NewBuilder[T](ctx)
+}
+
 // ── Pool Config：自动 Close 便捷包装函数（支持完整配置或链式设置）──
 
 // PoolConfig 汇集 Pool 的所有可配置项。
@@ -539,6 +621,16 @@ var DefaultPoolConfig = pool.DefaultConfig
 //	})
 func WithPoolCfg[T any](ctx context.Context, cfg PoolConfig, fn func(p *pool.Pool[T]) error) error {
 	return pool.WithCfg[T](ctx, cfg, fn)
+}
+
+// ── ShardPoolBuilder 链式 API ──
+
+// ShardPoolBuilder 分片池构造器类型。
+type ShardPoolBuilder[T any] = shard.ShardPoolBuilder[T]
+
+// ShardedPool 创建分片池构造器，内部自动注入 trace_id。
+func ShardedPool[T any](ctx context.Context) *ShardPoolBuilder[T] {
+	return shard.NewPoolBuilder[T](ctx)
 }
 
 // ── 分片池（多实例水平扩展）──
@@ -662,6 +754,21 @@ func WithShardedPoolCfg[T any](ctx context.Context, cfg ShardPoolConfig[T], fn f
 // ShardGroupConfig 分片 Group 配置。
 type ShardGroupConfig[T any] = shard.ShardGroupConfig[T]
 
+// ── ShardedGroupBuilder 链式 API ──
+
+// ShardedGroupBuilder 分片 Group 构造器类型。
+type ShardedGroupBuilder[T any] = shard.ShardedGroupBuilder[T]
+
+// ShardedGroup 创建分片 Group 构造器，内部自动注入 trace_id。
+func ShardedGroup[T any](ctx context.Context) *ShardedGroupBuilder[T] {
+	return shard.NewGroupBuilder[T](ctx)
+}
+
+// ShardedGroupBG 无上下文快捷构造，内部使用 context.Background()。
+func ShardedGroupBG[T any]() *ShardedGroupBuilder[T] {
+	return shard.NewGroupBuilderBG[T]()
+}
+
 // NewShardedGroup 创建分片 Group。
 func NewShardedGroup[T any](cfg ShardGroupConfig[T]) *shard.ShardedGroup[T] {
 	return shard.NewShardedGroup(cfg)
@@ -670,6 +777,21 @@ func NewShardedGroup[T any](cfg ShardGroupConfig[T]) *shard.ShardedGroup[T] {
 // DefaultShardedGroup 使用默认配置创建分片 Group（4 分片、IO 并发度、RoundRobin）。
 func DefaultShardedGroup[T any]() *shard.ShardedGroup[T] {
 	return shard.DefaultShardedGroup[T]()
+}
+
+// ── MultiGroupBuilder 链式 API ──
+
+// MultiGroupBuilder 分片任务组构造器类型。
+type MultiGroupBuilder[T any] = group.MultiGroupBuilder[T]
+
+// MultiGroup 创建分片任务组构造器，内部自动注入 trace_id。
+func MultiGroup[T any](ctx context.Context) *MultiGroupBuilder[T] {
+	return group.NewMultiBuilder[T](ctx)
+}
+
+// MultiGroupBG 无上下文快捷构造，内部使用 context.Background()。
+func MultiGroupBG[T any]() *MultiGroupBuilder[T] {
+	return group.NewMultiBuilderBG[T]()
 }
 
 // ── MultiGroup：Group 水平分片，极限高并发 ──
@@ -1000,221 +1122,6 @@ func GoCancelErr(ctx context.Context, fn func(context.Context) error) TaskErr {
 	return task.GoResultAction(ctx, fn)
 }
 
-// ──────────────────────────── Retry 重试 ────────────────────────────
-
-// WorkerPoolBackend 协程池的最小抽象接口，用于 BindRetryToWorker。
-type WorkerPoolBackend = retry.WorkerPoolBackend
-
-// TimeoutOpt 每次调用超时配置。
-type TimeoutOpt = retry.TimeoutOpt
-
-// RetryFn 函数式重试辅助类型。
-type RetryFn = retry.RetryFn
-
-var (
-	// BindRetryToWorker 向 worker 池提交任务，提交超时时自动退避重试。
-	//
-	// 示例：
-	//   err := async.BindRetryToWorker(ctx, pool, fn, 3, 10*time.Millisecond, 1*time.Second)
-	BindRetryToWorker = retry.BindRetryToWorker
-
-	// WithTimeoutVoid 无返回值版本的超时包装。
-	WithTimeoutVoid = retry.WithTimeoutVoid
-
-	// WithDeadlineVoid 无返回值版本的截止时间包装。
-	WithDeadlineVoid = retry.WithDeadlineVoid
-
-	// RetryWithConfigVoid 与 RetryWithConfig 相同，但 fn 只返回 error。
-	// 支持每次调用超时的指数退避重试。
-	//
-	// 示例：
-	//   err := async.RetryWithConfigVoid(ctx, func(ctx context.Context) error {
-	//       return sendMessage(ctx, msg)
-	//   }, 3, 100*time.Millisecond, 5*time.Second,
-	//       async.TimeoutOpt{PerCallTimeout: 2 * time.Second})
-	RetryWithConfigVoid = retry.RetryWithConfigVoid
-)
-
-// Retry 简单重试（无退避），最多执行 maxRetries+1 次。
-// 适用场景：瞬时性故障重试，如网络抖动。
-//
-// 参数：
-//   - ctx：上下文
-//   - maxRetries：最大重试次数（总执行次数 = maxRetries + 1）
-//   - fn：要执行的函数
-//
-// 示例：
-//
-//	// 最多尝试 5 次（1 次初始 + 4 次重试）
-//	err := async.Retry(ctx, 4, func(ctx context.Context) error {
-//	    return db.Ping(ctx)
-//	})
-func Retry(ctx context.Context, maxRetries int, fn func(ctx context.Context) error) error {
-	_, err := retry.RetryWithBackoff[struct{}](ctx, func(ctx context.Context) (struct{}, error) {
-		return struct{}{}, fn(ctx)
-	}, maxRetries, 0, 0)
-	return err
-}
-
-// RetryWithBackoff 带指数退避的重试。
-// backoff 为初始退避时间，每次失败后翻倍（默认最大退避 30 秒）。
-// 退避公式：min(backoff * 2^attempt, maxBackoff)。
-//
-// 适用于：调用外部 API、数据库连接等需要退避的场景。
-//
-// 参数：
-//   - ctx：上下文
-//   - maxRetries：最大重试次数
-//   - backoff：初始退避时间
-//   - fn：要执行的函数
-//
-// 示例：
-//
-//	// 最多重试 3 次（共 4 次尝试），初始退避 100ms
-//	// 退避序列: 100ms -> 200ms -> 400ms
-//	err := async.RetryWithBackoff(ctx, 3, 100*time.Millisecond, func(ctx context.Context) error {
-//	    return callExternalAPI(ctx, request)
-//	})
-func RetryWithBackoff(ctx context.Context, maxRetries int, backoff time.Duration, fn func(ctx context.Context) error) error {
-	_, err := retry.RetryWithBackoff[struct{}](ctx, func(ctx context.Context) (struct{}, error) {
-		return struct{}{}, fn(ctx)
-	}, maxRetries, backoff, 30*time.Second)
-	return err
-}
-
-// RetryWithLinearBackoff 带线性退避的重试，每次重试等待相同的 backoff。
-//
-// 参数：
-//   - ctx：上下文
-//   - maxRetries：最大重试次数
-//   - backoff：每次重试的固定等待时间
-//   - fn：要执行的函数
-//
-// 示例：
-//
-//	// 每次失败等 1 秒，最多重试 5 次
-//	err := async.RetryWithLinearBackoff(ctx, 5, 1*time.Second, fn)
-func RetryWithLinearBackoff(ctx context.Context, maxRetries int, backoff time.Duration, fn func(ctx context.Context) error) error {
-	return retry.RetryWithLinearBackoffVoid(ctx, fn, maxRetries, backoff)
-}
-
-// RetryWithConfig 支持每次调用超时的指数退避重试（带返回值）。
-// 相比 RetryWithBackoff，增加了 PerCallTimeout 控制每次 fn 调用的超时。
-//
-// 参数：
-//   - ctx：上下文
-//   - fn：要执行的函数（带返回值）
-//   - maxRetries：最大重试次数
-//   - initialBackoff：初始退避时间
-//   - maxBackoff：最大退避上限（0 = 无上限）
-//   - opts：可选 TimeoutOpt，PerCallTimeout 控制每次调用超时
-//
-// 示例：
-//
-//	// 每次调用最多 2 秒，最多重试 3 次
-//	result, err := async.RetryWithConfig(ctx, func(ctx context.Context) (*Data, error) {
-//	    return fetchData(ctx, id)
-//	}, 3, 100*time.Millisecond, 5*time.Second,
-//	    async.TimeoutOpt{PerCallTimeout: 2 * time.Second})
-func RetryWithConfig[T any](ctx context.Context, fn func(ctx context.Context) (T, error), maxRetries int, initialBackoff time.Duration, maxBackoff time.Duration, opts ...TimeoutOpt) (T, error) {
-	return retry.RetryWithConfig(ctx, fn, maxRetries, initialBackoff, maxBackoff, opts...)
-}
-
-// WithTimeout 包装 fn，使其在指定超时后自动取消。
-//
-// 参数：
-//   - ctx：上下文
-//   - timeout：超时时间
-//   - fn：要执行的函数
-//
-// 示例：
-//
-//	val, err := async.WithTimeout(ctx, 3*time.Second, func(ctx context.Context) (string, error) {
-//	    return httpGet(ctx, url)
-//	})
-func WithTimeout[T any](ctx context.Context, timeout time.Duration, fn func(ctx context.Context) (T, error)) (T, error) {
-	return retry.WithTimeout(ctx, timeout, fn)
-}
-
-// WithDeadline 包装 fn，使其在指定截止时间后自动取消。
-//
-// 参数：
-//   - ctx：上下文
-//   - deadline：截止时间
-//   - fn：要执行的函数
-//
-// 示例：
-//
-//	deadline := time.Now().Add(5 * time.Second)
-//	val, err := async.WithDeadline(ctx, deadline, fn)
-func WithDeadline[T any](ctx context.Context, deadline time.Time, fn func(ctx context.Context) (T, error)) (T, error) {
-	return retry.WithDeadline(ctx, deadline, fn)
-}
-
-// RetryWithBackoffResult 与 RetryWithBackoff 相同，但返回 Result[T] 而非两个返回值。
-// Result[T] 提供 Ok()、IsPanic() 等便捷方法，便于统一处理成功和失败。
-//
-// 参数：
-//   - ctx：上下文
-//   - fn：要执行的函数（带返回值）
-//   - maxRetries：最大重试次数
-//   - initialBackoff：初始退避时间
-//   - maxBackoff：最大退避上限
-//
-// 示例：
-//
-//	r := async.RetryWithBackoffResult(ctx, func(ctx context.Context) (*Data, error) {
-//	    return fetchData(ctx, id)
-//	}, 3, 100*time.Millisecond, 5*time.Second)
-//	if r.Ok() {
-//	    fmt.Println(r.Value)
-//	} else {
-//	    log.Printf("重试失败: %v", r.Err)
-//	}
-func RetryWithBackoffResult[T any](ctx context.Context, fn func(ctx context.Context) (T, error), maxRetries int, initialBackoff time.Duration, maxBackoff time.Duration) core.Result[T] {
-	return retry.RetryWithBackoffResult(ctx, fn, maxRetries, initialBackoff, maxBackoff)
-}
-
-// RetryWithLinearBackoffResult 与 RetryWithLinearBackoff 相同，但返回 Result[T]。
-//
-// 参数：
-//   - ctx：上下文
-//   - fn：要执行的函数（带返回值）
-//   - maxRetries：最大重试次数
-//   - backoff：每次重试的固定等待时间
-//
-// 示例：
-//
-//	r := async.RetryWithLinearBackoffResult(ctx, fn, 5, 1*time.Second)
-//	if !r.Ok() {
-//	    log.Printf("重试失败: %v", r.Err)
-//	}
-func RetryWithLinearBackoffResult[T any](ctx context.Context, fn func(ctx context.Context) (T, error), maxRetries int, backoff time.Duration) core.Result[T] {
-	return retry.RetryWithLinearBackoffResult(ctx, fn, maxRetries, backoff)
-}
-
-// RetryBackoff 指数退避重试，fn 签名为 func(ctx) error（无返回值）。
-//
-// 示例：
-//
-//	err := async.RetryBackoff(ctx, func(ctx context.Context) error {
-//	    return sendMessage(ctx, msg)
-//	}, 3, 10*time.Millisecond, 1*time.Second)
-func RetryBackoff(ctx context.Context, fn func(context.Context) error, maxRetries int, initialBackoff time.Duration, maxBackoff time.Duration) error {
-	return retry.RetryWithBackoffVoid(ctx, fn, maxRetries, initialBackoff, maxBackoff)
-}
-
-// RetryLinear 线性退避重试，fn 签名为 func(ctx) error（无返回值）。
-//
-// 示例：
-//
-//	err := async.RetryLinear(ctx, func(ctx context.Context) error {
-//	    return writeDB(ctx, record)
-//	}, 5, 100*time.Millisecond)
-func RetryLinear(ctx context.Context, fn func(context.Context) error, maxRetries int, backoff time.Duration) error {
-	return retry.RetryWithLinearBackoffVoid(ctx, fn, maxRetries, backoff)
-}
-
 // ──────────────────────────── RateLimiter 限流 ────────────────────────────
 
 // Strategy 限流策略：Block（阻塞等待）、Reject（立即拒绝）、BlockForce（强制阻塞忽略 ctx 取消）。
@@ -1388,6 +1295,49 @@ var (
 	//   })
 	WithShardedAdaptiveRateLimiter = ratelimit.WithShardedAdaptiveRateLimiter
 )
+
+// ──────────────────────────── Retry 链式 API ────────────────────────────
+
+// RetryChain 泛型重试链式构建器，提供声明式流式重试 API。
+// 支持指数/线性退避、4 种限流模式（RateLimiter/TokenBucket/SlidingWindow/Adaptive）。
+//
+// 统一入口 async.Retry[T](ctx)：
+//
+//	// 带返回值
+//	val, err := async.Retry[string](ctx).
+//	    Exponential().MaxRetries(3).Backoff(100*time.Millisecond, 5*time.Second).
+//	    Execute(fn)
+//
+//	// 无返回值（struct{} = void）
+//	err := async.Retry[struct{}](ctx).
+//	    TokenBucket().Rate(5).Capacity(20).
+//	    Run(func() error { return doSomething() })
+//
+//	// 退避 + RateLimiter 限速
+//	val, err := async.Retry[string](ctx).
+//	    Exponential().MaxRetries(5).Backoff(100*time.Millisecond, 10*time.Second).
+//	    PerCallTimeout(3*time.Second).
+//	    RateLimiter().Rate(10).Per(time.Second).Shards(8).
+//	    Execute(fn)
+type RetryChain[T any] = retry.RetryChain[T]
+
+// Retry 创建重试链式构建器，统一入口。
+// 默认配置：指数退避，最多 3 次重试，退避 100ms~30s。
+//
+// 带返回值：
+//
+//	val, err := async.Retry[string](ctx).
+//	    Exponential().MaxRetries(3).Backoff(100*time.Millisecond, 5*time.Second).
+//	    Execute(fn)
+//
+// 无返回值（用 struct{} 或 any）：
+//
+//	err := async.Retry[struct{}](ctx).
+//	    Linear().MaxRetries(5).Backoff(1*time.Second).
+//	    Run(func() error { return doSomething() })
+func Retry[T any](ctx context.Context) *RetryChain[T] {
+	return retry.New[T](ctx)
+}
 
 // ──────────────────────────── Pipeline 管道 ────────────────────────────
 

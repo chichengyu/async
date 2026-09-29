@@ -1,52 +1,32 @@
-package async
+package pool
 
 import (
 	"context"
 	"time"
 
 	"github.com/chichengyu/async/internal/core"
-	"github.com/chichengyu/async/internal/pool"
 )
 
-// ──────────────────────────── Pool 协程池 ────────────────────────────
-
-// PoolBuilder 协程池构造器，统一入口为 Pool[T](ctx)。
+// PoolBuilder 协程池构造器，统一入口为 async.Pool[T](ctx)。
 // 支持链式配置和函数式配置，Run 自动创建池→执行→Close。
-//
-// 示例：
-//
-//	async.Pool[string](ctx).
-//	    Worker(64).
-//	    FailFast().
-//	    Timeout(5 * time.Second).
-//	    Run(func(ctx context.Context, p *pool.Pool[string]) error {
-//	        for _, item := range items {
-//	            p.Submit(ctx, func(ctx context.Context) (string, error) {
-//	                return process(ctx, item)
-//	            })
-//	        }
-//	        results := p.Wait()
-//	        return check(results)
-//	    })
 type PoolBuilder[T any] struct {
 	ctx context.Context
-	cfg pool.Config
+	cfg Config
 }
 
-// Pool 创建协程池构造器，内部自动注入 trace_id。
-// 通过链式方法配置后调用 Run 执行。
-func Pool[T any](ctx context.Context) *PoolBuilder[T] {
-	return &PoolBuilder[T]{ctx: core.EnsureTraceID(ctx), cfg: pool.DefaultConfig()}
+// NewBuilder 创建协程池构造器，内部自动注入 trace_id。
+func NewBuilder[T any](ctx context.Context) *PoolBuilder[T] {
+	return &PoolBuilder[T]{ctx: core.EnsureTraceID(ctx), cfg: DefaultConfig()}
 }
 
 // DefaultPoolConfig 重置为默认配置
 func (b *PoolBuilder[T]) DefaultPoolConfig() *PoolBuilder[T] {
-	b.cfg = pool.DefaultConfig()
+	b.cfg = DefaultConfig()
 	return b
 }
 
-// Config 函数式配置，允许通过闭包修改 PoolConfig
-func (b *PoolBuilder[T]) Config(fn func(PoolConfig) PoolConfig) *PoolBuilder[T] {
+// Config 函数式配置，允许通过闭包修改 Config
+func (b *PoolBuilder[T]) Config(fn func(Config) Config) *PoolBuilder[T] {
 	b.cfg = fn(b.cfg)
 	return b
 }
@@ -82,7 +62,7 @@ func (b *PoolBuilder[T]) MaxPending(n int) *PoolBuilder[T] {
 }
 
 // Overflow 设置队列溢出策略
-func (b *PoolBuilder[T]) Overflow(s OverflowStrategy) *PoolBuilder[T] {
+func (b *PoolBuilder[T]) Overflow(s core.OverflowStrategy) *PoolBuilder[T] {
 	b.cfg.Overflow = s
 	return b
 }
@@ -106,8 +86,8 @@ func (b *PoolBuilder[T]) Streaming(buf int) *PoolBuilder[T] {
 }
 
 // Run 终端方法：创建协程池，执行 fn，fn 返回后自动 Close。
-func (b *PoolBuilder[T]) Run(fn func(ctx context.Context, p *pool.Pool[T]) error) error {
-	return pool.WithCfg[T](b.ctx, b.cfg, func(p *pool.Pool[T]) error {
+func (b *PoolBuilder[T]) Run(fn func(ctx context.Context, p *Pool[T]) error) error {
+	return WithCfg[T](b.ctx, b.cfg, func(p *Pool[T]) error {
 		return fn(b.ctx, p)
 	})
 }

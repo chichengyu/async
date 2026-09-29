@@ -1,36 +1,15 @@
-package async
+package group
 
 import (
 	"context"
 	"time"
 
 	"github.com/chichengyu/async/internal/core"
-	"github.com/chichengyu/async/internal/group"
 )
 
-// ──────────────────────────── MultiGroup 分片任务组 ────────────────────────────
-
-// MultiGroupBuilder 分片任务组构造器，统一入口为 MultiGroup[T](ctx)。
+// MultiGroupBuilder 分片任务组构造器，统一入口为 async.MultiGroup[T](ctx)。
 // 内部创建 Group → 水平分片为 N 份，支持极限高并发。
 // 支持链式配置，Run 自动创建→执行→Close 所有分片。
-//
-// 示例：
-//
-//	async.MultiGroup[string](ctx).
-//	    Shards(8).
-//	    Concurrency(64).
-//	    FailFast().
-//	    Run(func(ctx context.Context, mg *group.MultiGroup[string]) error {
-//	        for _, item := range items {
-//	            mg.Go(ctx, func(ctx context.Context) (string, error) {
-//	                return process(item)
-//	            })
-//	        }
-//	        results, firstErr := mg.Wait()
-//	        if firstErr != nil { return firstErr }
-//	        _ = results
-//	        return nil
-//	    })
 type MultiGroupBuilder[T any] struct {
 	ctx           context.Context
 	concurrency   int
@@ -40,8 +19,8 @@ type MultiGroupBuilder[T any] struct {
 	failFast      bool
 }
 
-// MultiGroup 创建分片任务组构造器，内部自动注入 trace_id。
-func MultiGroup[T any](ctx context.Context) *MultiGroupBuilder[T] {
+// NewMultiBuilder 创建分片任务组构造器，内部自动注入 trace_id。
+func NewMultiBuilder[T any](ctx context.Context) *MultiGroupBuilder[T] {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -50,9 +29,9 @@ func MultiGroup[T any](ctx context.Context) *MultiGroupBuilder[T] {
 	}
 }
 
-// MultiGroupBG 无上下文快捷构造，内部使用 context.Background()。
-func MultiGroupBG[T any]() *MultiGroupBuilder[T] {
-	return MultiGroup[T](context.Background())
+// NewMultiBuilderBG 无上下文快捷构造，内部使用 context.Background()。
+func NewMultiBuilderBG[T any]() *MultiGroupBuilder[T] {
+	return NewMultiBuilder[T](context.Background())
 }
 
 // Context 链式设置上下文
@@ -92,9 +71,8 @@ func (b *MultiGroupBuilder[T]) FailFast() *MultiGroupBuilder[T] {
 }
 
 // Run 终端方法：创建 Group → 应用配置 → 分片 → 执行 fn → Close 所有分片。
-func (b *MultiGroupBuilder[T]) Run(fn func(ctx context.Context, mg *group.MultiGroup[T]) error) error {
-	g := group.NewGroup[T](b.concurrency)
-
+func (b *MultiGroupBuilder[T]) Run(fn func(ctx context.Context, mg *MultiGroup[T]) error) error {
+	g := NewGroup[T](b.concurrency)
 	if b.timeout > 0 {
 		g.WithTimeout(b.timeout)
 	}
@@ -104,7 +82,6 @@ func (b *MultiGroupBuilder[T]) Run(fn func(ctx context.Context, mg *group.MultiG
 	if b.failFast {
 		g.WithFailFast(b.ctx)
 	}
-
 	mg := g.Shard(b.shards)
 	defer mg.Close()
 	return fn(b.ctx, mg)
