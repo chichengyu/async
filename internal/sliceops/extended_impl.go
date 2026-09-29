@@ -6,8 +6,8 @@ import (
 	"context"
 	"time"
 
-	"github.com/chichengyu/async/core"
-	"github.com/chichengyu/async/group"
+	"github.com/chichengyu/async/internal/core"
+	"github.com/chichengyu/async/internal/group"
 )
 
 // ──────────────────────────── Map 扩展 ────────────────────────────

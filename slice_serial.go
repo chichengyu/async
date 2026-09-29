@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/chichengyu/async/core"
+	"github.com/chichengyu/async/internal/core"
 	"github.com/chichengyu/async/internal/sliceops"
 )
 

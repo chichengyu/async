@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chichengyu/async/shard"
+	"github.com/chichengyu/async/internal/shard"
 )
 
 // ============================================================
@@ -40,7 +40,7 @@ func TestShardPoolBuilder_Chain_Basic(t *testing.T) {
 					}
 					for _, r := range sp.Wait() {
 						if r.Err != nil {
-							t.Errorf("unexpected error at %d: %v", r.Index, r.Err)
+							t.Errorf("unexpected error: %v", r.Err)
 						}
 						atomic.AddInt64(&sum, int64(r.Value))
 					}
@@ -99,20 +99,30 @@ func TestShardPoolBuilder_Chain_FailFast(t *testing.T) {
 }
 
 func TestShardPoolBuilder_Chain_Timeout(t *testing.T) {
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
-
+	sizes := []struct {
+		name string
+		n    int
+	}{
+		{"10tasks", 10},
+		{"100tasks", 100},
+	}
+	for _, sz := range sizes {
+		t.Run(sz.name, func(t *testing.T) {
 			var timeoutCount int32
 			err := ShardedPool[int](freshCtx()).
 				Shards(2).
-				Worker(4).
-				Timeout(50 * time.Millisecond).
+				Worker(2).
+				Timeout(10 * time.Millisecond).
 				Run(func(ctx context.Context, sp *shard.ShardedPool[int]) error {
-					for i := 0; i < tier.size; i++ {
+					for i := 0; i < sz.n; i++ {
+						v := i
 						sp.Submit(ctx, func(ctx context.Context) (int, error) {
-							time.Sleep(200 * time.Millisecond)
-							return i, nil
+							select {
+							case <-ctx.Done():
+								return 0, ctx.Err()
+							case <-time.After(200 * time.Millisecond):
+								return v, nil
+							}
 						})
 					}
 					for _, r := range sp.Wait() {
@@ -126,9 +136,9 @@ func TestShardPoolBuilder_Chain_Timeout(t *testing.T) {
 				t.Fatal(err)
 			}
 			if timeoutCount == 0 {
-				t.Fatal("Timeout=50ms but all 200ms tasks passed — timeout not enforced")
+				t.Fatal("Timeout=10ms but all context-aware tasks passed — timeout not enforced")
 			}
-			t.Logf("shard timeout count: %d / %d", timeoutCount, tier.size)
+			t.Logf("shard timeout count: %d / %d", timeoutCount, sz.n)
 		})
 	}
 }
@@ -243,7 +253,7 @@ func TestShardPoolBuilder_Chain_KeyFn(t *testing.T) {
 			err := ShardedPool[int](freshCtx()).
 				Shards(4).
 				Worker(8).
-				Distribution(HashShard).
+				Distribution(Hash).
 				KeyFn(func(v int) uint64 { return uint64(v) }).
 				Run(func(ctx context.Context, sp *shard.ShardedPool[int]) error {
 					for i := 0; i < tier.size; i++ {

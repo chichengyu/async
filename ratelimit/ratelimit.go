@@ -40,7 +40,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/chichengyu/async/core"
+	"github.com/chichengyu/async/internal/core"
 )
 
 // Strategy 定义令牌耗尽时的行为策略。

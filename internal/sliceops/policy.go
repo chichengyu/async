@@ -24,7 +24,7 @@ import (
 	"runtime"
 	"time"
 
-	"github.com/chichengyu/async/core"
+	"github.com/chichengyu/async/internal/core"
 )
 
 // Policy 执行策略，串行或并行模式 + 可选配置。

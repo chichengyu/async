@@ -27,7 +27,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/chichengyu/async/core"
+	"github.com/chichengyu/async/internal/core"
 )
 
 // poolShardCount 结果存储分片数，降低锁竞争到 1/32。

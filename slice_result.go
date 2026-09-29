@@ -1,6 +1,6 @@
 package async
 
-import "github.com/chichengyu/async/core"
+import "github.com/chichengyu/async/internal/core"
 
 // ── collectFailValues ──
 

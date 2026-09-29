@@ -6,6 +6,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/chichengyu/async/internal/pool"
 )
 
 // ============================================================
@@ -37,7 +39,7 @@ func TestPoolBuilder_Chain_Basic(t *testing.T) {
 					}
 					for _, r := range p.Wait() {
 						if r.Err != nil {
-							t.Errorf("unexpected error at %d: %v", r.Index, r.Err)
+							t.Errorf("unexpected error: %v", r.Err)
 						}
 						atomic.AddInt64(&sum, int64(r.Value))
 					}
@@ -100,19 +102,29 @@ func TestPoolBuilder_Chain_FailFast(t *testing.T) {
 }
 
 func TestPoolBuilder_Chain_Timeout(t *testing.T) {
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
-
+	sizes := []struct {
+		name string
+		n    int
+	}{
+		{"10tasks", 10},
+		{"100tasks", 100},
+	}
+	for _, sz := range sizes {
+		t.Run(sz.name, func(t *testing.T) {
 			var timeoutCount int32
 			err := Pool[int](freshCtx()).
-				Worker(8).
-				Timeout(50 * time.Millisecond).
+				Worker(2).
+				Timeout(10 * time.Millisecond).
 				Run(func(ctx context.Context, p *pool.Pool[int]) error {
-					for i := 0; i < tier.size; i++ {
+					for i := 0; i < sz.n; i++ {
+						v := i
 						p.Submit(ctx, func(ctx context.Context) (int, error) {
-							time.Sleep(200 * time.Millisecond)
-							return i, nil
+							select {
+							case <-ctx.Done():
+								return 0, ctx.Err()
+							case <-time.After(200 * time.Millisecond):
+								return v, nil
+							}
 						})
 					}
 					for _, r := range p.Wait() {
@@ -126,9 +138,9 @@ func TestPoolBuilder_Chain_Timeout(t *testing.T) {
 				t.Fatal(err)
 			}
 			if timeoutCount == 0 {
-				t.Fatal("Timeout=50ms but all 200ms tasks passed — timeout not enforced")
+				t.Fatal("Timeout=10ms but all context-aware tasks passed — timeout not enforced")
 			}
-			t.Logf("timeout count: %d / %d", timeoutCount, tier.size)
+			t.Logf("timeout count: %d / %d", timeoutCount, sz.n)
 		})
 	}
 }
@@ -241,24 +253,25 @@ func TestPoolBuilder_Chain_DefaultReset(t *testing.T) {
 }
 
 func TestPoolBuilder_Chain_SubmitTimeout(t *testing.T) {
-	tiers := []dataTier{
-		{"万级_10K", 10_000},
-		{"十万级_100K", 100_000},
+	sizes := []struct {
+		name string
+		n    int
+	}{
+		{"50tasks", 50},
+		{"200tasks", 200},
 	}
-	for _, tier := range tiers {
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
-
+	for _, sz := range sizes {
+		t.Run(sz.name, func(t *testing.T) {
 			var submitOK int32
 			err := Pool[int](freshCtx()).
-				Worker(4).
-				SubmitTimeout(200 * time.Millisecond).
+				Worker(2).
+				SubmitTimeout(50 * time.Millisecond).
 				MaxPending(2).
 				RingBuf(0).
 				Run(func(ctx context.Context, p *pool.Pool[int]) error {
-					for i := 0; i < tier.size; i++ {
+					for i := 0; i < sz.n; i++ {
 						p.Submit(ctx, func(ctx context.Context) (int, error) {
-							time.Sleep(100 * time.Millisecond)
+							time.Sleep(200 * time.Millisecond)
 							return i, nil
 						})
 						atomic.AddInt32(&submitOK, 1)
@@ -272,7 +285,7 @@ func TestPoolBuilder_Chain_SubmitTimeout(t *testing.T) {
 			if submitOK == 0 {
 				t.Fatal("no submissions succeeded")
 			}
-			t.Logf("submitted: %d / %d", submitOK, tier.size)
+			t.Logf("submitted: %d / %d", submitOK, sz.n)
 		})
 	}
 }

@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chichengyu/async/core"
+	"github.com/chichengyu/async/internal/core"
 )
 
 // ==================== Group 流式消费测试 ====================

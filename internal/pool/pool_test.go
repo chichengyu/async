@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chichengyu/async/core"
+	"github.com/chichengyu/async/internal/core"
 )
 
 var errPoolTest = errors.New("pool test error")

@@ -7,9 +7,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/chichengyu/async/core"
-	"github.com/chichengyu/async/group"
-	"github.com/chichengyu/async/pool"
+	"github.com/chichengyu/async/internal/core"
+	"github.com/chichengyu/async/internal/group"
+	"github.com/chichengyu/async/internal/pool"
 )
 
 // Distribution 分片分发策略。

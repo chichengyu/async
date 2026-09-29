@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chichengyu/async/core"
+	"github.com/chichengyu/async/internal/core"
 )
 
 // TestAutoScale_BasicEnableDisable 基本启用/禁用

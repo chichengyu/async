@@ -35,7 +35,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/chichengyu/async/core"
+	"github.com/chichengyu/async/internal/core"
 )
 
 // Task 表示一个可取消的异步任务。

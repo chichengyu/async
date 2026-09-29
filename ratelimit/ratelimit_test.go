@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chichengyu/async/core"
+	"github.com/chichengyu/async/internal/core"
 )
 
 // ==================== RateLimiter 基础测试 ====================

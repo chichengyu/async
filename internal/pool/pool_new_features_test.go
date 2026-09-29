@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chichengyu/async/core"
+	"github.com/chichengyu/async/internal/core"
 )
 
 // ==================== Pool 流式消费测试 ====================

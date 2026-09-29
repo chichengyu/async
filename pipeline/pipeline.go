@@ -30,8 +30,8 @@ import (
 	"runtime"
 	"sync"
 
-	"github.com/chichengyu/async/core"
-	"github.com/chichengyu/async/group"
+	"github.com/chichengyu/async/internal/core"
+	"github.com/chichengyu/async/internal/group"
 )
 
 // Stage 定义管道中的一个处理阶段。

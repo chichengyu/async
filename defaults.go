@@ -3,7 +3,7 @@ package async
 import (
 	"time"
 
-	"github.com/chichengyu/async/core"
+	"github.com/chichengyu/async/internal/core"
 )
 
 // ── 所有 Builder 和 Chain 的默认值统一从此处引用，确保单一来源 ──

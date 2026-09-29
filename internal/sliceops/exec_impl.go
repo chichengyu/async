@@ -11,9 +11,9 @@ import (
 	"runtime"
 	"sync"
 
-	"github.com/chichengyu/async/core"
-	"github.com/chichengyu/async/group"
-	"github.com/chichengyu/async/pool"
+	"github.com/chichengyu/async/internal/core"
+	"github.com/chichengyu/async/internal/group"
+	"github.com/chichengyu/async/internal/pool"
 )
 
 // ──────────────────────────── 统一 Map 执行器 ────────────────────────────

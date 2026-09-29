@@ -33,7 +33,7 @@ import (
 	"math"
 	"time"
 
-	"github.com/chichengyu/async/core"
+	"github.com/chichengyu/async/internal/core"
 )
 
 // RetryWithBackoff 使用指数退避策略执行 fn，最多执行 maxRetries+1 次。

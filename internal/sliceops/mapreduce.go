@@ -10,7 +10,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/chichengyu/async/core"
+	"github.com/chichengyu/async/internal/core"
 )
 
 // ──────────────────────────── 新 API：策略驱动 ────────────────────────────

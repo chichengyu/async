@@ -16,7 +16,7 @@ package sliceops
 import (
 	"context"
 
-	"github.com/chichengyu/async/core"
+	"github.com/chichengyu/async/internal/core"
 )
 
 // Runner 统一执行器，根据 Policy 策略分发到统一的执行引擎。

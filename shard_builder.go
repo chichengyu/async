@@ -4,8 +4,8 @@ import (
 	"context"
 	"time"
 
-	"github.com/chichengyu/async/core"
-	"github.com/chichengyu/async/shard"
+	"github.com/chichengyu/async/internal/core"
+	"github.com/chichengyu/async/internal/shard"
 )
 
 // ──────────────────────────── ShardedPool 分片池 ────────────────────────────
