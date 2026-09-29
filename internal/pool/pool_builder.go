@@ -25,6 +25,78 @@ func (b *PoolBuilder[T]) DefaultPoolConfig() *PoolBuilder[T] {
 	return b
 }
 
+// DefaultWorker 使用默认 worker 数量（GOMAXPROCS）。
+func (b *PoolBuilder[T]) DefaultWorker() *PoolBuilder[T] {
+	b.cfg.Size = core.IO()
+	return b
+}
+
+// DefaultTimeout 使用默认任务超时（不限时）。
+func (b *PoolBuilder[T]) DefaultTimeout() *PoolBuilder[T] {
+	b.cfg.Timeout = 0
+	return b
+}
+
+// DefaultSubmitTimeout 使用默认提交超时（不限时）。
+func (b *PoolBuilder[T]) DefaultSubmitTimeout() *PoolBuilder[T] {
+	b.cfg.SubmitTimeout = 0
+	return b
+}
+
+// DefaultFailFast 关闭快速失败模式（默认关闭）。
+func (b *PoolBuilder[T]) DefaultFailFast() *PoolBuilder[T] {
+	b.cfg.FailFast = false
+	return b
+}
+
+// DefaultMaxPending 使用默认最大待处理数（0=无限制）。
+func (b *PoolBuilder[T]) DefaultMaxPending() *PoolBuilder[T] {
+	b.cfg.MaxPending = 0
+	return b
+}
+
+// DefaultOverflow 使用默认溢出策略（OverflowDrop）。
+func (b *PoolBuilder[T]) DefaultOverflow() *PoolBuilder[T] {
+	b.cfg.Overflow = core.OverflowDrop
+	return b
+}
+
+// OverflowDrop 队列满时丢弃新任务（默认策略）。
+func (b *PoolBuilder[T]) OverflowDrop() *PoolBuilder[T] {
+	b.cfg.Overflow = core.OverflowDrop
+	return b
+}
+
+// OverflowBlock 队列满时阻塞等待空位。
+func (b *PoolBuilder[T]) OverflowBlock() *PoolBuilder[T] {
+	b.cfg.Overflow = core.OverflowBlock
+	return b
+}
+
+// OverflowError 队列满时返回错误。
+func (b *PoolBuilder[T]) OverflowError() *PoolBuilder[T] {
+	b.cfg.Overflow = core.OverflowError
+	return b
+}
+
+// DefaultRingBuf 使用默认环形缓冲容量（0=不启用）。
+func (b *PoolBuilder[T]) DefaultRingBuf() *PoolBuilder[T] {
+	b.cfg.RingBufCap = 0
+	return b
+}
+
+// DefaultMaxResults 使用默认最大结果数（0=无限制）。
+func (b *PoolBuilder[T]) DefaultMaxResults() *PoolBuilder[T] {
+	b.cfg.MaxResults = 0
+	return b
+}
+
+// DefaultStreaming 使用默认流式 buf 大小（0=无缓冲）。
+func (b *PoolBuilder[T]) DefaultStreaming() *PoolBuilder[T] {
+	b.cfg.Streaming = 0
+	return b
+}
+
 // Config 函数式配置，允许通过闭包修改 Config
 func (b *PoolBuilder[T]) Config(fn func(Config) Config) *PoolBuilder[T] {
 	b.cfg = fn(b.cfg)

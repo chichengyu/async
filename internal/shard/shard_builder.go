@@ -28,6 +28,42 @@ func (b *ShardPoolBuilder[T]) DefaultShardPoolConfig() *ShardPoolBuilder[T] {
 	return b
 }
 
+// DefaultShards 使用默认分片数（4）。
+func (b *ShardPoolBuilder[T]) DefaultShards() *ShardPoolBuilder[T] {
+	b.cfg.Shards = DefaultShardCount
+	return b
+}
+
+// DefaultWorker 使用默认每片 worker 数（GOMAXPROCS）。
+func (b *ShardPoolBuilder[T]) DefaultWorker() *ShardPoolBuilder[T] {
+	b.cfg.SizePerShard = DefaultSizePerShard
+	return b
+}
+
+// DefaultDistribution 使用默认分发策略（RoundRobin）。
+func (b *ShardPoolBuilder[T]) DefaultDistribution() *ShardPoolBuilder[T] {
+	b.cfg.Distribution = DefaultDistribution
+	return b
+}
+
+// DefaultTimeout 使用默认任务超时（不限时）。
+func (b *ShardPoolBuilder[T]) DefaultTimeout() *ShardPoolBuilder[T] {
+	b.cfg.PoolCfg.Timeout = 0
+	return b
+}
+
+// DefaultFailFast 关闭快速失败模式（默认关闭）。
+func (b *ShardPoolBuilder[T]) DefaultFailFast() *ShardPoolBuilder[T] {
+	b.cfg.PoolCfg.FailFast = false
+	return b
+}
+
+// DefaultMaxPending 使用默认最大待处理数（0=无限制）。
+func (b *ShardPoolBuilder[T]) DefaultMaxPending() *ShardPoolBuilder[T] {
+	b.cfg.PoolCfg.MaxPending = 0
+	return b
+}
+
 // Config 函数式配置，允许通过闭包修改 ShardPoolConfig
 func (b *ShardPoolBuilder[T]) Config(fn func(ShardPoolConfig[T]) ShardPoolConfig[T]) *ShardPoolBuilder[T] {
 	b.cfg = fn(b.cfg)

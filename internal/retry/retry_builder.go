@@ -205,6 +205,81 @@ func (c *RetryChain[T]) DefaultConfig() *RetryChain[T] {
 	return c
 }
 
+// DefaultMaxRetries 使用默认最大重试次数（3）。
+func (c *RetryChain[T]) DefaultMaxRetries() *RetryChain[T] {
+	c.maxRetries = 3
+	return c
+}
+
+// DefaultBackoff 使用默认退避参数：初始 100ms，最大 30s。
+func (c *RetryChain[T]) DefaultBackoff() *RetryChain[T] {
+	c.initialBackoff = 100 * time.Millisecond
+	c.maxBackoff = 30 * time.Second
+	return c
+}
+
+// DefaultPerCallTimeout 使用默认单次调用超时（不限时）。
+func (c *RetryChain[T]) DefaultPerCallTimeout() *RetryChain[T] {
+	c.perCallTimeout = 0
+	return c
+}
+
+// DefaultRate 使用默认限流速率（10/s）。
+func (c *RetryChain[T]) DefaultRate() *RetryChain[T] {
+	c.rlRate = 0
+	return c
+}
+
+// DefaultPer 使用默认限流时间窗口（1s）。
+func (c *RetryChain[T]) DefaultPer() *RetryChain[T] {
+	c.rlPer = 0
+	return c
+}
+
+// DefaultBurst 使用默认突发容量（0=不开启）。
+func (c *RetryChain[T]) DefaultBurst() *RetryChain[T] {
+	c.rlBurst = 0
+	return c
+}
+
+// DefaultCapacity 使用默认令牌桶容量（速率 × 2）。
+func (c *RetryChain[T]) DefaultCapacity() *RetryChain[T] {
+	c.tbCapacity = 0
+	return c
+}
+
+// DefaultLimit 使用默认滑动窗口限制（100）。
+func (c *RetryChain[T]) DefaultLimit() *RetryChain[T] {
+	c.swLimit = 0
+	return c
+}
+
+// DefaultWindow 使用默认滑动窗口大小（1s）。
+func (c *RetryChain[T]) DefaultWindow() *RetryChain[T] {
+	c.swWindow = 0
+	return c
+}
+
+// DefaultMinConcurrency 使用默认最小并发度（1）。
+func (c *RetryChain[T]) DefaultMinConcurrency() *RetryChain[T] {
+	c.adMinRate = 0
+	return c
+}
+
+// DefaultMaxConcurrency 使用默认最大并发度（最小并发度 × 10）。
+func (c *RetryChain[T]) DefaultMaxConcurrency() *RetryChain[T] {
+	c.adMaxRate = 0
+	return c
+}
+
+// DefaultShards 使用默认分片数（不启用分片模式）。
+func (c *RetryChain[T]) DefaultShards() *RetryChain[T] {
+	c.rlShards = 0
+	c.swShards = 0
+	c.adShards = 0
+	return c
+}
+
 // ──────────────────────── 模式一：RateLimiter ────────────────────────
 
 // RateLimiter 启用 RateLimiter 限流模式。每次重试前阻塞等待令牌，被限流时阻塞。

@@ -42,6 +42,24 @@ func (b *ShardedGroupBuilder[T]) DefaultShardedGroupConfig() *ShardedGroupBuilde
 	return b
 }
 
+// DefaultShards 使用默认分片数（4）。
+func (b *ShardedGroupBuilder[T]) DefaultShards() *ShardedGroupBuilder[T] {
+	b.cfg.Shards = DefaultShardCount
+	return b
+}
+
+// DefaultConcurrency 使用默认每分片并发度（GOMAXPROCS）。
+func (b *ShardedGroupBuilder[T]) DefaultConcurrency() *ShardedGroupBuilder[T] {
+	b.cfg.ConcurrencyPerShard = DefaultConcurrencyShard
+	return b
+}
+
+// DefaultDistribution 使用默认分发策略（RoundRobin）。
+func (b *ShardedGroupBuilder[T]) DefaultDistribution() *ShardedGroupBuilder[T] {
+	b.cfg.Distribution = DefaultDistribution
+	return b
+}
+
 // Config 函数式配置
 func (b *ShardedGroupBuilder[T]) Config(fn func(ShardGroupConfig[T]) ShardGroupConfig[T]) *ShardedGroupBuilder[T] {
 	b.cfg = fn(b.cfg)
