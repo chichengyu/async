@@ -421,7 +421,6 @@ func DisableNoResultAutoScale(nr *NoResult) {
 //	for _, r := range results {
 //	    fmt.Println(r.Value)
 //	}
-type PoolInstance[T any] = pool.Pool[T]
 
 // NoResultPool 无返回值协程池的别名。
 type NoResultPool = pool.Pool[struct{}]
@@ -449,19 +448,6 @@ func DataSlice[T any](items []T) *SliceData[T, T] {
 
 // ── MultiPool：Pool 水平分片，极限高并发 ──
 
-// MultiPool 将同一配置的 Pool 水平分片为 N 个实例，支持极限高并发（百万~千万 QPS）。
-// 通过 Pool.Shard() 创建，或使用 ShardPool() 便捷函数。
-//
-// 示例：
-//
-//	mp := async.NewPool[int](100).Shard(8) // 8 分片 × 100 worker = 800 worker
-//	defer mp.Close()
-//	for i := 0; i < 10_000_000; i++ {
-//	    mp.Submit(ctx, fn)
-//	}
-//	results := mp.Wait()
-type MultiPool[T any] = pool.MultiPool[T]
-
 // ShardPool 将 Pool 水平分片为 N 个实例的便捷函数。
 // 等价于 p.Shard(shards)。
 //
@@ -472,7 +458,7 @@ type MultiPool[T any] = pool.MultiPool[T]
 //	    WithOverflow(async.OverflowDrop)
 //	mp := async.ShardPool(p, 16)
 //	defer mp.Close()
-func ShardPool[T any](p *PoolInstance[T], shards int) *MultiPool[T] {
+func ShardPool[T any](p *pool.Pool[T], shards int) *pool.MultiPool[T] {
 	return p.Shard(shards)
 }
 
@@ -486,7 +472,7 @@ func ShardPool[T any](p *PoolInstance[T], shards int) *MultiPool[T] {
 //	    WithMaxPending(5000)
 //	mp := async.DefaultShardPool(p)
 //	defer mp.Close()
-func DefaultShardPool[T any](p *PoolInstance[T]) *MultiPool[T] {
+func DefaultShardPool[T any](p *pool.Pool[T]) *pool.MultiPool[T] {
 	return p.DefaultShard()
 }
 
@@ -496,7 +482,7 @@ func DefaultShardPool[T any](p *PoolInstance[T]) *MultiPool[T] {
 //
 // 示例：
 //
-//	err := async.WithPool(64, func(p *PoolInstance[int]) error {
+//	err := async.WithPool(64, func(p *pool.Pool[int]) error {
 //	    for _, item := range items {
 //	        p.Submit(ctx, func(ctx context.Context) (int, error) {
 //	            return process(item)
@@ -505,7 +491,7 @@ func DefaultShardPool[T any](p *PoolInstance[T]) *MultiPool[T] {
 //	    results := p.Wait()
 //	    return check(results)
 //	})
-func WithPool[T any](size int, fn func(p *PoolInstance[T]) error) error {
+func WithPool[T any](size int, fn func(p *pool.Pool[T]) error) error {
 	return pool.WithPool[T](size, fn)
 }
 
@@ -522,7 +508,7 @@ func WithPool[T any](size int, fn func(p *PoolInstance[T]) error) error {
 //	    results := mp.Wait()
 //	    return check(results)
 //	})
-func WithMultiPool[T any](size int, shards int, fn func(mp *MultiPool[T]) error) error {
+func WithMultiPool[T any](size int, shards int, fn func(mp *pool.MultiPool[T]) error) error {
 	return pool.WithMultiPool[T](size, shards, fn)
 }
 
@@ -544,21 +530,18 @@ var DefaultPoolConfig = pool.DefaultConfig
 // WithPoolCfg 使用 PoolConfig 创建协程池并执行 fn，fn 返回后自动 Close。
 //
 //	cfg := async.DefaultPoolConfig().WithSize(64).WithFailFast()
-//	err := async.WithPoolCfg[int](ctx, cfg, func(p *PoolInstance[int]) error {
+//	err := async.WithPoolCfg[int](ctx, cfg, func(p *pool.Pool[int]) error {
 //	    for _, item := range items {
 //	        p.Submit(p.Ctx(), func(ctx context.Context) (int, error) { return process(ctx, item) })
 //	    }
 //	    results := p.Wait()
 //	    return check(results)
 //	})
-func WithPoolCfg[T any](ctx context.Context, cfg PoolConfig, fn func(p *PoolInstance[T]) error) error {
+func WithPoolCfg[T any](ctx context.Context, cfg PoolConfig, fn func(p *pool.Pool[T]) error) error {
 	return pool.WithCfg[T](ctx, cfg, fn)
 }
 
 // ── 分片池（多实例水平扩展）──
-
-// ShardedPool 将任务分发到 N 个 Pool 实例的分片池。
-type ShardedPoolInstance[T any] = shard.ShardedPool[T]
 
 // ShardPoolConfig 分片池配置。
 type ShardPoolConfig[T any] = shard.ShardPoolConfig[T]
@@ -573,12 +556,12 @@ type ShardPoolConfig[T any] = shard.ShardPoolConfig[T]
 //	    Distribution: async.RoundRobin,
 //	})
 //	defer p.Close()
-func NewShardedPool[T any](cfg ShardPoolConfig[T]) *ShardedPoolInstance[T] {
+func NewShardedPool[T any](cfg ShardPoolConfig[T]) *shard.ShardedPool[T] {
 	return shard.NewShardedPool(cfg)
 }
 
 // DefaultShardedPool 使用默认配置创建分片池（4 分片、IO 并发度、RoundRobin）。
-func DefaultShardedPool[T any]() *ShardedPoolInstance[T] {
+func DefaultShardedPool[T any]() *shard.ShardedPool[T] {
 	return shard.DefaultShardedPool[T]()
 }
 
@@ -593,7 +576,7 @@ func DefaultShardedPool[T any]() *ShardedPoolInstance[T] {
 //
 //	// 4 个分片，每个使用默认 IO 并发度
 //	sp := async.NewShardedPoolSimple[int](4, 0)
-func NewShardedPoolSimple[T any](shards int, sizePerShard int) *ShardedPoolInstance[T] {
+func NewShardedPoolSimple[T any](shards int, sizePerShard int) *shard.ShardedPool[T] {
 	return shard.NewShardedPoolSimple[T](shards, sizePerShard)
 }
 
@@ -604,7 +587,7 @@ func NewShardedPoolSimple[T any](shards int, sizePerShard int) *ShardedPoolInsta
 //
 //	sp := async.DefaultShardedPoolWith[string](16) // 16 个分片
 //	defer sp.Close()
-func DefaultShardedPoolWith[T any](shards int) *ShardedPoolInstance[T] {
+func DefaultShardedPoolWith[T any](shards int) *shard.ShardedPool[T] {
 	return shard.DefaultShardedPoolWith[T](shards)
 }
 
@@ -623,7 +606,7 @@ func DefaultShardedPoolWith[T any](shards int) *ShardedPoolInstance[T] {
 //	sp := async.NewAutoScaleShardedPool[int](4, 8, &async.AutoScaleConfig{
 //	    MaxWorkers: 200,
 //	})
-func NewAutoScaleShardedPool[T any](shards int, initialSizePerShard int, config *AutoScaleConfig) *ShardedPoolInstance[T] {
+func NewAutoScaleShardedPool[T any](shards int, initialSizePerShard int, config *AutoScaleConfig) *shard.ShardedPool[T] {
 	return shard.NewAutoScaleShardedPool[T](shards, initialSizePerShard, config)
 }
 
@@ -640,7 +623,7 @@ func NewAutoScaleShardedPool[T any](shards int, initialSizePerShard int, config 
 //	    results := sp.Wait()
 //	    return check(results)
 //	})
-func WithShardedPool[T any](shards int, sizePerShard int, fn func(sp *ShardedPoolInstance[T]) error) error {
+func WithShardedPool[T any](shards int, sizePerShard int, fn func(sp *shard.ShardedPool[T]) error) error {
 	return shard.WithShardedPool[T](shards, sizePerShard, fn)
 }
 
@@ -670,50 +653,26 @@ func DefaultShardConfig[T any]() ShardPoolConfig[T] {
 //	    results := sp.Wait()
 //	    return check(results)
 //	})
-func WithShardedPoolCfg[T any](ctx context.Context, cfg ShardPoolConfig[T], fn func(sp *ShardedPoolInstance[T]) error) error {
+func WithShardedPoolCfg[T any](ctx context.Context, cfg ShardPoolConfig[T], fn func(sp *shard.ShardedPool[T]) error) error {
 	return shard.WithShardCfg[T](ctx, cfg, fn)
 }
 
 // ── 分片 Group（多实例水平扩展）──
 
-// ShardedGroup 将任务分发到 N 个 Group 实例的分片任务组。
-type ShardedGroup[T any] = shard.ShardedGroup[T]
-
 // ShardGroupConfig 分片 Group 配置。
 type ShardGroupConfig[T any] = shard.ShardGroupConfig[T]
 
 // NewShardedGroup 创建分片 Group。
-func NewShardedGroup[T any](cfg ShardGroupConfig[T]) *ShardedGroup[T] {
+func NewShardedGroup[T any](cfg ShardGroupConfig[T]) *shard.ShardedGroup[T] {
 	return shard.NewShardedGroup(cfg)
 }
 
 // DefaultShardedGroup 使用默认配置创建分片 Group（4 分片、IO 并发度、RoundRobin）。
-func DefaultShardedGroup[T any]() *ShardedGroup[T] {
+func DefaultShardedGroup[T any]() *shard.ShardedGroup[T] {
 	return shard.DefaultShardedGroup[T]()
 }
 
 // ── MultiGroup：Group 水平分片，极限高并发 ──
-
-// MultiGroup 将同一配置的 Group 水平分片为 N 个实例，支持极限高并发（百万~千万 QPS）。
-// 通过 Group.Shard() 创建，或使用 ShardGroup() 便捷函数。
-//
-// 每个分片独立运行，通过 round-robin 分发任务，互不影响；
-// 第一个分片复用当前 Group，其余自动克隆配置。
-//
-// 使用示例：
-//
-//	// 链式调用
-//	g, _ := async.NewGroup[int](50).
-//	    WithContext(ctx)
-//	mg := g.Shard(8)
-//	defer mg.Close()
-//
-//	mg.Go(ctx, fn)
-//	results := mg.Wait()
-//
-//	// 自动分片
-//	mg := async.NewGroup[int](50).DefaultShard()
-type MultiGroup[T any] = group.MultiGroup[T]
 
 // ShardGroup 将 Group 水平分片为 N 个实例的便捷函数。
 // 等效于 g.Shard(shards)。
@@ -723,7 +682,7 @@ type MultiGroup[T any] = group.MultiGroup[T]
 //	g, _ := async.NewGroup[int](50).WithCtx(ctx)
 //	mg := async.ShardGroup(g, 16)
 //	defer mg.Close()
-func ShardGroup[T any](g *Group[T], shards int) *MultiGroup[T] {
+func ShardGroup[T any](g *Group[T], shards int) *group.MultiGroup[T] {
 	return g.Shard(shards)
 }
 
@@ -736,7 +695,7 @@ func ShardGroup[T any](g *Group[T], shards int) *MultiGroup[T] {
 //	g, _ := async.NewGroup[int](50).WithCtx(ctx)
 //	mg := async.DefaultShardGroup(g)
 //	defer mg.Close()
-func DefaultShardGroup[T any](g *Group[T]) *MultiGroup[T] {
+func DefaultShardGroup[T any](g *Group[T]) *group.MultiGroup[T] {
 	return g.DefaultShard()
 }
 
@@ -757,7 +716,7 @@ func DefaultShardGroup[T any](g *Group[T]) *MultiGroup[T] {
 //	    _ = results
 //	    return nil
 //	})
-func WithMultiGroup[T any](concurrency int, shards int, fn func(mg *MultiGroup[T]) error) error {
+func WithMultiGroup[T any](concurrency int, shards int, fn func(mg *group.MultiGroup[T]) error) error {
 	return group.WithMultiGroup[T](concurrency, shards, fn)
 }
 
@@ -788,12 +747,12 @@ type SubmitResult = pool.SubmitResult
 //
 //	p := async.NewPool[string](8)
 //	defer p.Close()
-func NewPool[T any](size int) *PoolInstance[T] {
+func NewPool[T any](size int) *pool.Pool[T] {
 	return pool.NewPool[T](size)
 }
 
 // DefaultPool 使用默认 IO 并发度创建协程池。
-func DefaultPool[T any]() *PoolInstance[T] {
+func DefaultPool[T any]() *pool.Pool[T] {
 	return pool.DefaultPool[T]()
 }
 
@@ -839,7 +798,7 @@ type AutoScaleConfig = core.AutoScaleConfig
 //	    MaxWorkers: 200,
 //	    CheckInterval: 3 * time.Second,
 //	})
-func NewAutoScalePool[T any](initialSize int, config *core.AutoScaleConfig) *PoolInstance[T] {
+func NewAutoScalePool[T any](initialSize int, config *core.AutoScaleConfig) *pool.Pool[T] {
 	p := pool.NewPool[T](initialSize)
 	p.EnableAutoScale(config)
 	return p
@@ -1780,7 +1739,7 @@ func GoActionWithTimeout(p *NoResultPool, ctx context.Context, timeout time.Dura
 //	})
 //	defer p.Close()
 //	results := p.Wait()
-func Submit[T any](ctx context.Context, fn func(context.Context) (T, error)) (*PoolInstance[T], int, error) {
+func Submit[T any](ctx context.Context, fn func(context.Context) (T, error)) (*pool.Pool[T], int, error) {
 	return pool.Submit(ctx, fn)
 }
 
@@ -1796,7 +1755,7 @@ func Submit[T any](ctx context.Context, fn func(context.Context) (T, error)) (*P
 //	        log.Printf("提交失败 index=%d: %v", r.Index, r.Err)
 //	    }
 //	}
-func SubmitN[T any](ctx context.Context, fn func(context.Context) (T, error), n int) (*PoolInstance[T], []SubmitResult, error) {
+func SubmitN[T any](ctx context.Context, fn func(context.Context) (T, error), n int) (*pool.Pool[T], []SubmitResult, error) {
 	return pool.SubmitN(ctx, fn, n)
 }
 
@@ -1808,7 +1767,7 @@ func SubmitN[T any](ctx context.Context, fn func(context.Context) (T, error), n 
 //	// 初始化阶段：必须全部提交成功
 //	p, results := async.SubmitSafeN(ctx, initFn, 50)
 //	defer p.Close()
-func SubmitSafeN[T any](ctx context.Context, fn func(context.Context) (T, error), n int) (*PoolInstance[T], []SubmitResult) {
+func SubmitSafeN[T any](ctx context.Context, fn func(context.Context) (T, error), n int) (*pool.Pool[T], []SubmitResult) {
 	return pool.SubmitSafeN(ctx, fn, n)
 }
 
@@ -1824,7 +1783,7 @@ func SubmitSafeN[T any](ctx context.Context, fn func(context.Context) (T, error)
 //	for _, r := range results {
 //	    fmt.Printf("index=%d err=%v\n", r.Index, r.Err)
 //	}
-func SubmitBatch[T any, S ~[]E, E any](ctx context.Context, items S, fn func(context.Context, E) (T, error)) (*PoolInstance[T], []SubmitResult, error) {
+func SubmitBatch[T any, S ~[]E, E any](ctx context.Context, items S, fn func(context.Context, E) (T, error)) (*pool.Pool[T], []SubmitResult, error) {
 	return pool.SubmitBatch(ctx, items, fn)
 }
 
@@ -1843,7 +1802,7 @@ func SubmitBatch[T any, S ~[]E, E any](ctx context.Context, items S, fn func(con
 //	        fmt.Println(r.Value)
 //	    }
 //	}
-func MapPool[T any, R any](ctx context.Context, items []T, fn func(context.Context, T) (R, error), concurrency int) (*PoolInstance[R], []core.Result[R], error) {
+func MapPool[T any, R any](ctx context.Context, items []T, fn func(context.Context, T) (R, error), concurrency int) (*pool.Pool[R], []core.Result[R], error) {
 	return pool.MapPool(ctx, items, fn, concurrency)
 }
 
