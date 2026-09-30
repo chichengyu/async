@@ -14,6 +14,7 @@ type MultiPoolBuilder[T any] struct {
 	ctx    context.Context // 请求上下文，自动注入 trace_id
 	cfg    Config          // 协程池配置
 	shards int             // 水平分片数
+	extP   *Pool[T]        // 外部注入的协程池（非 nil 时跳过内部创建）
 }
 
 // NewMultiBuilder 创建分片协程池构造器，内部自动注入 trace_id。
@@ -188,32 +189,60 @@ func (b *MultiPoolBuilder[T]) Streaming(buf int) *MultiPoolBuilder[T] {
 	return b
 }
 
-// Run 终端方法：创建 Pool → 应用配置 → 分片 → 执行 fn → Close 所有分片。
+// Pool 注入外部协程池，MultiPool 使用该池进行分片。
+// 注入后 Worker/Timeout 等配置方法不再生效。
+// 外部池生命周期由 Run 接管：外部池成为 shard[0]，defer mp.Close() 会同时关闭它。
+// 调用方不得在 Run 之后再使用该池。
+//
+// 示例：
+//
+//	myPool := pool.New[string](8).WithTimeout(5 * time.Second)
+//	async.MultiPool[string](ctx).Pool(myPool).Shards(4).Run(func(ctx context.Context, mp *pool.MultiPool[string]) error {
+//	    mp.Submit(ctx, fn)
+//	    return nil
+//	})
+func (b *MultiPoolBuilder[T]) Pool(p *Pool[T]) *MultiPoolBuilder[T] {
+	b.extP = p
+	return b
+}
+
+// DefaultPool 恢复为内部自动创建协程池（默认行为）。
+func (b *MultiPoolBuilder[T]) DefaultPool() *MultiPoolBuilder[T] {
+	b.extP = nil
+	return b
+}
+
+// Run 终端方法：创建 Pool（或使用外部注入的 Pool）→ 应用配置 → 分片 → 执行 fn → Close 所有分片。
 func (b *MultiPoolBuilder[T]) Run(fn func(ctx context.Context, mp *MultiPool[T]) error) error {
-	p := NewPool[T](b.cfg.Size)
-	if b.cfg.Timeout > 0 {
-		p.WithTimeout(b.cfg.Timeout)
-	}
-	if b.cfg.FailFast {
-		p.WithFailFast(b.ctx)
-	}
-	if b.cfg.SubmitTimeout > 0 {
-		p.WithSubmitTimeout(b.cfg.SubmitTimeout)
-	}
-	if b.cfg.MaxPending > 0 {
-		p.WithMaxPending(b.cfg.MaxPending)
-	}
-	if b.cfg.Overflow != 0 {
-		p.WithOverflow(b.cfg.Overflow)
-	}
-	if b.cfg.RingBufCap > 0 {
-		p.WithRingBuffer(b.cfg.RingBufCap, core.GetDefaultOverflowStrategy())
-	}
-	if b.cfg.MaxResults >= 0 {
-		p.WithMaxResults(b.cfg.MaxResults)
-	}
-	if b.cfg.Streaming > 0 {
-		p.WithStreaming(b.cfg.Streaming)
+	var p *Pool[T]
+	if b.extP != nil {
+		p = b.extP
+	} else {
+		p = NewPool[T](b.cfg.Size)
+		if b.cfg.Timeout > 0 {
+			p.WithTimeout(b.cfg.Timeout)
+		}
+		if b.cfg.FailFast {
+			p.WithFailFast(b.ctx)
+		}
+		if b.cfg.SubmitTimeout > 0 {
+			p.WithSubmitTimeout(b.cfg.SubmitTimeout)
+		}
+		if b.cfg.MaxPending > 0 {
+			p.WithMaxPending(b.cfg.MaxPending)
+		}
+		if b.cfg.Overflow != 0 {
+			p.WithOverflow(b.cfg.Overflow)
+		}
+		if b.cfg.RingBufCap > 0 {
+			p.WithRingBuffer(b.cfg.RingBufCap, core.GetDefaultOverflowStrategy())
+		}
+		if b.cfg.MaxResults >= 0 {
+			p.WithMaxResults(b.cfg.MaxResults)
+		}
+		if b.cfg.Streaming > 0 {
+			p.WithStreaming(b.cfg.Streaming)
+		}
 	}
 	mp := p.Shard(b.shards)
 	defer mp.Close()
