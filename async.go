@@ -32,13 +32,13 @@ import (
 
 	"github.com/chichengyu/async/internal/core"
 	"github.com/chichengyu/async/internal/group"
+	"github.com/chichengyu/async/internal/pipeline"
 	"github.com/chichengyu/async/internal/pool"
 	"github.com/chichengyu/async/internal/ratelimit"
 	"github.com/chichengyu/async/internal/retry"
 	"github.com/chichengyu/async/internal/shard"
 	"github.com/chichengyu/async/internal/sliceops"
 	"github.com/chichengyu/async/internal/task"
-	"github.com/chichengyu/async/pipeline"
 )
 
 // ──────────────────────────── core 重导出 ────────────────────────────
@@ -739,9 +739,18 @@ type PipelineBuilder[T any] = pipeline.PipelineBuilder[T]
 
 // Pipeline 创建管道链式构建器，统一入口。
 // 通过 .Context(ctx) 设置上下文，.Run(fn) / .Execute(fn) 执行管道。
+// 通过 .Serial() / .Parallel() 切换串行/并行模式。
 func Pipeline[T any](items []T) *PipelineBuilder[T] {
 	return pipeline.NewPipelineBuilder[T](items)
 }
+
+// SerialChain 串行管道构建器，由 PipelineBuilder.Serial() 创建。
+// 拥有公共方法（Stage/Timeout/FailFast 等）和终端方法，不暴露并行专属配置。
+type SerialChain[T any] = pipeline.SerialChain[T]
+
+// ParallelChain 并行管道构建器，由 PipelineBuilder.Parallel() 创建。
+// 在公共方法基础上额外暴露 Pool/Shard/AutoScale/Worker 等并行专属配置。
+type ParallelChain[T any] = pipeline.ParallelChain[T]
 
 // ── ParallelPipeline：链式分片管道 ──
 
