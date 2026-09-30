@@ -3,7 +3,6 @@ package retry
 import (
 	"context"
 	"errors"
-	"math/rand"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -12,7 +11,31 @@ import (
 
 var errRetry = errors.New("retry test error")
 
-// ==================== 指数退避测试 ====================
+// ============================================================
+// 共享工具：四档数据量（万/十万/百万/千万），short 跳过
+// ============================================================
+
+type tier struct {
+	name string
+	size int
+}
+
+var allTiers = []tier{
+	{"万级_10K", 10_000},
+	{"十万级_100K", 100_000},
+	{"百万级_1M", 1_000_000},
+	{"千万级_10M", 10_000_000},
+}
+
+func skipIfTooLarge(t *testing.T, size int) {
+	if testing.Short() && size >= 100_000 {
+		t.Skip("short mode: skip large scale test")
+	}
+}
+
+// ============================================================
+// 一、指数退避基础测试
+// ============================================================
 
 func TestRetryWithBackoff_Success(t *testing.T) {
 	ctx := context.Background()
@@ -48,6 +71,25 @@ func TestRetryWithBackoff_RetryThenSuccess(t *testing.T) {
 	}
 }
 
+func TestRetryWithBackoff_Void(t *testing.T) {
+	var attempts int32
+	ctx := context.Background()
+	err := RetryWithBackoffVoid(ctx, func(ctx context.Context) error {
+		attempts++
+		if attempts < 3 {
+			return errRetry
+		}
+		return nil
+	}, 5, 10*time.Millisecond, 100*time.Millisecond)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// ============================================================
+// 二、边界 & 错误场景
+// ============================================================
+
 func TestRetryWithBackoff_Exhausted(t *testing.T) {
 	ctx := context.Background()
 	_, err := RetryWithBackoff(ctx, func(ctx context.Context) (int, error) {
@@ -82,6 +124,16 @@ func TestRetryWithBackoff_PanicRecovery(t *testing.T) {
 	}
 }
 
+func TestRetryWithBackoffVoid_Panic(t *testing.T) {
+	ctx := context.Background()
+	err := RetryWithBackoffVoid(ctx, func(ctx context.Context) error {
+		panic("void panic")
+	}, 1, 10*time.Millisecond, 100*time.Millisecond)
+	if err == nil {
+		t.Fatal("expected panic error")
+	}
+}
+
 func TestRetryWithBackoff_ZeroBackoff(t *testing.T) {
 	ctx := context.Background()
 	var attempts int
@@ -97,34 +149,9 @@ func TestRetryWithBackoff_ZeroBackoff(t *testing.T) {
 	}
 }
 
-// ==================== Void 测试 ====================
-
-func TestRetryWithBackoffVoid_Success(t *testing.T) {
-	ctx := context.Background()
-	err := RetryWithBackoffVoid(ctx, func(ctx context.Context) error {
-		return nil
-	}, 3, 10*time.Millisecond, 100*time.Millisecond)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestRetryWithBackoffVoid_Retry(t *testing.T) {
-	ctx := context.Background()
-	var attempts int32
-	err := RetryWithBackoffVoid(ctx, func(ctx context.Context) error {
-		attempts++
-		if attempts < 3 {
-			return errRetry
-		}
-		return nil
-	}, 5, 10*time.Millisecond, 100*time.Millisecond)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-// ==================== 线性退避测试 ====================
+// ============================================================
+// 三、线性退避测试
+// ============================================================
 
 func TestRetryWithLinearBackoff_Success(t *testing.T) {
 	ctx := context.Background()
@@ -164,7 +191,9 @@ func TestRetryWithLinearBackoffVoid_Panic(t *testing.T) {
 	}
 }
 
-// ==================== 可配置重试测试 ====================
+// ============================================================
+// 四、可配置重试 (WithConfig) 测试
+// ============================================================
 
 func TestRetryWithConfig_Success(t *testing.T) {
 	ctx := context.Background()
@@ -189,7 +218,9 @@ func TestRetryWithConfigVoid(t *testing.T) {
 	}
 }
 
-// ==================== 超时/截止时间包装测试 ====================
+// ============================================================
+// 五、超时/截止时间包装测试
+// ============================================================
 
 func TestWithTimeout_Success(t *testing.T) {
 	ctx := context.Background()
@@ -233,7 +264,9 @@ func TestWithDeadline(t *testing.T) {
 	}
 }
 
-// ==================== 函数式重试测试 ====================
+// ============================================================
+// 六、函数式 RetryFn 测试
+// ============================================================
 
 func TestRetryFn_WithRetry(t *testing.T) {
 	var attempts int32
@@ -258,125 +291,192 @@ func TestRetryFn_Exhausted(t *testing.T) {
 	}
 }
 
-// ==================== 高并发极限压力测试 ====================
+// ============================================================
+// 七、四档并发压力测试（万/十万/百万/千万）
+// ============================================================
 
-func TestRetryWithBackoff_50K_Concurrent(t *testing.T) {
-	var wg sync.WaitGroup
-	n := 50000
-	var success, fail atomic.Int64
-	wg.Add(n)
-	for i := 0; i < n; i++ {
-		go func(i int) {
-			defer wg.Done()
-			ctx := context.Background()
-			_, err := RetryWithBackoff(ctx, func(ctx context.Context) (int, error) {
-				if i%5 == 0 {
-					return 0, errRetry
-				}
-				return i, nil
-			}, 2, time.Millisecond, 10*time.Millisecond)
-			if err != nil {
-				fail.Add(1)
-			} else {
-				success.Add(1)
+func TestRetry_Backoff_Concurrent(t *testing.T) {
+	for _, tier := range allTiers {
+		t.Run(tier.name, func(t *testing.T) {
+			skipIfTooLarge(t, tier.size)
+
+			var wg sync.WaitGroup
+			var success, fail atomic.Int64
+			wg.Add(tier.size)
+			for i := 0; i < tier.size; i++ {
+				go func(i int) {
+					defer wg.Done()
+					ctx := context.Background()
+					_, err := RetryWithBackoff(ctx, func(ctx context.Context) (int, error) {
+						if i%5 == 0 {
+							return 0, errRetry
+						}
+						return i, nil
+					}, 2, time.Millisecond, 10*time.Millisecond)
+					if err != nil {
+						fail.Add(1)
+					} else {
+						success.Add(1)
+					}
+				}(i)
 			}
-		}(i)
-	}
-	wg.Wait()
-	if success.Load()+fail.Load() != int64(n) {
-		t.Fatalf("total mismatch: %d+%d != %d", success.Load(), fail.Load(), n)
-	}
-	t.Logf("50K: success=%d, fail=%d", success.Load(), fail.Load())
-}
-
-func TestRetryWithBackoff_TimedCancellation_10K(t *testing.T) {
-	var wg sync.WaitGroup
-	n := 10000
-	wg.Add(n)
-	for i := 0; i < n; i++ {
-		go func() {
-			defer wg.Done()
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Millisecond)
-			defer cancel()
-			_, _ = RetryWithBackoff(ctx, func(ctx context.Context) (int, error) {
-				return 0, errRetry
-			}, 10, 10*time.Millisecond, 100*time.Millisecond)
-		}()
-	}
-	wg.Wait()
-}
-
-func TestRetryWithLinearBackoff_100K_Concurrent(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping 100K in short mode")
-	}
-	var wg sync.WaitGroup
-	n := 100000
-	var total atomic.Int64
-	wg.Add(n)
-	for i := 0; i < n; i++ {
-		go func() {
-			defer wg.Done()
-			ctx := context.Background()
-			_, _ = RetryWithLinearBackoff(ctx, func(ctx context.Context) (int, error) {
-				return 1, nil
-			}, 1, time.Microsecond)
-			total.Add(1)
-		}()
-	}
-	wg.Wait()
-	if total.Load() != int64(n) {
-		t.Fatalf("expected %d, got %d", n, total.Load())
+			wg.Wait()
+			total := success.Load() + fail.Load()
+			if total != int64(tier.size) {
+				t.Fatalf("total mismatch: %d != %d", total, tier.size)
+			}
+		})
 	}
 }
 
-func TestRetryFn_50K_Simple(t *testing.T) {
-	var wg sync.WaitGroup
-	n := 50000
-	wg.Add(n)
-	for i := 0; i < n; i++ {
-		go func() {
-			defer wg.Done()
-			_ = RetryFn(func() error { return nil }).WithRetry(1)
-		}()
+func TestRetry_LinearBackoff_Concurrent(t *testing.T) {
+	for _, tier := range allTiers {
+		t.Run(tier.name, func(t *testing.T) {
+			skipIfTooLarge(t, tier.size)
+
+			var wg sync.WaitGroup
+			var total atomic.Int64
+			wg.Add(tier.size)
+			for i := 0; i < tier.size; i++ {
+				go func() {
+					defer wg.Done()
+					ctx := context.Background()
+					_, _ = RetryWithLinearBackoff(ctx, func(ctx context.Context) (int, error) {
+						return 1, nil
+					}, 1, time.Microsecond)
+					total.Add(1)
+				}()
+			}
+			wg.Wait()
+			if total.Load() != int64(tier.size) {
+				t.Fatalf("expected %d, got %d", tier.size, total.Load())
+			}
+		})
 	}
-	wg.Wait()
 }
 
-func TestRetryWithConfig_Concurrent_10K(t *testing.T) {
-	var wg sync.WaitGroup
-	n := 10000
-	wg.Add(n)
-	for i := 0; i < n; i++ {
-		go func() {
-			defer wg.Done()
-			ctx := context.Background()
-			backoff := time.Duration(rand.Intn(20)+1) * time.Millisecond
-			maxBackoff := time.Duration(rand.Intn(100)+10) * time.Millisecond
-			_, _ = RetryWithConfig(ctx, func(ctx context.Context) (int, error) {
-				return 1, nil
-			}, 2, backoff, maxBackoff)
-		}()
+func TestRetryFn_Concurrent(t *testing.T) {
+	for _, tier := range allTiers {
+		t.Run(tier.name, func(t *testing.T) {
+			skipIfTooLarge(t, tier.size)
+
+			var wg sync.WaitGroup
+			wg.Add(tier.size)
+			for i := 0; i < tier.size; i++ {
+				go func() {
+					defer wg.Done()
+					_ = RetryFn(func() error { return nil }).WithRetry(1)
+				}()
+			}
+			wg.Wait()
+		})
 	}
-	wg.Wait()
 }
 
-func TestRetryFn_BindRetryToWorker_10K(t *testing.T) {
-	t.Skip("BindRetryToWorker requires a WorkerPoolBackend")
+func TestRetry_TimedCancellation_Concurrent(t *testing.T) {
+	for _, tier := range allTiers {
+		t.Run(tier.name, func(t *testing.T) {
+			skipIfTooLarge(t, tier.size)
+
+			var wg sync.WaitGroup
+			wg.Add(tier.size)
+			for i := 0; i < tier.size; i++ {
+				go func() {
+					defer wg.Done()
+					ctx, cancel := context.WithTimeout(context.Background(), 5*time.Millisecond)
+					defer cancel()
+					_, _ = RetryWithBackoff(ctx, func(ctx context.Context) (int, error) {
+						return 0, errRetry
+					}, 10, 10*time.Millisecond, 100*time.Millisecond)
+				}()
+			}
+			wg.Wait()
+		})
+	}
 }
 
-func TestWithTimeout_Stress_10K(t *testing.T) {
-	var wg sync.WaitGroup
-	n := 10000
-	wg.Add(n)
-	for i := 0; i < n; i++ {
-		go func() {
-			defer wg.Done()
-			ctx := context.Background()
-			_, _ = WithTimeout(ctx, time.Second, func(ctx context.Context) (int, error) {
-				return 1, nil
-			})
-		}()
+func TestRetry_WithConfig_Concurrent(t *testing.T) {
+	for _, tier := range allTiers {
+		t.Run(tier.name, func(t *testing.T) {
+			skipIfTooLarge(t, tier.size)
+
+			var wg sync.WaitGroup
+			wg.Add(tier.size)
+			for i := 0; i < tier.size; i++ {
+				go func() {
+					defer wg.Done()
+					ctx := context.Background()
+					_, _ = RetryWithConfig(ctx, func(ctx context.Context) (int, error) {
+						return 1, nil
+					}, 2, time.Millisecond, 10*time.Millisecond)
+				}()
+			}
+			wg.Wait()
+		})
 	}
-	wg.Wait()
+}
+
+func TestRetry_WithTimeout_Concurrent(t *testing.T) {
+	for _, tier := range allTiers {
+		t.Run(tier.name, func(t *testing.T) {
+			skipIfTooLarge(t, tier.size)
+
+			var wg sync.WaitGroup
+			wg.Add(tier.size)
+			for i := 0; i < tier.size; i++ {
+				go func() {
+					defer wg.Done()
+					ctx := context.Background()
+					_, _ = WithTimeout(ctx, time.Second, func(ctx context.Context) (int, error) {
+						return 1, nil
+					})
+				}()
+			}
+			wg.Wait()
+		})
+	}
+}
+
+// ============================================================
+// 八、Race 竞态测试
+// ============================================================
+
+func TestRace_Retry_Backoff_CancelRace(t *testing.T) {
+	for round := 0; round < 10; round++ {
+		var wg sync.WaitGroup
+		n := 5000
+		wg.Add(n)
+		for i := 0; i < n; i++ {
+			go func() {
+				defer wg.Done()
+				ctx, cancel := context.WithCancel(context.Background())
+				go func() {
+					time.Sleep(100 * time.Microsecond)
+					cancel()
+				}()
+				_, _ = RetryWithBackoff(ctx, func(ctx context.Context) (int, error) {
+					return 0, errRetry
+				}, 5, time.Millisecond, 50*time.Millisecond)
+			}()
+		}
+		wg.Wait()
+	}
+}
+
+func TestRace_RetryWithConfig_BackoffRace(t *testing.T) {
+	for round := 0; round < 10; round++ {
+		var wg sync.WaitGroup
+		n := 5000
+		wg.Add(n)
+		for i := 0; i < n; i++ {
+			go func() {
+				defer wg.Done()
+				ctx := context.Background()
+				_, _ = RetryWithConfig(ctx, func(ctx context.Context) (int, error) {
+					return 1, nil
+				}, 3, time.Microsecond, time.Millisecond)
+			}()
+		}
+		wg.Wait()
+	}
 }

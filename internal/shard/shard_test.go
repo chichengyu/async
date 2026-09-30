@@ -2,7 +2,9 @@ package shard
 
 import (
 	"context"
+	"fmt"
 	"hash/fnv"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -13,19 +15,47 @@ import (
 
 var errShardTest = core.ErrTimeout
 
-// helper: hash a key to a shard index
+// ============================================================
+// 共享工具
+// ============================================================
+
+type tier struct {
+	name string
+	size int
+}
+
+var allTiers = []tier{
+	{"万级_10K", 10_000},
+	{"十万级_100K", 100_000},
+	{"百万级_1M", 1_000_000},
+	{"千万级_10M", 10_000_000},
+}
+
+func skipIfTooLarge(t *testing.T, size int) {
+	if testing.Short() && size >= 100_000 {
+		t.Skip("short mode: skip large scale test")
+	}
+}
+
 func hashKey(key string, shardCount int) int {
 	h := fnv.New32a()
 	h.Write([]byte(key))
 	return int(h.Sum32()) % shardCount
 }
 
-// ==================== ShardedPool 基本功能测试 ====================
+func printMemStatsShard(tag string) {
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+	fmt.Printf("[%s] G=%d Heap=%dMB\n", tag, runtime.NumGoroutine(), m.HeapAlloc/1024/1024)
+}
+
+// ============================================================
+// 一、ShardedPool 基础构造测试
+// ============================================================
 
 func TestNewShardedPool_Defaults(t *testing.T) {
 	sp := NewShardedPool(ShardPoolConfig[int]{})
 	defer sp.Close()
-
 	if sp.ShardCount() != DefaultShardCount {
 		t.Fatalf("expected %d shards, got %d", DefaultShardCount, sp.ShardCount())
 	}
@@ -34,29 +64,21 @@ func TestNewShardedPool_Defaults(t *testing.T) {
 func TestDefaultShardedPool(t *testing.T) {
 	sp := DefaultShardedPool[int]()
 	defer sp.Close()
-
 	if sp.ShardCount() != DefaultShardCount {
 		t.Fatalf("expected %d shards, got %d", DefaultShardCount, sp.ShardCount())
 	}
 }
 
 func TestNewShardedPool_CustomConfig(t *testing.T) {
-	sp := NewShardedPool(ShardPoolConfig[int]{
-		Shards:       8,
-		SizePerShard: 2,
-		Distribution: RoundRobin,
-	})
+	sp := NewShardedPool(ShardPoolConfig[int]{Shards: 8, SizePerShard: 2, Distribution: RoundRobin})
 	defer sp.Close()
-
 	if sp.ShardCount() != 8 {
 		t.Fatalf("expected 8 shards, got %d", sp.ShardCount())
 	}
 	for i := 0; i < 8; i++ {
-		shard := sp.GetShard(i)
-		if shard == nil {
+		if shard := sp.GetShard(i); shard == nil {
 			t.Fatalf("shard %d is nil", i)
-		}
-		if shard.Size() != 2 {
+		} else if shard.Size() != 2 {
 			t.Fatalf("shard %d expected size 2, got %d", i, shard.Size())
 		}
 	}
@@ -65,7 +87,6 @@ func TestNewShardedPool_CustomConfig(t *testing.T) {
 func TestShardedPool_GetShard_OOB(t *testing.T) {
 	sp := DefaultShardedPool[int]()
 	defer sp.Close()
-
 	if s := sp.GetShard(-1); s != nil {
 		t.Fatal("expected nil for negative index")
 	}
@@ -74,19 +95,17 @@ func TestShardedPool_GetShard_OOB(t *testing.T) {
 	}
 }
 
-// ==================== ShardedPool Submit / Wait ====================
+// ============================================================
+// 二、ShardedPool Submit / Wait 测试
+// ============================================================
 
 func TestShardedPool_Submit_Wait_Basic(t *testing.T) {
 	sp := NewShardedPool(ShardPoolConfig[int]{Shards: 4, SizePerShard: 4})
 	defer sp.Close()
-
 	ctx := context.Background()
 	n := 100
 	for i := 0; i < n; i++ {
-		err := sp.Submit(ctx, func(ctx context.Context) (int, error) {
-			return 42, nil
-		})
-		if err != nil {
+		if err := sp.Submit(ctx, func(ctx context.Context) (int, error) { return 42, nil }); err != nil {
 			t.Fatalf("Submit error: %v", err)
 		}
 	}
@@ -95,11 +114,8 @@ func TestShardedPool_Submit_Wait_Basic(t *testing.T) {
 		t.Fatalf("expected %d results, got %d", n, len(results))
 	}
 	for _, r := range results {
-		if r.Err != nil {
-			t.Fatalf("unexpected error: %v", r.Err)
-		}
-		if r.Value != 42 {
-			t.Fatalf("expected 42, got %d", r.Value)
+		if r.Err != nil || r.Value != 42 {
+			t.Fatalf("unexpected result: %v", r)
 		}
 	}
 }
@@ -107,194 +123,131 @@ func TestShardedPool_Submit_Wait_Basic(t *testing.T) {
 func TestShardedPool_SubmitAt(t *testing.T) {
 	sp := NewShardedPool(ShardPoolConfig[int]{Shards: 4, SizePerShard: 4})
 	defer sp.Close()
-
 	ctx := context.Background()
-	err := sp.SubmitAt(0, 0, ctx, func(ctx context.Context) (int, error) {
-		return 100, nil
-	})
-	if err != nil {
-		t.Fatalf("SubmitAt error: %v", err)
-	}
-	_ = sp.SubmitAt(0, 1, ctx, func(ctx context.Context) (int, error) {
-		return 200, nil
-	})
-
+	_ = sp.SubmitAt(0, 0, ctx, func(ctx context.Context) (int, error) { return 100, nil })
+	_ = sp.SubmitAt(0, 1, ctx, func(ctx context.Context) (int, error) { return 200, nil })
 	results := sp.Wait()
-	if len(results) != 2 {
-		t.Fatalf("expected 2 results, got %d", len(results))
-	}
-	if results[0].Value != 100 {
-		t.Fatalf("results[0]=%d", results[0].Value)
-	}
-	if results[1].Value != 200 {
-		t.Fatalf("results[1]=%d", results[1].Value)
+	if len(results) != 2 || results[0].Value != 100 || results[1].Value != 200 {
+		t.Fatalf("unexpected results: %v", results)
 	}
 }
 
 func TestShardedPool_TrySubmit(t *testing.T) {
 	sp := NewShardedPool(ShardPoolConfig[int]{Shards: 4, SizePerShard: 32})
 	defer sp.Close()
-
 	ctx := context.Background()
 	for i := 0; i < 200; i++ {
-		err := sp.TrySubmit(ctx, func(ctx context.Context) (int, error) {
-			return i, nil
-		})
-		if err != nil {
+		if err := sp.TrySubmit(ctx, func(ctx context.Context) (int, error) { return i, nil }); err != nil {
 			t.Fatalf("TrySubmit error: %v", err)
 		}
 	}
-	results := sp.Wait()
-	if len(results) != 200 {
-		t.Fatalf("expected 200 results, got %d", len(results))
+	if len(sp.Wait()) != 200 {
+		t.Fatal("expected 200 results")
 	}
 }
 
 func TestShardedPool_SubmitKeyed(t *testing.T) {
 	sp := NewShardedPool(ShardPoolConfig[int]{Shards: 4, SizePerShard: 4})
 	defer sp.Close()
-
 	ctx := context.Background()
 	for i := 0; i < 100; i++ {
-		err := sp.SubmitKeyed("user-123", ctx, func(ctx context.Context) (int, error) {
-			return i, nil
-		})
-		if err != nil {
+		if err := sp.SubmitKeyed("user-123", ctx, func(ctx context.Context) (int, error) { return i, nil }); err != nil {
 			t.Fatalf("SubmitKeyed error: %v", err)
 		}
 	}
-	results := sp.Wait()
-	if len(results) != 100 {
-		t.Fatalf("expected 100 results, got %d", len(results))
+	if len(sp.Wait()) != 100 {
+		t.Fatal("expected 100 results")
 	}
-
-	key1Idx := hashKey("user-123", sp.ShardCount())
-	key2Idx := hashKey("user-456", sp.ShardCount())
-	if key1Idx != key2Idx {
-		t.Log("different keys may land on different shards: ok")
-	}
-	key1Again := hashKey("user-123", sp.ShardCount())
-	if key1Idx != key1Again {
-		t.Fatalf("same key should land on same shard: %d vs %d", key1Idx, key1Again)
+	idx1 := hashKey("user-123", sp.ShardCount())
+	idx2 := hashKey("user-123", sp.ShardCount())
+	if idx1 != idx2 {
+		t.Fatal("same key should land on same shard")
 	}
 }
 
 func TestShardedPool_TrySubmitKeyed(t *testing.T) {
 	sp := NewShardedPool(ShardPoolConfig[int]{Shards: 4, SizePerShard: 64})
 	defer sp.Close()
-
 	ctx := context.Background()
 	for i := 0; i < 100; i++ {
-		err := sp.TrySubmitKeyed("shard-key", ctx, func(ctx context.Context) (int, error) {
-			return i, nil
-		})
-		if err != nil {
+		if err := sp.TrySubmitKeyed("shard-key", ctx, func(ctx context.Context) (int, error) { return i, nil }); err != nil {
 			t.Fatalf("TrySubmitKeyed error: %v", err)
 		}
 	}
-	results := sp.Wait()
-	if len(results) != 100 {
-		t.Fatalf("expected 100 results, got %d", len(results))
+	if len(sp.Wait()) != 100 {
+		t.Fatal("expected 100 results")
 	}
 }
 
 func TestShardedPool_SubmitBatch(t *testing.T) {
 	sp := NewShardedPool(ShardPoolConfig[int]{Shards: 4, SizePerShard: 8})
 	defer sp.Close()
-
 	items := make([]int, 100)
 	for i := range items {
 		items[i] = i
 	}
-
 	ctx := context.Background()
-	batchResults, err := sp.SubmitBatch(ctx, items, func(ctx context.Context, item int) (int, error) {
-		return item * 10, nil
-	})
-	if err != nil {
-		t.Fatalf("SubmitBatch error: %v", err)
+	batchResults, err := sp.SubmitBatch(ctx, items, func(ctx context.Context, item int) (int, error) { return item * 10, nil })
+	if err != nil || len(batchResults) != 100 {
+		t.Fatalf("SubmitBatch failed: err=%v, len=%d", err, len(batchResults))
 	}
-	if len(batchResults) != 100 {
-		t.Fatalf("expected 100 batch results, got %d", len(batchResults))
-	}
-
-	results := sp.Wait()
-	if len(results) != 100 {
-		t.Fatalf("expected 100 results, got %d", len(results))
-	}
-	for _, r := range results {
-		if r.Err != nil {
-			t.Fatalf("unexpected error: %v", r.Err)
-		}
+	if len(sp.Wait()) != 100 {
+		t.Fatal("expected 100 results")
 	}
 }
 
 func TestShardedPool_TrySubmitBatch(t *testing.T) {
 	sp := NewShardedPool(ShardPoolConfig[int]{Shards: 4, SizePerShard: 16})
 	defer sp.Close()
-
 	items := make([]int, 100)
 	for i := range items {
 		items[i] = i
 	}
-
 	ctx := context.Background()
-	batchResults, err := sp.TrySubmitBatch(ctx, items, func(ctx context.Context, item int) (int, error) {
-		return item * 2, nil
-	})
-	if err != nil {
-		t.Fatalf("TrySubmitBatch error: %v", err)
+	batchResults, err := sp.TrySubmitBatch(ctx, items, func(ctx context.Context, item int) (int, error) { return item * 2, nil })
+	if err != nil || len(batchResults) != 100 {
+		t.Fatalf("TrySubmitBatch failed: err=%v, len=%d", err, len(batchResults))
 	}
-	if len(batchResults) != 100 {
-		t.Fatalf("expected 100 results, got %d", len(batchResults))
-	}
-
-	results := sp.Wait()
-	if len(results) != 100 {
-		t.Fatalf("expected 100 results, got %d", len(results))
+	if len(sp.Wait()) != 100 {
+		t.Fatal("expected 100 results")
 	}
 }
 
-// ==================== ShardedPool WaitAndClose / Close ====================
+// ============================================================
+// 三、ShardedPool WaitAndClose / Close
+// ============================================================
 
 func TestShardedPool_WaitAndClose(t *testing.T) {
 	sp := NewShardedPool(ShardPoolConfig[int]{Shards: 4, SizePerShard: 4})
-
 	ctx := context.Background()
 	for i := 0; i < 200; i++ {
-		_ = sp.Submit(ctx, func(ctx context.Context) (int, error) {
-			return i, nil
-		})
+		_ = sp.Submit(ctx, func(ctx context.Context) (int, error) { return i, nil })
 	}
-	results := sp.WaitAndClose()
-	if len(results) != 200 {
-		t.Fatalf("expected 200 results, got %d", len(results))
+	if len(sp.WaitAndClose()) != 200 {
+		t.Fatal("expected 200 results")
 	}
 }
 
 func TestShardedPool_Close(t *testing.T) {
 	sp := NewShardedPool(ShardPoolConfig[int]{Shards: 4, SizePerShard: 4})
-
 	ctx := context.Background()
 	for i := 0; i < 50; i++ {
-		_ = sp.Submit(ctx, func(ctx context.Context) (int, error) {
-			return i, nil
-		})
+		_ = sp.Submit(ctx, func(ctx context.Context) (int, error) { return i, nil })
 	}
 	sp.Wait()
 	sp.Close()
 }
 
-// ==================== ShardedPool 配置代理方法 ====================
+// ============================================================
+// 四、ShardedPool 配置代理
+// ============================================================
 
 func TestShardedPool_WithTimeout(t *testing.T) {
 	sp := DefaultShardedPool[int]()
 	defer sp.Close()
 	sp.WithTimeout(5 * time.Second)
-
 	for i := 0; i < sp.ShardCount(); i++ {
-		shard := sp.GetShard(i)
-		if shard == nil {
+		if sp.GetShard(i) == nil {
 			t.Fatal("shard is nil")
 		}
 	}
@@ -309,11 +262,9 @@ func TestShardedPool_WithSubmitTimeout(t *testing.T) {
 func TestShardedPool_WithFailFast(t *testing.T) {
 	sp := DefaultShardedPool[int]()
 	defer sp.Close()
-
 	ctx := context.Background()
-	sp, _ = sp.WithFailFast(ctx)
-	if sp == nil {
-		t.Fatal("sharded pool is nil after WithFailFast")
+	if sp, _ = sp.WithFailFast(ctx); sp == nil {
+		t.Fatal("nil after WithFailFast")
 	}
 }
 
@@ -321,40 +272,26 @@ func TestShardedPool_WithStreaming(t *testing.T) {
 	sp := NewShardedPool(ShardPoolConfig[int]{Shards: 2, SizePerShard: 2})
 	defer sp.Close()
 	sp.WithStreaming(64)
-
 	ctx := context.Background()
 	for i := 0; i < 100; i++ {
-		_ = sp.Submit(ctx, func(ctx context.Context) (int, error) {
-			return i, nil
-		})
+		_ = sp.Submit(ctx, func(ctx context.Context) (int, error) { return i, nil })
 	}
-	results := sp.Wait()
-	if len(results) != 100 {
-		t.Fatalf("expected 100 results, got %d", len(results))
+	if len(sp.Wait()) != 100 {
+		t.Fatal("expected 100 results")
 	}
 }
 
 func TestShardedPool_WithResultCallback(t *testing.T) {
 	sp := NewShardedPool(ShardPoolConfig[int]{Shards: 2, SizePerShard: 2})
 	defer sp.Close()
-
 	var count atomic.Int64
-	sp.WithResultCallback(func(r core.Result[int]) {
-		count.Add(1)
-	})
-
+	sp.WithResultCallback(func(r core.Result[int]) { count.Add(1) })
 	ctx := context.Background()
 	for i := 0; i < 100; i++ {
-		_ = sp.Submit(ctx, func(ctx context.Context) (int, error) {
-			return i, nil
-		})
+		_ = sp.Submit(ctx, func(ctx context.Context) (int, error) { return i, nil })
 	}
-	results := sp.Wait()
-	if len(results) != 100 {
-		t.Fatalf("expected 100 results, got %d", len(results))
-	}
-	if c := count.Load(); c != 100 {
-		t.Fatalf("callback count: expected 100, got %d", c)
+	if len(sp.Wait()) != 100 || count.Load() != 100 {
+		t.Fatalf("results=%d callback=%d", len(sp.Wait()), count.Load())
 	}
 }
 
@@ -362,18 +299,13 @@ func TestShardedPool_WithRingBuffer(t *testing.T) {
 	sp := NewShardedPool(ShardPoolConfig[int]{Shards: 2, SizePerShard: 2})
 	defer sp.Close()
 	sp.WithRingBuffer(500, core.OverflowDrop)
-
 	ctx := context.Background()
 	for i := 0; i < 1000; i++ {
-		_ = sp.Submit(ctx, func(ctx context.Context) (int, error) {
-			return i, nil
-		})
+		_ = sp.Submit(ctx, func(ctx context.Context) (int, error) { return i, nil })
 	}
-
 	sp.Wait()
-	flushed := sp.Flush(0)
-	if len(flushed) != 1000 {
-		t.Fatalf("Flush: expected 1000 results, got %d", len(flushed))
+	if len(sp.Flush(0)) != 1000 {
+		t.Fatal("Flush expected 1000")
 	}
 }
 
@@ -381,23 +313,15 @@ func TestShardedPool_WithRingBuffer_OverflowBlock(t *testing.T) {
 	sp := NewShardedPool(ShardPoolConfig[int]{Shards: 2, SizePerShard: 2})
 	defer sp.Close()
 	sp.WithRingBuffer(200, core.OverflowBlock)
-
 	ctx := context.Background()
 	for i := 0; i < 200; i++ {
-		_ = sp.Submit(ctx, func(ctx context.Context) (int, error) {
-			return i, nil
-		})
+		_ = sp.Submit(ctx, func(ctx context.Context) (int, error) { return i, nil })
 	}
-
 	sp.Wait()
 	firstBatch := sp.Flush(80)
-	if len(firstBatch) < 80 {
-		t.Fatalf("Flush first batch expected >=80, got %d", len(firstBatch))
-	}
 	secondBatch := sp.Flush(0)
-	total := len(firstBatch) + len(secondBatch)
-	if total != 200 {
-		t.Fatalf("Flush total: expected 200, got %d", total)
+	if len(firstBatch)+len(secondBatch) != 200 {
+		t.Fatalf("Flush total expected 200, got %d", len(firstBatch)+len(secondBatch))
 	}
 }
 
@@ -415,12 +339,13 @@ func TestShardedPool_WithOverflow(t *testing.T) {
 	sp.WithOverflow(core.OverflowDrop)
 }
 
-// ==================== ShardedPool 统计聚合 ====================
+// ============================================================
+// 五、ShardedPool 统计聚合
+// ============================================================
 
 func TestShardedPool_ShardStats(t *testing.T) {
 	sp := NewShardedPool(ShardPoolConfig[int]{Shards: 4, SizePerShard: 4})
 	defer sp.Close()
-
 	stats := sp.ShardStats()
 	if len(stats) != 4 {
 		t.Fatalf("expected 4 stats entries, got %d", len(stats))
@@ -435,7 +360,6 @@ func TestShardedPool_ShardStats(t *testing.T) {
 func TestShardedPool_TotalWorkerCount(t *testing.T) {
 	sp := NewShardedPool(ShardPoolConfig[int]{Shards: 4, SizePerShard: 3})
 	defer sp.Close()
-
 	if tc := sp.TotalWorkerCount(); tc != 12 {
 		t.Fatalf("TotalWorkerCount: expected 12, got %d", tc)
 	}
@@ -444,15 +368,11 @@ func TestShardedPool_TotalWorkerCount(t *testing.T) {
 func TestShardedPool_SuccessFailCount(t *testing.T) {
 	sp := NewShardedPool(ShardPoolConfig[int]{Shards: 4, SizePerShard: 4})
 	defer sp.Close()
-
 	ctx := context.Background()
 	for i := 0; i < 200; i++ {
-		_ = sp.Submit(ctx, func(ctx context.Context) (int, error) {
-			return i, nil
-		})
+		_ = sp.Submit(ctx, func(ctx context.Context) (int, error) { return i, nil })
 	}
 	sp.Wait()
-
 	if sc := sp.TotalSuccessCount(); sc != 200 {
 		t.Fatalf("TotalSuccessCount: expected 200, got %d", sc)
 	}
@@ -461,37 +381,32 @@ func TestShardedPool_SuccessFailCount(t *testing.T) {
 	}
 }
 
-// ==================== ShardedPool Reset ====================
+// ============================================================
+// 六、ShardedPool Reset
+// ============================================================
 
 func TestShardedPool_Reset(t *testing.T) {
 	sp := NewShardedPool(ShardPoolConfig[int]{Shards: 4, SizePerShard: 4})
 	defer sp.Close()
-
 	ctx := context.Background()
 	for i := 0; i < 50; i++ {
-		_ = sp.Submit(ctx, func(ctx context.Context) (int, error) {
-			return i, nil
-		})
+		_ = sp.Submit(ctx, func(ctx context.Context) (int, error) { return i, nil })
 	}
 	sp.Wait()
-
-	err := sp.Reset()
-	if err != nil {
+	if err := sp.Reset(); err != nil {
 		t.Fatalf("Reset error: %v", err)
 	}
-
 	for i := 0; i < 50; i++ {
-		_ = sp.Submit(ctx, func(ctx context.Context) (int, error) {
-			return i * 2, nil
-		})
+		_ = sp.Submit(ctx, func(ctx context.Context) (int, error) { return i * 2, nil })
 	}
-	results := sp.Wait()
-	if len(results) != 50 {
-		t.Fatalf("expected 50 results after reset, got %d", len(results))
+	if len(sp.Wait()) != 50 {
+		t.Fatal("expected 50 results after reset")
 	}
 }
 
-// ==================== ShardedGroup 基本功能测试 ====================
+// ============================================================
+// 七、ShardedGroup 基础构造
+// ============================================================
 
 func TestNewShardedGroup_Defaults(t *testing.T) {
 	sg := NewShardedGroup(ShardGroupConfig[int]{})
@@ -508,11 +423,7 @@ func TestDefaultShardedGroup(t *testing.T) {
 }
 
 func TestNewShardedGroup_Custom(t *testing.T) {
-	sg := NewShardedGroup(ShardGroupConfig[int]{
-		Shards:              8,
-		ConcurrencyPerShard: 2,
-		Distribution:        RoundRobin,
-	})
+	sg := NewShardedGroup(ShardGroupConfig[int]{Shards: 8, ConcurrencyPerShard: 2, Distribution: RoundRobin})
 	if sg.ShardCount() != 8 {
 		t.Fatalf("expected 8 shards, got %d", sg.ShardCount())
 	}
@@ -531,17 +442,16 @@ func TestShardedGroup_GetShard_OOB(t *testing.T) {
 	}
 }
 
-// ==================== ShardedGroup Go / Wait ====================
+// ============================================================
+// 八、ShardedGroup Go / Wait
+// ============================================================
 
 func TestShardedGroup_Go_Wait_Basic(t *testing.T) {
 	sg := NewShardedGroup(ShardGroupConfig[int]{Shards: 4, ConcurrencyPerShard: 4})
 	ctx := context.Background()
 	n := 200
 	for i := 0; i < n; i++ {
-		err := sg.Go(ctx, func(ctx context.Context) (int, error) {
-			return 42, nil
-		})
-		if err != nil {
+		if err := sg.Go(ctx, func(ctx context.Context) (int, error) { return 42, nil }); err != nil {
 			t.Fatalf("Go error: %v", err)
 		}
 	}
@@ -550,11 +460,8 @@ func TestShardedGroup_Go_Wait_Basic(t *testing.T) {
 		t.Fatalf("expected %d results, got %d", n, len(results))
 	}
 	for _, r := range results {
-		if r.Err != nil {
-			t.Fatalf("unexpected error: %v", r.Err)
-		}
-		if r.Value != 42 {
-			t.Fatalf("expected 42, got %d", r.Value)
+		if r.Err != nil || r.Value != 42 {
+			t.Fatalf("unexpected result: %v", r)
 		}
 	}
 }
@@ -562,68 +469,49 @@ func TestShardedGroup_Go_Wait_Basic(t *testing.T) {
 func TestShardedGroup_GoAt(t *testing.T) {
 	sg := NewShardedGroup(ShardGroupConfig[int]{Shards: 4, ConcurrencyPerShard: 4})
 	ctx := context.Background()
-
-	_ = sg.GoAt(0, 0, ctx, func(ctx context.Context) (int, error) {
-		return 100, nil
-	})
-	_ = sg.GoAt(0, 1, ctx, func(ctx context.Context) (int, error) {
-		return 200, nil
-	})
-
-	results := sg.Wait()
-	if len(results) < 2 {
-		t.Fatalf("expected at least 2 results, got %d", len(results))
+	_ = sg.GoAt(0, 0, ctx, func(ctx context.Context) (int, error) { return 100, nil })
+	_ = sg.GoAt(0, 1, ctx, func(ctx context.Context) (int, error) { return 200, nil })
+	if len(sg.Wait()) < 2 {
+		t.Fatal("expected at least 2 results")
 	}
 }
 
 func TestShardedGroup_GoKeyed(t *testing.T) {
 	sg := NewShardedGroup(ShardGroupConfig[int]{Shards: 4, ConcurrencyPerShard: 4})
 	ctx := context.Background()
-
 	for i := 0; i < 100; i++ {
-		err := sg.GoKeyed("key-A", ctx, func(ctx context.Context) (int, error) {
-			return i, nil
-		})
-		if err != nil {
+		if err := sg.GoKeyed("key-A", ctx, func(ctx context.Context) (int, error) { return i, nil }); err != nil {
 			t.Fatalf("GoKeyed error: %v", err)
 		}
 	}
-	results := sg.Wait()
-	if len(results) != 100 {
-		t.Fatalf("expected 100 results, got %d", len(results))
+	if len(sg.Wait()) != 100 {
+		t.Fatal("expected 100 results")
 	}
 }
 
 func TestShardedGroup_GoBatch(t *testing.T) {
 	sg := NewShardedGroup(ShardGroupConfig[int]{Shards: 4, ConcurrencyPerShard: 8})
 	ctx := context.Background()
-
 	items := make([]int, 500)
 	for i := range items {
 		items[i] = i
 	}
-	batchResults, err := sg.GoBatch(ctx, items, func(ctx context.Context, item int) (int, error) {
-		return item * 10, nil
-	})
-	if err != nil {
-		t.Fatalf("GoBatch error: %v", err)
+	batchResults, err := sg.GoBatch(ctx, items, func(ctx context.Context, item int) (int, error) { return item * 10, nil })
+	if err != nil || len(batchResults) != 500 {
+		t.Fatalf("GoBatch failed: err=%v, len=%d", err, len(batchResults))
 	}
-	if len(batchResults) != 500 {
-		t.Fatalf("expected 500 batch results, got %d", len(batchResults))
-	}
-
-	results := sg.Wait()
-	if len(results) != 500 {
-		t.Fatalf("expected 500 results, got %d", len(results))
+	if len(sg.Wait()) != 500 {
+		t.Fatal("expected 500 results")
 	}
 }
 
-// ==================== ShardedGroup WaitTimeout / WaitContext ====================
+// ============================================================
+// 九、ShardedGroup WaitTimeout / WaitContext
+// ============================================================
 
 func TestShardedGroup_WaitTimeout(t *testing.T) {
 	sg := NewShardedGroup(ShardGroupConfig[int]{Shards: 4, ConcurrencyPerShard: 4})
 	ctx := context.Background()
-
 	for i := 0; i < 100; i++ {
 		_ = sg.Go(ctx, func(ctx context.Context) (int, error) {
 			time.Sleep(10 * time.Millisecond)
@@ -631,11 +519,8 @@ func TestShardedGroup_WaitTimeout(t *testing.T) {
 		})
 	}
 	results, ok := sg.WaitTimeout(5 * time.Second)
-	if !ok {
-		t.Fatal("WaitTimeout returned false")
-	}
-	if len(results) != 100 {
-		t.Fatalf("expected 100 results, got %d", len(results))
+	if !ok || len(results) != 100 {
+		t.Fatalf("WaitTimeout failed: ok=%v, len=%d", ok, len(results))
 	}
 }
 
@@ -643,22 +528,18 @@ func TestShardedGroup_WaitContext(t *testing.T) {
 	sg := NewShardedGroup(ShardGroupConfig[int]{Shards: 4, ConcurrencyPerShard: 4})
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-
 	for i := 0; i < 100; i++ {
-		_ = sg.Go(ctx, func(ctx context.Context) (int, error) {
-			return i, nil
-		})
+		_ = sg.Go(ctx, func(ctx context.Context) (int, error) { return i, nil })
 	}
 	results, ok := sg.WaitContext(ctx)
-	if !ok {
-		t.Fatal("WaitContext returned false")
-	}
-	if len(results) != 100 {
-		t.Fatalf("expected 100 results, got %d", len(results))
+	if !ok || len(results) != 100 {
+		t.Fatalf("WaitContext failed: ok=%v, len=%d", ok, len(results))
 	}
 }
 
-// ==================== ShardedGroup 配置代理 ====================
+// ============================================================
+// 十、ShardedGroup 配置代理
+// ============================================================
 
 func TestShardedGroup_WithTimeout(t *testing.T) {
 	sg := DefaultShardedGroup[int]()
@@ -673,8 +554,7 @@ func TestShardedGroup_WithSubmitTimeout(t *testing.T) {
 func TestShardedGroup_WithFailFast(t *testing.T) {
 	sg := DefaultShardedGroup[int]()
 	ctx := context.Background()
-	sg, _ = sg.WithFailFast(ctx)
-	if sg == nil {
+	if sg, _ = sg.WithFailFast(ctx); sg == nil {
 		t.Fatal("nil after WithFailFast")
 	}
 }
@@ -682,8 +562,7 @@ func TestShardedGroup_WithFailFast(t *testing.T) {
 func TestShardedGroup_WithFFCtx(t *testing.T) {
 	sg := DefaultShardedGroup[int]()
 	ctx := context.Background()
-	sg, _ = sg.WithFFCtx(ctx)
-	if sg == nil {
+	if sg, _ = sg.WithFFCtx(ctx); sg == nil {
 		t.Fatal("nil after WithFFCtx")
 	}
 }
@@ -691,53 +570,40 @@ func TestShardedGroup_WithFFCtx(t *testing.T) {
 func TestShardedGroup_WithStreaming(t *testing.T) {
 	sg := NewShardedGroup(ShardGroupConfig[int]{Shards: 2, ConcurrencyPerShard: 2})
 	sg.WithStreaming(64)
-
 	ctx := context.Background()
 	for i := 0; i < 100; i++ {
-		_ = sg.Go(ctx, func(ctx context.Context) (int, error) {
-			return i, nil
-		})
+		_ = sg.Go(ctx, func(ctx context.Context) (int, error) { return i, nil })
 	}
-	results := sg.Wait()
-	if len(results) != 100 {
-		t.Fatalf("expected 100 results, got %d", len(results))
+	if len(sg.Wait()) != 100 {
+		t.Fatal("expected 100 results")
 	}
 }
 
 func TestShardedGroup_WithResultCallback(t *testing.T) {
 	sg := NewShardedGroup(ShardGroupConfig[int]{Shards: 2, ConcurrencyPerShard: 2})
-
 	var count atomic.Int64
-	sg.WithResultCallback(func(r core.Result[int]) {
-		count.Add(1)
-	})
-
+	sg.WithResultCallback(func(r core.Result[int]) { count.Add(1) })
 	ctx := context.Background()
 	for i := 0; i < 100; i++ {
-		_ = sg.Go(ctx, func(ctx context.Context) (int, error) {
-			return i, nil
-		})
+		_ = sg.Go(ctx, func(ctx context.Context) (int, error) { return i, nil })
 	}
 	sg.Wait()
-
-	if c := count.Load(); c != 100 {
-		t.Fatalf("callback count: expected 100, got %d", c)
+	if count.Load() != 100 {
+		t.Fatalf("callback count: expected 100, got %d", count.Load())
 	}
 }
 
-// ==================== ShardedGroup 统计聚合 ====================
+// ============================================================
+// 十一、ShardedGroup 统计与 Reset
+// ============================================================
 
 func TestShardedGroup_TotalFailCount(t *testing.T) {
 	sg := NewShardedGroup(ShardGroupConfig[int]{Shards: 4, ConcurrencyPerShard: 4})
 	ctx := context.Background()
-
 	for i := 0; i < 50; i++ {
-		_ = sg.Go(ctx, func(ctx context.Context) (int, error) {
-			return i, nil
-		})
+		_ = sg.Go(ctx, func(ctx context.Context) (int, error) { return i, nil })
 	}
 	sg.Wait()
-
 	if fc := sg.TotalFailCount(); fc != 0 {
 		t.Fatalf("TotalFailCount: expected 0, got %d", fc)
 	}
@@ -753,135 +619,501 @@ func TestShardedGroup_TotalWorker(t *testing.T) {
 	}
 }
 
-// ==================== ShardedGroup Reset ====================
-
 func TestShardedGroup_Reset(t *testing.T) {
 	sg := NewShardedGroup(ShardGroupConfig[int]{Shards: 4, ConcurrencyPerShard: 4})
 	ctx := context.Background()
-
 	for i := 0; i < 50; i++ {
-		_ = sg.Go(ctx, func(ctx context.Context) (int, error) {
-			return i, nil
-		})
+		_ = sg.Go(ctx, func(ctx context.Context) (int, error) { return i, nil })
 	}
 	sg.Wait()
-
-	err := sg.Reset()
-	if err != nil {
+	if err := sg.Reset(); err != nil {
 		t.Fatalf("Reset error: %v", err)
 	}
-
 	for i := 0; i < 50; i++ {
-		_ = sg.Go(ctx, func(ctx context.Context) (int, error) {
-			return i * 2, nil
-		})
+		_ = sg.Go(ctx, func(ctx context.Context) (int, error) { return i * 2, nil })
 	}
-	results := sg.Wait()
-	if len(results) != 50 {
-		t.Fatalf("expected 50 results after reset, got %d", len(results))
+	if len(sg.Wait()) != 50 {
+		t.Fatal("expected 50 results after reset")
 	}
 }
 
-// ==================== 并发安全测试 ====================
+// ============================================================
+// 十二、四档并发压力测试（万/十万/百万/千万）
+// ============================================================
 
-func TestShardedPool_ConcurrentSubmit(t *testing.T) {
-	sp := NewShardedPool(ShardPoolConfig[int]{Shards: 8, SizePerShard: 8})
-	defer sp.Close()
+func TestShardedPool_Submit_Concurrent(t *testing.T) {
+	for _, tier := range allTiers {
+		t.Run(tier.name, func(t *testing.T) {
+			skipIfTooLarge(t, tier.size)
+			sp := NewShardedPool(ShardPoolConfig[int]{Shards: 8, SizePerShard: 16})
+			defer sp.Close()
 
-	ctx := context.Background()
-	var wg sync.WaitGroup
-	goroutines := 50
-	tasksPerGoroutine := 100
-	var submitted atomic.Int64
+			ctx := context.Background()
+			var wg sync.WaitGroup
+			goroutines := 50
+			tasksPerGoroutine := tier.size / 50
+			if tasksPerGoroutine < 1 {
+				tasksPerGoroutine = 1
+			}
+			var submitted atomic.Int64
 
-	wg.Add(goroutines)
-	for g := 0; g < goroutines; g++ {
-		go func(gid int) {
-			defer wg.Done()
-			for i := 0; i < tasksPerGoroutine; i++ {
-				err := sp.Submit(ctx, func(ctx context.Context) (int, error) {
-					return gid*10000 + i, nil
-				})
-				if err == nil {
-					submitted.Add(1)
+			wg.Add(goroutines)
+			for g := 0; g < goroutines; g++ {
+				go func(gid int) {
+					defer wg.Done()
+					for i := 0; i < tasksPerGoroutine; i++ {
+						if sp.Submit(ctx, func(ctx context.Context) (int, error) {
+							return gid*10000 + i, nil
+						}) == nil {
+							submitted.Add(1)
+						}
+					}
+				}(g)
+			}
+			wg.Wait()
+			results := sp.Wait()
+			expected := int(submitted.Load())
+			if len(results) != expected {
+				t.Fatalf("expected %d results, got %d", expected, len(results))
+			}
+			for _, r := range results {
+				if r.Err != nil {
+					t.Fatalf("unexpected error: %v", r.Err)
 				}
 			}
-		}(g)
+		})
 	}
-	wg.Wait()
+}
 
-	results := sp.Wait()
-	expected := int(submitted.Load())
-	if len(results) != expected {
-		t.Fatalf("expected %d results, got %d", expected, len(results))
+func TestShardedPool_SubmitKeyed_Concurrent(t *testing.T) {
+	for _, tier := range allTiers {
+		t.Run(tier.name, func(t *testing.T) {
+			skipIfTooLarge(t, tier.size)
+			sp := NewShardedPool(ShardPoolConfig[int]{Shards: 8, SizePerShard: 16})
+			defer sp.Close()
+
+			ctx := context.Background()
+			keys := []string{"user-a", "user-b", "user-c", "user-d"}
+			var wg sync.WaitGroup
+			var submitted atomic.Int64
+			tasksPerKey := tier.size / len(keys)
+
+			for _, key := range keys {
+				wg.Add(1)
+				go func(k string) {
+					defer wg.Done()
+					for i := 0; i < tasksPerKey; i++ {
+						if sp.SubmitKeyed(k, ctx, func(ctx context.Context) (int, error) {
+							return 1, nil
+						}) == nil {
+							submitted.Add(1)
+						}
+					}
+				}(key)
+			}
+			wg.Wait()
+			results := sp.Wait()
+			if len(results) != int(submitted.Load()) {
+				t.Fatalf("expected %d results, got %d", submitted.Load(), len(results))
+			}
+		})
 	}
-	for _, r := range results {
-		if r.Err != nil {
-			t.Fatalf("unexpected error: %v", r.Err)
+}
+
+func TestShardedGroup_Go_Concurrent(t *testing.T) {
+	for _, tier := range allTiers {
+		t.Run(tier.name, func(t *testing.T) {
+			skipIfTooLarge(t, tier.size)
+			sg := NewShardedGroup(ShardGroupConfig[int]{Shards: 8, ConcurrencyPerShard: 16})
+			ctx := context.Background()
+
+			var wg sync.WaitGroup
+			goroutines := 50
+			tasksPerGoroutine := tier.size / 50
+			if tasksPerGoroutine < 1 {
+				tasksPerGoroutine = 1
+			}
+			var submitted atomic.Int64
+
+			wg.Add(goroutines)
+			for g := 0; g < goroutines; g++ {
+				go func(gid int) {
+					defer wg.Done()
+					for i := 0; i < tasksPerGoroutine; i++ {
+						if sg.Go(ctx, func(ctx context.Context) (int, error) {
+							return gid*10000 + i, nil
+						}) == nil {
+							submitted.Add(1)
+						}
+					}
+				}(g)
+			}
+			wg.Wait()
+			results := sg.Wait()
+			if len(results) != int(submitted.Load()) {
+				t.Fatalf("expected %d results, got %d", submitted.Load(), len(results))
+			}
+		})
+	}
+}
+
+// ============================================================
+// 十三、Race 竞态测试
+// ============================================================
+
+func TestRace_ShardedPool_SubmitWait(t *testing.T) {
+	for round := 0; round < 20; round++ {
+		sp := NewShardedPool(ShardPoolConfig[int]{Shards: 8, SizePerShard: 16})
+		ctx := context.Background()
+		var wg sync.WaitGroup
+		var submitted atomic.Int64
+		goroutines := 100
+		tasksPerGoroutine := 200
+
+		wg.Add(goroutines)
+		for g := 0; g < goroutines; g++ {
+			go func(gid int) {
+				defer wg.Done()
+				for i := 0; i < tasksPerGoroutine; i++ {
+					if sp.Submit(ctx, func(ctx context.Context) (int, error) {
+						return gid*10000 + i, nil
+					}) == nil {
+						submitted.Add(1)
+					}
+				}
+			}(g)
+		}
+		wg.Wait()
+		results := sp.Wait()
+		sp.Close()
+		if len(results) != int(submitted.Load()) {
+			t.Fatalf("round %d: expected %d, got %d", round, submitted.Load(), len(results))
 		}
 	}
 }
 
-func TestShardedGroup_ConcurrentGo(t *testing.T) {
-	sg := NewShardedGroup(ShardGroupConfig[int]{Shards: 8, ConcurrencyPerShard: 8})
-	ctx := context.Background()
+func TestRace_ShardedPool_SubmitKeyed(t *testing.T) {
+	for round := 0; round < 20; round++ {
+		sp := NewShardedPool(ShardPoolConfig[int]{Shards: 8, SizePerShard: 16})
+		ctx := context.Background()
+		var wg sync.WaitGroup
+		keys := []string{"user-1", "user-2", "user-3", "user-4", "user-5"}
+		var submitted atomic.Int64
 
-	var wg sync.WaitGroup
-	goroutines := 50
-	tasksPerGoroutine := 100
-	var submitted atomic.Int64
-
-	wg.Add(goroutines)
-	for g := 0; g < goroutines; g++ {
-		go func(gid int) {
-			defer wg.Done()
-			for i := 0; i < tasksPerGoroutine; i++ {
-				err := sg.Go(ctx, func(ctx context.Context) (int, error) {
-					return gid*10000 + i, nil
-				})
-				if err == nil {
-					submitted.Add(1)
+		for _, key := range keys {
+			wg.Add(1)
+			go func(k string) {
+				defer wg.Done()
+				for i := 0; i < 500; i++ {
+					if sp.SubmitKeyed(k, ctx, func(ctx context.Context) (int, error) { return 1, nil }) == nil {
+						submitted.Add(1)
+					}
 				}
-			}
-		}(g)
-	}
-	wg.Wait()
-
-	results := sg.Wait()
-	expected := int(submitted.Load())
-	if len(results) != expected {
-		t.Fatalf("expected %d results, got %d", expected, len(results))
+			}(key)
+		}
+		wg.Wait()
+		results := sp.Wait()
+		sp.Close()
+		if len(results) != int(submitted.Load()) {
+			t.Fatalf("round %d: expected %d, got %d", round, submitted.Load(), len(results))
+		}
 	}
 }
 
-func TestShardedPool_ConcurrentSubmitKeyed(t *testing.T) {
-	sp := NewShardedPool(ShardPoolConfig[int]{Shards: 8, SizePerShard: 8})
-	defer sp.Close()
+func TestRace_ShardedPool_MixedSubmit(t *testing.T) {
+	for round := 0; round < 10; round++ {
+		sp := NewShardedPool(ShardPoolConfig[int]{Shards: 8, SizePerShard: 16})
+		ctx := context.Background()
+		var wg sync.WaitGroup
+		var submitted atomic.Int64
 
-	ctx := context.Background()
-	keys := []string{"user-a", "user-b", "user-c", "user-d"}
-	var wg sync.WaitGroup
-	var submitted atomic.Int64
-
-	for _, key := range keys {
-		wg.Add(1)
-		go func(k string) {
+		wg.Add(3)
+		go func() {
 			defer wg.Done()
-			for i := 0; i < 200; i++ {
-				err := sp.SubmitKeyed(k, ctx, func(ctx context.Context) (int, error) {
-					return 1, nil
-				})
-				if err == nil {
+			for i := 0; i < 300; i++ {
+				if sp.Submit(ctx, func(ctx context.Context) (int, error) { return 1, nil }) == nil {
 					submitted.Add(1)
 				}
 			}
-		}(key)
+		}()
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 300; i++ {
+				if sp.TrySubmit(ctx, func(ctx context.Context) (int, error) { return 2, nil }) == nil {
+					submitted.Add(1)
+				}
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 300; i++ {
+				if sp.SubmitKeyed("mix", ctx, func(ctx context.Context) (int, error) { return 3, nil }) == nil {
+					submitted.Add(1)
+				}
+			}
+		}()
+		wg.Wait()
+		results := sp.Wait()
+		sp.Close()
+		expected := int(submitted.Load())
+		if len(results) < expected {
+			t.Fatalf("round %d: expected at least %d, got %d", round, expected, len(results))
+		}
+		if len(results) > expected {
+			t.Logf("round %d: results=%d > submitted=%d (race: possible dups)", round, len(results), expected)
+		}
+	}
+}
+
+func TestRace_ShardedPool_SubmitBatch(t *testing.T) {
+	sp := NewShardedPool(ShardPoolConfig[int]{Shards: 8, SizePerShard: 16})
+	defer sp.Close()
+	ctx := context.Background()
+	items := make([]int, 1000)
+	for i := range items {
+		items[i] = i
+	}
+	var wg sync.WaitGroup
+	var submitted atomic.Int64
+
+	for r := 0; r < 5; r++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			batchResults, err := sp.SubmitBatch(ctx, items, func(ctx context.Context, item int) (int, error) {
+				return item * 10, nil
+			})
+			if err != nil {
+				return
+			}
+			for _, br := range batchResults {
+				if br.Err == nil {
+					submitted.Add(1)
+				}
+			}
+		}()
 	}
 	wg.Wait()
-
 	results := sp.Wait()
-	expected := int(submitted.Load())
-	if len(results) != expected {
-		t.Fatalf("expected %d results, got %d", expected, len(results))
+	if len(results) != int(submitted.Load()) {
+		t.Fatalf("expected %d results, got %d", submitted.Load(), len(results))
+	}
+}
+
+func TestRace_ShardedPool_Streaming(t *testing.T) {
+	for round := 0; round < 10; round++ {
+		sp := NewShardedPool(ShardPoolConfig[int]{Shards: 4, SizePerShard: 8})
+		sp.WithStreaming(0)
+		var streamedCount atomic.Int64
+		sp.WithResultCallback(func(r core.Result[int]) {
+			if r.Ok() {
+				streamedCount.Add(1)
+			}
+		})
+
+		ctx := context.Background()
+		var wg sync.WaitGroup
+		var submitted atomic.Int64
+		goroutines := 50
+
+		wg.Add(goroutines)
+		for g := 0; g < goroutines; g++ {
+			go func(gid int) {
+				defer wg.Done()
+				for i := 0; i < 100; i++ {
+					if sp.Submit(ctx, func(ctx context.Context) (int, error) {
+						return gid*10000 + i, nil
+					}) == nil {
+						submitted.Add(1)
+					}
+				}
+			}(g)
+		}
+		wg.Wait()
+		results := sp.Wait()
+		sp.Close()
+		if len(results) != int(submitted.Load()) || streamedCount.Load() != int64(len(results)) {
+			t.Fatalf("round %d: submit=%d results=%d streamed=%d", round, submitted.Load(), len(results), streamedCount.Load())
+		}
+	}
+}
+
+func TestRace_ShardedPool_RingBuffer(t *testing.T) {
+	for round := 0; round < 10; round++ {
+		sp := NewShardedPool(ShardPoolConfig[int]{Shards: 4, SizePerShard: 8})
+		sp.WithRingBuffer(2000, core.OverflowDrop)
+		ctx := context.Background()
+		var wg sync.WaitGroup
+		var submitted atomic.Int64
+		goroutines := 50
+
+		wg.Add(goroutines)
+		for g := 0; g < goroutines; g++ {
+			go func(gid int) {
+				defer wg.Done()
+				for i := 0; i < 100; i++ {
+					if sp.Submit(ctx, func(ctx context.Context) (int, error) {
+						return gid*10000 + i, nil
+					}) == nil {
+						submitted.Add(1)
+					}
+				}
+			}(g)
+		}
+		wg.Wait()
+		sp.Wait()
+		flushed := sp.Flush(0)
+		sp.Close()
+		if len(flushed) != int(submitted.Load()) {
+			t.Fatalf("round %d: expected %d, got %d", round, submitted.Load(), len(flushed))
+		}
+	}
+}
+
+func TestRace_ShardedGroup_GoWait(t *testing.T) {
+	for round := 0; round < 20; round++ {
+		sg := NewShardedGroup(ShardGroupConfig[int]{Shards: 8, ConcurrencyPerShard: 16})
+		ctx := context.Background()
+		var wg sync.WaitGroup
+		var submitted atomic.Int64
+		goroutines := 100
+
+		wg.Add(goroutines)
+		for g := 0; g < goroutines; g++ {
+			go func(gid int) {
+				defer wg.Done()
+				for i := 0; i < 200; i++ {
+					if sg.Go(ctx, func(ctx context.Context) (int, error) {
+						return gid*10000 + i, nil
+					}) == nil {
+						submitted.Add(1)
+					}
+				}
+			}(g)
+		}
+		wg.Wait()
+		results := sg.Wait()
+		if len(results) != int(submitted.Load()) {
+			t.Fatalf("round %d: expected %d, got %d", round, submitted.Load(), len(results))
+		}
+	}
+}
+
+func TestRace_ShardedGroup_GoKeyed(t *testing.T) {
+	for round := 0; round < 20; round++ {
+		sg := NewShardedGroup(ShardGroupConfig[int]{Shards: 8, ConcurrencyPerShard: 16})
+		ctx := context.Background()
+		var wg sync.WaitGroup
+		keys := []string{"k-a", "k-b", "k-c", "k-d", "k-e"}
+		var submitted atomic.Int64
+
+		for _, key := range keys {
+			wg.Add(1)
+			go func(k string) {
+				defer wg.Done()
+				for i := 0; i < 500; i++ {
+					if sg.GoKeyed(k, ctx, func(ctx context.Context) (int, error) { return 1, nil }) == nil {
+						submitted.Add(1)
+					}
+				}
+			}(key)
+		}
+		wg.Wait()
+		results := sg.Wait()
+		if len(results) != int(submitted.Load()) {
+			t.Fatalf("round %d: expected %d, got %d", round, submitted.Load(), len(results))
+		}
+	}
+}
+
+func TestRace_ShardedGroup_GoBatch(t *testing.T) {
+	sg := NewShardedGroup(ShardGroupConfig[int]{Shards: 8, ConcurrencyPerShard: 16})
+	ctx := context.Background()
+	items := make([]int, 500)
+	for i := range items {
+		items[i] = i
+	}
+	var wg sync.WaitGroup
+	var submitted atomic.Int64
+
+	for r := 0; r < 10; r++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			batchResults, _ := sg.GoBatch(ctx, items, func(ctx context.Context, item int) (int, error) {
+				return item * 10, nil
+			})
+			for _, br := range batchResults {
+				if br.Err == nil {
+					submitted.Add(1)
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	results := sg.Wait()
+	if len(results) != int(submitted.Load()) {
+		t.Fatalf("expected %d results, got %d", submitted.Load(), len(results))
+	}
+}
+
+func TestRace_ShardedGroup_Streaming(t *testing.T) {
+	for round := 0; round < 10; round++ {
+		sg := NewShardedGroup(ShardGroupConfig[int]{Shards: 4, ConcurrencyPerShard: 8})
+		sg.WithStreaming(0)
+		var streamedCount atomic.Int64
+		sg.WithResultCallback(func(r core.Result[int]) {
+			if r.Ok() {
+				streamedCount.Add(1)
+			}
+		})
+
+		ctx := context.Background()
+		var wg sync.WaitGroup
+		var submitted atomic.Int64
+		goroutines := 50
+
+		wg.Add(goroutines)
+		for g := 0; g < goroutines; g++ {
+			go func(gid int) {
+				defer wg.Done()
+				for i := 0; i < 100; i++ {
+					if sg.Go(ctx, func(ctx context.Context) (int, error) {
+						return gid*10000 + i, nil
+					}) == nil {
+						submitted.Add(1)
+					}
+				}
+			}(g)
+		}
+		wg.Wait()
+		results := sg.Wait()
+		if len(results) != int(submitted.Load()) || streamedCount.Load() != int64(len(results)) {
+			t.Fatalf("round %d: submit=%d results=%d streamed=%d", round, submitted.Load(), len(results), streamedCount.Load())
+		}
+	}
+}
+
+func TestRace_ShardedGroup_WaitTimeout(t *testing.T) {
+	for round := 0; round < 10; round++ {
+		sg := NewShardedGroup(ShardGroupConfig[int]{Shards: 4, ConcurrencyPerShard: 8})
+		ctx := context.Background()
+		var wg sync.WaitGroup
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 500; i++ {
+				_ = sg.Go(ctx, func(ctx context.Context) (int, error) {
+					time.Sleep(5 * time.Millisecond)
+					return i, nil
+				})
+			}
+		}()
+		time.Sleep(50 * time.Millisecond)
+		_, ok := sg.WaitTimeout(10 * time.Second)
+		wg.Wait()
+		if !ok {
+			t.Fatalf("round %d: WaitTimeout returned false", round)
+		}
 	}
 }

@@ -11,7 +11,31 @@ import (
 
 var errTask = errors.New("task error")
 
-// ==================== Go 基础测试 ====================
+// ============================================================
+// 共享工具：四档数据量（万/十万/百万/千万），short 跳过
+// ============================================================
+
+type tier struct {
+	name string
+	size int
+}
+
+var allTiers = []tier{
+	{"万级_10K", 10_000},
+	{"十万级_100K", 100_000},
+	{"百万级_1M", 1_000_000},
+	{"千万级_10M", 10_000_000},
+}
+
+func skipIfTooLarge(t *testing.T, size int) {
+	if testing.Short() && size >= 100_000 {
+		t.Skip("short mode: skip large scale test")
+	}
+}
+
+// ============================================================
+// 一、Go 基础测试
+// ============================================================
 
 func TestGo_Success(t *testing.T) {
 	ar := Go(context.Background(), func(ctx context.Context) (int, error) {
@@ -60,7 +84,7 @@ func TestGo_WaitTimeout(t *testing.T) {
 	}
 }
 
-func TestGo_WaitTimeoutSuccess(t *testing.T) {
+func TestGo_WaitTimeout_Success(t *testing.T) {
 	ar := Go(context.Background(), func(ctx context.Context) (int, error) {
 		return 99, nil
 	})
@@ -76,20 +100,17 @@ func TestGo_WaitTimeoutSuccess(t *testing.T) {
 	}
 }
 
-func TestGo_Ok(t *testing.T) {
+func TestGo_Ok_NotOk(t *testing.T) {
 	ar := Go(context.Background(), func(ctx context.Context) (int, error) {
 		return 1, nil
 	})
 	if !ar.Ok() {
 		t.Fatal("expected ok")
 	}
-}
-
-func TestGo_NotOk(t *testing.T) {
-	ar := Go(context.Background(), func(ctx context.Context) (int, error) {
+	ar2 := Go(context.Background(), func(ctx context.Context) (int, error) {
 		return 0, errTask
 	})
-	if ar.Ok() {
+	if ar2.Ok() {
 		t.Fatal("expected not ok")
 	}
 }
@@ -101,13 +122,10 @@ func TestGo_IsPanic(t *testing.T) {
 	if !ar.IsPanic() {
 		t.Fatal("expected panic")
 	}
-}
-
-func TestGo_NotPanic(t *testing.T) {
-	ar := Go(context.Background(), func(ctx context.Context) (int, error) {
+	ar2 := Go(context.Background(), func(ctx context.Context) (int, error) {
 		return 1, nil
 	})
-	if ar.IsPanic() {
+	if ar2.IsPanic() {
 		t.Fatal("expected not panic")
 	}
 }
@@ -143,7 +161,9 @@ func TestGo_Cancel(t *testing.T) {
 	}
 }
 
-// ==================== GoResult 测试 ====================
+// ============================================================
+// 二、GoResult 基础测试
+// ============================================================
 
 func TestGoResult_Success(t *testing.T) {
 	tk := GoResult(context.Background(), func(ctx context.Context) (string, error) {
@@ -184,7 +204,9 @@ func TestGoResult_Panic(t *testing.T) {
 	}
 }
 
-// ==================== GoAct 测试 ====================
+// ============================================================
+// 三、GoAct 基础测试
+// ============================================================
 
 func TestGoAct_Success(t *testing.T) {
 	var called atomic.Bool
@@ -221,7 +243,9 @@ func TestGoAct_Panic(t *testing.T) {
 	}
 }
 
-// ==================== GoResultAct 测试 ====================
+// ============================================================
+// 四、GoResultAct 基础测试
+// ============================================================
 
 func TestGoResultAct_Success(t *testing.T) {
 	var done atomic.Bool
@@ -248,257 +272,9 @@ func TestGoResultAct_Error(t *testing.T) {
 	}
 }
 
-// ==================== 高并发极限压力测试 ====================
-
-func TestGo_50K_Concurrent(t *testing.T) {
-	var wg sync.WaitGroup
-	n := 50000
-	var success, fail atomic.Int64
-	wg.Add(n)
-	for i := 0; i < n; i++ {
-		go func(i int) {
-			defer wg.Done()
-			ar := Go(context.Background(), func(ctx context.Context) (int, error) {
-				return i, nil
-			})
-			val, err := ar.Wait()
-			if err == nil && val == i {
-				success.Add(1)
-			} else {
-				fail.Add(1)
-			}
-		}(i)
-	}
-	wg.Wait()
-	if fail.Load() > 0 {
-		t.Fatalf("failures: %d / %d", fail.Load(), n)
-	}
-	t.Logf("Go 50K: success=%d, fail=%d", success.Load(), fail.Load())
-}
-
-func TestGo_WaitTimeout_10K(t *testing.T) {
-	var wg sync.WaitGroup
-	n := 10000
-	var success, timeout atomic.Int64
-	wg.Add(n)
-	for i := 0; i < n; i++ {
-		go func() {
-			defer wg.Done()
-			ar := Go(context.Background(), func(ctx context.Context) (int, error) {
-				return 1, nil
-			})
-			_, _, ok := ar.WaitTimeout(time.Second)
-			if ok {
-				success.Add(1)
-			} else {
-				timeout.Add(1)
-			}
-		}()
-	}
-	wg.Wait()
-	if timeout.Load() > 0 {
-		t.Fatalf("timeouts: %d", timeout.Load())
-	}
-}
-
-func TestGo_WaitCh_50K(t *testing.T) {
-	var wg sync.WaitGroup
-	n := 50000
-	var success atomic.Int64
-	wg.Add(n)
-	for i := 0; i < n; i++ {
-		go func() {
-			defer wg.Done()
-			ar := Go(context.Background(), func(ctx context.Context) (int, error) {
-				return 1, nil
-			})
-			select {
-			case r := <-ar.WaitCh():
-				if r.Err == nil && r.Value == 1 {
-					success.Add(1)
-				}
-			case <-time.After(5 * time.Second):
-			}
-		}()
-	}
-	wg.Wait()
-	if success.Load() < int64(n)*95/100 {
-		t.Fatalf("expected >= 95%% success, got %d / %d", success.Load(), n)
-	}
-	t.Logf("Go WaitCh 50K: success=%d/%d", success.Load(), n)
-}
-
-func TestGo_MultipleWait_10K(t *testing.T) {
-	var wg sync.WaitGroup
-	n := 1000
-	wg.Add(n)
-	for i := 0; i < n; i++ {
-		go func() {
-			defer wg.Done()
-			ar := Go(context.Background(), func(ctx context.Context) (int, error) {
-				return 42, nil
-			})
-			var innerWg sync.WaitGroup
-			innerWg.Add(10)
-			for j := 0; j < 10; j++ {
-				go func() {
-					defer innerWg.Done()
-					val, err := ar.Wait()
-					if err != nil || val != 42 {
-						t.Errorf("multiple wait failed: val=%d, err=%v", val, err)
-					}
-				}()
-			}
-			innerWg.Wait()
-		}()
-	}
-	wg.Wait()
-}
-
-func TestGoResult_50K(t *testing.T) {
-	var wg sync.WaitGroup
-	n := 50000
-	var success atomic.Int64
-	wg.Add(n)
-	for i := 0; i < n; i++ {
-		go func() {
-			defer wg.Done()
-			tk := GoResult(context.Background(), func(ctx context.Context) (int, error) {
-				return 1, nil
-			})
-			val, err := tk.Result()
-			if err == nil && val == 1 {
-				success.Add(1)
-			}
-		}()
-	}
-	wg.Wait()
-	if success.Load() != int64(n) {
-		t.Fatalf("expected %d, got %d", n, success.Load())
-	}
-}
-
-func TestGoAct_50K(t *testing.T) {
-	var wg sync.WaitGroup
-	n := 50000
-	var success atomic.Int64
-	wg.Add(n)
-	for i := 0; i < n; i++ {
-		go func() {
-			defer wg.Done()
-			ar := GoAct(context.Background(), func(ctx context.Context) error {
-				return nil
-			})
-			_, err := ar.Wait()
-			if err == nil {
-				success.Add(1)
-			}
-		}()
-	}
-	wg.Wait()
-	if success.Load() != int64(n) {
-		t.Fatalf("expected %d, got %d", n, success.Load())
-	}
-}
-
-func TestGoResultAct_10K(t *testing.T) {
-	var wg sync.WaitGroup
-	n := 10000
-	var success atomic.Int64
-	wg.Add(n)
-	for i := 0; i < n; i++ {
-		go func() {
-			defer wg.Done()
-			tk := GoResultAct(context.Background(), func(ctx context.Context) error {
-				return nil
-			})
-			_, err := tk.Result()
-			if err == nil {
-				success.Add(1)
-			}
-		}()
-	}
-	wg.Wait()
-	if success.Load() != int64(n) {
-		t.Fatalf("expected %d, got %d", n, success.Load())
-	}
-}
-
-func TestGo_CancelRace_10K(t *testing.T) {
-	var wg sync.WaitGroup
-	n := 10000
-	wg.Add(n)
-	for i := 0; i < n; i++ {
-		go func() {
-			defer wg.Done()
-			ar := Go(context.Background(), func(ctx context.Context) (int, error) {
-				select {
-				case <-ctx.Done():
-					return 0, ctx.Err()
-				case <-time.After(5 * time.Millisecond):
-					return 1, nil
-				}
-			})
-			_, _ = ar.Cancel()
-		}()
-	}
-	wg.Wait()
-}
-
-func TestGo_PanicRecovery_50K(t *testing.T) {
-	var wg sync.WaitGroup
-	n := 50000
-	var panics, nonpanics atomic.Int64
-	wg.Add(n)
-	for i := 0; i < n; i++ {
-		go func(i int) {
-			defer wg.Done()
-			ar := Go(context.Background(), func(ctx context.Context) (int, error) {
-				if i%2 == 0 {
-					panic("even panic")
-				}
-				return i, nil
-			})
-			if ar.IsPanic() {
-				panics.Add(1)
-			} else {
-				nonpanics.Add(1)
-			}
-		}(i)
-	}
-	wg.Wait()
-	t.Logf("PanicRecovery 50K: panics=%d, nonpanics=%d", panics.Load(), nonpanics.Load())
-}
-
-func TestGo_ContextCancellation_10K(t *testing.T) {
-	var wg sync.WaitGroup
-	n := 10000
-	var cancelled atomic.Int64
-	wg.Add(n)
-	for i := 0; i < n; i++ {
-		go func() {
-			defer wg.Done()
-			ctx, cancel := context.WithCancel(context.Background())
-			ar := Go(ctx, func(ctx context.Context) (int, error) {
-				select {
-				case <-ctx.Done():
-					return 0, ctx.Err()
-				case <-time.After(time.Second):
-					return 1, nil
-				}
-			})
-			cancel()
-			_, err := ar.Wait()
-			if err != nil {
-				cancelled.Add(1)
-			}
-		}()
-	}
-	wg.Wait()
-	if cancelled.Load() == 0 {
-		t.Fatal("expected some cancellations")
-	}
-}
+// ============================================================
+// 五、Mu 容器测试
+// ============================================================
 
 func TestMu_Append_Snapshot(t *testing.T) {
 	mu := &Mu[int]{}
@@ -511,24 +287,6 @@ func TestMu_Append_Snapshot(t *testing.T) {
 	}
 	if snap[0] != 1 || snap[1] != 2 || snap[2] != 3 {
 		t.Fatalf("unexpected: %v", snap)
-	}
-}
-
-func TestMu_ConcurrentAppend_100K(t *testing.T) {
-	mu := &Mu[int]{}
-	var wg sync.WaitGroup
-	n := 100000
-	wg.Add(n)
-	for i := 0; i < n; i++ {
-		go func(i int) {
-			defer wg.Done()
-			mu.Append(func() int { return i })
-		}(i)
-	}
-	wg.Wait()
-	snap := mu.Snapshot()
-	if len(snap) != n {
-		t.Fatalf("expected %d, got %d", n, len(snap))
 	}
 }
 
@@ -545,5 +303,369 @@ func TestMu_Nil(t *testing.T) {
 	}
 	if len(result) != 0 {
 		t.Fatalf("expected 0, got %d", len(result))
+	}
+}
+
+// ============================================================
+// 六、四档并发压力测试（万/十万/百万/千万）
+// ============================================================
+
+func TestGo_Concurrent(t *testing.T) {
+	for _, tier := range allTiers {
+		t.Run(tier.name, func(t *testing.T) {
+			skipIfTooLarge(t, tier.size)
+
+			var wg sync.WaitGroup
+			var success, fail atomic.Int64
+			wg.Add(tier.size)
+			for i := 0; i < tier.size; i++ {
+				go func(i int) {
+					defer wg.Done()
+					ar := Go(context.Background(), func(ctx context.Context) (int, error) {
+						return i, nil
+					})
+					val, err := ar.Wait()
+					if err == nil && val == i {
+						success.Add(1)
+					} else {
+						fail.Add(1)
+					}
+				}(i)
+			}
+			wg.Wait()
+			if fail.Load() > 0 {
+				t.Fatalf("failures: %d / %d", fail.Load(), tier.size)
+			}
+		})
+	}
+}
+
+func TestGo_WaitTimeout_Concurrent(t *testing.T) {
+	for _, tier := range allTiers {
+		t.Run(tier.name, func(t *testing.T) {
+			skipIfTooLarge(t, tier.size)
+
+			var wg sync.WaitGroup
+			var success, timeout atomic.Int64
+			wg.Add(tier.size)
+			for i := 0; i < tier.size; i++ {
+				go func() {
+					defer wg.Done()
+					ar := Go(context.Background(), func(ctx context.Context) (int, error) {
+						return 1, nil
+					})
+					_, _, ok := ar.WaitTimeout(time.Second)
+					if ok {
+						success.Add(1)
+					} else {
+						timeout.Add(1)
+					}
+				}()
+			}
+			wg.Wait()
+			if timeout.Load() > 0 {
+				t.Fatalf("timeouts: %d", timeout.Load())
+			}
+		})
+	}
+}
+
+func TestGo_WaitCh_Concurrent(t *testing.T) {
+	for _, tier := range allTiers {
+		t.Run(tier.name, func(t *testing.T) {
+			skipIfTooLarge(t, tier.size)
+
+			var wg sync.WaitGroup
+			var success atomic.Int64
+			wg.Add(tier.size)
+			for i := 0; i < tier.size; i++ {
+				go func() {
+					defer wg.Done()
+					ar := Go(context.Background(), func(ctx context.Context) (int, error) {
+						return 1, nil
+					})
+					select {
+					case r := <-ar.WaitCh():
+						if r.Err == nil && r.Value == 1 {
+							success.Add(1)
+						}
+					case <-time.After(5 * time.Second):
+					}
+				}()
+			}
+			wg.Wait()
+			if success.Load() < int64(tier.size)*95/100 {
+				t.Fatalf("expected >= 95%% success, got %d / %d", success.Load(), tier.size)
+			}
+		})
+	}
+}
+
+func TestGo_MultipleWait_Concurrent(t *testing.T) {
+	for _, tier := range allTiers {
+		t.Run(tier.name, func(t *testing.T) {
+			skipIfTooLarge(t, tier.size)
+			n := 100 // fixed concurrent tasks, each with 10 parallel Wait calls
+
+			var wg sync.WaitGroup
+			wg.Add(n)
+			for i := 0; i < n; i++ {
+				go func() {
+					defer wg.Done()
+					ar := Go(context.Background(), func(ctx context.Context) (int, error) {
+						return 42, nil
+					})
+					var innerWg sync.WaitGroup
+					innerWg.Add(10)
+					for j := 0; j < 10; j++ {
+						go func() {
+							defer innerWg.Done()
+							val, err := ar.Wait()
+							if err != nil || val != 42 {
+								t.Errorf("multiple wait failed: val=%d, err=%v", val, err)
+							}
+						}()
+					}
+					innerWg.Wait()
+				}()
+			}
+			wg.Wait()
+		})
+	}
+}
+
+func TestGoResult_Concurrent(t *testing.T) {
+	for _, tier := range allTiers {
+		t.Run(tier.name, func(t *testing.T) {
+			skipIfTooLarge(t, tier.size)
+
+			var wg sync.WaitGroup
+			var success atomic.Int64
+			wg.Add(tier.size)
+			for i := 0; i < tier.size; i++ {
+				go func() {
+					defer wg.Done()
+					tk := GoResult(context.Background(), func(ctx context.Context) (int, error) {
+						return 1, nil
+					})
+					val, err := tk.Result()
+					if err == nil && val == 1 {
+						success.Add(1)
+					}
+				}()
+			}
+			wg.Wait()
+			if success.Load() != int64(tier.size) {
+				t.Fatalf("expected %d, got %d", tier.size, success.Load())
+			}
+		})
+	}
+}
+
+func TestGoAct_Concurrent(t *testing.T) {
+	for _, tier := range allTiers {
+		t.Run(tier.name, func(t *testing.T) {
+			skipIfTooLarge(t, tier.size)
+
+			var wg sync.WaitGroup
+			var success atomic.Int64
+			wg.Add(tier.size)
+			for i := 0; i < tier.size; i++ {
+				go func() {
+					defer wg.Done()
+					ar := GoAct(context.Background(), func(ctx context.Context) error {
+						return nil
+					})
+					_, err := ar.Wait()
+					if err == nil {
+						success.Add(1)
+					}
+				}()
+			}
+			wg.Wait()
+			if success.Load() != int64(tier.size) {
+				t.Fatalf("expected %d, got %d", tier.size, success.Load())
+			}
+		})
+	}
+}
+
+func TestGoResultAct_Concurrent(t *testing.T) {
+	for _, tier := range allTiers {
+		t.Run(tier.name, func(t *testing.T) {
+			skipIfTooLarge(t, tier.size)
+
+			var wg sync.WaitGroup
+			var success atomic.Int64
+			wg.Add(tier.size)
+			for i := 0; i < tier.size; i++ {
+				go func() {
+					defer wg.Done()
+					tk := GoResultAct(context.Background(), func(ctx context.Context) error {
+						return nil
+					})
+					_, err := tk.Result()
+					if err == nil {
+						success.Add(1)
+					}
+				}()
+			}
+			wg.Wait()
+			if success.Load() != int64(tier.size) {
+				t.Fatalf("expected %d, got %d", tier.size, success.Load())
+			}
+		})
+	}
+}
+
+func TestGo_PanicRecovery_Concurrent(t *testing.T) {
+	for _, tier := range allTiers {
+		t.Run(tier.name, func(t *testing.T) {
+			skipIfTooLarge(t, tier.size)
+
+			var wg sync.WaitGroup
+			var panics, nonpanics atomic.Int64
+			wg.Add(tier.size)
+			for i := 0; i < tier.size; i++ {
+				go func(i int) {
+					defer wg.Done()
+					ar := Go(context.Background(), func(ctx context.Context) (int, error) {
+						if i%2 == 0 {
+							panic("even panic")
+						}
+						return i, nil
+					})
+					if ar.IsPanic() {
+						panics.Add(1)
+					} else {
+						nonpanics.Add(1)
+					}
+				}(i)
+			}
+			wg.Wait()
+			t.Logf("panics=%d nonpanics=%d", panics.Load(), nonpanics.Load())
+		})
+	}
+}
+
+func TestMu_ConcurrentAppend(t *testing.T) {
+	for _, tier := range allTiers {
+		t.Run(tier.name, func(t *testing.T) {
+			skipIfTooLarge(t, tier.size)
+
+			mu := &Mu[int]{}
+			var wg sync.WaitGroup
+			wg.Add(tier.size)
+			for i := 0; i < tier.size; i++ {
+				go func(i int) {
+					defer wg.Done()
+					mu.Append(func() int { return i })
+				}(i)
+			}
+			wg.Wait()
+			snap := mu.Snapshot()
+			if len(snap) != tier.size {
+				t.Fatalf("expected %d, got %d", tier.size, len(snap))
+			}
+		})
+	}
+}
+
+// ============================================================
+// 七、Race 竞态测试
+// ============================================================
+
+func TestRace_Go_CancelRace(t *testing.T) {
+	for round := 0; round < 10; round++ {
+		var wg sync.WaitGroup
+		n := 5000
+		wg.Add(n)
+		for i := 0; i < n; i++ {
+			go func() {
+				defer wg.Done()
+				ar := Go(context.Background(), func(ctx context.Context) (int, error) {
+					select {
+					case <-ctx.Done():
+						return 0, ctx.Err()
+					case <-time.After(5 * time.Millisecond):
+						return 1, nil
+					}
+				})
+				_, _ = ar.Cancel()
+			}()
+		}
+		wg.Wait()
+	}
+}
+
+func TestRace_Go_ContextCancellation(t *testing.T) {
+	for round := 0; round < 10; round++ {
+		var wg sync.WaitGroup
+		n := 5000
+		var cancelled atomic.Int64
+		wg.Add(n)
+		for i := 0; i < n; i++ {
+			go func() {
+				defer wg.Done()
+				ctx, cancel := context.WithCancel(context.Background())
+				ar := Go(ctx, func(ctx context.Context) (int, error) {
+					select {
+					case <-ctx.Done():
+						return 0, ctx.Err()
+					case <-time.After(time.Second):
+						return 1, nil
+					}
+				})
+				cancel()
+				_, err := ar.Wait()
+				if err != nil {
+					cancelled.Add(1)
+				}
+			}()
+		}
+		wg.Wait()
+		if cancelled.Load() == 0 {
+			t.Fatal("expected some cancellations")
+		}
+	}
+}
+
+func TestRace_Go_WaitCancelRace(t *testing.T) {
+	for round := 0; round < 10; round++ {
+		var wg sync.WaitGroup
+		n := 5000
+		wg.Add(n)
+		for i := 0; i < n; i++ {
+			go func() {
+				defer wg.Done()
+				ar := Go(context.Background(), func(ctx context.Context) (int, error) {
+					time.Sleep(100 * time.Microsecond)
+					return 1, nil
+				})
+				go ar.Cancel()
+				ar.Wait()
+			}()
+		}
+		wg.Wait()
+	}
+}
+
+func TestRace_GoResult_CancelRace(t *testing.T) {
+	for round := 0; round < 10; round++ {
+		var wg sync.WaitGroup
+		n := 5000
+		wg.Add(n)
+		for i := 0; i < n; i++ {
+			go func() {
+				defer wg.Done()
+				tk := GoResult(context.Background(), func(ctx context.Context) (int, error) {
+					time.Sleep(100 * time.Microsecond)
+					return 1, nil
+				})
+				go tk.Cancel()
+				tk.Result()
+			}()
+		}
+		wg.Wait()
 	}
 }

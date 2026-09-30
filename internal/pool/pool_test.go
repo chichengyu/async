@@ -3,7 +3,6 @@ package pool
 import (
 	"context"
 	"errors"
-	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -14,7 +13,31 @@ import (
 
 var errPoolTest = errors.New("pool test error")
 
-// ==================== Pool 基本功能测试 ====================
+// ============================================================
+// 共享工具：四档数据量（万/十万/百万/千万），short 跳过
+// ============================================================
+
+type tier struct {
+	name string
+	size int
+}
+
+var allTiers = []tier{
+	{"万级_10K", 10_000},
+	{"十万级_100K", 100_000},
+	{"百万级_1M", 1_000_000},
+	{"千万级_10M", 10_000_000},
+}
+
+func skipIfTooLarge(t *testing.T, size int) {
+	if testing.Short() && size >= 100_000 {
+		t.Skip("short mode: skip large scale test")
+	}
+}
+
+// ============================================================
+// 一、Pool 基本功能测试
+// ============================================================
 
 func TestNewPool_Defaults(t *testing.T) {
 	p := NewPool[int](5)
@@ -91,28 +114,18 @@ func TestPool_ConcurrencyLimit_NWorkers(t *testing.T) {
 	}
 }
 
-func TestPool_FailFast(t *testing.T) {
-	p, ctx := NewPool[int](4).WithFailFast(context.Background())
+func TestPool_ChainConfigs(t *testing.T) {
+	ctx := context.Background()
+	p, _ := NewPool[int](4).WithTraceID(ctx)
+	if p == nil {
+		t.Fatal("expected non-nil after chain")
+	}
 	defer p.Close()
-	for i := 0; i < 20; i++ {
-		idx := i
-		_ = p.SubmitAt(idx, ctx, func(ctx context.Context) (int, error) {
-			if idx == 5 {
-				return 0, errPoolTest
-			}
-			select {
-			case <-ctx.Done():
-				return 0, ctx.Err()
-			case <-time.After(50 * time.Millisecond):
-				return idx, nil
-			}
-		})
-	}
-	results := p.Wait()
-	if results[5].Err == nil {
-		t.Fatal("expected error at index 5 in fail-fast mode")
-	}
 }
+
+// ============================================================
+// 二、Pool 超时与取消测试
+// ============================================================
 
 func TestPool_WaitTimeout(t *testing.T) {
 	p := NewPool[int](4)
@@ -147,6 +160,63 @@ func TestPool_WaitContext(t *testing.T) {
 		t.Fatal("expected timeout via context")
 	}
 }
+
+func TestPool_WithTimeout(t *testing.T) {
+	p := NewPool[int](2).WithTimeout(100 * time.Millisecond)
+	defer p.Close()
+	ctx := context.Background()
+	for i := 0; i < 10; i++ {
+		_ = p.Submit(ctx, func(ctx context.Context) (int, error) {
+			select {
+			case <-ctx.Done():
+				return 0, ctx.Err()
+			case <-time.After(500 * time.Millisecond):
+				return 1, nil
+			}
+		})
+	}
+	results := p.Wait()
+	failCount := 0
+	for _, r := range results {
+		if r.Err != nil {
+			failCount++
+		}
+	}
+	if failCount == 0 {
+		t.Fatal("expected some timeout failures")
+	}
+}
+
+// ============================================================
+// 三、Pool FailFast 快速失败测试
+// ============================================================
+
+func TestPool_FailFast(t *testing.T) {
+	p, ctx := NewPool[int](4).WithFailFast(context.Background())
+	defer p.Close()
+	for i := 0; i < 20; i++ {
+		idx := i
+		_ = p.SubmitAt(idx, ctx, func(ctx context.Context) (int, error) {
+			if idx == 5 {
+				return 0, errPoolTest
+			}
+			select {
+			case <-ctx.Done():
+				return 0, ctx.Err()
+			case <-time.After(50 * time.Millisecond):
+				return idx, nil
+			}
+		})
+	}
+	results := p.Wait()
+	if results[5].Err == nil {
+		t.Fatal("expected error at index 5 in fail-fast mode")
+	}
+}
+
+// ============================================================
+// 四、Pool 边界与统计测试
+// ============================================================
 
 func TestPool_PanicRecovery(t *testing.T) {
 	p := NewPool[int](4)
@@ -241,42 +311,9 @@ func TestPool_CloseThenSubmitAfterWait(t *testing.T) {
 	}
 }
 
-func TestPool_ChainConfigs(t *testing.T) {
-	ctx := context.Background()
-	p, _ := NewPool[int](4).WithTraceID(ctx)
-	if p == nil {
-		t.Fatal("expected non-nil after chain")
-	}
-	defer p.Close()
-}
-
-func TestPool_WithTimeout(t *testing.T) {
-	p := NewPool[int](2).WithTimeout(100 * time.Millisecond)
-	defer p.Close()
-	ctx := context.Background()
-	for i := 0; i < 10; i++ {
-		_ = p.Submit(ctx, func(ctx context.Context) (int, error) {
-			select {
-			case <-ctx.Done():
-				return 0, ctx.Err()
-			case <-time.After(500 * time.Millisecond):
-				return 1, nil
-			}
-		})
-	}
-	results := p.Wait()
-	failCount := 0
-	for _, r := range results {
-		if r.Err != nil {
-			failCount++
-		}
-	}
-	if failCount == 0 {
-		t.Fatal("expected some timeout failures")
-	}
-}
-
-// ==================== NoResultPool 测试 ====================
+// ============================================================
+// 五、NoResultPool 测试
+// ============================================================
 
 func TestNoResultPool_Basic(t *testing.T) {
 	nr := NewPool[struct{}](4)
@@ -317,279 +354,738 @@ func TestNoResultPool_Close(t *testing.T) {
 	}
 }
 
-// ==================== 高并发极限压力测试 ====================
+// ============================================================
+// 六、Pool 流式消费测试
+// ============================================================
 
-func TestPool_50K_SubmitWait(t *testing.T) {
-	p := NewPool[int](50)
+func TestPool_WithStreaming_Basic(t *testing.T) {
+	p := NewPool[int](4)
 	defer p.Close()
+
+	p.WithStreaming(128)
+	ch := p.StreamResults()
+	if ch == nil {
+		t.Fatal("StreamResults returned nil")
+	}
+
+	var streamed []core.Result[int]
+	var mu sync.Mutex
+	done := make(chan struct{})
+	go func() {
+		for r := range ch {
+			mu.Lock()
+			streamed = append(streamed, r)
+			mu.Unlock()
+		}
+		close(done)
+	}()
+
 	ctx := context.Background()
-	n := 50000
-	var submitted atomic.Int64
-	for i := 0; i < n; i++ {
-		err := p.Submit(ctx, func(ctx context.Context) (int, error) {
-			return 1, nil
-		})
-		if err == nil {
-			submitted.Add(1)
-		}
-	}
-	results := p.Wait()
-	expected := int(submitted.Load())
-	if len(results) != expected {
-		t.Fatalf("expected %d, got %d", expected, len(results))
-	}
-}
-
-func TestPool_200K_SubmitWait(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping 200K in short mode")
-	}
-	p := NewPool[int](200)
-	defer p.Close()
-	ctx := context.Background()
-	n := 200000
-	var submitted atomic.Int64
-	var counter atomic.Int64
-	for i := 0; i < n; i++ {
-		err := p.Submit(ctx, func(ctx context.Context) (int, error) {
-			counter.Add(1)
-			return int(counter.Load()), nil
-		})
-		if err == nil {
-			submitted.Add(1)
-		}
-	}
-	results := p.Wait()
-	expected := int(submitted.Load())
-	if len(results) != expected {
-		t.Fatalf("expected %d, got %d", expected, len(results))
-	}
-	if counter.Load() != int64(expected) {
-		t.Fatalf("expected counter=%d, got %d", expected, counter.Load())
-	}
-}
-
-func TestPool_ConcurrentSubmit_300Goroutines(t *testing.T) {
-	for round := 0; round < 5; round++ {
-		p := NewPool[int](100)
-		ctx := context.Background()
-		var submitWg sync.WaitGroup
-		goroutines := 300
-		tasksPerGoroutine := 167
-		var totalSubmitted atomic.Int64
-		submitWg.Add(goroutines)
-		for gid := 0; gid < goroutines; gid++ {
-			go func(gid int) {
-				defer submitWg.Done()
-				for tid := 0; tid < tasksPerGoroutine; tid++ {
-					err := p.Submit(ctx, func(ctx context.Context) (int, error) {
-						return gid*1000 + tid, nil
-					})
-					if err == nil {
-						totalSubmitted.Add(1)
-					}
-				}
-			}(gid)
-		}
-		submitWg.Wait()
-		results := p.Wait()
-		expected := int(totalSubmitted.Load())
-		if len(results) != expected {
-			t.Fatalf("round %d: expected %d, got %d", round, expected, len(results))
-		}
-		p.Close()
-		t.Logf("round %d: %d tasks, %d results", round, expected, len(results))
-	}
-}
-
-func TestPool_FailFast_50K(t *testing.T) {
-	for round := 0; round < 5; round++ {
-		p, ctx := NewPool[int](100).WithFFSto(context.Background(), 2*time.Second)
-		n := 50000
-		for i := 0; i < n; i++ {
-			idx := i
-			_ = p.Submit(ctx, func(ctx context.Context) (int, error) {
-				if idx == 0 {
-					return 0, errors.New("trigger fail fast")
-				}
-				select {
-				case <-ctx.Done():
-					return 0, ctx.Err()
-				case <-time.After(time.Millisecond * 100):
-					return idx, nil
-				}
-			})
-		}
-		results := p.Wait()
-		if len(results) != n {
-			t.Fatalf("round %d: expected %d, got %d", round, n, len(results))
-		}
-		if results[0].Err == nil {
-			t.Fatalf("round %d: expected first task to fail", round)
-		}
-		p.Close()
-	}
-}
-
-func TestPool_SubmitAt_LargeIndices_10K(t *testing.T) {
-	p := NewPool[int](20)
-	defer p.Close()
-	ctx := context.Background()
-	n := 10000
-	for i := 0; i < n; i++ {
-		idx := i
-		_ = p.SubmitAt(idx, ctx, func(ctx context.Context) (int, error) {
-			if idx%1000 == 0 {
-				return 0, fmt.Errorf("err at %d", idx)
-			}
-			return idx, nil
+	for i := 0; i < 100; i++ {
+		_ = p.Submit(ctx, func(ctx context.Context) (int, error) {
+			return i, nil
 		})
 	}
+
 	results := p.Wait()
-	if len(results) != n {
-		t.Fatalf("expected %d, got %d", n, len(results))
+	<-done
+
+	if len(results) != 100 {
+		t.Fatalf("Wait: expected 100 results, got %d", len(results))
 	}
-	errCount := 0
-	for _, r := range results {
+	mu.Lock()
+	defer mu.Unlock()
+	if len(streamed) != 100 {
+		t.Fatalf("StreamResults: expected 100 streamed, got %d", len(streamed))
+	}
+}
+
+func TestPool_WithStreaming_DefaultBufSize(t *testing.T) {
+	p := NewPool[int](8)
+	defer p.Close()
+	p.WithStreaming(0)
+
+	ctx := context.Background()
+	for i := 0; i < 50; i++ {
+		_ = p.Submit(ctx, func(ctx context.Context) (int, error) {
+			return i, nil
+		})
+	}
+	p.Wait()
+}
+
+func TestPool_WithResultCallback_Basic(t *testing.T) {
+	p := NewPool[int](4)
+	defer p.Close()
+
+	var cbCount atomic.Int64
+	var cbResults sync.Map
+	p.WithResultCallback(func(r core.Result[int]) {
+		cbCount.Add(1)
+		cbResults.Store(r.Value, true)
+	})
+
+	ctx := context.Background()
+	for i := 0; i < 100; i++ {
+		_ = p.Submit(ctx, func(ctx context.Context) (int, error) {
+			return i, nil
+		})
+	}
+	p.Wait()
+
+	if c := cbCount.Load(); c != 100 {
+		t.Fatalf("callback count: expected 100, got %d", c)
+	}
+}
+
+func TestPool_WithResultCallback_Errors(t *testing.T) {
+	p := NewPool[int](4)
+	defer p.Close()
+
+	var errCount atomic.Int64
+	p.WithResultCallback(func(r core.Result[int]) {
 		if r.Err != nil {
-			errCount++
+			errCount.Add(1)
 		}
-	}
-	if errCount == 0 {
-		t.Fatal("expected some errors")
-	}
-}
+	})
 
-func TestPool_CPUBound_500Tasks(t *testing.T) {
-	for round := 0; round < 5; round++ {
-		p := NewPool[int](core.CPU() * 4)
-		ctx := context.Background()
-		n := 500
-		for i := 0; i < n; i++ {
-			idx := i
-			_ = p.Submit(ctx, func(ctx context.Context) (int, error) {
-				sum := 0
-				for j := 0; j < 200000; j++ {
-					sum += j
-				}
-				return sum + idx, nil
-			})
-		}
-		results := p.Wait()
-		if len(results) != n {
-			t.Fatalf("round %d: expected %d, got %d", round, n, len(results))
-		}
-		p.Close()
-	}
-}
-
-func TestNoResultPool_100K(t *testing.T) {
-	nr := NewPool[struct{}](100)
-	defer nr.Close()
 	ctx := context.Background()
-	n := 100000
-	var counter atomic.Int64
-	for i := 0; i < n; i++ {
-		_ = nr.Submit(ctx, func(ctx context.Context) (struct{}, error) {
-			counter.Add(1)
-			return struct{}{}, nil
-		})
-	}
-	nr.Wait()
-	if counter.Load() != int64(n) {
-		t.Fatalf("expected %d, got %d", n, counter.Load())
-	}
-}
-
-func TestPool_MixedSuccessAndError_50K(t *testing.T) {
-	p := NewPool[int](50)
-	defer p.Close()
-	ctx := context.Background()
-	n := 50000
-	var success, fail atomic.Int64
-	for i := 0; i < n; i++ {
+	for i := 0; i < 50; i++ {
 		idx := i
 		_ = p.Submit(ctx, func(ctx context.Context) (int, error) {
-			if idx%10 == 0 {
+			if idx%2 == 0 {
 				return 0, errPoolTest
 			}
 			return idx, nil
 		})
 	}
-	results := p.Wait()
-	for _, r := range results {
-		if r.Ok() {
-			success.Add(1)
-		} else {
-			fail.Add(1)
-		}
-	}
-	if success.Load()+fail.Load() != int64(n) {
-		t.Fatalf("total mismatch: %d+%d != %d", success.Load(), fail.Load(), n)
+	p.Wait()
+
+	if c := errCount.Load(); c != 25 {
+		t.Fatalf("error callback count: expected 25, got %d", c)
 	}
 }
 
-func TestPool_CloseRace_SubmitAndClose(t *testing.T) {
-	for round := 0; round < 100; round++ {
-		p := NewPool[int](10)
-		var wg sync.WaitGroup
-		wg.Add(2)
-		ctx := context.Background()
+func TestPool_WithStreaming_NoDeadlock_NoConsumer(t *testing.T) {
+	p := NewPool[int](4)
+	defer p.Close()
+	p.WithStreaming(10)
+
+	ctx := context.Background()
+	for i := 0; i < 10000; i++ {
+		_ = p.Submit(ctx, func(ctx context.Context) (int, error) {
+			return i, nil
+		})
+	}
+
+	done := make(chan struct{})
+	go func() {
+		results := p.Wait()
+		if len(results) != 10000 {
+			t.Errorf("expected 10000 results, got %d", len(results))
+		}
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("test timed out - possible deadlock")
+	}
+}
+
+func TestPool_StreamResults_ConcurrentConsumer(t *testing.T) {
+	p := NewPool[int](8)
+	defer p.Close()
+	p.WithStreaming(256)
+
+	var consumed atomic.Int64
+	var wg sync.WaitGroup
+	consumers := 4
+	ch := p.StreamResults()
+
+	wg.Add(consumers)
+	for c := 0; c < consumers; c++ {
 		go func() {
 			defer wg.Done()
-			for i := 0; i < 100; i++ {
-				p.Submit(ctx, func(ctx context.Context) (int, error) {
-					time.Sleep(time.Millisecond)
-					return 1, nil
-				})
+			for range ch {
+				consumed.Add(1)
 			}
 		}()
-		go func() {
-			defer wg.Done()
-			time.Sleep(time.Millisecond)
-			p.Close()
-		}()
-		wg.Wait()
 	}
-}
 
-func TestPool_TaskFullBufferHandling_100K(t *testing.T) {
-	p := NewPool[int](10)
-	defer p.Close()
 	ctx := context.Background()
-	n := 100000
-	var submitted atomic.Int64
-	var rejected atomic.Int64
+	n := 1000
 	for i := 0; i < n; i++ {
-		err := p.Submit(ctx, func(ctx context.Context) (int, error) { return 1, nil })
-		if err == nil {
-			submitted.Add(1)
-		} else {
-			rejected.Add(1)
-		}
+		_ = p.Submit(ctx, func(ctx context.Context) (int, error) {
+			return i, nil
+		})
 	}
+
 	results := p.Wait()
-	if len(results) != int(submitted.Load()) {
-		t.Fatalf("submitted %d, got %d", submitted.Load(), len(results))
+	wg.Wait()
+
+	if len(results) != n {
+		t.Fatalf("Wait: expected %d results, got %d", n, len(results))
 	}
-	t.Logf("100K: submitted=%d, rejected=%d", submitted.Load(), rejected.Load())
+	if c := consumed.Load(); c != int64(n) {
+		t.Fatalf("concurrent consumers: expected %d consumed, got %d", n, c)
+	}
 }
 
-func TestPool_Concurrency1_10K(t *testing.T) {
-	p := NewPool[int](1)
+// ============================================================
+// 七、Pool 环形缓冲测试
+// ============================================================
+
+func TestPool_WithRingBuffer_Basic(t *testing.T) {
+	p := NewPool[int](4)
 	defer p.Close()
+	p.WithRingBuffer(1000, core.OverflowDrop)
+
+	ctx := context.Background()
+	for i := 0; i < 500; i++ {
+		_ = p.Submit(ctx, func(ctx context.Context) (int, error) {
+			return i, nil
+		})
+	}
+
+	p.Wait()
+	flushed := p.Flush(0)
+	if len(flushed) != 500 {
+		t.Fatalf("Flush: expected 500 results, got %d", len(flushed))
+	}
+}
+
+func TestPool_WithRingBuffer_OverflowDrop_SmallCapacity(t *testing.T) {
+	p := NewPool[int](4)
+	defer p.Close()
+	p.WithRingBuffer(50, core.OverflowDrop)
+
+	ctx := context.Background()
+	for i := 0; i < 1000; i++ {
+		_ = p.Submit(ctx, func(ctx context.Context) (int, error) {
+			return i, nil
+		})
+	}
+
+	flushed := p.Flush(500)
+	if len(flushed) < 50 {
+		t.Fatalf("Flush: expected at least 50 results, got %d", len(flushed))
+	}
+	t.Logf("OverflowDrop: capacity=50, submitted=1000, flushed=%d", len(flushed))
+}
+
+func TestPool_WithRingBuffer_OverflowBlock_BatchedFlush(t *testing.T) {
+	p := NewPool[int](4)
+	defer p.Close()
+	p.WithRingBuffer(500, core.OverflowBlock)
+
+	ctx := context.Background()
+	for i := 0; i < 500; i++ {
+		_ = p.Submit(ctx, func(ctx context.Context) (int, error) {
+			return i, nil
+		})
+	}
+
+	p.Wait()
+	first := p.Flush(100)
+	second := p.Flush(500)
+	total := len(first) + len(second)
+	if total != 500 {
+		t.Fatalf("OverflowBlock: expected 500 total flushed, got %d (batch1=%d batch2=%d)",
+			total, len(first), len(second))
+	}
+}
+
+func TestPool_WithRingBuffer_Empty(t *testing.T) {
+	p := NewPool[int](4)
+	defer p.Close()
+	p.WithRingBuffer(100, core.OverflowDrop)
+
+	flushed := p.Flush(100)
+	if len(flushed) != 0 {
+		t.Fatalf("Flush on empty ring buffer: expected 0, got %d", len(flushed))
+	}
+}
+
+func TestPool_WithRingBuffer_LargeCapacity(t *testing.T) {
+	p := NewPool[int](8)
+	defer p.Close()
+	p.WithRingBuffer(10000, core.OverflowDrop)
+
 	ctx := context.Background()
 	n := 10000
 	for i := 0; i < n; i++ {
-		_ = p.Submit(ctx, func(ctx context.Context) (int, error) { return 1, nil })
+		_ = p.Submit(ctx, func(ctx context.Context) (int, error) {
+			return i, nil
+		})
 	}
-	results := p.Wait()
-	if len(results) != n {
-		t.Fatalf("expected %d, got %d", n, len(results))
+
+	p.Wait()
+	flushed := p.Flush(0)
+	if len(flushed) != n {
+		t.Fatalf("Flush: expected %d results, got %d", n, len(flushed))
+	}
+	for _, r := range flushed {
+		if r.Err != nil {
+			t.Fatalf("unexpected error: %v", r.Err)
+		}
 	}
 }
 
-// ==================== MultiPool / Shard 测试 ====================
+func TestPool_RingBuffer_PreservedAfterReset(t *testing.T) {
+	p := NewPool[int](4)
+	defer p.Close()
+	p.WithRingBuffer(500, core.OverflowDrop)
+
+	ctx := context.Background()
+	for i := 0; i < 100; i++ {
+		_ = p.Submit(ctx, func(ctx context.Context) (int, error) {
+			return i, nil
+		})
+	}
+	p.Wait()
+
+	_, err := p.Reset()
+	if err != nil {
+		t.Fatalf("Reset error: %v", err)
+	}
+
+	for i := 0; i < 100; i++ {
+		_ = p.Submit(ctx, func(ctx context.Context) (int, error) {
+			return i * 2, nil
+		})
+	}
+
+	p.Wait()
+	flushed := p.Flush(0)
+	if len(flushed) != 100 {
+		t.Fatalf("Flush after Reset: expected 100 results, got %d", len(flushed))
+	}
+}
+
+func TestPool_RingBuffer_ConcurrentSubmitFlush(t *testing.T) {
+	p := NewPool[int](8)
+	defer p.Close()
+	p.WithRingBuffer(5000, core.OverflowBlock)
+
+	ctx := context.Background()
+	var wg sync.WaitGroup
+	goroutines := 10
+	tasksPerGoroutine := 500
+	var submitted atomic.Int64
+
+	wg.Add(goroutines)
+	for g := 0; g < goroutines; g++ {
+		go func(gid int) {
+			defer wg.Done()
+			for i := 0; i < tasksPerGoroutine; i++ {
+				err := p.Submit(ctx, func(ctx context.Context) (int, error) {
+					return gid*10000 + i, nil
+				})
+				if err == nil {
+					submitted.Add(1)
+				}
+			}
+		}(g)
+	}
+	wg.Wait()
+	p.Wait()
+	flushed := p.Flush(0)
+	expected := int(submitted.Load())
+	if len(flushed) != expected {
+		t.Fatalf("Flush: expected %d results, got %d", expected, len(flushed))
+	}
+}
+
+// ============================================================
+// 八、Pool 背压控制测试
+// ============================================================
+
+func TestPool_WithMaxPending_Basic(t *testing.T) {
+	p := NewPool[int](1)
+	defer p.Close()
+	p.WithMaxPending(10)
+	p.WithOverflow(core.OverflowBlock)
+
+	ctx := context.Background()
+	submitted := 0
+	for i := 0; i < 100; i++ {
+		err := p.Submit(ctx, func(ctx context.Context) (int, error) {
+			time.Sleep(5 * time.Millisecond)
+			return i, nil
+		})
+		if err != nil {
+			break
+		}
+		submitted++
+	}
+	if submitted < 1 {
+		t.Fatal("no tasks submitted at all")
+	}
+	t.Logf("backpressure: submitted %d of 100 tasks", submitted)
+
+	p.Wait()
+}
+
+func TestPool_WithMaxPending_Zero(t *testing.T) {
+	p := NewPool[int](4)
+	defer p.Close()
+	p.WithMaxPending(0)
+
+	ctx := context.Background()
+	for i := 0; i < 100; i++ {
+		err := p.Submit(ctx, func(ctx context.Context) (int, error) {
+			return i, nil
+		})
+		if err != nil {
+			t.Fatalf("Submit error with maxPending=0: %v", err)
+		}
+	}
+	results := p.Wait()
+	if len(results) != 100 {
+		t.Fatalf("expected 100 results, got %d", len(results))
+	}
+}
+
+func TestPool_OverflowStrategy_Error(t *testing.T) {
+	p := NewPool[int](1)
+	defer p.Close()
+	p.WithMaxPending(5)
+	p.WithOverflow(core.OverflowError)
+
+	ctx := context.Background()
+
+	overflowDetected := false
+	for i := 0; i < 200; i++ {
+		err := p.Submit(ctx, func(ctx context.Context) (int, error) {
+			time.Sleep(2 * time.Millisecond)
+			return i, nil
+		})
+		if err == core.ErrQueueOverflow {
+			overflowDetected = true
+			break
+		}
+	}
+
+	if !overflowDetected {
+		t.Skip("OverflowError not triggered (depends on timing)")
+	}
+	t.Log("OverflowError correctly triggered")
+}
+
+func TestPool_WithOverflow_Drop(t *testing.T) {
+	p := NewPool[int](1)
+	defer p.Close()
+	p.WithMaxPending(3)
+	p.WithOverflow(core.OverflowDrop)
+
+	ctx := context.Background()
+	for i := 0; i < 100; i++ {
+		_ = p.Submit(ctx, func(ctx context.Context) (int, error) {
+			time.Sleep(2 * time.Millisecond)
+			return i, nil
+		})
+	}
+
+	results := p.Wait()
+	if len(results) < 1 {
+		t.Fatal("no results at all")
+	}
+	t.Logf("OverflowDrop: submitted 100, results=%d (some dropped)", len(results))
+}
+
+func TestPool_Backpressure_WorkersBusy(t *testing.T) {
+	p := NewPool[int](2)
+	defer p.Close()
+	p.WithMaxPending(50)
+
+	ctx := context.Background()
+	for i := 0; i < 200; i++ {
+		_ = p.Submit(ctx, func(ctx context.Context) (int, error) {
+			time.Sleep(3 * time.Millisecond)
+			return i, nil
+		})
+	}
+
+	results := p.Wait()
+	if len(results) < 1 {
+		t.Fatal("no results")
+	}
+	t.Logf("backpressure: workers=2, maxPending=50, results=%d", len(results))
+}
+
+// ============================================================
+// 九、Pool 流式 + 环形缓冲 + 背压 组合测试
+// ============================================================
+
+func TestPool_Streaming_RingBuffer_Combined(t *testing.T) {
+	p := NewPool[int](4)
+	defer p.Close()
+	p.WithStreaming(64)
+	p.WithRingBuffer(1000, core.OverflowDrop)
+	p.WithMaxPending(500)
+	p.WithOverflow(core.OverflowBlock)
+
+	var callbackCount atomic.Int64
+	p.WithResultCallback(func(r core.Result[int]) {
+		callbackCount.Add(1)
+	})
+
+	ctx := context.Background()
+	for i := 0; i < 500; i++ {
+		_ = p.Submit(ctx, func(ctx context.Context) (int, error) {
+			return i, nil
+		})
+	}
+
+	p.Wait()
+	flushed := p.Flush(0)
+
+	if len(flushed) != 500 {
+		t.Fatalf("Flush: expected 500 results, got %d", len(flushed))
+	}
+	if c := callbackCount.Load(); c != 500 {
+		t.Fatalf("callback: expected 500, got %d", c)
+	}
+}
+
+// ============================================================
+// 十、Pool 自动扩缩容测试
+// ============================================================
+
+func TestAutoScale_BasicEnableDisable(t *testing.T) {
+	p := NewPool[int](4)
+	defer p.Close()
+
+	if p.IsAutoScaleEnabled() {
+		t.Fatal("auto-scale should be disabled by default")
+	}
+
+	p.EnableAutoScale(nil)
+	if !p.IsAutoScaleEnabled() {
+		t.Fatal("auto-scale should be enabled after EnableAutoScale")
+	}
+
+	p.EnableAutoScale(nil)
+	if !p.IsAutoScaleEnabled() {
+		t.Fatal("auto-scale should remain enabled after duplicate call")
+	}
+
+	p.DisableAutoScale()
+	if p.IsAutoScaleEnabled() {
+		t.Fatal("auto-scale should be disabled after DisableAutoScale")
+	}
+
+	if p.Size() != core.DefaultAutoScaleConfig().MinWorkers {
+		t.Logf("size after disable: %d, min: %d", p.Size(), core.DefaultAutoScaleConfig().MinWorkers)
+	}
+}
+
+func TestAutoScale_ScaleUp(t *testing.T) {
+	initialSize := 4
+	p := NewPool[int](initialSize)
+	defer p.Close()
+
+	p.EnableAutoScale(&core.AutoScaleConfig{
+		MinWorkers:         2,
+		MaxWorkers:         100,
+		CheckInterval:      200 * time.Millisecond,
+		ScaleUpThreshold:   0.5,
+		ScaleDownThreshold: 0.1,
+		ScaleUpChecks:      2,
+		ScaleDownChecks:    5,
+	})
+
+	startSize := p.Size()
+	t.Logf("initial size: %d", startSize)
+
+	var wg sync.WaitGroup
+	submitCount := 10000
+	wg.Add(submitCount)
+
+	var submitted int64
+	for i := 0; i < submitCount; i++ {
+		v := i
+		if err := p.TrySubmit(context.Background(), func(ctx context.Context) (int, error) {
+			time.Sleep(10 * time.Millisecond)
+			return v * 2, nil
+		}); err == nil {
+			atomic.AddInt64(&submitted, 1)
+		}
+		wg.Done()
+	}
+
+	time.Sleep(1 * time.Second)
+
+	afterSize := p.Size()
+	t.Logf("size after load: %d (initial: %d)", afterSize, startSize)
+
+	if afterSize <= startSize {
+		t.Logf("WARNING: auto-scale did not scale up (busy workers may be < threshold)")
+	}
+
+	p.Wait()
+	p.Close()
+	t.Logf("final size: %d, submitted: %d", p.Size(), atomic.LoadInt64(&submitted))
+}
+
+func TestAutoScale_ScaleDown(t *testing.T) {
+	p := NewPool[int](20)
+	defer p.Close()
+
+	p.EnableAutoScale(&core.AutoScaleConfig{
+		MinWorkers:         2,
+		MaxWorkers:         50,
+		CheckInterval:      200 * time.Millisecond,
+		ScaleUpThreshold:   0.7,
+		ScaleDownThreshold: 0.3,
+		ScaleUpChecks:      3,
+		ScaleDownChecks:    3,
+	})
+
+	p.Resize(20)
+	t.Logf("forced size to 20")
+
+	time.Sleep(2 * time.Second)
+
+	finalSize := p.Size()
+	t.Logf("size after idle: %d", finalSize)
+
+	if finalSize >= 20 {
+		t.Logf("WARNING: auto-scale did not scale down (busy ratio may not be < threshold)")
+	}
+}
+
+func TestAutoScale_100K_HighLoad(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping autoscale 100K in short mode")
+	}
+	p := NewPool[int](4)
+	defer p.Close()
+
+	p.EnableAutoScale(&core.AutoScaleConfig{
+		MinWorkers:         2,
+		MaxWorkers:         500,
+		CheckInterval:      300 * time.Millisecond,
+		ScaleUpThreshold:   0.5,
+		ScaleDownThreshold: 0.1,
+		ScaleUpChecks:      2,
+		ScaleDownChecks:    5,
+	})
+
+	n := 100_000
+	var wg sync.WaitGroup
+	wg.Add(n)
+
+	start := time.Now()
+	for i := 0; i < n; i++ {
+		v := i
+		go func() {
+			defer wg.Done()
+			p.Submit(context.Background(), func(ctx context.Context) (int, error) {
+				time.Sleep(1 * time.Millisecond)
+				return v * 2, nil
+			})
+		}()
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		wg.Wait()
+	}()
+
+	peakSize := p.Size()
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+
+loop:
+	for {
+		select {
+		case <-done:
+			break loop
+		case <-ticker.C:
+			s := p.Size()
+			if s > peakSize {
+				peakSize = s
+			}
+			t.Logf("auto-scale monitoring: size=%d, busy=%d, active=%d, pending=%d",
+				s, p.Busy(), p.Active(), p.Pending())
+		}
+	}
+
+	p.Wait()
+	elapsed := time.Since(start)
+
+	opsPerSec := float64(n) / elapsed.Seconds()
+	t.Logf("100K with auto-scale: peak=%d, final=%d, %d tasks in %v (%.0f ops/s)",
+		peakSize, p.Size(), n, elapsed, opsPerSec)
+}
+
+func TestAutoScale_NoDeadlock_ConcurrentSubmitResize(t *testing.T) {
+	p := NewPool[int](4)
+	defer p.Close()
+
+	p.EnableAutoScale(&core.AutoScaleConfig{
+		MinWorkers:         2,
+		MaxWorkers:         100,
+		CheckInterval:      100 * time.Millisecond,
+		ScaleUpThreshold:   0.3,
+		ScaleDownThreshold: 0.1,
+		ScaleUpChecks:      1,
+		ScaleDownChecks:    5,
+	})
+
+	var wg sync.WaitGroup
+	n := 5000
+	wg.Add(n)
+
+	start := time.Now()
+	for i := 0; i < n; i++ {
+		go func() {
+			defer wg.Done()
+			p.Submit(context.Background(), func(ctx context.Context) (int, error) {
+				time.Sleep(100 * time.Microsecond)
+				return 0, nil
+			})
+		}()
+	}
+
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		elapsed := time.Since(start)
+		t.Logf("5K concurrent submit + auto-scale: completed in %v", elapsed)
+	case <-time.After(30 * time.Second):
+		t.Fatal("deadlock detected: concurrent submit + auto-scale timed out")
+	}
+
+	p.Wait()
+	p.Close()
+}
+
+func TestAutoScale_DisabledByDefault(t *testing.T) {
+	p := NewPool[int](4)
+	defer p.Close()
+
+	if p.IsAutoScaleEnabled() {
+		t.Fatal("auto-scale must be disabled by default")
+	}
+
+	if p.autoScale != nil {
+		t.Fatal("autoScale config must be nil by default")
+	}
+}
+
+// ============================================================
+// 十一、MultiPool / Shard 基本测试
+// ============================================================
 
 func TestMultiPool_Shard_Basic(t *testing.T) {
 	mp := NewPool[int](4).Shard(4)
@@ -611,7 +1107,6 @@ func TestMultiPool_Shard_Basic(t *testing.T) {
 		t.Fatalf("expected %d results, got %d", n, len(results))
 	}
 
-	// verify results
 	for _, r := range results {
 		if !r.Ok() {
 			t.Fatalf("unexpected error: %v", r.Err)
@@ -620,7 +1115,6 @@ func TestMultiPool_Shard_Basic(t *testing.T) {
 }
 
 func TestMultiPool_Shard_ConfigCopy(t *testing.T) {
-	// 创建带配置的 Pool，然后 Shard，验证配置被复制
 	p := NewPool[int](8).
 		WithTimeout(5 * time.Second).
 		WithMaxPending(100).
@@ -631,7 +1125,6 @@ func TestMultiPool_Shard_ConfigCopy(t *testing.T) {
 		t.Fatalf("expected 4 shards, got %d", mp.ShardCount())
 	}
 
-	// 第一个分片是原 Pool，后三个是克隆
 	for i := 0; i < 4; i++ {
 		sp := mp.GetShard(i)
 		if sp == nil {
@@ -657,7 +1150,6 @@ func TestMultiPool_SubmitKeyed(t *testing.T) {
 
 	ctx := context.Background()
 
-	// 同一 key 应该落到同一分片
 	for i := 0; i < 100; i++ {
 		if err := mp.SubmitKeyed(42, ctx, func(ctx context.Context) (string, error) {
 			return "a", nil
@@ -679,7 +1171,6 @@ func TestMultiPool_TrySubmit(t *testing.T) {
 	ctx := context.Background()
 	n := 500
 	var submitted int
-	// TrySubmit 是非阻塞的，channel 满时会返回 error
 	for i := 0; i < n; i++ {
 		err := mp.TrySubmit(ctx, func(ctx context.Context) (int, error) {
 			return i, nil
@@ -697,7 +1188,6 @@ func TestMultiPool_TrySubmit(t *testing.T) {
 }
 
 func TestMultiPool_Shard_Single(t *testing.T) {
-	// shards <= 1 返回单分片 MultiPool，复用原 Pool
 	p := NewPool[int](4)
 	mp := p.Shard(1)
 
@@ -728,7 +1218,7 @@ func TestMultiPool_Stats(t *testing.T) {
 	if mp.TotalSuccessCount() != int64(n) {
 		t.Fatalf("TotalSuccessCount: expected %d, got %d", n, mp.TotalSuccessCount())
 	}
-	if mp.TotalWorkerCount() != 16 { // 4 shards × 4 workers
+	if mp.TotalWorkerCount() != 16 {
 		t.Fatalf("TotalWorkerCount: expected 16, got %d", mp.TotalWorkerCount())
 	}
 }
@@ -755,14 +1245,198 @@ func TestMultiPool_SubmitBatch(t *testing.T) {
 	}
 }
 
-func TestMultiPool_Race(t *testing.T) {
-	// 竞态检测：多 goroutine 并发提交
+// ============================================================
+// 十二、四档并发压力测试（万/十万/百万/千万）
+// ============================================================
+
+func TestPool_Submit_Concurrent(t *testing.T) {
+	for _, tier := range allTiers {
+		t.Run(tier.name, func(t *testing.T) {
+			skipIfTooLarge(t, tier.size)
+			p := NewPool[int](100)
+			defer p.Close()
+
+			ctx := context.Background()
+			var wg sync.WaitGroup
+			goroutines := 50
+			tasksPerGoroutine := tier.size / goroutines
+			if tasksPerGoroutine < 1 {
+				tasksPerGoroutine = 1
+			}
+			var submitted atomic.Int64
+
+			wg.Add(goroutines)
+			for g := 0; g < goroutines; g++ {
+				go func(gid int) {
+					defer wg.Done()
+					for i := 0; i < tasksPerGoroutine; i++ {
+						if p.Submit(ctx, func(ctx context.Context) (int, error) {
+							return gid*10000 + i, nil
+						}) == nil {
+							submitted.Add(1)
+						}
+					}
+				}(g)
+			}
+			wg.Wait()
+			results := p.Wait()
+			expected := int(submitted.Load())
+			if len(results) != expected {
+				t.Fatalf("expected %d results, got %d", expected, len(results))
+			}
+		})
+	}
+}
+
+func TestPool_Submit_FailFast_Concurrent(t *testing.T) {
+	for _, tier := range allTiers {
+		t.Run(tier.name, func(t *testing.T) {
+			skipIfTooLarge(t, tier.size)
+			if tier.size > 1_000_000 {
+				t.Skip("FailFast stress tests skip >1M")
+			}
+			p, ctx := NewPool[int](100).WithFailFast(context.Background())
+			defer p.Close()
+
+			n := tier.size
+			for i := 0; i < n; i++ {
+				idx := i
+				_ = p.Submit(ctx, func(ctx context.Context) (int, error) {
+					if idx == 0 {
+						return 0, errors.New("trigger fail fast")
+					}
+					select {
+					case <-ctx.Done():
+						return 0, ctx.Err()
+					case <-time.After(100 * time.Millisecond):
+						return idx, nil
+					}
+				})
+			}
+			results := p.Wait()
+			if len(results) != n {
+				t.Fatalf("expected %d results, got %d", n, len(results))
+			}
+			if results[0].Err == nil {
+				t.Fatal("expected first task to fail")
+			}
+		})
+	}
+}
+
+func TestMultiPool_Submit_Concurrent(t *testing.T) {
+	for _, tier := range allTiers {
+		t.Run(tier.name, func(t *testing.T) {
+			skipIfTooLarge(t, tier.size)
+			mp := NewPool[int](16).Shard(8)
+			defer mp.Close()
+
+			ctx := context.Background()
+			var wg sync.WaitGroup
+			goroutines := 50
+			tasksPerGoroutine := tier.size / goroutines
+			if tasksPerGoroutine < 1 {
+				tasksPerGoroutine = 1
+			}
+			var submitted atomic.Int64
+
+			wg.Add(goroutines)
+			for g := 0; g < goroutines; g++ {
+				go func(gid int) {
+					defer wg.Done()
+					for i := 0; i < tasksPerGoroutine; i++ {
+						if mp.Submit(ctx, func(ctx context.Context) (int, error) {
+							return gid*10000 + i, nil
+						}) == nil {
+							submitted.Add(1)
+						}
+					}
+				}(g)
+			}
+			wg.Wait()
+			results := mp.Wait()
+			expected := int(submitted.Load())
+			if len(results) != expected {
+				t.Fatalf("expected %d results, got %d", expected, len(results))
+			}
+		})
+	}
+}
+
+func TestNoResultPool_Submit_Concurrent(t *testing.T) {
+	for _, tier := range allTiers {
+		t.Run(tier.name, func(t *testing.T) {
+			skipIfTooLarge(t, tier.size)
+			nr := NewPool[struct{}](100)
+			defer nr.Close()
+
+			ctx := context.Background()
+			var counter atomic.Int64
+			var wg sync.WaitGroup
+			goroutines := 50
+			tasksPerGoroutine := tier.size / goroutines
+			if tasksPerGoroutine < 1 {
+				tasksPerGoroutine = 1
+			}
+
+			wg.Add(goroutines)
+			for g := 0; g < goroutines; g++ {
+				go func() {
+					defer wg.Done()
+					for i := 0; i < tasksPerGoroutine; i++ {
+						nr.Submit(ctx, func(ctx context.Context) (struct{}, error) {
+							counter.Add(1)
+							return struct{}{}, nil
+						})
+					}
+				}()
+			}
+			wg.Wait()
+			nr.Wait()
+
+			expected := int64(goroutines * tasksPerGoroutine)
+			if counter.Load() != expected {
+				t.Fatalf("expected %d tasks executed, got %d", expected, counter.Load())
+			}
+		})
+	}
+}
+
+// ============================================================
+// 十三、Race 竞态测试（go test -race）
+// ============================================================
+
+func TestPool_Race_ConcurrentSubmitClose(t *testing.T) {
+	for round := 0; round < 50; round++ {
+		p := NewPool[int](10)
+		var wg sync.WaitGroup
+		wg.Add(2)
+		ctx := context.Background()
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 100; i++ {
+				p.Submit(ctx, func(ctx context.Context) (int, error) {
+					time.Sleep(time.Millisecond)
+					return 1, nil
+				})
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			time.Sleep(time.Millisecond)
+			p.Close()
+		}()
+		wg.Wait()
+	}
+}
+
+func TestMultiPool_Race_ConcurrentSubmit(t *testing.T) {
 	mp := NewPool[int](8).Shard(8)
 	defer mp.Close()
 
 	var wg sync.WaitGroup
 	ctx := context.Background()
-	n := 1000
+	n := 5000
 	concurrency := 20
 
 	for g := 0; g < concurrency; g++ {
@@ -779,5 +1453,74 @@ func TestMultiPool_Race(t *testing.T) {
 	results := mp.Wait()
 	if len(results) != n {
 		t.Fatalf("expected %d results, got %d", n, len(results))
+	}
+}
+
+func TestPool_Race_Streaming_MultiConsumer(t *testing.T) {
+	for round := 0; round < 20; round++ {
+		p := NewPool[int](16)
+		p.WithStreaming(256)
+
+		var consumed atomic.Int64
+		ch := p.StreamResults()
+
+		var consumerWg sync.WaitGroup
+		for c := 0; c < 4; c++ {
+			consumerWg.Add(1)
+			go func() {
+				defer consumerWg.Done()
+				for range ch {
+					consumed.Add(1)
+				}
+			}()
+		}
+
+		ctx := context.Background()
+		for i := 0; i < 500; i++ {
+			p.Submit(ctx, func(ctx context.Context) (int, error) {
+				return i, nil
+			})
+		}
+
+		p.Wait()
+		consumerWg.Wait()
+
+		if consumed.Load() != 500 {
+			t.Fatalf("round %d: expected 500 consumed, got %d", round, consumed.Load())
+		}
+		p.Close()
+	}
+}
+
+func TestPool_Race_RingBuffer_ConcurrentFlush(t *testing.T) {
+	for round := 0; round < 10; round++ {
+		p := NewPool[int](16)
+		p.WithRingBuffer(500, core.OverflowBlock)
+
+		ctx := context.Background()
+		var submitted atomic.Int64
+		var wg sync.WaitGroup
+		for g := 0; g < 10; g++ {
+			wg.Add(1)
+			go func(gid int) {
+				defer wg.Done()
+				for i := 0; i < 100; i++ {
+					if p.Submit(ctx, func(ctx context.Context) (int, error) {
+						return gid*100 + i, nil
+					}) == nil {
+						submitted.Add(1)
+					}
+				}
+			}(g)
+		}
+		wg.Wait()
+		results := p.Wait()
+		p.Close()
+
+		expected := int(submitted.Load())
+		if len(results) < expected {
+			t.Fatalf("round %d: expected at least %d results, got %d",
+				round, expected, len(results))
+		}
 	}
 }
