@@ -77,6 +77,18 @@ func (b *ShardedGroupBuilder[T]) Distribution(d Distribution) *ShardedGroupBuild
 	return b
 }
 
+// Logger 注入自定义日志实现，全局生效。
+func (b *ShardedGroupBuilder[T]) Logger(l core.Logger) *ShardedGroupBuilder[T] {
+	core.SetLogger(l)
+	return b
+}
+
+// DefaultLogger 重置为默认日志实现。
+func (b *ShardedGroupBuilder[T]) DefaultLogger() *ShardedGroupBuilder[T] {
+	core.SetLogger(nil)
+	return b
+}
+
 // Run 终端方法：创建 ShardedGroup → 执行 fn → 关闭所有分片。
 // 调用方应在 fn 内调用 sg.Wait() / sg.WaitTimeout() / sg.WaitContext() 等待结果。
 func (b *ShardedGroupBuilder[T]) Run(fn func(ctx context.Context, sg *ShardedGroup[T]) error) error {

@@ -38,14 +38,24 @@ type BoundedRunner struct {
 //
 // 使用示例：
 //
-//	runner := async.NewBoundedRunner().Max(1000).Build()
+//	runner := async.NewBoundedRunner().Context(ctx).Max(1000).Build()
 type BoundedRunnerBuilder struct {
+	ctx context.Context
 	max int
 }
 
 // NewBoundedRunnerBuilder 创建 BoundedRunner 链式构建器。
 func NewBoundedRunnerBuilder() *BoundedRunnerBuilder {
-	return &BoundedRunnerBuilder{max: core.IO()}
+	return &BoundedRunnerBuilder{
+		ctx: context.Background(),
+		max: core.IO(),
+	}
+}
+
+// Context 链式设置上下文，自动注入 trace_id。
+func (b *BoundedRunnerBuilder) Context(ctx context.Context) *BoundedRunnerBuilder {
+	b.ctx = core.EnsureTraceID(ctx)
+	return b
 }
 
 // Max 设置最大并发 goroutine 数。<=0 使用默认 IO 并发度。
@@ -53,6 +63,15 @@ func (b *BoundedRunnerBuilder) Max(n int) *BoundedRunnerBuilder {
 	b.max = n
 	return b
 }
+
+// Logger 注入自定义日志实现，全局生效。
+func (b *BoundedRunnerBuilder) Logger(l core.Logger) *BoundedRunnerBuilder {
+	core.SetLogger(l)
+	return b
+}
+
+// DefaultLogger 重置为默认日志实现。
+func (b *BoundedRunnerBuilder) DefaultLogger() *BoundedRunnerBuilder { core.SetLogger(nil); return b }
 
 // Build 创建 BoundedRunner 实例。
 func (b *BoundedRunnerBuilder) Build() *BoundedRunner {

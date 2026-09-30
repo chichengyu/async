@@ -773,8 +773,6 @@ func TestSlice_Chain_Split(t *testing.T) {
 // Section 8: 终端 Map 测试（SliceBuilder / ParallelSlice / SerialSlice 高并发）
 // ============================================================
 
-var mapConcurrencies = []int{0, 1, 4, 32, 128}
-
 func TestSlice_Chain_Map_SliceBuilder(t *testing.T) {
 	for _, tier := range allTiers {
 		for _, conc := range mapConcurrencies {

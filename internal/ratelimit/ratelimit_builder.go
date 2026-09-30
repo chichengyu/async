@@ -62,6 +62,18 @@ func (b *RatelimitBuilder) Sharded() *ShardedRatelimitBuilder {
 	return &ShardedRatelimitBuilder{ctx: b.ctx}
 }
 
+// Context 链式设置上下文，自动注入 trace_id。
+func (b *RatelimitBuilder) Context(ctx context.Context) *RatelimitBuilder {
+	b.ctx = core.EnsureTraceID(ctx)
+	return b
+}
+
+// Logger 注入自定义日志实现，全局生效。
+func (b *RatelimitBuilder) Logger(l core.Logger) *RatelimitBuilder { core.SetLogger(l); return b }
+
+// DefaultLogger 重置为默认日志实现。
+func (b *RatelimitBuilder) DefaultLogger() *RatelimitBuilder { core.SetLogger(nil); return b }
+
 // ──────────────────────────── RatelimiterSubBuilder ────────────────────────────
 
 // RatelimiterSubBuilder RateLimiter 模式子构建器，设置令牌补充速率/窗口/突发容量后 Build。
@@ -93,6 +105,21 @@ func (b *RatelimiterSubBuilder) Burst(n int) *RatelimiterSubBuilder {
 	b.burst = n
 	return b
 }
+
+// Context 链式设置上下文，自动注入 trace_id。
+func (b *RatelimiterSubBuilder) Context(ctx context.Context) *RatelimiterSubBuilder {
+	b.ctx = core.EnsureTraceID(ctx)
+	return b
+}
+
+// Logger 注入自定义日志实现，全局生效。
+func (b *RatelimiterSubBuilder) Logger(l core.Logger) *RatelimiterSubBuilder {
+	core.SetLogger(l)
+	return b
+}
+
+// DefaultLogger 重置为默认日志实现。
+func (b *RatelimiterSubBuilder) DefaultLogger() *RatelimiterSubBuilder { core.SetLogger(nil); return b }
 
 // Build 构建 RateLimiter 实例。
 func (b *RatelimiterSubBuilder) Build() *RateLimiter {
@@ -139,11 +166,26 @@ func (b *TokenBucketSubBuilder) Rate(n float64) *TokenBucketSubBuilder {
 	return b
 }
 
-// Capacity 设置最大令牌容量（决定允许的突发流量大小）。
+// Capacity 设置最大令牌容量（允许的突发流量）。
 func (b *TokenBucketSubBuilder) Capacity(n float64) *TokenBucketSubBuilder {
 	b.capacity = n
 	return b
 }
+
+// Context 链式设置上下文，自动注入 trace_id。
+func (b *TokenBucketSubBuilder) Context(ctx context.Context) *TokenBucketSubBuilder {
+	b.ctx = core.EnsureTraceID(ctx)
+	return b
+}
+
+// Logger 注入自定义日志实现，全局生效。
+func (b *TokenBucketSubBuilder) Logger(l core.Logger) *TokenBucketSubBuilder {
+	core.SetLogger(l)
+	return b
+}
+
+// DefaultLogger 重置为默认日志实现。
+func (b *TokenBucketSubBuilder) DefaultLogger() *TokenBucketSubBuilder { core.SetLogger(nil); return b }
 
 // Build 构建 TokenBucket 实例。
 func (b *TokenBucketSubBuilder) Build() *TokenBucket {
@@ -181,9 +223,27 @@ func (b *SlidingWindowSubBuilder) Limit(n int) *SlidingWindowSubBuilder {
 	return b
 }
 
-// Window 设置时间窗口大小。
+// Window 设置滑动窗口的时间范围。
 func (b *SlidingWindowSubBuilder) Window(d time.Duration) *SlidingWindowSubBuilder {
 	b.window = d
+	return b
+}
+
+// Context 链式设置上下文，自动注入 trace_id。
+func (b *SlidingWindowSubBuilder) Context(ctx context.Context) *SlidingWindowSubBuilder {
+	b.ctx = core.EnsureTraceID(ctx)
+	return b
+}
+
+// Logger 注入自定义日志实现，全局生效。
+func (b *SlidingWindowSubBuilder) Logger(l core.Logger) *SlidingWindowSubBuilder {
+	core.SetLogger(l)
+	return b
+}
+
+// DefaultLogger 重置为默认日志实现。
+func (b *SlidingWindowSubBuilder) DefaultLogger() *SlidingWindowSubBuilder {
+	core.SetLogger(nil)
 	return b
 }
 
@@ -223,11 +283,23 @@ func (b *AdaptiveSubBuilder) MinWorker(n int) *AdaptiveSubBuilder {
 	return b
 }
 
-// MaxWorker 设置最大并发度（负载高时不会超过此值）。
+// MaxWorker 设置并发度的上限阈值。
 func (b *AdaptiveSubBuilder) MaxWorker(n int) *AdaptiveSubBuilder {
 	b.maxRate = n
 	return b
 }
+
+// Context 链式设置上下文，自动注入 trace_id。
+func (b *AdaptiveSubBuilder) Context(ctx context.Context) *AdaptiveSubBuilder {
+	b.ctx = core.EnsureTraceID(ctx)
+	return b
+}
+
+// Logger 注入自定义日志实现，全局生效。
+func (b *AdaptiveSubBuilder) Logger(l core.Logger) *AdaptiveSubBuilder { core.SetLogger(l); return b }
+
+// DefaultLogger 重置为默认日志实现。
+func (b *AdaptiveSubBuilder) DefaultLogger() *AdaptiveSubBuilder { core.SetLogger(nil); return b }
 
 // Build 构建 AdaptiveRateLimiter 实例。
 func (b *AdaptiveSubBuilder) Build() *AdaptiveRateLimiter {
@@ -274,6 +346,24 @@ func (b *ShardedRatelimitBuilder) Adaptive() *ShardedAdaptiveSubBuilder {
 	return &ShardedAdaptiveSubBuilder{ctx: b.ctx}
 }
 
+// Context 链式设置上下文，自动注入 trace_id。
+func (b *ShardedRatelimitBuilder) Context(ctx context.Context) *ShardedRatelimitBuilder {
+	b.ctx = core.EnsureTraceID(ctx)
+	return b
+}
+
+// Logger 注入自定义日志实现，全局生效。
+func (b *ShardedRatelimitBuilder) Logger(l core.Logger) *ShardedRatelimitBuilder {
+	core.SetLogger(l)
+	return b
+}
+
+// DefaultLogger 重置为默认日志实现。
+func (b *ShardedRatelimitBuilder) DefaultLogger() *ShardedRatelimitBuilder {
+	core.SetLogger(nil)
+	return b
+}
+
 // ──────────────────────────── ShardedRatelimiterSubBuilder ────────────────────────────
 
 // ShardedRatelimiterSubBuilder 分片 RateLimiter 子构建器，设置分片数/速率/窗口/突发后 Build。
@@ -307,9 +397,27 @@ func (b *ShardedRatelimiterSubBuilder) Per(d time.Duration) *ShardedRatelimiterS
 	return b
 }
 
-// Burst 设置突发容量，均匀分配到各分片。
+// Burst 设置突发容量。
 func (b *ShardedRatelimiterSubBuilder) Burst(n int) *ShardedRatelimiterSubBuilder {
 	b.burst = n
+	return b
+}
+
+// Context 链式设置上下文，自动注入 trace_id。
+func (b *ShardedRatelimiterSubBuilder) Context(ctx context.Context) *ShardedRatelimiterSubBuilder {
+	b.ctx = core.EnsureTraceID(ctx)
+	return b
+}
+
+// Logger 注入自定义日志实现，全局生效。
+func (b *ShardedRatelimiterSubBuilder) Logger(l core.Logger) *ShardedRatelimiterSubBuilder {
+	core.SetLogger(l)
+	return b
+}
+
+// DefaultLogger 重置为默认日志实现。
+func (b *ShardedRatelimiterSubBuilder) DefaultLogger() *ShardedRatelimiterSubBuilder {
+	core.SetLogger(nil)
 	return b
 }
 
@@ -371,9 +479,27 @@ func (b *ShardedTokenBucketSubBuilder) Rate(n float64) *ShardedTokenBucketSubBui
 	return b
 }
 
-// Capacity 设置每片最大令牌容量。
+// Capacity 设置最大令牌容量。
 func (b *ShardedTokenBucketSubBuilder) Capacity(n float64) *ShardedTokenBucketSubBuilder {
 	b.capacity = n
+	return b
+}
+
+// Context 链式设置上下文，自动注入 trace_id。
+func (b *ShardedTokenBucketSubBuilder) Context(ctx context.Context) *ShardedTokenBucketSubBuilder {
+	b.ctx = core.EnsureTraceID(ctx)
+	return b
+}
+
+// Logger 注入自定义日志实现，全局生效。
+func (b *ShardedTokenBucketSubBuilder) Logger(l core.Logger) *ShardedTokenBucketSubBuilder {
+	core.SetLogger(l)
+	return b
+}
+
+// DefaultLogger 重置为默认日志实现。
+func (b *ShardedTokenBucketSubBuilder) DefaultLogger() *ShardedTokenBucketSubBuilder {
+	core.SetLogger(nil)
 	return b
 }
 
@@ -432,6 +558,24 @@ func (b *ShardedSlidingWindowSubBuilder) Window(d time.Duration) *ShardedSliding
 	return b
 }
 
+// Context 链式设置上下文，自动注入 trace_id。
+func (b *ShardedSlidingWindowSubBuilder) Context(ctx context.Context) *ShardedSlidingWindowSubBuilder {
+	b.ctx = core.EnsureTraceID(ctx)
+	return b
+}
+
+// Logger 注入自定义日志实现，全局生效。
+func (b *ShardedSlidingWindowSubBuilder) Logger(l core.Logger) *ShardedSlidingWindowSubBuilder {
+	core.SetLogger(l)
+	return b
+}
+
+// DefaultLogger 重置为默认日志实现。
+func (b *ShardedSlidingWindowSubBuilder) DefaultLogger() *ShardedSlidingWindowSubBuilder {
+	core.SetLogger(nil)
+	return b
+}
+
 // Build 构建 ShardedSlidingWindowRateLimiter 实例。
 func (b *ShardedSlidingWindowSubBuilder) Build() *ShardedSlidingWindowRateLimiter {
 	return NewShardedSlidingWindowRateLimiter(b.shards, b.limit, b.window)
@@ -484,6 +628,24 @@ func (b *ShardedAdaptiveSubBuilder) MinWorker(n int) *ShardedAdaptiveSubBuilder 
 // MaxWorker 设置最大并发度，平均分配到各分片。
 func (b *ShardedAdaptiveSubBuilder) MaxWorker(n int) *ShardedAdaptiveSubBuilder {
 	b.maxRate = n
+	return b
+}
+
+// Context 链式设置上下文，自动注入 trace_id。
+func (b *ShardedAdaptiveSubBuilder) Context(ctx context.Context) *ShardedAdaptiveSubBuilder {
+	b.ctx = core.EnsureTraceID(ctx)
+	return b
+}
+
+// Logger 注入自定义日志实现，全局生效。
+func (b *ShardedAdaptiveSubBuilder) Logger(l core.Logger) *ShardedAdaptiveSubBuilder {
+	core.SetLogger(l)
+	return b
+}
+
+// DefaultLogger 重置为默认日志实现。
+func (b *ShardedAdaptiveSubBuilder) DefaultLogger() *ShardedAdaptiveSubBuilder {
+	core.SetLogger(nil)
 	return b
 }
 

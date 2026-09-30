@@ -108,6 +108,18 @@ func (b *PipelineStreamBuilder[T]) DefaultBuf() *PipelineStreamBuilder[T] {
 	return b
 }
 
+// Logger 注入自定义日志实现，全局生效。
+func (b *PipelineStreamBuilder[T]) Logger(l core.Logger) *PipelineStreamBuilder[T] {
+	core.SetLogger(l)
+	return b
+}
+
+// DefaultLogger 重置为默认日志实现。
+func (b *PipelineStreamBuilder[T]) DefaultLogger() *PipelineStreamBuilder[T] {
+	core.SetLogger(nil)
+	return b
+}
+
 // Run 启动流式管道，返回句柄。
 func (b *PipelineStreamBuilder[T]) Run(fn func(context.Context, string, T) (T, error)) *PipelineStream[T] {
 	ch := ExecuteStream(b.ctx, b.stages, b.items, fn, b.buf)

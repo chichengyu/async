@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/chichengyu/async/internal/core"
+	"github.com/chichengyu/async/internal/pool"
 )
 
 // ──────────────────────────── GroupBuilder ────────────────────────────
@@ -40,6 +41,8 @@ type GroupBuilder[T any] struct {
 	streaming     int                   // 流式结果通道缓冲大小
 	resultCb      func(core.Result[T])  // 结果回调
 	autoScale     *core.AutoScaleConfig // 自动扩缩容配置，nil 表示禁用
+	logger        core.Logger           // 自定义日志
+	extPool       *pool.Pool[T]         // 外部注入协程池
 }
 
 // NewGroupBuilder 创建任务组构造器，默认使用 context.Background()。
@@ -137,6 +140,18 @@ func (b *GroupBuilder[T]) DefaultAutoScale() *GroupBuilder[T] {
 	return b
 }
 
+// Logger 注入自定义日志实现，全局生效。
+func (b *GroupBuilder[T]) Logger(l core.Logger) *GroupBuilder[T] { core.SetLogger(l); return b }
+
+// DefaultLogger 重置为默认日志实现。
+func (b *GroupBuilder[T]) DefaultLogger() *GroupBuilder[T] { core.SetLogger(nil); return b }
+
+// Pool 注入外部协程池，构建的 Group 将使用该池执行任务。
+func (b *GroupBuilder[T]) Pool(p *pool.Pool[T]) *GroupBuilder[T] { b.extPool = p; return b }
+
+// DefaultPool 恢复为内部自动创建协程池（默认行为）。
+func (b *GroupBuilder[T]) DefaultPool() *GroupBuilder[T] { b.extPool = nil; return b }
+
 // ── 终端方法 ──
 
 // Build 创建并配置 Group，返回后调用方需自行管理生命周期（手动 Close / Wait）。
@@ -163,6 +178,9 @@ func (b *GroupBuilder[T]) Build() *Group[T] {
 	}
 	if b.autoScale != nil {
 		g.EnableAutoScale(b.autoScale)
+	}
+	if b.extPool != nil {
+		g.WithPool(b.extPool)
 	}
 
 	return g

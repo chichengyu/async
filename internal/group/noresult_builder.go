@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/chichengyu/async/internal/core"
+	"github.com/chichengyu/async/internal/pool"
 )
 
 // ──────────────────────────── GroupNoResultBuilder ────────────────────────────
@@ -34,6 +35,8 @@ type GroupNoResultBuilder struct {
 	failFast      bool                  // 快速失败：任一失败取消所有
 	streaming     int                   // 流式结果通道缓冲大小
 	autoScale     *core.AutoScaleConfig // 自动扩缩容配置，nil 表示禁用
+	logger        core.Logger           // 自定义日志
+	extPool       *pool.Pool[struct{}]  // 外部注入协程池
 }
 
 // NewGroupNoResultBuilder 创建无返回值任务组构造器，默认使用 context.Background()。
@@ -119,6 +122,24 @@ func (b *GroupNoResultBuilder) DefaultAutoScale() *GroupNoResultBuilder {
 	return b
 }
 
+// Logger 注入自定义日志实现，全局生效。
+func (b *GroupNoResultBuilder) Logger(l core.Logger) *GroupNoResultBuilder {
+	core.SetLogger(l)
+	return b
+}
+
+// DefaultLogger 重置为默认日志实现。
+func (b *GroupNoResultBuilder) DefaultLogger() *GroupNoResultBuilder { core.SetLogger(nil); return b }
+
+// Pool 注入外部协程池，构建的 Group 将使用该池执行任务。
+func (b *GroupNoResultBuilder) Pool(p *pool.Pool[struct{}]) *GroupNoResultBuilder {
+	b.extPool = p
+	return b
+}
+
+// DefaultPool 恢复为内部自动创建协程池（默认行为）。
+func (b *GroupNoResultBuilder) DefaultPool() *GroupNoResultBuilder { b.extPool = nil; return b }
+
 // ── 终端方法 ──
 
 // Build 创建并配置 NoResult，返回后调用方需自行管理生命周期。
@@ -143,6 +164,9 @@ func (b *GroupNoResultBuilder) Build() *NoResult {
 	}
 	if b.autoScale != nil {
 		nr.EnableAutoScale(b.autoScale)
+	}
+	if b.extPool != nil {
+		g.WithPool(b.extPool)
 	}
 
 	return nr

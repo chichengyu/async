@@ -31,6 +31,7 @@ import (
 
 	"github.com/chichengyu/async/internal/core"
 	"github.com/chichengyu/async/internal/group"
+	mymaps "github.com/chichengyu/async/internal/maps"
 	"github.com/chichengyu/async/internal/pipeline"
 	"github.com/chichengyu/async/internal/pool"
 	"github.com/chichengyu/async/internal/ratelimit"
@@ -819,6 +820,90 @@ func NewBoundedRunnerBuilder() *BoundedRunnerBuilder {
 //	}
 func ForEachPool[T any](ctx context.Context, items []T, fn func(context.Context, T) error, concurrency int) (*NoResultPool, error) {
 	return pool.ForEachPool(ctx, items, fn, concurrency)
+}
+
+// ──────────────────────────── Maps K-V 容器 ────────────────────────────
+
+// Map[K, V] 是泛型 key-value 容器的类型别名，提供链式调用和丰富的工具方法。
+// K 必须满足 comparable 约束，V 为任意类型。
+//
+// 使用示例：
+//
+//	// 基础读写
+//	m := async.NewMap[string, int]()
+//	m.Set("a", 1).Set("b", 2).Set("c", 3)
+//	v, ok := m.Get("a")  // 1, true
+//	m.Has("b")           // true
+//	m.Len()              // 3
+//
+//	// 链式过滤与变换
+//	m.Filter(func(k string, v int) bool { return v > 1 }).
+//	  MapValues(func(k string, v int) int { return v * 10 })
+//
+//	// 遍历
+//	m.Range(func(k string, v int) bool { fmt.Println(k, v); return true })
+//
+//	// 从原生 map 创建
+//	m := async.MapFrom(map[string]int{"x": 1, "y": 2})
+//
+//	// 集合运算
+//	a := async.NewMap[int, string]().Set(1, "a").Set(2, "b")
+//	b := async.NewMap[int, string]().Set(2, "x").Set(3, "y")
+//	u := a.Union(b)  // {1:"a", 2:"x", 3:"y"}
+//	i := a.Intersect(b) // {2:"b"}
+type Map[K comparable, V any] = mymaps.Map[K, V]
+
+// NewMap 创建空的泛型 key-value 容器。
+func NewMap[K comparable, V any]() *Map[K, V] {
+	return mymaps.NewMap[K, V]()
+}
+
+// NewMapCap 创建空的泛型 key-value 容器，预分配 capacity 大小的空间。
+func NewMapCap[K comparable, V any](capacity int) *Map[K, V] {
+	return mymaps.New[K, V](capacity)
+}
+
+// MapFrom 从原生 map 创建 Map 容器（深拷贝）。
+func MapFrom[K comparable, V any](m map[K]V) *Map[K, V] {
+	return mymaps.From[K, V](m)
+}
+
+// MapFromRef 从原生 map 创建 Map 容器（直接引用，不拷贝）。
+func MapFromRef[K comparable, V any](m map[K]V) *Map[K, V] {
+	return mymaps.FromRef[K, V](m)
+}
+
+// MapChain 泛型 map 并发操作链构建器，默认并行模式。
+// 支持 .Serial() / .Parallel() 模式切换，.Worker(n) / .Pool(p) / .Timeout(d) / .Shards(n) / .Buf(n) 等配置，
+// 终端方法：.ForEach(fn) / .Map(fn) / .MapToFn(fn) / .Filter(fn) / .Stream(fn, buf) / .Reduce(init, fn)。
+type MapChain[K comparable, V any, R any] = mymaps.MapChain[K, V, R]
+
+// MapParallel 并行 map 链构建器。
+type MapParallel[K comparable, V any, R any] = mymaps.MapParallel[K, V, R]
+
+// MapSerial 串行 map 链构建器。
+type MapSerial[K comparable, V any, R any] = mymaps.MapSerial[K, V, R]
+
+// MapForEachResult ForEach 操作的结果。
+type MapForEachResult = mymaps.MapForEachResult
+
+// MapResult Map 操作的结果容器（内嵌 error，通过 .Error() / .Err() 访问）。
+type MapResult[K comparable, R any] = mymaps.MapResult[K, R]
+
+// MapRes 向后兼容别名，等价于 MapResult。
+type MapRes[K comparable, R any] = mymaps.MapResult[K, R]
+
+// MapEntry 是 Map 操作的条目类型，用于 MapBatch/ForEachBatch。
+type MapEntry[K comparable, V any] = mymaps.MapEntry[K, V]
+
+// NewMapChain 从原生 map 创建 MapChain，输出类型与输入 V 一致。
+func NewMapChain[K comparable, V any](ctx context.Context, data map[K]V) *MapChain[K, V, V] {
+	return mymaps.NewMapChain[K, V](ctx, data)
+}
+
+// NewMapChainWith 从原生 map 创建 MapChain，可指定输出类型 R。
+func NewMapChainWith[K comparable, V any, R any](ctx context.Context, data map[K]V) *MapChain[K, V, R] {
+	return mymaps.NewMapChainWith[K, V, R](ctx, data)
 }
 
 // ──────────────────────────── 通用工具函数 ────────────────────────────

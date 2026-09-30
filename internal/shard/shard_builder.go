@@ -119,6 +119,12 @@ func (b *ShardPoolBuilder[T]) MaxPending(n int) *ShardPoolBuilder[T] {
 	return b
 }
 
+// Logger 注入自定义日志实现，全局生效。
+func (b *ShardPoolBuilder[T]) Logger(l core.Logger) *ShardPoolBuilder[T] { core.SetLogger(l); return b }
+
+// DefaultLogger 重置为默认日志实现。
+func (b *ShardPoolBuilder[T]) DefaultLogger() *ShardPoolBuilder[T] { core.SetLogger(nil); return b }
+
 // Run 终端方法：创建分片池，执行 fn，fn 返回后自动 Close 所有分片。
 func (b *ShardPoolBuilder[T]) Run(fn func(ctx context.Context, sp *ShardedPool[T]) error) error {
 	return WithShardCfg[T](b.ctx, b.cfg, func(sp *ShardedPool[T]) error {

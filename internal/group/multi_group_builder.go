@@ -63,6 +63,15 @@ func (b *MultiGroupBuilder[T]) FailFast() *MultiGroupBuilder[T] {
 	return b
 }
 
+// Logger 注入自定义日志实现，全局生效。
+func (b *MultiGroupBuilder[T]) Logger(l core.Logger) *MultiGroupBuilder[T] {
+	core.SetLogger(l)
+	return b
+}
+
+// DefaultLogger 重置为默认日志实现。
+func (b *MultiGroupBuilder[T]) DefaultLogger() *MultiGroupBuilder[T] { core.SetLogger(nil); return b }
+
 // Run 终端方法：创建 Group → 应用配置 → 分片 → 执行 fn → Close 所有分片。
 func (b *MultiGroupBuilder[T]) Run(fn func(ctx context.Context, mg *MultiGroup[T]) error) error {
 	g := NewGroup[T](b.concurrency)

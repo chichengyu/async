@@ -10,8 +10,9 @@ import (
 // PoolBuilder 协程池构造器，统一入口为 async.Pool[T]()。
 // 支持链式配置和函数式配置，Run 自动创建池→执行→Close。
 type PoolBuilder[T any] struct {
-	ctx context.Context // 请求上下文，自动注入 trace_id
-	cfg Config          // 协程池配置
+	ctx    context.Context // 请求上下文，自动注入 trace_id
+	cfg    Config          // 协程池配置
+	logger core.Logger     // 自定义日志
 }
 
 // NewBuilder 创建协程池构造器，默认使用 context.Background()。
@@ -163,6 +164,12 @@ func (b *PoolBuilder[T]) Streaming(buf int) *PoolBuilder[T] {
 	b.cfg.Streaming = buf
 	return b
 }
+
+// Logger 注入自定义日志实现，全局生效。
+func (b *PoolBuilder[T]) Logger(l core.Logger) *PoolBuilder[T] { core.SetLogger(l); return b }
+
+// DefaultLogger 重置为默认日志实现。
+func (b *PoolBuilder[T]) DefaultLogger() *PoolBuilder[T] { core.SetLogger(nil); return b }
 
 // Run 终端方法：创建协程池，执行 fn，fn 返回后自动 Close。
 func (b *PoolBuilder[T]) Run(fn func(ctx context.Context, p *Pool[T]) error) error {

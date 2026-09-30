@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/chichengyu/async/internal/core"
+	"github.com/chichengyu/async/internal/pool"
 )
 
 // ──────────────────────────── Group ────────────────────────────
@@ -58,6 +59,8 @@ type Group[T any] struct {
 	autoScale        *core.AutoScaleConfig
 	autoScaleEnabled atomic.Bool
 	autoScaleStop    chan struct{}
+
+	pool *pool.Pool[T] // 外部注入协程池，为 nil 时使用内部 worker 池
 
 	streamCh         chan core.Result[T]
 	streamOverflow   []core.Result[T]
@@ -377,6 +380,14 @@ func (g *Group[T]) WithResultCallback(fn func(core.Result[T])) *Group[T] {
 	return g
 }
 
+// WithPool 注入外部协程池，任务执行时通过 pool.Submit 调度而非内部 worker goroutine。
+// 外部 Pool 控制实际并发度，Group 内部的 concurrency worker 仅做分发。
+// 为 nil 时恢复默认行为（使用内部 worker 池）。
+func (g *Group[T]) WithPool(p *pool.Pool[T]) *Group[T] {
+	g.pool = p
+	return g
+}
+
 // StreamResults 返回流式结果的只读 channel。
 // 必须在 WithStreaming 之后调用，否则返回 nil。
 func (g *Group[T]) StreamResults() <-chan core.Result[T] {
@@ -429,6 +440,17 @@ func (g *Group[T]) worker() {
 
 func (g *Group[T]) executeTask(task groupTask[T]) {
 	g.busy.Add(1)
+	if g.pool != nil {
+		g.pool.Submit(task.taskCtx, func(ctx context.Context) (T, error) {
+			defer g.busy.Add(-1)
+			defer g.active.Add(-1)
+			defer g.wg.Done()
+			g.runTaskImpl(ctx, task.taskCancel, task.record, task.timeout, task.failFast, task.failCancel, task.fn)
+			var zero T
+			return zero, nil
+		})
+		return
+	}
 	g.runTaskImpl(task.taskCtx, task.taskCancel, task.record, task.timeout, task.failFast, task.failCancel, task.fn)
 	g.busy.Add(-1)
 	g.active.Add(-1)

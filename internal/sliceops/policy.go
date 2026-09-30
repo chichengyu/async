@@ -179,3 +179,6 @@ func (p Policy) GetShards() int { return p.shards }
 
 // GetChunkSize 分块大小。
 func (p Policy) GetChunkSize() int { return p.chunkSize }
+
+// GetBuf 流式缓冲区大小。
+func (p Policy) GetBuf() int { return p.bufSize }

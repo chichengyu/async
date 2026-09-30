@@ -73,6 +73,12 @@ func (b *TaskBuilder[T]) DefaultBounded() *TaskBuilder[T] {
 	return b
 }
 
+// Logger 注入自定义日志实现，全局生效。
+func (b *TaskBuilder[T]) Logger(l core.Logger) *TaskBuilder[T] { core.SetLogger(l); return b }
+
+// DefaultLogger 重置为默认日志实现。
+func (b *TaskBuilder[T]) DefaultLogger() *TaskBuilder[T] { core.SetLogger(nil); return b }
+
 // ── 终端方法 ──
 
 // Go 启动异步任务，返回 AsyncResult[T]。

@@ -182,6 +182,12 @@ func (b *MultiPoolBuilder[T]) Streaming(buf int) *MultiPoolBuilder[T] {
 	return b
 }
 
+// Logger 注入自定义日志实现，全局生效。
+func (b *MultiPoolBuilder[T]) Logger(l core.Logger) *MultiPoolBuilder[T] { core.SetLogger(l); return b }
+
+// DefaultLogger 重置为默认日志实现。
+func (b *MultiPoolBuilder[T]) DefaultLogger() *MultiPoolBuilder[T] { core.SetLogger(nil); return b }
+
 // Pool 注入外部协程池，MultiPool 使用该池进行分片。
 // 注入后 Conc/Timeout 等配置方法不再生效。
 // 外部池生命周期由 Run 接管：外部池成为 shard[0]，defer mp.Close() 会同时关闭它。

@@ -117,6 +117,12 @@ func (b *SliceBuilder[T, R]) Parallel() *ParallelSlice[T, R] {
 
 // ── 配置方法 ──
 
+// Context 链式设置上下文，自动注入 trace_id。
+func (b *SliceBuilder[T, R]) Context(ctx context.Context) *SliceBuilder[T, R] {
+	b.ctx = core.EnsureTraceID(ctx)
+	return b
+}
+
 // Logger 注入自定义日志实现，全局生效。
 //
 //	l: core.Logger 接口实现。

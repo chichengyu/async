@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/chichengyu/async/internal/core"
 	"github.com/chichengyu/async/internal/ratelimit"
 )
 
@@ -119,6 +120,12 @@ func New[T any](ctx context.Context) *RetryChain[T] {
 //	    ExecuteVoid(myFunc)
 func NewVoid(ctx context.Context) *RetryChain[struct{}] {
 	return New[struct{}](ctx)
+}
+
+// Context 链式设置上下文，自动注入 trace_id。
+func (c *RetryChain[T]) Context(ctx context.Context) *RetryChain[T] {
+	c.ctx = core.EnsureTraceID(ctx)
+	return c
 }
 
 // ── 策略配置 ──
@@ -437,6 +444,12 @@ func (c *RetryChain[T]) Shards(n int) *RetryChain[T] {
 	c.adShards = n
 	return c
 }
+
+// Logger 注入自定义日志实现，全局生效。
+func (c *RetryChain[T]) Logger(l core.Logger) *RetryChain[T] { core.SetLogger(l); return c }
+
+// DefaultLogger 重置为默认日志实现。
+func (c *RetryChain[T]) DefaultLogger() *RetryChain[T] { core.SetLogger(nil); return c }
 
 // ── 终端方法 ──
 
