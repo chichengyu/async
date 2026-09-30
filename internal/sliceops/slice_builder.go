@@ -11,7 +11,7 @@
 //	vals := r.Values()
 //
 //	// 并行 + FailFast + 超时 + 分块
-//	r := Slice(ctx, items).Concurrency(16).FailFast().Timeout(5*time.Second).Chunk(100).Map(fn)
+//	r := Slice(ctx, items).Worker(16).FailFast().Timeout(5*time.Second).Chunk(100).Map(fn)
 //
 //	// 串行
 //	r := Slice(ctx, items).Serial().Map(fn)
@@ -108,7 +108,7 @@ func (b *SliceBuilder[T, R]) Serial() *SerialSlice[T, R] {
 // Parallel 切换为并行模式，返回 ParallelSlice。
 // 并行模式下暴露所有并行配置方法及数据操作。
 //
-//	go sb.Parallel().Concurrency(8).FailFast().Map(fn).Values()
+//	go sb.Parallel().Worker(8).FailFast().Map(fn).Values()
 func (b *SliceBuilder[T, R]) Parallel() *ParallelSlice[T, R] {
 	ps := &ParallelSlice[T, R]{}
 	ps.sliceBase = newSliceBase(b.ctx, b.items, DefPar(), ps)
@@ -135,20 +135,20 @@ func (b *SliceBuilder[T, R]) DefaultLogger() *SliceBuilder[T, R] {
 	return b
 }
 
-// Concurrency 设置并发度，n <= 0 恢复默认 IO 并发度。
+// Worker 设置并发度，n <= 0 恢复默认 IO 并发度。
 //
 //	n: 并发 goroutine 数量。
 //
-//	go sb.Concurrency(32).Map(fn)
-func (b *SliceBuilder[T, R]) Concurrency(n int) *SliceBuilder[T, R] {
+//	go sb.Worker(32).Map(fn)
+func (b *SliceBuilder[T, R]) Worker(n int) *SliceBuilder[T, R] {
 	b.policy = Par(n)
 	return b
 }
 
-// DefaultConcurrency 使用默认 IO 并发度（推荐，语义更清晰）。
+// DefaultWorker 使用默认 IO 并发度（推荐，语义更清晰）。
 //
-//	go sb.DefaultConcurrency().Map(fn)
-func (b *SliceBuilder[T, R]) DefaultConcurrency() *SliceBuilder[T, R] {
+//	go sb.DefaultWorker().Map(fn)
+func (b *SliceBuilder[T, R]) DefaultWorker() *SliceBuilder[T, R] {
 	b.policy = DefPar()
 	return b
 }
@@ -298,10 +298,10 @@ func (b *SliceBuilder[T, R]) Slice(i, j int) *SliceBuilder[T, R] {
 //
 //	fn: 转换函数 func(context.Context, T) (R, error)。
 //
-//	go r := sb.Concurrency(16).Map(func(ctx context.Context, v int) (string, error) {
+//	go r := sb.Worker(16).Map(func(ctx context.Context, v int) (string, error) {
 //	    return strconv.Itoa(v), nil
 //	})
-//	if r.IsErr() { return r.Error() }
+//	if r.Err() { return r.Error() }
 //	vals := r.Values()
 func (b *SliceBuilder[T, R]) Map(fn func(context.Context, T) (R, error)) *SliceResult[R] {
 	results, err := NewRunner[T, R](b.ctx, b.items, b.policy).Map(fn)
@@ -330,7 +330,7 @@ func (b *SliceBuilder[T, R]) MapBatch(fn func(context.Context, []T) (R, error)) 
 //	    log.Printf("processing %d", v)
 //	    return nil
 //	})
-//	if r.IsErr() { return r.Error() }
+//	if r.Err() { return r.Error() }
 func (b *SliceBuilder[T, R]) ForEach(fn func(context.Context, T) error) *ForEachResult {
 	total, failCnt, firstErr, _ := NewRunner[T, R](b.ctx, b.items, b.policy).Each(fn)
 	return &ForEachResult{total: total, failCnt: failCnt, firstErr: firstErr}
@@ -365,7 +365,7 @@ func (b *SliceBuilder[T, R]) Reduce(initial R, fn func(context.Context, R, T) (R
 //	fn:      转换函数 func(context.Context, T) (R, error)。
 //	bufSize: 通道缓冲区大小，<= 0 时使用 Buf() 设置的值。
 //
-//	go ch := sb.Concurrency(16).Stream(func(ctx context.Context, v int) (int, error) {
+//	go ch := sb.Worker(16).Stream(func(ctx context.Context, v int) (int, error) {
 //	    return v * 2, nil
 //	}, 1024)
 //	for res := range ch {

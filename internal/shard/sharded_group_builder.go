@@ -41,8 +41,8 @@ func (b *ShardedGroupBuilder[T]) DefaultShards() *ShardedGroupBuilder[T] {
 	return b
 }
 
-// DefaultConcurrency 使用默认每分片并发度（GOMAXPROCS）。
-func (b *ShardedGroupBuilder[T]) DefaultConcurrency() *ShardedGroupBuilder[T] {
+// DefaultWorker 使用默认每分片并发度（GOMAXPROCS）。
+func (b *ShardedGroupBuilder[T]) DefaultWorker() *ShardedGroupBuilder[T] {
 	b.cfg.ConcurrencyPerShard = DefaultConcurrencyShard
 	return b
 }
@@ -65,8 +65,8 @@ func (b *ShardedGroupBuilder[T]) Shards(n int) *ShardedGroupBuilder[T] {
 	return b
 }
 
-// Concurrency 设置每分片并发度
-func (b *ShardedGroupBuilder[T]) Concurrency(n int) *ShardedGroupBuilder[T] {
+// Worker 设置每分片并发度
+func (b *ShardedGroupBuilder[T]) Worker(n int) *ShardedGroupBuilder[T] {
 	b.cfg.ConcurrencyPerShard = n
 	return b
 }

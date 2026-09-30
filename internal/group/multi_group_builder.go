@@ -39,8 +39,8 @@ func (b *MultiGroupBuilder[T]) Shards(n int) *MultiGroupBuilder[T] {
 	return b
 }
 
-// Concurrency 设置并发度
-func (b *MultiGroupBuilder[T]) Concurrency(n int) *MultiGroupBuilder[T] {
+// Worker 设置并发度
+func (b *MultiGroupBuilder[T]) Worker(n int) *MultiGroupBuilder[T] {
 	b.concurrency = n
 	return b
 }

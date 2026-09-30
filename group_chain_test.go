@@ -68,36 +68,36 @@ func groupSleepFn(d time.Duration) func(context.Context) (int, error) {
 
 // ============================================================
 // Section 1: GroupBuilder 基础配置链式方法
-//   - Concurrency / DefaultConcurrency
+//   - Worker / DefaultWorker
 //   - Timeout（Build+Wait 模式才能捕获 task 错误）
 //   - SubmitTimeout
 // ============================================================
 
-func TestGroupBuilder_Chain_Concurrency(t *testing.T) {
+func TestGroupBuilder_Chain_Worker(t *testing.T) {
 	for _, tier := range groupAllTiers {
 		t.Run(tier.name, func(t *testing.T) {
 			groupSkipIfTooLarge(t, tier.size)
 
-			g := Group[int]().Context(groupFreshCtx()).Concurrency(8).Build()
+			g := Group[int]().Context(groupFreshCtx()).Worker(8).Build()
 			defer g.Close()
 
-			if g.Concurrency() != 8 {
-				t.Fatalf("Concurrency: expected 8, got %d", g.Concurrency())
+			if g.Worker() != 8 {
+				t.Fatalf("Concurrency: expected 8, got %d", g.Worker())
 			}
 		})
 	}
 }
 
-func TestGroupBuilder_Chain_DefaultConcurrency(t *testing.T) {
+func TestGroupBuilder_Chain_DefaultWorker(t *testing.T) {
 	for _, tier := range groupAllTiers {
 		t.Run(tier.name, func(t *testing.T) {
 			groupSkipIfTooLarge(t, tier.size)
 
-			g := Group[int]().Context(groupFreshCtx()).DefaultConcurrency().Build()
+			g := Group[int]().Context(groupFreshCtx()).DefaultWorker().Build()
 			defer g.Close()
 
-			if g.Concurrency() != core.IO() {
-				t.Fatalf("DefaultConcurrency: expected %d, got %d", core.IO(), g.Concurrency())
+			if g.Worker() != core.IO() {
+				t.Fatalf("DefaultWorker: expected %d, got %d", core.IO(), g.Worker())
 			}
 		})
 	}
@@ -109,7 +109,7 @@ func TestGroupBuilder_Chain_Timeout(t *testing.T) {
 			groupSkipIfTooLarge(t, tier.size)
 
 			g := Group[int]().Context(groupFreshCtx()).
-				Concurrency(4).
+				Worker(4).
 				Timeout(50 * time.Millisecond).
 				Build()
 			defer g.Close()
@@ -139,7 +139,7 @@ func TestGroupBuilder_Chain_SubmitTimeout(t *testing.T) {
 			groupSkipIfTooLarge(t, tier.size)
 
 			g := Group[int]().Context(groupFreshCtx()).
-				Concurrency(1).
+				Worker(1).
 				SubmitTimeout(10 * time.Millisecond).
 				Build()
 			defer g.Close()
@@ -162,7 +162,7 @@ func TestGroupBuilder_Chain_DefaultSubmitTimeout(t *testing.T) {
 			groupSkipIfTooLarge(t, tier.size)
 
 			g := Group[int]().Context(groupFreshCtx()).
-				Concurrency(4).
+				Worker(4).
 				DefaultSubmitTimeout().
 				Build()
 			defer g.Close()
@@ -195,7 +195,7 @@ func TestGroupBuilder_Chain_FailFast(t *testing.T) {
 			}
 
 			g := Group[int]().Context(groupFreshCtx()).
-				Concurrency(4).
+				Worker(4).
 				FailFast().
 				Build()
 			defer g.Close()
@@ -232,7 +232,7 @@ func TestGroupBuilder_Chain_Streaming(t *testing.T) {
 
 			var streamCount int32
 			g := Group[int]().Context(groupFreshCtx()).
-				Concurrency(4).
+				Worker(4).
 				Streaming(32).
 				ResultCallback(func(r core.Result[int]) {
 					atomic.AddInt32(&streamCount, 1)
@@ -258,7 +258,7 @@ func TestGroupBuilder_Chain_DefaultStreaming(t *testing.T) {
 			groupSkipIfTooLarge(t, tier.size)
 
 			g := Group[int]().Context(groupFreshCtx()).
-				Concurrency(4).
+				Worker(4).
 				DefaultStreaming().
 				Build()
 			defer g.Close()
@@ -281,7 +281,7 @@ func TestGroupBuilder_Chain_ResultCallback(t *testing.T) {
 
 			var cbCount int32
 			g := Group[int]().Context(groupFreshCtx()).
-				Concurrency(4).
+				Worker(4).
 				ResultCallback(func(r core.Result[int]) {
 					atomic.AddInt32(&cbCount, 1)
 				}).
@@ -306,7 +306,7 @@ func TestGroupBuilder_Chain_DefaultResultCallback(t *testing.T) {
 			groupSkipIfTooLarge(t, tier.size)
 
 			g := Group[int]().Context(groupFreshCtx()).
-				Concurrency(4).
+				Worker(4).
 				DefaultResultCallback().
 				Build()
 			defer g.Close()
@@ -338,7 +338,7 @@ func TestGroupBuilder_Chain_AutoScale(t *testing.T) {
 			}
 
 			g := Group[int]().Context(groupFreshCtx()).
-				Concurrency(4).
+				Worker(4).
 				AutoScale(cfg).
 				Build()
 			defer g.Close()
@@ -364,7 +364,7 @@ func TestGroupBuilder_Chain_DefaultAutoScale(t *testing.T) {
 			groupSkipIfTooLarge(t, tier.size)
 
 			g := Group[int]().Context(groupFreshCtx()).
-				Concurrency(4).
+				Worker(4).
 				DefaultAutoScale().
 				Build()
 			defer g.Close()
@@ -395,7 +395,7 @@ func TestGroupBuilder_Build_Basic(t *testing.T) {
 		t.Run(tier.name, func(t *testing.T) {
 			groupSkipIfTooLarge(t, tier.size)
 
-			g := Group[int]().Context(groupFreshCtx()).Concurrency(8).Build()
+			g := Group[int]().Context(groupFreshCtx()).Worker(8).Build()
 			defer g.Close()
 
 			for i := 0; i < tier.size; i++ {
@@ -429,7 +429,7 @@ func TestGroupBuilder_Build_MultipleGo(t *testing.T) {
 		t.Run(tier.name, func(t *testing.T) {
 			groupSkipIfTooLarge(t, tier.size)
 
-			g := Group[int]().Context(groupFreshCtx()).Concurrency(16).Build()
+			g := Group[int]().Context(groupFreshCtx()).Worker(16).Build()
 			defer g.Close()
 
 			var wg sync.WaitGroup
@@ -469,7 +469,7 @@ func TestGroupBuilder_Run_Basic(t *testing.T) {
 			groupSkipIfTooLarge(t, tier.size)
 
 			err := Group[int]().Context(groupFreshCtx()).
-				Concurrency(8).
+				Worker(8).
 				Run(func(ctx context.Context, g *group.Group[int]) error {
 					for i := 0; i < tier.size; i++ {
 						i := i
@@ -493,7 +493,7 @@ func TestGroupBuilder_Run_FnErrorPropagation(t *testing.T) {
 			groupSkipIfTooLarge(t, tier.size)
 
 			err := Group[int]().Context(groupFreshCtx()).
-				Concurrency(4).
+				Worker(4).
 				Run(func(ctx context.Context, g *group.Group[int]) error {
 					return errTestSentinel
 				})
@@ -507,36 +507,36 @@ func TestGroupBuilder_Run_FnErrorPropagation(t *testing.T) {
 
 // ============================================================
 // Section 5: GroupNoResultBuilder 基础配置链式方法
-//   - Concurrency / DefaultConcurrency
+//   - Worker / DefaultWorker
 //   - Timeout（Build+Wait）
 //   - SubmitTimeout
 // ============================================================
 
-func TestGroupNoResultBuilder_Chain_Concurrency(t *testing.T) {
+func TestGroupNoResultBuilder_Chain_Worker(t *testing.T) {
 	for _, tier := range groupAllTiers {
 		t.Run(tier.name, func(t *testing.T) {
 			groupSkipIfTooLarge(t, tier.size)
 
-			nr := GroupVoid().Context(groupFreshCtx()).Concurrency(8).Build()
+			nr := GroupVoid().Context(groupFreshCtx()).Worker(8).Build()
 			defer nr.Close()
 
-			if nr.Concurrency() != 8 {
-				t.Fatalf("NoResult Concurrency: expected 8, got %d", nr.Concurrency())
+			if nr.Worker() != 8 {
+				t.Fatalf("NoResult Concurrency: expected 8, got %d", nr.Worker())
 			}
 		})
 	}
 }
 
-func TestGroupNoResultBuilder_Chain_DefaultConcurrency(t *testing.T) {
+func TestGroupNoResultBuilder_Chain_DefaultWorker(t *testing.T) {
 	for _, tier := range groupAllTiers {
 		t.Run(tier.name, func(t *testing.T) {
 			groupSkipIfTooLarge(t, tier.size)
 
-			nr := GroupVoid().Context(groupFreshCtx()).DefaultConcurrency().Build()
+			nr := GroupVoid().Context(groupFreshCtx()).DefaultWorker().Build()
 			defer nr.Close()
 
-			if nr.Concurrency() != core.IO() {
-				t.Fatalf("NoResult DefaultConcurrency: expected %d, got %d", core.IO(), nr.Concurrency())
+			if nr.Worker() != core.IO() {
+				t.Fatalf("NoResult DefaultWorker: expected %d, got %d", core.IO(), nr.Worker())
 			}
 		})
 	}
@@ -548,7 +548,7 @@ func TestGroupNoResultBuilder_Chain_Timeout(t *testing.T) {
 			groupSkipIfTooLarge(t, tier.size)
 
 			nr := GroupVoid().Context(groupFreshCtx()).
-				Concurrency(4).
+				Worker(4).
 				Timeout(50 * time.Millisecond).
 				Build()
 			defer nr.Close()
@@ -579,7 +579,7 @@ func TestGroupNoResultBuilder_Chain_SubmitTimeout(t *testing.T) {
 			groupSkipIfTooLarge(t, tier.size)
 
 			nr := GroupVoid().Context(groupFreshCtx()).
-				Concurrency(1).
+				Worker(1).
 				SubmitTimeout(1 * time.Millisecond).
 				Build()
 			defer nr.Close()
@@ -613,7 +613,7 @@ func TestGroupNoResultBuilder_Chain_FailFast(t *testing.T) {
 			groupSkipIfTooLarge(t, tier.size)
 
 			nr := GroupVoid().Context(groupFreshCtx()).
-				Concurrency(4).
+				Worker(4).
 				FailFast().
 				Build()
 			defer nr.Close()
@@ -643,7 +643,7 @@ func TestGroupNoResultBuilder_Chain_Streaming(t *testing.T) {
 			groupSkipIfTooLarge(t, tier.size)
 
 			err := GroupVoid().Context(groupFreshCtx()).
-				Concurrency(4).
+				Worker(4).
 				Streaming(64).
 				Run(func(ctx context.Context, nr *group.NoResult) error {
 					for i := 0; i < tier.size; i++ {
@@ -667,7 +667,7 @@ func TestGroupNoResultBuilder_Chain_DefaultStreaming(t *testing.T) {
 			groupSkipIfTooLarge(t, tier.size)
 
 			err := GroupVoid().Context(groupFreshCtx()).
-				Concurrency(4).
+				Worker(4).
 				DefaultStreaming().
 				Run(func(ctx context.Context, nr *group.NoResult) error {
 					for i := 0; i < tier.size; i++ {
@@ -699,7 +699,7 @@ func TestGroupNoResultBuilder_Chain_AutoScale(t *testing.T) {
 			}
 
 			nr := GroupVoid().Context(groupFreshCtx()).
-				Concurrency(4).
+				Worker(4).
 				AutoScale(cfg).
 				Build()
 			defer nr.Close()
@@ -722,7 +722,7 @@ func TestGroupNoResultBuilder_Chain_DefaultAutoScale(t *testing.T) {
 			groupSkipIfTooLarge(t, tier.size)
 
 			nr := GroupVoid().Context(groupFreshCtx()).
-				Concurrency(4).
+				Worker(4).
 				DefaultAutoScale().
 				Build()
 			defer nr.Close()
@@ -748,7 +748,7 @@ func TestGroupNoResultBuilder_Build_Basic(t *testing.T) {
 		t.Run(tier.name, func(t *testing.T) {
 			groupSkipIfTooLarge(t, tier.size)
 
-			nr := GroupVoid().Context(groupFreshCtx()).Concurrency(8).Build()
+			nr := GroupVoid().Context(groupFreshCtx()).Worker(8).Build()
 			defer nr.Close()
 
 			for i := 0; i < tier.size; i++ {
@@ -768,7 +768,7 @@ func TestGroupNoResultBuilder_Build_ErrorAggregation(t *testing.T) {
 		t.Run(tier.name, func(t *testing.T) {
 			groupSkipIfTooLarge(t, tier.size)
 
-			nr := GroupVoid().Context(groupFreshCtx()).Concurrency(4).Build()
+			nr := GroupVoid().Context(groupFreshCtx()).Worker(4).Build()
 			defer nr.Close()
 
 			for i := 0; i < tier.size; i++ {
@@ -801,7 +801,7 @@ func TestGroupNoResultBuilder_Run_Basic(t *testing.T) {
 			groupSkipIfTooLarge(t, tier.size)
 
 			err := GroupVoid().Context(groupFreshCtx()).
-				Concurrency(8).
+				Worker(8).
 				Run(func(ctx context.Context, nr *group.NoResult) error {
 					for i := 0; i < tier.size; i++ {
 						nr.Go(ctx, func(ctx context.Context) error {
@@ -824,7 +824,7 @@ func TestGroupNoResultBuilder_Run_FnErrorPropagation(t *testing.T) {
 			groupSkipIfTooLarge(t, tier.size)
 
 			err := GroupVoid().Context(groupFreshCtx()).
-				Concurrency(4).
+				Worker(4).
 				Run(func(ctx context.Context, nr *group.NoResult) error {
 					return errTestSentinel
 				})
@@ -851,7 +851,7 @@ func TestGroupBuilder_Cross_ConcurrencyTimeout(t *testing.T) {
 			groupSkipIfTooLarge(t, tier.size)
 
 			g := Group[int]().Context(groupFreshCtx()).
-				Concurrency(16).
+				Worker(16).
 				Timeout(500 * time.Millisecond).
 				Build()
 			defer g.Close()
@@ -889,7 +889,7 @@ func TestGroupBuilder_Cross_FailFastCallback(t *testing.T) {
 
 			var cbCount int32
 			g := Group[int]().Context(groupFreshCtx()).
-				Concurrency(4).
+				Worker(4).
 				FailFast().
 				ResultCallback(func(r core.Result[int]) {
 					atomic.AddInt32(&cbCount, 1)
@@ -915,7 +915,7 @@ func TestGroupBuilder_Cross_FailFastCallback(t *testing.T) {
 	}
 }
 
-func TestGroupBuilder_Cross_StreamingConcurrency(t *testing.T) {
+func TestGroupBuilder_Cross_StreamingWorker(t *testing.T) {
 	for _, tier := range groupAllTiers {
 		for _, conc := range []int{1, 4, 16} {
 			name := fmt.Sprintf("%s_c%d", tier.name, conc)
@@ -924,7 +924,7 @@ func TestGroupBuilder_Cross_StreamingConcurrency(t *testing.T) {
 
 				var streamCount int32
 				g := Group[int]().Context(groupFreshCtx()).
-					Concurrency(conc).
+					Worker(conc).
 					Streaming(conc * 4).
 					ResultCallback(func(r core.Result[int]) {
 						atomic.AddInt32(&streamCount, 1)
@@ -959,7 +959,7 @@ func TestGroupBuilder_Cross_AutoScaleRun(t *testing.T) {
 			}
 
 			err := Group[int]().Context(groupFreshCtx()).
-				Concurrency(4).
+				Worker(4).
 				AutoScale(cfg).
 				Timeout(5 * time.Second).
 				Run(func(ctx context.Context, g *group.Group[int]) error {
@@ -985,7 +985,7 @@ func TestGroupBuilder_Cross_NoResultTimeout(t *testing.T) {
 			groupSkipIfTooLarge(t, tier.size)
 
 			err := GroupVoid().Context(groupFreshCtx()).
-				Concurrency(8).
+				Worker(8).
 				Timeout(1 * time.Second).
 				FailFast().
 				Run(func(ctx context.Context, nr *group.NoResult) error {
@@ -1020,7 +1020,7 @@ func TestGroupBuilder_Edge_CanceledContext(t *testing.T) {
 			cancel()
 
 			g := Group[int]().Context(ctx).
-				Concurrency(4).
+				Worker(4).
 				FailFast().
 				Build()
 			defer g.Close()
@@ -1040,12 +1040,12 @@ func TestGroupBuilder_Edge_CanceledContext(t *testing.T) {
 	}
 }
 
-func TestGroupBuilder_Edge_ZeroConcurrency(t *testing.T) {
+func TestGroupBuilder_Edge_ZeroWorker(t *testing.T) {
 	for _, tier := range groupAllTiers {
 		t.Run(tier.name, func(t *testing.T) {
 			groupSkipIfTooLarge(t, tier.size)
 
-			g := Group[int]().Context(groupFreshCtx()).Concurrency(0).Build()
+			g := Group[int]().Context(groupFreshCtx()).Worker(0).Build()
 			defer g.Close()
 
 			for i := 0; i < tier.size; i++ {
@@ -1066,7 +1066,7 @@ func TestGroupBuilder_Edge_NoContext(t *testing.T) {
 			groupSkipIfTooLarge(t, tier.size)
 
 			err := Group[int]().
-				Concurrency(8).
+				Worker(8).
 				Run(func(ctx context.Context, g *group.Group[int]) error {
 					for i := 0; i < tier.size; i++ {
 						i := i
@@ -1090,7 +1090,7 @@ func TestGroupNoResultBuilder_Edge_NoContext(t *testing.T) {
 			groupSkipIfTooLarge(t, tier.size)
 
 			err := GroupVoid().
-				Concurrency(8).
+				Worker(8).
 				Run(func(ctx context.Context, nr *group.NoResult) error {
 					for i := 0; i < tier.size; i++ {
 						nr.Go(ctx, func(ctx context.Context) error {
@@ -1127,7 +1127,7 @@ func TestGroupBuilder_FullChain_Build(t *testing.T) {
 
 			var cbSum int64
 			g := Group[int]().Context(groupFreshCtx()).
-				Concurrency(16).
+				Worker(16).
 				Timeout(10 * time.Second).
 				SubmitTimeout(5 * time.Second).
 				Streaming(64).
@@ -1141,8 +1141,8 @@ func TestGroupBuilder_FullChain_Build(t *testing.T) {
 			if !g.IsAutoScaleEnabled() {
 				t.Fatal("FullChain: expected auto-scale enabled")
 			}
-			if g.Concurrency() != 16 {
-				t.Fatalf("FullChain: expected concurrency 16, got %d", g.Concurrency())
+			if g.Worker() != 16 {
+				t.Fatalf("FullChain: expected concurrency 16, got %d", g.Worker())
 			}
 
 			for i := 0; i < tier.size; i++ {
@@ -1163,7 +1163,7 @@ func TestGroupBuilder_FullChain_Run(t *testing.T) {
 			groupSkipIfTooLarge(t, tier.size)
 
 			err := Group[int]().Context(groupFreshCtx()).
-				Concurrency(8).
+				Worker(8).
 				Timeout(10 * time.Second).
 				SubmitTimeout(5 * time.Second).
 				FailFast().
@@ -1199,7 +1199,7 @@ func TestGroupNoResultBuilder_FullChain_Build(t *testing.T) {
 			}
 
 			nr := GroupVoid().Context(groupFreshCtx()).
-				Concurrency(8).
+				Worker(8).
 				Timeout(10 * time.Second).
 				SubmitTimeout(5 * time.Second).
 				FailFast().
@@ -1211,8 +1211,8 @@ func TestGroupNoResultBuilder_FullChain_Build(t *testing.T) {
 			if !nr.IsAutoScaleEnabled() {
 				t.Fatal("NoResult FullChain: expected auto-scale enabled")
 			}
-			if nr.Concurrency() != 8 {
-				t.Fatalf("NoResult FullChain: expected concurrency 8, got %d", nr.Concurrency())
+			if nr.Worker() != 8 {
+				t.Fatalf("NoResult FullChain: expected concurrency 8, got %d", nr.Worker())
 			}
 
 			for i := 0; i < tier.size; i++ {
@@ -1233,7 +1233,7 @@ func TestGroupNoResultBuilder_FullChain_Run(t *testing.T) {
 			groupSkipIfTooLarge(t, tier.size)
 
 			err := GroupVoid().Context(groupFreshCtx()).
-				Concurrency(8).
+				Worker(8).
 				Timeout(10 * time.Second).
 				SubmitTimeout(5 * time.Second).
 				FailFast().
@@ -1265,7 +1265,7 @@ func TestGroupBuilder_Correctness_ResultIntegrity(t *testing.T) {
 		t.Run(tier.name, func(t *testing.T) {
 			groupSkipIfTooLarge(t, tier.size)
 
-			g := Group[int]().Context(groupFreshCtx()).Concurrency(32).Build()
+			g := Group[int]().Context(groupFreshCtx()).Worker(32).Build()
 			defer g.Close()
 
 			for i := 0; i < tier.size; i++ {
@@ -1304,7 +1304,7 @@ func TestGroupBuilder_Correctness_ErrorAggregation(t *testing.T) {
 				errCount = 1
 			}
 
-			g := Group[int]().Context(groupFreshCtx()).Concurrency(4).Build()
+			g := Group[int]().Context(groupFreshCtx()).Worker(4).Build()
 			defer g.Close()
 
 			for i := 0; i < tier.size; i++ {

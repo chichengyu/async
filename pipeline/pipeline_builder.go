@@ -99,28 +99,27 @@ func (b *PipelineBuilder[T]) ExecuteStream(fn func(context.Context, string, T) (
 
 // ── 流式模式 ──
 
-// Stream 切换为流式管道模式，bufSize 为 channel 缓冲大小（<=0 使用默认值）。
-// 返回 PipelineStreamBuilder，通过 .Run(fn).Receive() 获取结果 channel。
+// Stream 切换为流式管道模式。
+// 返回 PipelineStreamBuilder，通过 .Buf(n).Run(fn).Receive() 获取结果 channel。
 //
 // 使用示例：
 //
 //	ch := async.Pipeline[Data](items).Context(ctx).
-//	    Stage("parse", 4).Stage("validate", 2).
-//	    Stream(1024).Run(fn).Receive()
+//	    Stage("parse", 4).DefaultStage("validate").
+//	    Stream().Buf(1024).Run(fn).Receive()
 //	for r := range ch {
 //	    if r.Ok() { saveToDB(r.Value) }
 //	}
-func (b *PipelineBuilder[T]) Stream(bufSize int) *PipelineStreamBuilder[T] {
+func (b *PipelineBuilder[T]) Stream() *PipelineStreamBuilder[T] {
 	return &PipelineStreamBuilder[T]{
 		ctx:    b.ctx,
 		items:  b.items,
 		stages: b.stages,
-		buf:    bufSize,
 	}
 }
 
 // PipelineStreamBuilder 流式管道构建器，由 PipelineBuilder.Stream() 创建。
-// 通过 .Run(fn).Receive() 启动管道并获取结果 channel。
+// 通过 .Buf(n).Run(fn).Receive() 启动管道并获取结果 channel。
 type PipelineStreamBuilder[T any] struct {
 	ctx    context.Context
 	items  []T
@@ -128,9 +127,15 @@ type PipelineStreamBuilder[T any] struct {
 	buf    int
 }
 
-// BufSize 设置 channel 缓冲大小（<=0 使用默认值）。
-func (b *PipelineStreamBuilder[T]) BufSize(n int) *PipelineStreamBuilder[T] {
+// Buf 设置 channel 缓冲大小（<=0 使用默认值）。
+func (b *PipelineStreamBuilder[T]) Buf(n int) *PipelineStreamBuilder[T] {
 	b.buf = n
+	return b
+}
+
+// DefaultBuf 重置 channel 缓冲大小为默认值（自动计算）。
+func (b *PipelineStreamBuilder[T]) DefaultBuf() *PipelineStreamBuilder[T] {
+	b.buf = 0
 	return b
 }
 
@@ -149,7 +154,7 @@ func (b *PipelineStreamBuilder[T]) Run(fn func(context.Context, string, T) (T, e
 //	for r := range ch { ... }
 //
 //	// 方式二：回调消费（一边执行一边消费）
-//	stream.ForEach(func(r core.Result[Data]) {
+//	stream.Drain(func(r core.Result[Data]) {
 //	    if r.Ok() { saveToDB(r.Value) }
 //	})
 type PipelineStream[T any] struct {
@@ -161,9 +166,10 @@ func (s *PipelineStream[T]) Receive() <-chan core.Result[T] {
 	return s.ch
 }
 
-// ForEach 通过回调函数逐条消费流式结果，阻塞直到管道执行完毕。
+// Drain 通过回调逐条消费流式结果，阻塞直到管道执行完毕。
 // fn 在管道执行过程中被调用，实现一边执行一边消费。
-func (s *PipelineStream[T]) ForEach(fn func(core.Result[T])) {
+// 命名参考 Go 生态中 io.Copy / channel drain 等标准用法。
+func (s *PipelineStream[T]) Drain(fn func(core.Result[T])) {
 	for r := range s.ch {
 		fn(r)
 	}

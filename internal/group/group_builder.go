@@ -19,13 +19,13 @@ import (
 // 示例：
 //
 //	// Build 模式
-//	g := async.Group[string]().Context(ctx).Concurrency(10).Timeout(5 * time.Second).Build()
+//	g := async.Group[string]().Context(ctx).Worker(10).Timeout(5 * time.Second).Build()
 //	defer g.Close()
 //	g.Go(ctx, fn)
 //	g.Wait()
 //
 //	// Run 模式
-//	async.Group[string]().Context(ctx).Concurrency(10).Timeout(5 * time.Second).Run(func(ctx context.Context, g *group.Group[string]) error {
+//	async.Group[string]().Context(ctx).Worker(10).Timeout(5 * time.Second).Run(func(ctx context.Context, g *group.Group[string]) error {
 //	    for _, item := range items {
 //	        g.Go(ctx, fn)
 //	    }
@@ -59,14 +59,14 @@ func (b *GroupBuilder[T]) Context(ctx context.Context) *GroupBuilder[T] {
 
 // ── 链式配置方法 ──
 
-// Concurrency 设置最大并发数。
-func (b *GroupBuilder[T]) Concurrency(n int) *GroupBuilder[T] {
+// Worker 设置最大并发数。
+func (b *GroupBuilder[T]) Worker(n int) *GroupBuilder[T] {
 	b.concurrency = n
 	return b
 }
 
-// DefaultConcurrency 使用默认并发数（core.IO()）。
-func (b *GroupBuilder[T]) DefaultConcurrency() *GroupBuilder[T] {
+// DefaultWorker 使用默认并发数（core.IO()）。
+func (b *GroupBuilder[T]) DefaultWorker() *GroupBuilder[T] {
 	b.concurrency = core.IO()
 	return b
 }
@@ -170,12 +170,12 @@ func (b *GroupBuilder[T]) Build() *Group[T] {
 
 // Run 创建→执行→关闭。
 // 内部流程：Build() → 调用 fn → Close()（Wait + 清理）。
-// 使用前必须设置 Concurrency（或使用 DefaultConcurrency）。
+// 使用前必须设置 Concurrency（或使用 DefaultWorker）。
 //
 // 示例：
 //
 //	async.Group[string](ctx).
-//	    Concurrency(10).
+//	    Worker(10).
 //	    Timeout(5 * time.Second).
 //	    Run(func(ctx context.Context, g *group.Group[string]) error {
 //	        for _, item := range items {

@@ -24,7 +24,7 @@ import (
 //	sw := async.Ratelimit(ctx).SlidingWindow().Limit(100).Window(10*time.Second).Build()
 //
 //	// Adaptive 模式
-//	al := async.Ratelimit(ctx).Adaptive().MinConcurrency(5).MaxConcurrency(100).Build()
+//	al := async.Ratelimit(ctx).Adaptive().MinWorker(5).MaxWorker(100).Build()
 //
 //	// 分片模式
 //	srl := async.Ratelimit(ctx).Sharded().RateLimiter().Rate(100).Per(time.Second).Shards(16).Build()
@@ -210,21 +210,21 @@ func (b *SlidingWindowSubBuilder) DefaultWindow() *SlidingWindowSubBuilder {
 //
 // 链式调用示例：
 //
-//	al := async.Ratelimit(ctx).Adaptive().MinConcurrency(5).MaxConcurrency(100).Build()
+//	al := async.Ratelimit(ctx).Adaptive().MinWorker(5).MaxWorker(100).Build()
 type AdaptiveSubBuilder struct {
 	ctx     context.Context // 请求上下文
 	minRate int             // 最小并发度（负载低时不下于此值）
 	maxRate int             // 最大并发度（负载高时不超于此值）
 }
 
-// MinConcurrency 设置最小并发度（负载低时不会低于此值）。
-func (b *AdaptiveSubBuilder) MinConcurrency(n int) *AdaptiveSubBuilder {
+// MinWorker 设置最小并发度（负载低时不会低于此值）。
+func (b *AdaptiveSubBuilder) MinWorker(n int) *AdaptiveSubBuilder {
 	b.minRate = n
 	return b
 }
 
-// MaxConcurrency 设置最大并发度（负载高时不会超过此值）。
-func (b *AdaptiveSubBuilder) MaxConcurrency(n int) *AdaptiveSubBuilder {
+// MaxWorker 设置最大并发度（负载高时不会超过此值）。
+func (b *AdaptiveSubBuilder) MaxWorker(n int) *AdaptiveSubBuilder {
 	b.maxRate = n
 	return b
 }
@@ -234,14 +234,14 @@ func (b *AdaptiveSubBuilder) Build() *AdaptiveRateLimiter {
 	return NewAdaptiveRateLimiter(b.minRate, b.maxRate)
 }
 
-// DefaultMinConcurrency 使用默认最小并发度（GOMAXPROCS）。
-func (b *AdaptiveSubBuilder) DefaultMinConcurrency() *AdaptiveSubBuilder {
+// DefaultMinWorker 使用默认最小并发度（GOMAXPROCS）。
+func (b *AdaptiveSubBuilder) DefaultMinWorker() *AdaptiveSubBuilder {
 	b.minRate = core.IO()
 	return b
 }
 
-// DefaultMaxConcurrency 使用默认最大并发度（GOMAXPROCS × 10）。
-func (b *AdaptiveSubBuilder) DefaultMaxConcurrency() *AdaptiveSubBuilder {
+// DefaultMaxWorker 使用默认最大并发度（GOMAXPROCS × 10）。
+func (b *AdaptiveSubBuilder) DefaultMaxWorker() *AdaptiveSubBuilder {
 	b.maxRate = core.IO() * 10
 	return b
 }
@@ -461,7 +461,7 @@ func (b *ShardedSlidingWindowSubBuilder) DefaultWindow() *ShardedSlidingWindowSu
 //
 // 链式调用示例：
 //
-//	sal := async.Ratelimit(ctx).Sharded().Adaptive().Shards(16).MinConcurrency(32).MaxConcurrency(800).Build()
+//	sal := async.Ratelimit(ctx).Sharded().Adaptive().Shards(16).MinWorker(32).MaxWorker(800).Build()
 type ShardedAdaptiveSubBuilder struct {
 	ctx     context.Context // 请求上下文
 	shards  int             // 水平分片数
@@ -475,14 +475,14 @@ func (b *ShardedAdaptiveSubBuilder) Shards(n int) *ShardedAdaptiveSubBuilder {
 	return b
 }
 
-// MinConcurrency 设置最小并发度，平均分配到各分片。
-func (b *ShardedAdaptiveSubBuilder) MinConcurrency(n int) *ShardedAdaptiveSubBuilder {
+// MinWorker 设置最小并发度，平均分配到各分片。
+func (b *ShardedAdaptiveSubBuilder) MinWorker(n int) *ShardedAdaptiveSubBuilder {
 	b.minRate = n
 	return b
 }
 
-// MaxConcurrency 设置最大并发度，平均分配到各分片。
-func (b *ShardedAdaptiveSubBuilder) MaxConcurrency(n int) *ShardedAdaptiveSubBuilder {
+// MaxWorker 设置最大并发度，平均分配到各分片。
+func (b *ShardedAdaptiveSubBuilder) MaxWorker(n int) *ShardedAdaptiveSubBuilder {
 	b.maxRate = n
 	return b
 }
@@ -498,14 +498,14 @@ func (b *ShardedAdaptiveSubBuilder) DefaultShards() *ShardedAdaptiveSubBuilder {
 	return b
 }
 
-// DefaultMinConcurrency 使用默认最小并发度（GOMAXPROCS）。
-func (b *ShardedAdaptiveSubBuilder) DefaultMinConcurrency() *ShardedAdaptiveSubBuilder {
+// DefaultMinWorker 使用默认最小并发度（GOMAXPROCS）。
+func (b *ShardedAdaptiveSubBuilder) DefaultMinWorker() *ShardedAdaptiveSubBuilder {
 	b.minRate = core.IO()
 	return b
 }
 
-// DefaultMaxConcurrency 使用默认最大并发度（GOMAXPROCS × 10）。
-func (b *ShardedAdaptiveSubBuilder) DefaultMaxConcurrency() *ShardedAdaptiveSubBuilder {
+// DefaultMaxWorker 使用默认最大并发度（GOMAXPROCS × 10）。
+func (b *ShardedAdaptiveSubBuilder) DefaultMaxWorker() *ShardedAdaptiveSubBuilder {
 	b.maxRate = core.IO() * 10
 	return b
 }

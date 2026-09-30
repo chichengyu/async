@@ -404,7 +404,7 @@ func TestPool_ConcurrentSubmit_300Goroutines(t *testing.T) {
 
 func TestPool_FailFast_50K(t *testing.T) {
 	for round := 0; round < 5; round++ {
-		p, ctx := NewPool[int](100).WithFFSubmitTO(context.Background(), 2*time.Second)
+		p, ctx := NewPool[int](100).WithFFSto(context.Background(), 2*time.Second)
 		n := 50000
 		for i := 0; i < n; i++ {
 			idx := i

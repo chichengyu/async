@@ -26,7 +26,7 @@ import (
 // 组合示例：
 //
 //	g, ctx := group.NewGroup[string](10).
-//	    WithFFTimeoutTraceID(ctx, 5*time.Second)
+//	    WithFFTOTID(ctx, 5*time.Second)
 
 type Group[T any] struct {
 	concurrency   atomic.Int32
@@ -189,21 +189,21 @@ func (g *Group[T]) MergeFailFastCancel(cancel context.CancelFunc) *Group[T] {
 	return g
 }
 
-// ─── 组合配置方法（FF=快速失败, Ctx=Context管理, Timeout=任务超时, SubmitTO=提交超时, TraceID=链路追踪）───
+// ─── 组合配置方法（FF=快速失败, Ctx=Context, TO=任务超时, Sto=提交超时, TID=TraceID）───
 //
-// 以下方法均为 WithXxx 的组合封装，命名格式为 With[FF][Ctx|Timeout|SubmitTO|TraceID]*：
+// 以下方法均为 WithXxx 的组合封装，命名格式为 With[FF][Ctx|TO|Sto|TID]*：
 //   - WithFFTraceID：快速失败 + TraceID
-//   - WithFFSubmitTO：快速失败 + 提交超时
-//   - WithFFSubmitTOTraceID：快速失败 + 提交超时 + TraceID
+//   - WithFFSto：快速失败 + 提交超时
+//   - WithFFStoTID：快速失败 + 提交超时 + TraceID
 //   - WithFFTimeout：快速失败 + 任务超时
-//   - WithFFTimeoutTraceID：快速失败 + 任务超时 + TraceID
-//   - WithFFTimeoutSubmitTO：快速失败 + 任务超时 + 提交超时
-//   - WithFFTimeoutSubmitTOTraceID：快速失败 + 任务超时 + 提交超时 + TraceID
+//   - WithFFTOTID：快速失败 + 任务超时 + TraceID
+//   - WithFFTOSto：快速失败 + 任务超时 + 提交超时
+//   - WithFFTOStoTID：快速失败 + 任务超时 + 提交超时 + TraceID
 //   - WithCtxTraceID：Context + TraceID
 //   - WithCtxTimeout：Context + 任务超时
-//   - WithCtxTimeoutTraceID：Context + 任务超时 + TraceID
-//   - WithCtxSubmitTO：Context + 提交超时
-//   - WithCtxSubmitTOTraceID：Context + 提交超时 + TraceID
+//   - WithCtxTOTID：Context + 任务超时 + TraceID
+//   - WithCtxSto：Context + 提交超时
+//   - WithCtxStoTID：Context + 提交超时 + TraceID
 
 // WithFFTraceID 启用 FailFast 并注入 trace_id。
 //
@@ -214,24 +214,24 @@ func (g *Group[T]) WithFFTraceID(ctx context.Context) (*Group[T], context.Contex
 	return g.WithTraceID(ctx)
 }
 
-// WithFFSubmitTO 启用 FailFast 并设置提交超时。
+// WithFFSto 启用 FailFast 并设置提交超时（Sto = SubmitTimeout）。
 //
 // 参数：
 //   - ctx：原始上下文
 //   - submitTimeout：提交超时时间
-func (g *Group[T]) WithFFSubmitTO(ctx context.Context, submitTimeout time.Duration) (*Group[T], context.Context) {
+func (g *Group[T]) WithFFSto(ctx context.Context, submitTimeout time.Duration) (*Group[T], context.Context) {
 	g, ctx = g.WithFailFast(ctx)
 	g.WithSubmitTimeout(submitTimeout)
 	return g, ctx
 }
 
-// WithFFSubmitTOTraceID 启用 FailFast、设置提交超时并注入 trace_id。
+// WithFFStoTID 启用 FailFast、设置提交超时并注入 trace_id。
 //
 // 参数：
 //   - ctx：原始上下文
 //   - submitTimeout：提交超时时间
-func (g *Group[T]) WithFFSubmitTOTraceID(ctx context.Context, submitTimeout time.Duration) (*Group[T], context.Context) {
-	g, ctx = g.WithFFSubmitTO(ctx, submitTimeout)
+func (g *Group[T]) WithFFStoTID(ctx context.Context, submitTimeout time.Duration) (*Group[T], context.Context) {
+	g, ctx = g.WithFFSto(ctx, submitTimeout)
 	return g.WithTraceID(ctx)
 }
 
@@ -255,36 +255,36 @@ func (g *Group[T]) WithCtxTraceID(ctx context.Context) (*Group[T], context.Conte
 	return g.WithTraceID(ctx)
 }
 
-// WithFFTimeoutTraceID 启用 FailFast、设置超时并注入 trace_id。
+// WithFFTOTID 启用 FailFast、设置超时并注入 trace_id（TO = Timeout, TID = TraceID）。
 //
 // 参数：
 //   - ctx：原始上下文
 //   - timeout：任务超时时间
-func (g *Group[T]) WithFFTimeoutTraceID(ctx context.Context, timeout time.Duration) (*Group[T], context.Context) {
+func (g *Group[T]) WithFFTOTID(ctx context.Context, timeout time.Duration) (*Group[T], context.Context) {
 	g, ctx = g.WithFFTimeout(ctx, timeout)
 	return g.WithTraceID(ctx)
 }
 
-// WithFFTimeoutSubmitTO 启用 FailFast、设置任务超时和提交超时。
+// WithFFTOSto 启用 FailFast、设置任务超时和提交超时（TO=Timeout, Sto=SubmitTimeout）。
 //
 // 参数：
 //   - ctx：原始上下文
 //   - timeout：任务超时时间
 //   - submitTimeout：提交超时时间
-func (g *Group[T]) WithFFTimeoutSubmitTO(ctx context.Context, timeout time.Duration, submitTimeout time.Duration) (*Group[T], context.Context) {
+func (g *Group[T]) WithFFTOSto(ctx context.Context, timeout time.Duration, submitTimeout time.Duration) (*Group[T], context.Context) {
 	g, ctx = g.WithFFTimeout(ctx, timeout)
 	g.WithSubmitTimeout(submitTimeout)
 	return g, ctx
 }
 
-// WithFFTimeoutSubmitTOTraceID 启用 FailFast、设置超时、提交超时并注入 trace_id。
+// WithFFTOStoTID 启用 FailFast、设置超时、提交超时并注入 trace_id（TO=Timeout, Sto=SubmitTimeout, TID=TraceID）。
 //
 // 参数：
 //   - ctx：原始上下文
 //   - timeout：任务超时时间
 //   - submitTimeout：提交超时时间
-func (g *Group[T]) WithFFTimeoutSubmitTOTraceID(ctx context.Context, timeout time.Duration, submitTimeout time.Duration) (*Group[T], context.Context) {
-	g, ctx = g.WithFFTimeoutSubmitTO(ctx, timeout, submitTimeout)
+func (g *Group[T]) WithFFTOStoTID(ctx context.Context, timeout time.Duration, submitTimeout time.Duration) (*Group[T], context.Context) {
+	g, ctx = g.WithFFTOSto(ctx, timeout, submitTimeout)
 	return g.WithTraceID(ctx)
 }
 
@@ -299,12 +299,12 @@ func (g *Group[T]) WithCtxTimeout(ctx context.Context, timeout time.Duration) (*
 	return g, ctx
 }
 
-// WithCtxTimeoutTraceID 设置 Context、任务超时并注入 trace_id。
+// WithCtxTOTID 设置 Context、任务超时并注入 trace_id。
 //
 // 参数：
 //   - ctx：原始上下文
 //   - timeout：任务超时时间
-func (g *Group[T]) WithCtxTimeoutTraceID(ctx context.Context, timeout time.Duration) (*Group[T], context.Context) {
+func (g *Group[T]) WithCtxTOTID(ctx context.Context, timeout time.Duration) (*Group[T], context.Context) {
 	g, ctx = g.WithCtxTimeout(ctx, timeout)
 	return g.WithTraceID(ctx)
 }
@@ -336,24 +336,24 @@ func (g *Group[T]) WithSubmitTimeout(d time.Duration) *Group[T] {
 	return g
 }
 
-// WithCtxSubmitTO 设置 Context 和提交超时。
+// WithCtxSto 设置 Context 和提交超时（Sto = SubmitTimeout）。
 //
 // 参数：
 //   - ctx：原始上下文
 //   - submitTimeout：提交超时时间
-func (g *Group[T]) WithCtxSubmitTO(ctx context.Context, submitTimeout time.Duration) (*Group[T], context.Context) {
+func (g *Group[T]) WithCtxSto(ctx context.Context, submitTimeout time.Duration) (*Group[T], context.Context) {
 	g, ctx = g.WithContext(ctx)
 	g.WithSubmitTimeout(submitTimeout)
 	return g, ctx
 }
 
-// WithCtxSubmitTOTraceID 设置 Context、提交超时并注入 trace_id。
+// WithCtxStoTID 设置 Context、提交超时并注入 trace_id。
 //
 // 参数：
 //   - ctx：原始上下文
 //   - submitTimeout：提交超时时间
-func (g *Group[T]) WithCtxSubmitTOTraceID(ctx context.Context, submitTimeout time.Duration) (*Group[T], context.Context) {
-	g, ctx = g.WithCtxSubmitTO(ctx, submitTimeout)
+func (g *Group[T]) WithCtxStoTID(ctx context.Context, submitTimeout time.Duration) (*Group[T], context.Context) {
+	g, ctx = g.WithCtxSto(ctx, submitTimeout)
 	return g.WithTraceID(ctx)
 }
 
@@ -364,7 +364,7 @@ func (g *Group[T]) WithCtxSubmitTOTraceID(ctx context.Context, submitTimeout tim
 // 调用 StreamResults() 获取只读 channel，在 Wait() 后自动关闭。
 func (g *Group[T]) WithStreaming(bufSize int) *Group[T] {
 	if bufSize <= 0 {
-		bufSize = g.Concurrency() * 2
+		bufSize = g.Worker() * 2
 	}
 	g.streamCh = make(chan core.Result[T], bufSize)
 	return g
@@ -916,8 +916,8 @@ func (g *Group[T]) TotalCount() int64 {
 	return n
 }
 
-// Concurrency 返回当前最大并发数（自动扩缩容时可能动态变化）。
-func (g *Group[T]) Concurrency() int {
+// Worker 返回当前最大并发数（自动扩缩容时可能动态变化）。
+func (g *Group[T]) Worker() int {
 	return int(g.concurrency.Load())
 }
 
@@ -1263,7 +1263,7 @@ func (g *Group[T]) DisableAutoScale() {
 		close(g.autoScaleStop)
 		if g.autoScale != nil {
 			minWorkers := g.autoScale.MinWorkers
-			if minWorkers > 0 && g.Concurrency() != minWorkers {
+			if minWorkers > 0 && g.Worker() != minWorkers {
 				g.resizeWorkerPool(minWorkers)
 			}
 		}
@@ -1339,7 +1339,7 @@ func (g *Group[T]) performAutoScaleCheck(config *core.AutoScaleConfig, scaleUpCo
 		return
 	}
 
-	cur := g.Concurrency()
+	cur := g.Worker()
 	busy := g.Busy()
 	if cur == 0 {
 		return
@@ -1400,7 +1400,7 @@ func (g *Group[T]) Shard(shards int) *MultiGroup[T] {
 		return &MultiGroup[T]{groups: []*Group[T]{g}}
 	}
 
-	templateConcurrency := g.Concurrency()
+	templateConcurrency := g.Worker()
 
 	groups := make([]*Group[T], shards)
 	groups[0] = g // 第一个分片复用当前 Group

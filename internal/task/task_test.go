@@ -184,11 +184,11 @@ func TestGoResult_Panic(t *testing.T) {
 	}
 }
 
-// ==================== GoAction 测试 ====================
+// ==================== GoAct 测试 ====================
 
-func TestGoAction_Success(t *testing.T) {
+func TestGoAct_Success(t *testing.T) {
 	var called atomic.Bool
-	ar := GoAction(context.Background(), func(ctx context.Context) error {
+	ar := GoAct(context.Background(), func(ctx context.Context) error {
 		called.Store(true)
 		return nil
 	})
@@ -201,8 +201,8 @@ func TestGoAction_Success(t *testing.T) {
 	}
 }
 
-func TestGoAction_Error(t *testing.T) {
-	ar := GoAction(context.Background(), func(ctx context.Context) error {
+func TestGoAct_Error(t *testing.T) {
+	ar := GoAct(context.Background(), func(ctx context.Context) error {
 		return errTask
 	})
 	_, err := ar.Wait()
@@ -211,8 +211,8 @@ func TestGoAction_Error(t *testing.T) {
 	}
 }
 
-func TestGoAction_Panic(t *testing.T) {
-	ar := GoAction(context.Background(), func(ctx context.Context) error {
+func TestGoAct_Panic(t *testing.T) {
+	ar := GoAct(context.Background(), func(ctx context.Context) error {
 		panic("action panic")
 	})
 	_, err := ar.Wait()
@@ -221,11 +221,11 @@ func TestGoAction_Panic(t *testing.T) {
 	}
 }
 
-// ==================== GoResultAction 测试 ====================
+// ==================== GoResultAct 测试 ====================
 
-func TestGoResultAction_Success(t *testing.T) {
+func TestGoResultAct_Success(t *testing.T) {
 	var done atomic.Bool
-	tk := GoResultAction(context.Background(), func(ctx context.Context) error {
+	tk := GoResultAct(context.Background(), func(ctx context.Context) error {
 		done.Store(true)
 		return nil
 	})
@@ -238,8 +238,8 @@ func TestGoResultAction_Success(t *testing.T) {
 	}
 }
 
-func TestGoResultAction_Error(t *testing.T) {
-	tk := GoResultAction(context.Background(), func(ctx context.Context) error {
+func TestGoResultAct_Error(t *testing.T) {
+	tk := GoResultAct(context.Background(), func(ctx context.Context) error {
 		return errTask
 	})
 	_, err := tk.Result()
@@ -378,7 +378,7 @@ func TestGoResult_50K(t *testing.T) {
 	}
 }
 
-func TestGoAction_50K(t *testing.T) {
+func TestGoAct_50K(t *testing.T) {
 	var wg sync.WaitGroup
 	n := 50000
 	var success atomic.Int64
@@ -386,7 +386,7 @@ func TestGoAction_50K(t *testing.T) {
 	for i := 0; i < n; i++ {
 		go func() {
 			defer wg.Done()
-			ar := GoAction(context.Background(), func(ctx context.Context) error {
+			ar := GoAct(context.Background(), func(ctx context.Context) error {
 				return nil
 			})
 			_, err := ar.Wait()
@@ -401,7 +401,7 @@ func TestGoAction_50K(t *testing.T) {
 	}
 }
 
-func TestGoResultAction_10K(t *testing.T) {
+func TestGoResultAct_10K(t *testing.T) {
 	var wg sync.WaitGroup
 	n := 10000
 	var success atomic.Int64
@@ -409,7 +409,7 @@ func TestGoResultAction_10K(t *testing.T) {
 	for i := 0; i < n; i++ {
 		go func() {
 			defer wg.Done()
-			tk := GoResultAction(context.Background(), func(ctx context.Context) error {
+			tk := GoResultAct(context.Background(), func(ctx context.Context) error {
 				return nil
 			})
 			_, err := tk.Result()

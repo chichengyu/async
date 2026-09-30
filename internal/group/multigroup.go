@@ -82,11 +82,11 @@ func (mg *MultiGroup[T]) Close() {
 
 // ── 统计聚合 ──
 
-// TotalConcurrency 返回所有分片的总并发数。
-func (mg *MultiGroup[T]) TotalConcurrency() int {
+// TotalWorker 返回所有分片的总并发数。
+func (mg *MultiGroup[T]) TotalWorker() int {
 	var total int
 	for _, g := range mg.groups {
-		total += g.Concurrency()
+		total += g.Worker()
 	}
 	return total
 }

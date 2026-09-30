@@ -393,7 +393,7 @@ func (p *Pool[T]) WithFFTraceID(ctx context.Context) (*Pool[T], context.Context)
 	return p.WithTraceID(ctx)
 }
 
-// WithFFSubmitTO 启用 FailFast 并设置提交超时。
+// WithFFSto 启用 FailFast 并设置提交超时（Sto = SubmitTimeout）。
 // submitTimeout 控制任务入队的最大等待时间。
 //
 // 参数：
@@ -402,20 +402,20 @@ func (p *Pool[T]) WithFFTraceID(ctx context.Context) (*Pool[T], context.Context)
 //
 // 示例：
 //
-//	p, ffCtx := pool.NewPool[string](4).WithFFSubmitTO(ctx, 5*time.Second)
-func (p *Pool[T]) WithFFSubmitTO(ctx context.Context, submitTimeout time.Duration) (*Pool[T], context.Context) {
+//	p, ffCtx := pool.NewPool[string](4).WithFFSto(ctx, 5*time.Second)
+func (p *Pool[T]) WithFFSto(ctx context.Context, submitTimeout time.Duration) (*Pool[T], context.Context) {
 	p, ctx = p.WithFailFast(ctx)
 	p.WithSubmitTimeout(submitTimeout)
 	return p, ctx
 }
 
-// WithFFSubmitTOTraceID 启用 FailFast、设置提交超时并注入 trace_id。
+// WithFFStoTID 启用 FailFast、设置提交超时并注入 trace_id。
 //
 // 参数：
 //   - ctx：原始上下文
 //   - submitTimeout：提交超时时间
-func (p *Pool[T]) WithFFSubmitTOTraceID(ctx context.Context, submitTimeout time.Duration) (*Pool[T], context.Context) {
-	p, ctx = p.WithFFSubmitTO(ctx, submitTimeout)
+func (p *Pool[T]) WithFFStoTID(ctx context.Context, submitTimeout time.Duration) (*Pool[T], context.Context) {
+	p, ctx = p.WithFFSto(ctx, submitTimeout)
 	return p.WithTraceID(ctx)
 }
 
@@ -444,36 +444,36 @@ func (p *Pool[T]) WithCtxTraceID(ctx context.Context) (*Pool[T], context.Context
 	return p.WithTraceID(ctx)
 }
 
-// WithFFTimeoutTraceID 启用 FailFast、设置超时并注入 trace_id。
+// WithFFTOTID 启用 FailFast、设置超时并注入 trace_id（TO=Timeout, TID=TraceID）。
 //
 // 参数：
 //   - ctx：原始上下文
 //   - timeout：任务超时时间
-func (p *Pool[T]) WithFFTimeoutTraceID(ctx context.Context, timeout time.Duration) (*Pool[T], context.Context) {
+func (p *Pool[T]) WithFFTOTID(ctx context.Context, timeout time.Duration) (*Pool[T], context.Context) {
 	p, ctx = p.WithFFTimeout(ctx, timeout)
 	return p.WithTraceID(ctx)
 }
 
-// WithFFTimeoutSubmitTO 启用 FailFast、设置任务超时和提交超时。
+// WithFFTOSto 启用 FailFast、设置任务超时和提交超时（TO=Timeout, Sto=SubmitTimeout）。
 //
 // 参数：
 //   - ctx：原始上下文
 //   - timeout：任务超时时间
 //   - submitTimeout：提交超时时间
-func (p *Pool[T]) WithFFTimeoutSubmitTO(ctx context.Context, timeout, submitTimeout time.Duration) (*Pool[T], context.Context) {
+func (p *Pool[T]) WithFFTOSto(ctx context.Context, timeout, submitTimeout time.Duration) (*Pool[T], context.Context) {
 	p, ctx = p.WithFFTimeout(ctx, timeout)
 	p.WithSubmitTimeout(submitTimeout)
 	return p, ctx
 }
 
-// WithFFTimeoutSubmitTOTraceID 启用 FailFast、设置超时、提交超时并注入 trace_id。
+// WithFFTOStoTID 启用 FailFast、设置超时、提交超时并注入 trace_id（TO=Timeout, Sto=SubmitTimeout, TID=TraceID）。
 //
 // 参数：
 //   - ctx：原始上下文
 //   - timeout：任务超时时间
 //   - submitTimeout：提交超时时间
-func (p *Pool[T]) WithFFTimeoutSubmitTOTraceID(ctx context.Context, timeout, submitTimeout time.Duration) (*Pool[T], context.Context) {
-	p, ctx = p.WithFFTimeoutSubmitTO(ctx, timeout, submitTimeout)
+func (p *Pool[T]) WithFFTOStoTID(ctx context.Context, timeout, submitTimeout time.Duration) (*Pool[T], context.Context) {
+	p, ctx = p.WithFFTOSto(ctx, timeout, submitTimeout)
 	return p.WithTraceID(ctx)
 }
 
@@ -488,12 +488,12 @@ func (p *Pool[T]) WithCtxTimeout(ctx context.Context, timeout time.Duration) (*P
 	return p, ctx
 }
 
-// WithCtxTimeoutTraceID 设置 Context、任务超时并注入 trace_id。
+// WithCtxTOTID 设置 Context、任务超时并注入 trace_id。
 //
 // 参数：
 //   - ctx：原始上下文
 //   - timeout：任务超时时间
-func (p *Pool[T]) WithCtxTimeoutTraceID(ctx context.Context, timeout time.Duration) (*Pool[T], context.Context) {
+func (p *Pool[T]) WithCtxTOTID(ctx context.Context, timeout time.Duration) (*Pool[T], context.Context) {
 	p, ctx = p.WithCtxTimeout(ctx, timeout)
 	return p.WithTraceID(ctx)
 }
@@ -524,24 +524,24 @@ func (p *Pool[T]) WithSubmitTimeout(d time.Duration) *Pool[T] {
 	return p
 }
 
-// WithCtxSubmitTO 设置 Context 和提交超时。
+// WithCtxSto 设置 Context 和提交超时（Sto = SubmitTimeout）。
 //
 // 参数：
 //   - ctx：原始上下文
 //   - submitTimeout：提交超时时间
-func (p *Pool[T]) WithCtxSubmitTO(ctx context.Context, submitTimeout time.Duration) (*Pool[T], context.Context) {
+func (p *Pool[T]) WithCtxSto(ctx context.Context, submitTimeout time.Duration) (*Pool[T], context.Context) {
 	p, ctx = p.WithContext(ctx)
 	p.WithSubmitTimeout(submitTimeout)
 	return p, ctx
 }
 
-// WithCtxSubmitTOTraceID 设置 Context、提交超时并注入 trace_id。
+// WithCtxStoTID 设置 Context、提交超时并注入 trace_id。
 //
 // 参数：
 //   - ctx：原始上下文
 //   - submitTimeout：提交超时时间
-func (p *Pool[T]) WithCtxSubmitTOTraceID(ctx context.Context, submitTimeout time.Duration) (*Pool[T], context.Context) {
-	p, ctx = p.WithCtxSubmitTO(ctx, submitTimeout)
+func (p *Pool[T]) WithCtxStoTID(ctx context.Context, submitTimeout time.Duration) (*Pool[T], context.Context) {
+	p, ctx = p.WithCtxSto(ctx, submitTimeout)
 	return p.WithTraceID(ctx)
 }
 

@@ -18,8 +18,8 @@ var errTest = errors.New("test error")
 
 func TestNewGroup_Defaults(t *testing.T) {
 	g := NewGroup[int](5)
-	if g.Concurrency() != 5 {
-		t.Fatalf("expected concurrency 5, got %d", g.Concurrency())
+	if g.Worker() != 5 {
+		t.Fatalf("expected concurrency 5, got %d", g.Worker())
 	}
 	if g.timeout != core.GetDefaultTimeout() {
 		t.Fatalf("expected default timeout, got %v", g.timeout)
@@ -28,21 +28,21 @@ func TestNewGroup_Defaults(t *testing.T) {
 
 func TestNewGroup_ZeroConcurrency(t *testing.T) {
 	g := NewGroup[int](0)
-	if g.Concurrency() != 1 {
-		t.Fatalf("expected concurrency 1 for zero input, got %d", g.Concurrency())
+	if g.Worker() != 1 {
+		t.Fatalf("expected concurrency 1 for zero input, got %d", g.Worker())
 	}
 }
 
 func TestNewGroup_NegativeConcurrency(t *testing.T) {
 	g := NewGroup[int](-5)
-	if g.Concurrency() != 1 {
-		t.Fatalf("expected concurrency 1 for negative input, got %d", g.Concurrency())
+	if g.Worker() != 1 {
+		t.Fatalf("expected concurrency 1 for negative input, got %d", g.Worker())
 	}
 }
 
 func TestDefaultGroup(t *testing.T) {
 	g := DefaultGroup[int]()
-	if g.Concurrency() <= 0 {
+	if g.Worker() <= 0 {
 		t.Fatal("expected positive concurrency")
 	}
 }
@@ -498,7 +498,7 @@ func TestGroup_ConcurrentGoWait_200Goroutines(t *testing.T) {
 
 func TestGroup_FailFast_50K(t *testing.T) {
 	for round := 0; round < 5; round++ {
-		g, ctx := NewGroup[int](100).WithFFSubmitTO(context.Background(), 2*time.Second)
+		g, ctx := NewGroup[int](100).WithFFSto(context.Background(), 2*time.Second)
 		n := 50000
 		for i := 0; i < n; i++ {
 			idx := i

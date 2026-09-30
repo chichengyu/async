@@ -14,13 +14,13 @@ import (
 // 示例：
 //
 //	// Build 模式
-//	nr := async.GroupVoid().Context(ctx).Concurrency(10).Timeout(5 * time.Second).Build()
+//	nr := async.GroupVoid().Context(ctx).Worker(10).Timeout(5 * time.Second).Build()
 //	defer nr.Close()
 //	nr.Go(ctx, fn)
 //	nr.Wait()
 //
 //	// Run 模式
-//	async.GroupVoid().Context(ctx).Concurrency(10).Run(func(ctx context.Context, nr *NoResult) error {
+//	async.GroupVoid().Context(ctx).Worker(10).Run(func(ctx context.Context, nr *NoResult) error {
 //	    for _, item := range items {
 //	        nr.Go(ctx, func(ctx context.Context) error { return process(item) })
 //	    }
@@ -53,14 +53,14 @@ func (b *GroupNoResultBuilder) Context(ctx context.Context) *GroupNoResultBuilde
 
 // ── 链式配置方法 ──
 
-// Concurrency 设置最大并发数。
-func (b *GroupNoResultBuilder) Concurrency(n int) *GroupNoResultBuilder {
+// Worker 设置最大并发数。
+func (b *GroupNoResultBuilder) Worker(n int) *GroupNoResultBuilder {
 	b.concurrency = n
 	return b
 }
 
-// DefaultConcurrency 使用默认并发数（core.IO()）。
-func (b *GroupNoResultBuilder) DefaultConcurrency() *GroupNoResultBuilder {
+// DefaultWorker 使用默认并发数（core.IO()）。
+func (b *GroupNoResultBuilder) DefaultWorker() *GroupNoResultBuilder {
 	b.concurrency = core.IO()
 	return b
 }

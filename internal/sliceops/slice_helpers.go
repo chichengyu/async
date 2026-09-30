@@ -76,7 +76,7 @@ func filterItems[T any](items []T, pred func(T) bool, p Policy) []T {
 	if !p.IsParallel() || len(items) < 1000 {
 		return filterSerial(items, pred)
 	}
-	return filterParallel(items, pred, p.Concurrency())
+	return filterParallel(items, pred, p.GetWorker())
 }
 
 func filterSerial[T any](items []T, pred func(T) bool) []T {

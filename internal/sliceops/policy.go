@@ -96,8 +96,8 @@ func (p Policy) Shard(n int) Policy {
 	return p
 }
 
-// Conc 覆盖并发度，n <= 0 时使用 core.IO()。
-func (p Policy) Conc(n int) Policy {
+// Worker 覆盖并发度，n <= 0 时使用 core.IO()。
+func (p Policy) Worker(n int) Policy {
 	if n <= 0 {
 		n = core.IO()
 	}
@@ -165,8 +165,8 @@ func (p Policy) IsSerial() bool { return p.serial }
 // IsParallel 判断是否并行模式。
 func (p Policy) IsParallel() bool { return !p.serial }
 
-// Concurrency 并发度。
-func (p Policy) Concurrency() int { return p.concurrency }
+// GetWorker 并发度。
+func (p Policy) GetWorker() int { return p.concurrency }
 
 // GetTimeout 超时时间。
 func (p Policy) GetTimeout() time.Duration { return p.timeout }

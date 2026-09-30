@@ -587,17 +587,17 @@ func TestRingBuffer_Original_OverflowError(t *testing.T) {
 // TestRingBuffer_Original_OverflowStrategy 验证 OverflowStrategy 方法。
 func TestRingBuffer_Original_OverflowStrategy(t *testing.T) {
 	rb1 := NewRingBuffer[int](16, OverflowBlock)
-	if rb1.OverflowStrategy() != OverflowBlock {
+	if rb1.Overflow() != OverflowBlock {
 		t.Error("OverflowStrategy 应返回 OverflowBlock")
 	}
 
 	rb2 := NewRingBuffer[int](16, OverflowDrop)
-	if rb2.OverflowStrategy() != OverflowDrop {
+	if rb2.Overflow() != OverflowDrop {
 		t.Error("OverflowStrategy 应返回 OverflowDrop")
 	}
 
 	rb3 := NewRingBuffer[int](16, OverflowError)
-	if rb3.OverflowStrategy() != OverflowError {
+	if rb3.Overflow() != OverflowError {
 		t.Error("OverflowStrategy 应返回 OverflowError")
 	}
 }

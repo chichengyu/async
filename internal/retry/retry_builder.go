@@ -59,7 +59,7 @@ const (
 //	// Adaptive 自适应限流
 //	err := retry.NewVoid(ctx).
 //	    Exponential().MaxRetries(10).Backoff(50*time.Millisecond, 5*time.Second).
-//	    Adaptive().MinConcurrency(5).MaxConcurrency(100).Shards(16).
+//	    Adaptive().MinWorker(5).MaxWorker(100).Shards(16).
 //	    ExecuteVoid(fn)
 type RetryChain[T any] struct {
 	ctx context.Context // 请求上下文
@@ -260,14 +260,14 @@ func (c *RetryChain[T]) DefaultWindow() *RetryChain[T] {
 	return c
 }
 
-// DefaultMinConcurrency 使用默认最小并发度（1）。
-func (c *RetryChain[T]) DefaultMinConcurrency() *RetryChain[T] {
+// DefaultMinWorker 使用默认最小并发度（1）。
+func (c *RetryChain[T]) DefaultMinWorker() *RetryChain[T] {
 	c.adMinRate = 0
 	return c
 }
 
-// DefaultMaxConcurrency 使用默认最大并发度（最小并发度 × 10）。
-func (c *RetryChain[T]) DefaultMaxConcurrency() *RetryChain[T] {
+// DefaultMaxWorker 使用默认最大并发度（最小并发度 × 10）。
+func (c *RetryChain[T]) DefaultMaxWorker() *RetryChain[T] {
 	c.adMaxRate = 0
 	return c
 }
@@ -388,33 +388,33 @@ func (c *RetryChain[T]) Window(d time.Duration) *RetryChain[T] {
 
 // Adaptive 启用自适应限流模式。根据成功率自动调整并发度（成功率高→扩并发，失败率高→缩并发）。
 // 每次重试前 Acquire 并发槽位，执行完毕后 Release。
-// 配置方法：MinConcurrency / MaxConcurrency / Shards。
+// 配置方法：MinWorker / MaxWorker / Shards。
 //
 // 示例：
 //
 //	err := retry.NewVoid(ctx).Exponential().MaxRetries(10).Backoff(50*time.Millisecond, 5*time.Second).
-//	    Adaptive().MinConcurrency(5).MaxConcurrency(100).Shards(16).ExecuteVoid(fn)
+//	    Adaptive().MinWorker(5).MaxWorker(100).Shards(16).ExecuteVoid(fn)
 func (c *RetryChain[T]) Adaptive() *RetryChain[T] {
 	c.mode = modeAdaptive
 	return c
 }
 
-// MinConcurrency 设置 AdaptiveRateLimiter 的最小并发度（负载低时不会低于此值）。
+// MinWorker 设置 AdaptiveRateLimiter 的最小并发度（负载低时不会低于此值）。
 //
 // 示例：
 //
-//	.Adaptive().MinConcurrency(5).MaxConcurrency(100)  // 并发度 5~100 自适应
-func (c *RetryChain[T]) MinConcurrency(n int) *RetryChain[T] {
+//	.Adaptive().MinWorker(5).MaxWorker(100)  // 并发度 5~100 自适应
+func (c *RetryChain[T]) MinWorker(n int) *RetryChain[T] {
 	c.adMinRate = n
 	return c
 }
 
-// MaxConcurrency 设置 AdaptiveRateLimiter 的最大并发度（负载高时不会超过此值）。
+// MaxWorker 设置 AdaptiveRateLimiter 的最大并发度（负载高时不会超过此值）。
 //
 // 示例：
 //
-//	.Adaptive().MinConcurrency(10).MaxConcurrency(200)
-func (c *RetryChain[T]) MaxConcurrency(n int) *RetryChain[T] {
+//	.Adaptive().MinWorker(10).MaxWorker(200)
+func (c *RetryChain[T]) MaxWorker(n int) *RetryChain[T] {
 	c.adMaxRate = n
 	return c
 }

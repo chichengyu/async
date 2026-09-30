@@ -30,8 +30,8 @@ func (r *SliceResult[R]) Error() error {
 	return nil
 }
 
-func (r *SliceResult[R]) IsOk() bool  { return r.Error() == nil }
-func (r *SliceResult[R]) IsErr() bool { return r.Error() != nil }
+func (r *SliceResult[R]) Ok() bool  { return r.Error() == nil }
+func (r *SliceResult[R]) Err() bool { return r.Error() != nil }
 
 func (r *SliceResult[R]) Values() []R {
 	out := make([]R, 0, len(r.results))
@@ -86,8 +86,8 @@ type ForEachResult struct {
 }
 
 func (r *ForEachResult) Error() error        { return r.firstErr }
-func (r *ForEachResult) IsOk() bool          { return r.firstErr == nil }
-func (r *ForEachResult) IsErr() bool         { return r.firstErr != nil }
+func (r *ForEachResult) Ok() bool            { return r.firstErr == nil }
+func (r *ForEachResult) Err() bool           { return r.firstErr != nil }
 func (r *ForEachResult) Total() int64        { return r.total }
 func (r *ForEachResult) FailCount() int64    { return r.failCnt }
 func (r *ForEachResult) SuccessCount() int64 { return r.total - r.failCnt }

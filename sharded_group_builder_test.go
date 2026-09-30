@@ -15,7 +15,7 @@ import (
 //
 // 只测试对外暴露 API：
 //
-//	GroupSharded[T](ctx).Shards(n).Concurrency(n).Distribution(d).Run(fn)
+//	GroupSharded[T](ctx).Shards(n).Worker(n).Distribution(d).Run(fn)
 // ============================================================
 
 func TestShardedGroupBuilder_Chain_Basic(t *testing.T) {
@@ -26,7 +26,7 @@ func TestShardedGroupBuilder_Chain_Basic(t *testing.T) {
 			var sum int64
 			err := GroupSharded[int]().Context(freshCtx()).
 				Shards(2).
-				Concurrency(16).
+				Worker(16).
 				Distribution(RoundRobin).
 				Run(func(ctx context.Context, sg *shard.ShardedGroup[int]) error {
 					for i := 0; i < tier.size; i++ {
@@ -62,7 +62,7 @@ func TestShardedGroupBuilder_Chain_Distribution(t *testing.T) {
 			var sum int64
 			err := GroupSharded[int]().Context(freshCtx()).
 				Shards(2).
-				Concurrency(8).
+				Worker(8).
 				Distribution(dist).
 				Run(func(ctx context.Context, sg *shard.ShardedGroup[int]) error {
 					for i := 0; i < 100; i++ {
@@ -136,10 +136,10 @@ func TestShardedGroupBuilder_Chain_DefaultReset(t *testing.T) {
 			var count int32
 			err := GroupSharded[int]().Context(freshCtx()).
 				Shards(100).
-				Concurrency(200).
+				Worker(200).
 				DefaultShardedGroupConfig().
 				Shards(2).
-				Concurrency(16).
+				Worker(16).
 				Run(func(ctx context.Context, sg *shard.ShardedGroup[int]) error {
 					for i := 0; i < tier.size; i++ {
 						sg.Go(ctx, func(ctx context.Context) (int, error) {
@@ -163,7 +163,7 @@ func TestShardedGroupBuilder_Chain_ErrorInFn(t *testing.T) {
 	myErr := errors.New("sharded group run error")
 	err := GroupSharded[int]().Context(freshCtx()).
 		Shards(2).
-		Concurrency(8).
+		Worker(8).
 		Run(func(ctx context.Context, sg *shard.ShardedGroup[int]) error {
 			return myErr
 		})
@@ -175,7 +175,7 @@ func TestShardedGroupBuilder_Chain_ErrorInFn(t *testing.T) {
 func TestShardedGroupBuilder_Chain_EmptyRun(t *testing.T) {
 	err := GroupSharded[int]().Context(freshCtx()).
 		Shards(2).
-		Concurrency(4).
+		Worker(4).
 		Run(func(ctx context.Context, sg *shard.ShardedGroup[int]) error {
 			results := sg.Wait()
 			if len(results) != 0 {
@@ -219,7 +219,7 @@ func TestShardedGroupBuilder_Chain_WithBG(t *testing.T) {
 	var count int32
 	err := GroupSharded[int]().
 		Shards(2).
-		Concurrency(8).
+		Worker(8).
 		Run(func(ctx context.Context, sg *shard.ShardedGroup[int]) error {
 			for i := 0; i < 100; i++ {
 				sg.Go(ctx, func(ctx context.Context) (int, error) {
@@ -241,7 +241,7 @@ func TestShardedGroupBuilder_Chain_NilCtx(t *testing.T) {
 	var count int32
 	err := GroupSharded[int]().
 		Shards(2).
-		Concurrency(8).
+		Worker(8).
 		Run(func(ctx context.Context, sg *shard.ShardedGroup[int]) error {
 			for i := 0; i < 100; i++ {
 				sg.Go(ctx, func(ctx context.Context) (int, error) {
@@ -292,7 +292,7 @@ func TestShardedGroupBuilder_Chain_WaitContext(t *testing.T) {
 			var count int32
 			err := GroupSharded[int]().Context(freshCtx()).
 				Shards(2).
-				Concurrency(16).
+				Worker(16).
 				Run(func(ctx context.Context, sg *shard.ShardedGroup[int]) error {
 					for i := 0; i < tier.size; i++ {
 						sg.Go(ctx, func(ctx context.Context) (int, error) {
@@ -323,7 +323,7 @@ func TestShardedGroupBuilder_Chain_WaitTimeout(t *testing.T) {
 
 			err := GroupSharded[int]().Context(freshCtx()).
 				Shards(2).
-				Concurrency(16).
+				Worker(16).
 				Run(func(ctx context.Context, sg *shard.ShardedGroup[int]) error {
 					for i := 0; i < tier.size; i++ {
 						sg.Go(ctx, func(ctx context.Context) (int, error) {
@@ -354,7 +354,7 @@ func TestShardedGroupBuilder_Chain_FailFast(t *testing.T) {
 			var errCount int32
 			err := GroupSharded[int]().Context(freshCtx()).
 				Shards(2).
-				Concurrency(4).
+				Worker(4).
 				Run(func(ctx context.Context, sg *shard.ShardedGroup[int]) error {
 					// Set failfast via WithFailFast on individual shard
 					for s := 0; s < sg.ShardCount(); s++ {

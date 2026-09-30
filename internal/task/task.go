@@ -8,8 +8,8 @@
 // 创建异步任务：
 //   - Go[T](ctx, fn)：启动异步任务，返回 AsyncResult[T]
 //   - GoResult[T](ctx, fn)：启动异步任务，返回 Task[T]（可取消）
-//   - GoAction(ctx, fn)：无返回值异步任务
-//   - GoResultAction(ctx, fn)：无返回值可取消异步任务
+//   - GoAct(ctx, fn)：无返回值异步任务
+//   - GoResultAct(ctx, fn)：无返回值可取消异步任务
 //
 // 并发安全工具：
 //   - Mu[T]：带锁的泛型切片，支持 Append/Snapshot

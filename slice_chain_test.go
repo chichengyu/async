@@ -786,10 +786,10 @@ func TestSlice_Chain_Map_SliceBuilder(t *testing.T) {
 				}
 				t.Parallel()
 				data := genInts(tier.size)
-				r := Slice(freshCtx(), data).Concurrency(conc).Map(func(ctx context.Context, v int) (int, error) {
+				r := Slice(freshCtx(), data).Worker(conc).Map(func(ctx context.Context, v int) (int, error) {
 					return v * 2, nil
 				})
-				if r.IsErr() {
+				if r.Err() {
 					t.Fatalf("Map error: %v", r.Error())
 				}
 				vals := r.Values()
@@ -817,10 +817,10 @@ func TestSlice_Chain_Map_ParallelSlice(t *testing.T) {
 				}
 				t.Parallel()
 				data := genInts(tier.size)
-				r := Slice(freshCtx(), data).Parallel().Concurrency(conc).Map(func(ctx context.Context, v int) (int, error) {
+				r := Slice(freshCtx(), data).Parallel().Worker(conc).Map(func(ctx context.Context, v int) (int, error) {
 					return v * 2, nil
 				})
-				if r.IsErr() {
+				if r.Err() {
 					t.Fatalf("Map error: %v", r.Error())
 				}
 				vals := r.Values()
@@ -840,7 +840,7 @@ func TestSlice_Chain_Map_SerialSlice(t *testing.T) {
 			r := Slice(freshCtx(), data).Serial().Map(func(ctx context.Context, v int) (int, error) {
 				return v * 2, nil
 			})
-			if r.IsErr() {
+			if r.Err() {
 				t.Fatalf("Map error: %v", r.Error())
 			}
 			vals := r.Values()
@@ -860,7 +860,7 @@ func TestSlice_Chain_Map_SerialSlice_FailFast(t *testing.T) {
 			r := Slice(freshCtx(), data).Serial().FailFast().Map(func(ctx context.Context, v int) (int, error) {
 				return v * 2, nil
 			})
-			if r.IsErr() {
+			if r.Err() {
 				t.Fatalf("Map Serial FF: unexpected error: %v", r.Error())
 			}
 			vals := r.Values()
@@ -874,7 +874,7 @@ func TestSlice_Chain_Map_SerialSlice_FailFast(t *testing.T) {
 				}
 				return v * 2, nil
 			})
-			if !r2.IsErr() {
+			if !r2.Err() {
 				t.Fatalf("Map Serial FF: expected error but got none")
 			}
 			if r2.Len() != tier.size {
@@ -892,7 +892,7 @@ func TestSlice_Chain_Map_SliceWith(t *testing.T) {
 			r := SliceWith[string](freshCtx(), data).Map(func(ctx context.Context, v int) (string, error) {
 				return strconv.Itoa(v), nil
 			})
-			if r.IsErr() {
+			if r.Err() {
 				t.Fatalf("SliceWith Map error: %v", r.Error())
 			}
 			vals := r.Values()
@@ -919,11 +919,11 @@ func TestSlice_Chain_ForEach_SliceBuilder(t *testing.T) {
 				t.Parallel()
 				data := genInts(tier.size)
 				var sum int64
-				r := Slice(freshCtx(), data).Concurrency(conc).ForEach(func(ctx context.Context, v int) error {
+				r := Slice(freshCtx(), data).Worker(conc).ForEach(func(ctx context.Context, v int) error {
 					atomic.AddInt64(&sum, int64(v))
 					return nil
 				})
-				if r.IsErr() {
+				if r.Err() {
 					t.Fatalf("ForEach error: %v", r.Error())
 				}
 				if r.SuccessCount() != int64(tier.size) {
@@ -946,11 +946,11 @@ func TestSlice_Chain_ForEach_ParallelSlice(t *testing.T) {
 				t.Parallel()
 				data := genInts(tier.size)
 				var sum int64
-				r := Slice(freshCtx(), data).Parallel().Concurrency(conc).ForEach(func(ctx context.Context, v int) error {
+				r := Slice(freshCtx(), data).Parallel().Worker(conc).ForEach(func(ctx context.Context, v int) error {
 					atomic.AddInt64(&sum, int64(v))
 					return nil
 				})
-				if r.IsErr() {
+				if r.Err() {
 					t.Fatalf("ForEach error: %v", r.Error())
 				}
 				if r.SuccessCount() != int64(tier.size) {
@@ -971,7 +971,7 @@ func TestSlice_Chain_ForEach_SerialSlice(t *testing.T) {
 				atomic.AddInt64(&sum, int64(v))
 				return nil
 			})
-			if r.IsErr() {
+			if r.Err() {
 				t.Fatalf("ForEach error: %v", r.Error())
 			}
 			if r.SuccessCount() != int64(tier.size) {
@@ -992,7 +992,7 @@ func TestSlice_Chain_ForEach_SerialSlice_FailFast(t *testing.T) {
 				atomic.AddInt64(&counter, 1)
 				return nil
 			})
-			if r.IsErr() {
+			if r.Err() {
 				t.Fatalf("ForEach Serial FF: unexpected error: %v", r.Error())
 			}
 			if r.SuccessCount() != int64(tier.size) {
@@ -1005,7 +1005,7 @@ func TestSlice_Chain_ForEach_SerialSlice_FailFast(t *testing.T) {
 				}
 				return nil
 			})
-			if !r2.IsErr() {
+			if !r2.Err() {
 				t.Fatalf("ForEach Serial FF: expected error but got none")
 			}
 		})
@@ -1069,7 +1069,7 @@ func TestSlice_Chain_Stream_SliceBuilder(t *testing.T) {
 				}
 				t.Parallel()
 				data := genInts(tier.size)
-				ch := Slice(freshCtx(), data).Concurrency(conc).Stream(func(ctx context.Context, v int) (int, error) {
+				ch := Slice(freshCtx(), data).Worker(conc).Stream(func(ctx context.Context, v int) (int, error) {
 					return v * 2, nil
 				}, 0)
 				count := 0
@@ -1098,7 +1098,7 @@ func TestSlice_Chain_Stream_ParallelSlice(t *testing.T) {
 				}
 				t.Parallel()
 				data := genInts(tier.size)
-				ch := Slice(freshCtx(), data).Parallel().Concurrency(conc).Stream(func(ctx context.Context, v int) (int, error) {
+				ch := Slice(freshCtx(), data).Parallel().Worker(conc).Stream(func(ctx context.Context, v int) (int, error) {
 					return v * 2, nil
 				}, 0)
 				count := 0
@@ -1132,7 +1132,7 @@ func TestSlice_Chain_MapBatch_SliceBuilder(t *testing.T) {
 				}
 				return sum, nil
 			})
-			if r.IsErr() {
+			if r.Err() {
 				t.Fatalf("MapBatch error: %v", r.Error())
 			}
 			if r.Len() <= 0 {
@@ -1154,7 +1154,7 @@ func TestSlice_Chain_MapBatch_ParallelSlice(t *testing.T) {
 				}
 				return sum, nil
 			})
-			if r.IsErr() {
+			if r.Err() {
 				t.Fatalf("MapBatch error: %v", r.Error())
 			}
 			if r.Len() <= 0 {
@@ -1178,7 +1178,7 @@ func TestSlice_Chain_ForEachBatch_SliceBuilder(t *testing.T) {
 				atomic.AddInt64(&processed, int64(len(chunk)))
 				return nil
 			})
-			if r.IsErr() {
+			if r.Err() {
 				t.Fatalf("ForEachBatch error: %v", r.Error())
 			}
 			if processed != int64(tier.size) {
@@ -1198,7 +1198,7 @@ func TestSlice_Chain_ForEachBatch_ParallelSlice(t *testing.T) {
 				atomic.AddInt64(&processed, int64(len(chunk)))
 				return nil
 			})
-			if r.IsErr() {
+			if r.Err() {
 				t.Fatalf("ForEachBatch error: %v", r.Error())
 			}
 			if processed != int64(tier.size) {
@@ -1225,11 +1225,11 @@ func TestSlice_Chain_Result_IsOk_IsErr(t *testing.T) {
 	r := Slice(freshCtx(), []int{1, 2, 3}).Map(func(ctx context.Context, v int) (int, error) {
 		return v, nil
 	})
-	if !r.IsOk() {
-		t.Fatal("IsOk: expected true")
+	if !r.Ok() {
+		t.Fatal("Ok: expected true")
 	}
-	if r.IsErr() {
-		t.Fatal("IsErr: expected false")
+	if r.Err() {
+		t.Fatal("Err: expected false")
 	}
 }
 
@@ -1338,11 +1338,11 @@ func TestSlice_Chain_ForEachResult_IsOk_IsErr(t *testing.T) {
 	r := Slice(freshCtx(), []int{1, 2, 3}).ForEach(func(ctx context.Context, v int) error {
 		return nil
 	})
-	if !r.IsOk() {
-		t.Fatal("IsOk: expected true")
+	if !r.Ok() {
+		t.Fatal("Ok: expected true")
 	}
-	if r.IsErr() {
-		t.Fatal("IsErr: expected false")
+	if r.Err() {
+		t.Fatal("Err: expected false")
 	}
 }
 
@@ -1455,10 +1455,10 @@ func TestSlice_Chain_ToParallel(t *testing.T) {
 
 func TestSlice_Chain_Concurrency(t *testing.T) {
 	data := genInts(1000)
-	r := Slice(freshCtx(), data).Concurrency(4).Map(func(ctx context.Context, v int) (int, error) {
+	r := Slice(freshCtx(), data).Worker(4).Map(func(ctx context.Context, v int) (int, error) {
 		return v, nil
 	})
-	if r.IsErr() {
+	if r.Err() {
 		t.Fatalf("Concurrency: %v", r.Error())
 	}
 	if r.Len() != 1000 {
@@ -1468,10 +1468,10 @@ func TestSlice_Chain_Concurrency(t *testing.T) {
 
 func TestSlice_Chain_DefaultConcurrency(t *testing.T) {
 	data := genInts(1000)
-	r := Slice(freshCtx(), data).DefaultConcurrency().Map(func(ctx context.Context, v int) (int, error) {
+	r := Slice(freshCtx(), data).DefaultWorker().Map(func(ctx context.Context, v int) (int, error) {
 		return v, nil
 	})
-	if r.IsErr() {
+	if r.Err() {
 		t.Fatalf("DefaultConcurrency: %v", r.Error())
 	}
 }
@@ -1481,7 +1481,7 @@ func TestSlice_Chain_DefaultPool(t *testing.T) {
 	r := Slice(freshCtx(), data).DefaultPool().Map(func(ctx context.Context, v int) (int, error) {
 		return v, nil
 	})
-	if r.IsErr() {
+	if r.Err() {
 		t.Fatalf("DefaultPool: %v", r.Error())
 	}
 	if r.Len() != 1000 {
@@ -1496,7 +1496,7 @@ func TestSlice_Chain_Pool(t *testing.T) {
 	r := Slice(freshCtx(), data).Pool(p).Map(func(ctx context.Context, v int) (int, error) {
 		return v, nil
 	})
-	if r.IsErr() {
+	if r.Err() {
 		t.Fatalf("Pool: %v", r.Error())
 	}
 	if r.Len() != 1000 {
@@ -1509,7 +1509,7 @@ func TestSlice_Chain_PoolAuto(t *testing.T) {
 	r := Slice(freshCtx(), data).PoolAuto(pool.NewPool[int](16)).Map(func(ctx context.Context, v int) (int, error) {
 		return v, nil
 	})
-	if r.IsErr() {
+	if r.Err() {
 		t.Fatalf("PoolAuto: %v", r.Error())
 	}
 	if r.Len() != 1000 {
@@ -1522,7 +1522,7 @@ func TestSlice_Chain_Timeout(t *testing.T) {
 	r := Slice(freshCtx(), data).Timeout(5 * time.Second).Map(func(ctx context.Context, v int) (int, error) {
 		return v, nil
 	})
-	if r.IsErr() {
+	if r.Err() {
 		t.Fatalf("Timeout: %v", r.Error())
 	}
 }
@@ -1532,7 +1532,7 @@ func TestSlice_Chain_DefaultTimeout(t *testing.T) {
 	r := Slice(freshCtx(), data).DefaultTimeout().Map(func(ctx context.Context, v int) (int, error) {
 		return v, nil
 	})
-	if r.IsErr() {
+	if r.Err() {
 		t.Fatalf("DefaultTimeout: %v", r.Error())
 	}
 }
@@ -1542,7 +1542,7 @@ func TestSlice_Chain_FailFast(t *testing.T) {
 	r := Slice(freshCtx(), data).FailFast().Map(func(ctx context.Context, v int) (int, error) {
 		return v, nil
 	})
-	if r.IsErr() {
+	if r.Err() {
 		t.Fatalf("FailFast: %v", r.Error())
 	}
 }
@@ -1552,7 +1552,7 @@ func TestSlice_Chain_DefaultFailFast(t *testing.T) {
 	r := Slice(freshCtx(), data).DefaultFailFast().Map(func(ctx context.Context, v int) (int, error) {
 		return v, nil
 	})
-	if r.IsErr() {
+	if r.Err() {
 		t.Fatalf("DefaultFailFast: %v", r.Error())
 	}
 }
@@ -1562,7 +1562,7 @@ func TestSlice_Chain_NoFailFast(t *testing.T) {
 	r := Slice(freshCtx(), data).Parallel().NoFailFast().Map(func(ctx context.Context, v int) (int, error) {
 		return v, nil
 	})
-	if r.IsErr() {
+	if r.Err() {
 		t.Fatalf("NoFailFast: %v", r.Error())
 	}
 }
@@ -1572,7 +1572,7 @@ func TestSlice_Chain_Shards(t *testing.T) {
 	r := Slice(freshCtx(), data).Shards(8).Map(func(ctx context.Context, v int) (int, error) {
 		return v, nil
 	})
-	if r.IsErr() {
+	if r.Err() {
 		t.Fatalf("Shards: %v", r.Error())
 	}
 	if r.Len() != 10000 {
@@ -1585,7 +1585,7 @@ func TestSlice_Chain_DefaultShard(t *testing.T) {
 	r := Slice(freshCtx(), data).DefaultShard().Map(func(ctx context.Context, v int) (int, error) {
 		return v, nil
 	})
-	if r.IsErr() {
+	if r.Err() {
 		t.Fatalf("DefaultShard: %v", r.Error())
 	}
 	if r.Len() != 10000 {
@@ -1598,7 +1598,7 @@ func TestSlice_Chain_Chunk(t *testing.T) {
 	r := Slice(freshCtx(), data).Chunk(100).MapBatch(func(ctx context.Context, chunk []int) (int, error) {
 		return len(chunk), nil
 	})
-	if r.IsErr() {
+	if r.Err() {
 		t.Fatalf("Chunk: %v", r.Error())
 	}
 }
@@ -1608,7 +1608,7 @@ func TestSlice_Chain_DefaultChunk(t *testing.T) {
 	r := Slice(freshCtx(), data).DefaultChunk().MapBatch(func(ctx context.Context, chunk []int) (int, error) {
 		return len(chunk), nil
 	})
-	if r.IsErr() {
+	if r.Err() {
 		t.Fatalf("DefaultChunk: %v", r.Error())
 	}
 }
@@ -1646,7 +1646,7 @@ func TestSlice_Chain_Logger(t *testing.T) {
 	r := Slice(freshCtx(), data).Logger(&testLogger{}).Map(func(ctx context.Context, v int) (int, error) {
 		return v, nil
 	})
-	if r.IsErr() {
+	if r.Err() {
 		t.Fatalf("Logger: %v", r.Error())
 	}
 	core.SetLogger(nil)
@@ -1657,7 +1657,7 @@ func TestSlice_Chain_DefaultLogger(t *testing.T) {
 	r := Slice(freshCtx(), data).DefaultLogger().Map(func(ctx context.Context, v int) (int, error) {
 		return v, nil
 	})
-	if r.IsErr() {
+	if r.Err() {
 		t.Fatalf("DefaultLogger: %v", r.Error())
 	}
 }
@@ -1671,7 +1671,7 @@ func TestSlice_Chain_FailFast_Stress(t *testing.T) {
 		t.Run(tier.name, func(t *testing.T) {
 			data := genInts(tier.size)
 			var called int64
-			r := Slice(freshCtx(), data).Concurrency(64).FailFast().Map(func(ctx context.Context, v int) (int, error) {
+			r := Slice(freshCtx(), data).Worker(64).FailFast().Map(func(ctx context.Context, v int) (int, error) {
 				atomic.AddInt64(&called, 1)
 				if v == tier.size/2 {
 					return 0, errTestSentinel
@@ -1702,10 +1702,10 @@ func TestSlice_Chain_HighConcurrency_Map(t *testing.T) {
 			t.Run(fmt.Sprintf("%s_c8", tier.name), func(t *testing.T) {
 				t.Parallel()
 				data := genInts(tier.size)
-				r := Slice(freshCtx(), data).Concurrency(8).Map(func(ctx context.Context, v int) (int, error) {
+				r := Slice(freshCtx(), data).Worker(8).Map(func(ctx context.Context, v int) (int, error) {
 					return v + 1, nil
 				})
-				if r.IsErr() {
+				if r.Err() {
 					t.Fatalf("Map error: %v", r.Error())
 				}
 				if r.Len() != tier.size {
@@ -1723,10 +1723,10 @@ func TestSlice_Chain_HighConcurrency_Map(t *testing.T) {
 			t.Run(name, func(t *testing.T) {
 				t.Parallel()
 				data := genInts(tier.size)
-				r := Slice(freshCtx(), data).Concurrency(conc).Map(func(ctx context.Context, v int) (int, error) {
+				r := Slice(freshCtx(), data).Worker(conc).Map(func(ctx context.Context, v int) (int, error) {
 					return v + 1, nil
 				})
-				if r.IsErr() {
+				if r.Err() {
 					t.Fatalf("Map error: %v", r.Error())
 				}
 				if r.Len() != tier.size {
@@ -1741,10 +1741,10 @@ func TestSlice_Chain_HighConcurrency_Map(t *testing.T) {
 			t.Run(name, func(t *testing.T) {
 				t.Parallel()
 				data := genInts(tier.size)
-				r := Slice(freshCtx(), data).Concurrency(conc).Map(func(ctx context.Context, v int) (int, error) {
+				r := Slice(freshCtx(), data).Worker(conc).Map(func(ctx context.Context, v int) (int, error) {
 					return v + 1, nil
 				})
-				if r.IsErr() {
+				if r.Err() {
 					t.Fatalf("Map error: %v", r.Error())
 				}
 				if r.Len() != tier.size {
@@ -1762,10 +1762,10 @@ func TestSlice_Chain_HighConcurrency_Pool_Map(t *testing.T) {
 				t.Parallel()
 				data := genInts(tier.size)
 				p := pool.NewPool[int](8)
-				r := Slice(freshCtx(), data).PoolAuto(p).Concurrency(8).Map(func(ctx context.Context, v int) (int, error) {
+				r := Slice(freshCtx(), data).PoolAuto(p).Worker(8).Map(func(ctx context.Context, v int) (int, error) {
 					return v, nil
 				})
-				if r.IsErr() {
+				if r.Err() {
 					t.Fatalf("Pool Map error: %v", r.Error())
 				}
 				if r.Len() != tier.size {
@@ -1784,10 +1784,10 @@ func TestSlice_Chain_HighConcurrency_Pool_Map(t *testing.T) {
 				t.Parallel()
 				data := genInts(tier.size)
 				p := pool.NewPool[int](conc)
-				r := Slice(freshCtx(), data).PoolAuto(p).Concurrency(conc).Map(func(ctx context.Context, v int) (int, error) {
+				r := Slice(freshCtx(), data).PoolAuto(p).Worker(conc).Map(func(ctx context.Context, v int) (int, error) {
 					return v, nil
 				})
-				if r.IsErr() {
+				if r.Err() {
 					t.Fatalf("Pool Map error: %v", r.Error())
 				}
 				if r.Len() != tier.size {
@@ -1803,10 +1803,10 @@ func TestSlice_Chain_HighConcurrency_Pool_Map(t *testing.T) {
 				t.Parallel()
 				data := genInts(tier.size)
 				p := pool.NewPool[int](conc)
-				r := Slice(freshCtx(), data).PoolAuto(p).Concurrency(conc).Map(func(ctx context.Context, v int) (int, error) {
+				r := Slice(freshCtx(), data).PoolAuto(p).Worker(conc).Map(func(ctx context.Context, v int) (int, error) {
 					return v, nil
 				})
-				if r.IsErr() {
+				if r.Err() {
 					t.Fatalf("Pool Map error: %v", r.Error())
 				}
 				if r.Len() != tier.size {
@@ -1826,7 +1826,7 @@ func TestSlice_Chain_HighConcurrency_Shards_Map(t *testing.T) {
 				r := Slice(freshCtx(), data).Shards(8).Map(func(ctx context.Context, v int) (int, error) {
 					return v * 2, nil
 				})
-				if r.IsErr() {
+				if r.Err() {
 					t.Fatalf("Shards Map error: %v", r.Error())
 				}
 				if r.Len() != tier.size {
@@ -1847,7 +1847,7 @@ func TestSlice_Chain_HighConcurrency_Shards_Map(t *testing.T) {
 				r := Slice(freshCtx(), data).Shards(shards).Map(func(ctx context.Context, v int) (int, error) {
 					return v * 2, nil
 				})
-				if r.IsErr() {
+				if r.Err() {
 					t.Fatalf("Shards Map error: %v", r.Error())
 				}
 				if r.Len() != tier.size {
@@ -1865,7 +1865,7 @@ func TestSlice_Chain_HighConcurrency_Shards_Map(t *testing.T) {
 				r := Slice(freshCtx(), data).Shards(shards).Map(func(ctx context.Context, v int) (int, error) {
 					return v * 2, nil
 				})
-				if r.IsErr() {
+				if r.Err() {
 					t.Fatalf("Shards Map error: %v", r.Error())
 				}
 				if r.Len() != tier.size {
@@ -1882,7 +1882,7 @@ func TestSlice_Chain_HighConcurrency_Stream(t *testing.T) {
 			t.Run(fmt.Sprintf("%s_c8_b256", tier.name), func(t *testing.T) {
 				t.Parallel()
 				data := genInts(tier.size)
-				ch := Slice(freshCtx(), data).Concurrency(8).Buf(256).Stream(func(ctx context.Context, v int) (int, error) {
+				ch := Slice(freshCtx(), data).Worker(8).Buf(256).Stream(func(ctx context.Context, v int) (int, error) {
 					return v, nil
 				}, 0)
 				count := 0
@@ -1909,7 +1909,7 @@ func TestSlice_Chain_HighConcurrency_Stream(t *testing.T) {
 				t.Run(name, func(t *testing.T) {
 					t.Parallel()
 					data := genInts(tier.size)
-					ch := Slice(freshCtx(), data).Concurrency(conc).Buf(buf).Stream(func(ctx context.Context, v int) (int, error) {
+					ch := Slice(freshCtx(), data).Worker(conc).Buf(buf).Stream(func(ctx context.Context, v int) (int, error) {
 						return v, nil
 					}, 0)
 					count := 0
@@ -1933,7 +1933,7 @@ func TestSlice_Chain_HighConcurrency_Stream(t *testing.T) {
 				t.Run(name, func(t *testing.T) {
 					t.Parallel()
 					data := genInts(tier.size)
-					ch := Slice(freshCtx(), data).Concurrency(conc).Buf(buf).Stream(func(ctx context.Context, v int) (int, error) {
+					ch := Slice(freshCtx(), data).Worker(conc).Buf(buf).Stream(func(ctx context.Context, v int) (int, error) {
 						return v, nil
 					}, 0)
 					count := 0
@@ -1959,11 +1959,11 @@ func TestSlice_Chain_HighConcurrency_ForEach_Stress(t *testing.T) {
 				t.Parallel()
 				data := genInts(tier.size)
 				var counter int64
-				r := Slice(freshCtx(), data).Concurrency(8).ForEach(func(ctx context.Context, v int) error {
+				r := Slice(freshCtx(), data).Worker(8).ForEach(func(ctx context.Context, v int) error {
 					atomic.AddInt64(&counter, 1)
 					return nil
 				})
-				if r.IsErr() {
+				if r.Err() {
 					t.Fatalf("ForEach error: %v", r.Error())
 				}
 				if counter != int64(tier.size) {
@@ -1985,11 +1985,11 @@ func TestSlice_Chain_HighConcurrency_ForEach_Stress(t *testing.T) {
 				t.Parallel()
 				data := genInts(tier.size)
 				var counter int64
-				r := Slice(freshCtx(), data).Concurrency(conc).ForEach(func(ctx context.Context, v int) error {
+				r := Slice(freshCtx(), data).Worker(conc).ForEach(func(ctx context.Context, v int) error {
 					atomic.AddInt64(&counter, 1)
 					return nil
 				})
-				if r.IsErr() {
+				if r.Err() {
 					t.Fatalf("ForEach error: %v", r.Error())
 				}
 				if counter != int64(tier.size) {
@@ -2008,11 +2008,11 @@ func TestSlice_Chain_HighConcurrency_ForEach_Stress(t *testing.T) {
 				t.Parallel()
 				data := genInts(tier.size)
 				var counter int64
-				r := Slice(freshCtx(), data).Concurrency(conc).ForEach(func(ctx context.Context, v int) error {
+				r := Slice(freshCtx(), data).Worker(conc).ForEach(func(ctx context.Context, v int) error {
 					atomic.AddInt64(&counter, 1)
 					return nil
 				})
-				if r.IsErr() {
+				if r.Err() {
 					t.Fatalf("ForEach error: %v", r.Error())
 				}
 				if counter != int64(tier.size) {
@@ -2034,10 +2034,10 @@ func TestSlice_Chain_HighConcurrency_Map_Timeout(t *testing.T) {
 			t.Run(fmt.Sprintf("%s_c8", tier.name), func(t *testing.T) {
 				t.Parallel()
 				data := genInts(tier.size)
-				r := Slice(freshCtx(), data).Concurrency(8).Timeout(30 * time.Second).Map(func(ctx context.Context, v int) (int, error) {
+				r := Slice(freshCtx(), data).Worker(8).Timeout(30 * time.Second).Map(func(ctx context.Context, v int) (int, error) {
 					return v + 1, nil
 				})
-				if r.IsErr() {
+				if r.Err() {
 					t.Fatalf("Map+Timeout error: %v", r.Error())
 				}
 				if r.Len() != tier.size {
@@ -2053,10 +2053,10 @@ func TestSlice_Chain_HighConcurrency_Map_Timeout(t *testing.T) {
 			t.Run(name, func(t *testing.T) {
 				t.Parallel()
 				data := genInts(tier.size)
-				r := Slice(freshCtx(), data).Concurrency(conc).Timeout(30 * time.Second).Map(func(ctx context.Context, v int) (int, error) {
+				r := Slice(freshCtx(), data).Worker(conc).Timeout(30 * time.Second).Map(func(ctx context.Context, v int) (int, error) {
 					return v + 1, nil
 				})
-				if r.IsErr() {
+				if r.Err() {
 					t.Fatalf("Map+Timeout error: %v", r.Error())
 				}
 				if r.Len() != tier.size {
@@ -2075,10 +2075,10 @@ func TestSlice_Chain_HighConcurrency_Map_FailFast(t *testing.T) {
 			t.Run(fmt.Sprintf("%s_c8", tier.name), func(t *testing.T) {
 				t.Parallel()
 				data := genInts(tier.size)
-				r := Slice(freshCtx(), data).Concurrency(8).FailFast().Map(func(ctx context.Context, v int) (int, error) {
+				r := Slice(freshCtx(), data).Worker(8).FailFast().Map(func(ctx context.Context, v int) (int, error) {
 					return v + 1, nil
 				})
-				if r.IsErr() {
+				if r.Err() {
 					t.Fatalf("Map+FailFast error: %v", r.Error())
 				}
 				if r.Len() != tier.size {
@@ -2094,10 +2094,10 @@ func TestSlice_Chain_HighConcurrency_Map_FailFast(t *testing.T) {
 			t.Run(name, func(t *testing.T) {
 				t.Parallel()
 				data := genInts(tier.size)
-				r := Slice(freshCtx(), data).Concurrency(conc).FailFast().Map(func(ctx context.Context, v int) (int, error) {
+				r := Slice(freshCtx(), data).Worker(conc).FailFast().Map(func(ctx context.Context, v int) (int, error) {
 					return v + 1, nil
 				})
-				if r.IsErr() {
+				if r.Err() {
 					t.Fatalf("Map+FailFast error: %v", r.Error())
 				}
 				if r.Len() != tier.size {
@@ -2116,10 +2116,10 @@ func TestSlice_Chain_HighConcurrency_Map_TimeoutFailFast(t *testing.T) {
 			t.Run(fmt.Sprintf("%s_c8", tier.name), func(t *testing.T) {
 				t.Parallel()
 				data := genInts(tier.size)
-				r := Slice(freshCtx(), data).Concurrency(8).Timeout(30 * time.Second).FailFast().Map(func(ctx context.Context, v int) (int, error) {
+				r := Slice(freshCtx(), data).Worker(8).Timeout(30 * time.Second).FailFast().Map(func(ctx context.Context, v int) (int, error) {
 					return v + 1, nil
 				})
-				if r.IsErr() {
+				if r.Err() {
 					t.Fatalf("Map+TO+FF error: %v", r.Error())
 				}
 				if r.Len() != tier.size {
@@ -2135,10 +2135,10 @@ func TestSlice_Chain_HighConcurrency_Map_TimeoutFailFast(t *testing.T) {
 			t.Run(name, func(t *testing.T) {
 				t.Parallel()
 				data := genInts(tier.size)
-				r := Slice(freshCtx(), data).Concurrency(conc).Timeout(30 * time.Second).FailFast().Map(func(ctx context.Context, v int) (int, error) {
+				r := Slice(freshCtx(), data).Worker(conc).Timeout(30 * time.Second).FailFast().Map(func(ctx context.Context, v int) (int, error) {
 					return v + 1, nil
 				})
-				if r.IsErr() {
+				if r.Err() {
 					t.Fatalf("Map+TO+FF error: %v", r.Error())
 				}
 				if r.Len() != tier.size {
@@ -2158,11 +2158,11 @@ func TestSlice_Chain_HighConcurrency_ForEach_Timeout(t *testing.T) {
 				t.Parallel()
 				data := genInts(tier.size)
 				var counter int64
-				r := Slice(freshCtx(), data).Concurrency(8).Timeout(30 * time.Second).ForEach(func(ctx context.Context, v int) error {
+				r := Slice(freshCtx(), data).Worker(8).Timeout(30 * time.Second).ForEach(func(ctx context.Context, v int) error {
 					atomic.AddInt64(&counter, 1)
 					return nil
 				})
-				if r.IsErr() {
+				if r.Err() {
 					t.Fatalf("ForEach+Timeout error: %v", r.Error())
 				}
 				if counter != int64(tier.size) {
@@ -2179,11 +2179,11 @@ func TestSlice_Chain_HighConcurrency_ForEach_Timeout(t *testing.T) {
 				t.Parallel()
 				data := genInts(tier.size)
 				var counter int64
-				r := Slice(freshCtx(), data).Concurrency(conc).Timeout(30 * time.Second).ForEach(func(ctx context.Context, v int) error {
+				r := Slice(freshCtx(), data).Worker(conc).Timeout(30 * time.Second).ForEach(func(ctx context.Context, v int) error {
 					atomic.AddInt64(&counter, 1)
 					return nil
 				})
-				if r.IsErr() {
+				if r.Err() {
 					t.Fatalf("ForEach+Timeout error: %v", r.Error())
 				}
 				if counter != int64(tier.size) {
@@ -2203,11 +2203,11 @@ func TestSlice_Chain_HighConcurrency_ForEach_FailFast(t *testing.T) {
 				t.Parallel()
 				data := genInts(tier.size)
 				var counter int64
-				r := Slice(freshCtx(), data).Concurrency(8).FailFast().ForEach(func(ctx context.Context, v int) error {
+				r := Slice(freshCtx(), data).Worker(8).FailFast().ForEach(func(ctx context.Context, v int) error {
 					atomic.AddInt64(&counter, 1)
 					return nil
 				})
-				if r.IsErr() {
+				if r.Err() {
 					t.Fatalf("ForEach+FailFast error: %v", r.Error())
 				}
 				if counter != int64(tier.size) {
@@ -2224,11 +2224,11 @@ func TestSlice_Chain_HighConcurrency_ForEach_FailFast(t *testing.T) {
 				t.Parallel()
 				data := genInts(tier.size)
 				var counter int64
-				r := Slice(freshCtx(), data).Concurrency(conc).FailFast().ForEach(func(ctx context.Context, v int) error {
+				r := Slice(freshCtx(), data).Worker(conc).FailFast().ForEach(func(ctx context.Context, v int) error {
 					atomic.AddInt64(&counter, 1)
 					return nil
 				})
-				if r.IsErr() {
+				if r.Err() {
 					t.Fatalf("ForEach+FailFast error: %v", r.Error())
 				}
 				if counter != int64(tier.size) {
@@ -2247,14 +2247,14 @@ func TestSlice_Chain_HighConcurrency_MapBatch(t *testing.T) {
 			t.Run(fmt.Sprintf("%s_c8", tier.name), func(t *testing.T) {
 				t.Parallel()
 				data := genInts(tier.size)
-				r := Slice(freshCtx(), data).Concurrency(8).Chunk(100).MapBatch(func(ctx context.Context, batch []int) (int, error) {
+				r := Slice(freshCtx(), data).Worker(8).Chunk(100).MapBatch(func(ctx context.Context, batch []int) (int, error) {
 					sum := 0
 					for _, v := range batch {
 						sum += v
 					}
 					return sum, nil
 				})
-				if r.IsErr() {
+				if r.Err() {
 					t.Fatalf("MapBatch error: %v", r.Error())
 				}
 			})
@@ -2267,14 +2267,14 @@ func TestSlice_Chain_HighConcurrency_MapBatch(t *testing.T) {
 			t.Run(name, func(t *testing.T) {
 				t.Parallel()
 				data := genInts(tier.size)
-				r := Slice(freshCtx(), data).Concurrency(conc).Chunk(100).MapBatch(func(ctx context.Context, batch []int) (int, error) {
+				r := Slice(freshCtx(), data).Worker(conc).Chunk(100).MapBatch(func(ctx context.Context, batch []int) (int, error) {
 					sum := 0
 					for _, v := range batch {
 						sum += v
 					}
 					return sum, nil
 				})
-				if r.IsErr() {
+				if r.Err() {
 					t.Fatalf("MapBatch error: %v", r.Error())
 				}
 			})
@@ -2291,11 +2291,11 @@ func TestSlice_Chain_HighConcurrency_ForEachBatch(t *testing.T) {
 				t.Parallel()
 				data := genInts(tier.size)
 				var counter int64
-				r := Slice(freshCtx(), data).Concurrency(8).Chunk(100).ForEachBatch(func(ctx context.Context, batch []int) error {
+				r := Slice(freshCtx(), data).Worker(8).Chunk(100).ForEachBatch(func(ctx context.Context, batch []int) error {
 					atomic.AddInt64(&counter, int64(len(batch)))
 					return nil
 				})
-				if r.IsErr() {
+				if r.Err() {
 					t.Fatalf("ForEachBatch error: %v", r.Error())
 				}
 				if counter != int64(tier.size) {
@@ -2312,11 +2312,11 @@ func TestSlice_Chain_HighConcurrency_ForEachBatch(t *testing.T) {
 				t.Parallel()
 				data := genInts(tier.size)
 				var counter int64
-				r := Slice(freshCtx(), data).Concurrency(conc).Chunk(100).ForEachBatch(func(ctx context.Context, batch []int) error {
+				r := Slice(freshCtx(), data).Worker(conc).Chunk(100).ForEachBatch(func(ctx context.Context, batch []int) error {
 					atomic.AddInt64(&counter, int64(len(batch)))
 					return nil
 				})
-				if r.IsErr() {
+				if r.Err() {
 					t.Fatalf("ForEachBatch error: %v", r.Error())
 				}
 				if counter != int64(tier.size) {
@@ -2335,7 +2335,7 @@ func TestSlice_Chain_HighConcurrency_Stream_FailFast(t *testing.T) {
 			t.Run(fmt.Sprintf("%s_c8", tier.name), func(t *testing.T) {
 				t.Parallel()
 				data := genInts(tier.size)
-				ch := Slice(freshCtx(), data).Concurrency(8).FailFast().Stream(func(ctx context.Context, v int) (int, error) {
+				ch := Slice(freshCtx(), data).Worker(8).FailFast().Stream(func(ctx context.Context, v int) (int, error) {
 					return v, nil
 				}, 256)
 				count := 0
@@ -2358,7 +2358,7 @@ func TestSlice_Chain_HighConcurrency_Stream_FailFast(t *testing.T) {
 			t.Run(name, func(t *testing.T) {
 				t.Parallel()
 				data := genInts(tier.size)
-				ch := Slice(freshCtx(), data).Concurrency(conc).FailFast().Stream(func(ctx context.Context, v int) (int, error) {
+				ch := Slice(freshCtx(), data).Worker(conc).FailFast().Stream(func(ctx context.Context, v int) (int, error) {
 					return v, nil
 				}, 256)
 				count := 0
@@ -2389,7 +2389,7 @@ func TestSlice_Chain_HighConcurrency_ForEach_Shards(t *testing.T) {
 					atomic.AddInt64(&counter, 1)
 					return nil
 				})
-				if r.IsErr() {
+				if r.Err() {
 					t.Fatalf("ForEach+Shards error: %v", r.Error())
 				}
 				if counter != int64(tier.size) {
@@ -2410,7 +2410,7 @@ func TestSlice_Chain_HighConcurrency_ForEach_Shards(t *testing.T) {
 					atomic.AddInt64(&counter, 1)
 					return nil
 				})
-				if r.IsErr() {
+				if r.Err() {
 					t.Fatalf("ForEach+Shards error: %v", r.Error())
 				}
 				if counter != int64(tier.size) {
@@ -2431,11 +2431,11 @@ func TestSlice_Chain_HighConcurrency_ForEach_TOFF(t *testing.T) {
 				t.Parallel()
 				data := genInts(tier.size)
 				var counter int64
-				r := Slice(freshCtx(), data).Concurrency(8).Timeout(30 * time.Second).FailFast().ForEach(func(ctx context.Context, v int) error {
+				r := Slice(freshCtx(), data).Worker(8).Timeout(30 * time.Second).FailFast().ForEach(func(ctx context.Context, v int) error {
 					atomic.AddInt64(&counter, 1)
 					return nil
 				})
-				if r.IsErr() {
+				if r.Err() {
 					t.Fatalf("ForEach+TO+FF error: %v", r.Error())
 				}
 				if counter != int64(tier.size) {
@@ -2452,11 +2452,11 @@ func TestSlice_Chain_HighConcurrency_ForEach_TOFF(t *testing.T) {
 				t.Parallel()
 				data := genInts(tier.size)
 				var counter int64
-				r := Slice(freshCtx(), data).Concurrency(conc).Timeout(30 * time.Second).FailFast().ForEach(func(ctx context.Context, v int) error {
+				r := Slice(freshCtx(), data).Worker(conc).Timeout(30 * time.Second).FailFast().ForEach(func(ctx context.Context, v int) error {
 					atomic.AddInt64(&counter, 1)
 					return nil
 				})
-				if r.IsErr() {
+				if r.Err() {
 					t.Fatalf("ForEach+TO+FF error: %v", r.Error())
 				}
 				if counter != int64(tier.size) {
@@ -2504,7 +2504,7 @@ func TestSlice_Chain_SerialSlice_Timeout(t *testing.T) {
 	r := Slice(freshCtx(), data).Serial().Timeout(5 * time.Second).Map(func(ctx context.Context, v int) (int, error) {
 		return v, nil
 	})
-	if r.IsErr() {
+	if r.Err() {
 		t.Fatalf("Serial Timeout: %v", r.Error())
 	}
 }
@@ -2514,7 +2514,7 @@ func TestSlice_Chain_SerialSlice_DefaultTimeout(t *testing.T) {
 	r := Slice(freshCtx(), data).Serial().DefaultTimeout().Map(func(ctx context.Context, v int) (int, error) {
 		return v, nil
 	})
-	if r.IsErr() {
+	if r.Err() {
 		t.Fatalf("Serial DefaultTimeout: %v", r.Error())
 	}
 }
@@ -2524,7 +2524,7 @@ func TestSlice_Chain_SerialSlice_Logger(t *testing.T) {
 	r := Slice(freshCtx(), data).Serial().Logger(&testLogger{}).Map(func(ctx context.Context, v int) (int, error) {
 		return v, nil
 	})
-	if r.IsErr() {
+	if r.Err() {
 		t.Fatalf("Serial Logger: %v", r.Error())
 	}
 	core.SetLogger(nil)
@@ -2533,7 +2533,7 @@ func TestSlice_Chain_SerialSlice_Logger(t *testing.T) {
 func TestSlice_Chain_SerialSlice_ToParallel(t *testing.T) {
 	data := genInts(1000)
 	ps := Slice(freshCtx(), data).Serial().ToParallel()
-	vals := ps.Concurrency(16).Values()
+	vals := ps.Worker(16).Values()
 	if len(vals) != 1000 {
 		t.Fatalf("Serial->ToParallel: expected 1000 values, got %d", len(vals))
 	}
@@ -2546,13 +2546,13 @@ func TestSlice_Chain_SerialSlice_ToParallel(t *testing.T) {
 func TestSlice_Chain_ParallelSlice_AllConfig(t *testing.T) {
 	data := genInts(5000)
 	ps := Slice(freshCtx(), data).Parallel().
-		Concurrency(16).
+		Worker(16).
 		FailFast().
 		Timeout(10 * time.Second).
 		Shards(8)
 	_ = ps.NoFailFast()
 	_ = ps.DefaultTimeout()
-	_ = ps.DefaultConcurrency()
+	_ = ps.DefaultWorker()
 	_ = ps.DefaultShard()
 	_ = ps.DefaultPool()
 	_ = ps.PoolAuto(pool.NewPool[int](8))
@@ -2622,7 +2622,7 @@ func TestSlice_Chain_EmptyMap(t *testing.T) {
 	r := Slice(freshCtx(), []int{}).Map(func(ctx context.Context, v int) (int, error) {
 		return v, nil
 	})
-	if r.IsErr() {
+	if r.Err() {
 		t.Fatalf("empty Map should not error: %v", r.Error())
 	}
 	if r.Len() != 0 {
@@ -2634,7 +2634,7 @@ func TestSlice_Chain_EmptyForEach(t *testing.T) {
 	r := Slice(freshCtx(), []int{}).ForEach(func(ctx context.Context, v int) error {
 		return nil
 	})
-	if r.IsErr() {
+	if r.Err() {
 		t.Fatalf("empty ForEach should not error: %v", r.Error())
 	}
 	if r.Total() != 0 {
@@ -2729,10 +2729,10 @@ func TestSlice_Chain_ConcurrentMapCalls(t *testing.T) {
 					if len(data) == 0 {
 						return
 					}
-					r := Slice(freshCtx(), data).Concurrency(8).Map(func(ctx context.Context, v int) (int, error) {
+					r := Slice(freshCtx(), data).Worker(8).Map(func(ctx context.Context, v int) (int, error) {
 						return v, nil
 					})
-					if r.IsErr() {
+					if r.Err() {
 						t.Errorf("concurrent Map error: %v", r.Error())
 						return
 					}
@@ -2765,11 +2765,11 @@ func TestSlice_Chain_Race_Map(t *testing.T) {
 		t.Run(tier.name, func(t *testing.T) {
 			data := genInts(tier.size)
 			var sum int64
-			r := Slice(freshCtx(), data).Concurrency(conc).Map(func(ctx context.Context, v int) (int, error) {
+			r := Slice(freshCtx(), data).Worker(conc).Map(func(ctx context.Context, v int) (int, error) {
 				atomic.AddInt64(&sum, int64(v))
 				return v, nil
 			})
-			if r.IsErr() {
+			if r.Err() {
 				t.Fatalf("Race Map: %v", r.Error())
 			}
 			if r.Len() != tier.size {
@@ -2789,7 +2789,7 @@ func TestSlice_Chain_Race_ForEach(t *testing.T) {
 			data := genInts(tier.size)
 			var counter int64
 			var errCount int64
-			r := Slice(freshCtx(), data).Concurrency(conc).ForEach(func(ctx context.Context, v int) error {
+			r := Slice(freshCtx(), data).Worker(conc).ForEach(func(ctx context.Context, v int) error {
 				atomic.AddInt64(&counter, 1)
 				if v%2 == 0 {
 					atomic.AddInt64(&errCount, 1)
@@ -2816,7 +2816,7 @@ func TestSlice_Chain_Race_FailFast(t *testing.T) {
 		t.Run(tier.name, func(t *testing.T) {
 			data := genInts(tier.size)
 			var called int64
-			r := Slice(freshCtx(), data).Concurrency(conc).FailFast().Map(func(ctx context.Context, v int) (int, error) {
+			r := Slice(freshCtx(), data).Worker(conc).FailFast().Map(func(ctx context.Context, v int) (int, error) {
 				idx := atomic.AddInt64(&called, 1)
 				if idx == 100 {
 					return 0, errTestSentinel
@@ -2838,7 +2838,7 @@ func TestSlice_Chain_Race_Stream(t *testing.T) {
 	for _, tier := range allTiers {
 		t.Run(tier.name, func(t *testing.T) {
 			data := genInts(tier.size)
-			ch := Slice(freshCtx(), data).Concurrency(conc).Buf(4096).Stream(func(ctx context.Context, v int) (int, error) {
+			ch := Slice(freshCtx(), data).Worker(conc).Buf(4096).Stream(func(ctx context.Context, v int) (int, error) {
 				return v, nil
 			}, 0)
 			count := 0
@@ -2864,10 +2864,10 @@ func TestSlice_Chain_Race_PoolShared(t *testing.T) {
 		t.Run(tier.name, func(t *testing.T) {
 			data := genInts(tier.size)
 			p := pool.NewPool[int](16)
-			r := Slice(freshCtx(), data).PoolAuto(p).Concurrency(conc).Map(func(ctx context.Context, v int) (int, error) {
+			r := Slice(freshCtx(), data).PoolAuto(p).Worker(conc).Map(func(ctx context.Context, v int) (int, error) {
 				return v, nil
 			})
-			if r.IsErr() {
+			if r.Err() {
 				t.Fatalf("Race PoolShared: %v", r.Error())
 			}
 			if r.Len() != tier.size {
@@ -2885,10 +2885,10 @@ func TestSlice_Chain_Race_Shards(t *testing.T) {
 	for _, tier := range allTiers {
 		t.Run(tier.name, func(t *testing.T) {
 			data := genInts(tier.size)
-			r := Slice(freshCtx(), data).Concurrency(conc).Shards(16).Map(func(ctx context.Context, v int) (int, error) {
+			r := Slice(freshCtx(), data).Worker(conc).Shards(16).Map(func(ctx context.Context, v int) (int, error) {
 				return v * 2, nil
 			})
-			if r.IsErr() {
+			if r.Err() {
 				t.Fatalf("Race Shards: %v", r.Error())
 			}
 			if r.Len() != tier.size {
@@ -2906,14 +2906,14 @@ func TestSlice_Chain_Race_MapBatch(t *testing.T) {
 	for _, tier := range allTiers {
 		t.Run(tier.name, func(t *testing.T) {
 			data := genInts(tier.size)
-			r := Slice(freshCtx(), data).Concurrency(conc).Chunk(100).MapBatch(func(ctx context.Context, batch []int) (int, error) {
+			r := Slice(freshCtx(), data).Worker(conc).Chunk(100).MapBatch(func(ctx context.Context, batch []int) (int, error) {
 				sum := 0
 				for _, v := range batch {
 					sum += v
 				}
 				return sum, nil
 			})
-			if r.IsErr() {
+			if r.Err() {
 				t.Fatalf("Race MapBatch: %v", r.Error())
 			}
 			if r.Len() == 0 {
@@ -2932,11 +2932,11 @@ func TestSlice_Chain_Race_ForEachBatch(t *testing.T) {
 		t.Run(tier.name, func(t *testing.T) {
 			data := genInts(tier.size)
 			var counter int64
-			r := Slice(freshCtx(), data).Concurrency(conc).Chunk(100).ForEachBatch(func(ctx context.Context, batch []int) error {
+			r := Slice(freshCtx(), data).Worker(conc).Chunk(100).ForEachBatch(func(ctx context.Context, batch []int) error {
 				atomic.AddInt64(&counter, int64(len(batch)))
 				return nil
 			})
-			if r.IsErr() {
+			if r.Err() {
 				t.Fatalf("Race ForEachBatch: %v", r.Error())
 			}
 			if counter != int64(tier.size) {
@@ -2954,7 +2954,7 @@ func TestSlice_Chain_Race_Reduce(t *testing.T) {
 	for _, tier := range allTiers {
 		t.Run(tier.name, func(t *testing.T) {
 			data := genInts(tier.size)
-			sum, err := Slice(freshCtx(), data).Concurrency(conc).Reduce(0, func(ctx context.Context, acc int, v int) (int, error) {
+			sum, err := Slice(freshCtx(), data).Worker(conc).Reduce(0, func(ctx context.Context, acc int, v int) (int, error) {
 				return acc + v, nil
 			})
 			if err != nil {
@@ -2972,7 +2972,7 @@ func TestSlice_Chain_Race_SerialMode(t *testing.T) {
 			r := Slice(freshCtx(), data).Serial().Map(func(ctx context.Context, v int) (int, error) {
 				return v, nil
 			})
-			if r.IsErr() {
+			if r.Err() {
 				t.Fatalf("Race Serial: %v", r.Error())
 			}
 			if r.Len() != tier.size {
@@ -2989,7 +2989,7 @@ func TestSlice_Chain_Race_SerialMode_FailFast(t *testing.T) {
 			r := Slice(freshCtx(), data).Serial().FailFast().Map(func(ctx context.Context, v int) (int, error) {
 				return v, nil
 			})
-			if r.IsErr() {
+			if r.Err() {
 				t.Fatalf("Race Serial FF: %v", r.Error())
 			}
 			if r.Len() != tier.size {
@@ -3007,10 +3007,10 @@ func TestSlice_Chain_Race_ParallelMode(t *testing.T) {
 	for _, tier := range allTiers {
 		t.Run(tier.name, func(t *testing.T) {
 			data := genInts(tier.size)
-			r := Slice(freshCtx(), data).Parallel().Concurrency(conc).Map(func(ctx context.Context, v int) (int, error) {
+			r := Slice(freshCtx(), data).Parallel().Worker(conc).Map(func(ctx context.Context, v int) (int, error) {
 				return v, nil
 			})
-			if r.IsErr() {
+			if r.Err() {
 				t.Fatalf("Race Parallel: %v", r.Error())
 			}
 			if r.Len() != tier.size {
@@ -3033,7 +3033,7 @@ func TestSlice_Chain_Race_ForEach_Shards(t *testing.T) {
 				atomic.AddInt64(&counter, 1)
 				return nil
 			})
-			if r.IsErr() {
+			if r.Err() {
 				t.Fatalf("Race ForEach Shards: %v", r.Error())
 			}
 			if r.SuccessCount() != int64(tier.size) {
@@ -3053,11 +3053,11 @@ func TestSlice_Chain_Race_ForEach_TOFF(t *testing.T) {
 			skipIfTooLarge(t, tier.size)
 			data := genInts(tier.size)
 			var counter int64
-			r := Slice(freshCtx(), data).Concurrency(conc).Timeout(30 * time.Second).FailFast().ForEach(func(ctx context.Context, v int) error {
+			r := Slice(freshCtx(), data).Worker(conc).Timeout(30 * time.Second).FailFast().ForEach(func(ctx context.Context, v int) error {
 				atomic.AddInt64(&counter, 1)
 				return nil
 			})
-			if r.IsErr() {
+			if r.Err() {
 				t.Fatalf("Race ForEach TOFF: %v", r.Error())
 			}
 			if r.SuccessCount() != int64(tier.size) {

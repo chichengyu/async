@@ -404,7 +404,7 @@ func (b *sliceBase[T, S]) Contains(pred func(T) bool) bool {
 	if !b.policy.IsParallel() || len(b.items) < 100 {
 		return funcContains(b.items, pred)
 	}
-	return funcContainsParallel(b.items, pred, b.policy.Concurrency())
+	return funcContainsParallel(b.items, pred, b.policy.GetWorker())
 }
 
 // Index 返回第一个满足 pred 的元素索引，未找到返回 -1。
@@ -462,7 +462,7 @@ func (b *sliceBase[T, S]) All(pred func(T) bool) bool {
 	if !b.policy.IsParallel() || len(b.items) < 100 {
 		return funcAll(b.items, pred)
 	}
-	return funcAllParallel(b.items, pred, b.policy.Concurrency())
+	return funcAllParallel(b.items, pred, b.policy.GetWorker())
 }
 
 // Any 判断是否存在至少一个元素满足 pred。
@@ -478,7 +478,7 @@ func (b *sliceBase[T, S]) Any(pred func(T) bool) bool {
 	if !b.policy.IsParallel() || len(b.items) < 100 {
 		return funcAny(b.items, pred)
 	}
-	return funcAnyParallel(b.items, pred, b.policy.Concurrency())
+	return funcAnyParallel(b.items, pred, b.policy.GetWorker())
 }
 
 // Count 统计满足 pred 的元素数量。
@@ -494,7 +494,7 @@ func (b *sliceBase[T, S]) Count(pred func(T) bool) int {
 	if !b.policy.IsParallel() || len(b.items) < 100 {
 		return funcCount(b.items, pred)
 	}
-	return funcCountParallel(b.items, pred, b.policy.Concurrency())
+	return funcCountParallel(b.items, pred, b.policy.GetWorker())
 }
 
 // Max 使用 cmp 比较函数找出最大元素。

@@ -19,12 +19,12 @@ func (b *ParallelSlice[T, R]) ToSerial() *SerialSlice[T, R] {
 	return ss
 }
 
-func (b *ParallelSlice[T, R]) Concurrency(n int) *ParallelSlice[T, R] {
+func (b *ParallelSlice[T, R]) Worker(n int) *ParallelSlice[T, R] {
 	b.policy = Par(n)
 	return b
 }
 
-func (b *ParallelSlice[T, R]) DefaultConcurrency() *ParallelSlice[T, R] {
+func (b *ParallelSlice[T, R]) DefaultWorker() *ParallelSlice[T, R] {
 	b.policy = DefPar()
 	return b
 }

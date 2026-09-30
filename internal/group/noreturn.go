@@ -79,8 +79,8 @@ func (nr *NoResult) WithFFTraceID(ctx context.Context) (*NoResult, context.Conte
 	return (*NoResult)(g), ctx
 }
 
-func (nr *NoResult) WithFFSubmitTO(ctx context.Context, submitTimeout time.Duration) (*NoResult, context.Context) {
-	g, ctx := (*Group[struct{}])(nr).WithFFSubmitTO(ctx, submitTimeout)
+func (nr *NoResult) WithFFSto(ctx context.Context, submitTimeout time.Duration) (*NoResult, context.Context) {
+	g, ctx := (*Group[struct{}])(nr).WithFFSto(ctx, submitTimeout)
 	return (*NoResult)(g), ctx
 }
 
@@ -89,23 +89,23 @@ func (nr *NoResult) WithFFTimeout(ctx context.Context, timeout time.Duration) (*
 	return (*NoResult)(g), ctx
 }
 
-func (nr *NoResult) WithFFSubmitTOTraceID(ctx context.Context, submitTimeout time.Duration) (*NoResult, context.Context) {
-	g, ctx := (*Group[struct{}])(nr).WithFFSubmitTOTraceID(ctx, submitTimeout)
+func (nr *NoResult) WithFFStoTID(ctx context.Context, submitTimeout time.Duration) (*NoResult, context.Context) {
+	g, ctx := (*Group[struct{}])(nr).WithFFStoTID(ctx, submitTimeout)
 	return (*NoResult)(g), ctx
 }
 
-func (nr *NoResult) WithFFTimeoutTraceID(ctx context.Context, timeout time.Duration) (*NoResult, context.Context) {
-	g, ctx := (*Group[struct{}])(nr).WithFFTimeoutTraceID(ctx, timeout)
+func (nr *NoResult) WithFFTOTID(ctx context.Context, timeout time.Duration) (*NoResult, context.Context) {
+	g, ctx := (*Group[struct{}])(nr).WithFFTOTID(ctx, timeout)
 	return (*NoResult)(g), ctx
 }
 
-func (nr *NoResult) WithFFTimeoutSubmitTO(ctx context.Context, timeout, submitTimeout time.Duration) (*NoResult, context.Context) {
-	g, ctx := (*Group[struct{}])(nr).WithFFTimeoutSubmitTO(ctx, timeout, submitTimeout)
+func (nr *NoResult) WithFFTOSto(ctx context.Context, timeout, submitTimeout time.Duration) (*NoResult, context.Context) {
+	g, ctx := (*Group[struct{}])(nr).WithFFTOSto(ctx, timeout, submitTimeout)
 	return (*NoResult)(g), ctx
 }
 
-func (nr *NoResult) WithFFTimeoutSubmitTOTraceID(ctx context.Context, timeout, submitTimeout time.Duration) (*NoResult, context.Context) {
-	g, ctx := (*Group[struct{}])(nr).WithFFTimeoutSubmitTOTraceID(ctx, timeout, submitTimeout)
+func (nr *NoResult) WithFFTOStoTID(ctx context.Context, timeout, submitTimeout time.Duration) (*NoResult, context.Context) {
+	g, ctx := (*Group[struct{}])(nr).WithFFTOStoTID(ctx, timeout, submitTimeout)
 	return (*NoResult)(g), ctx
 }
 
@@ -114,13 +114,13 @@ func (nr *NoResult) WithCtxTraceID(ctx context.Context) (*NoResult, context.Cont
 	return (*NoResult)(g), ctx
 }
 
-func (nr *NoResult) WithCtxSubmitTO(ctx context.Context, submitTimeout time.Duration) (*NoResult, context.Context) {
-	g, ctx := (*Group[struct{}])(nr).WithCtxSubmitTO(ctx, submitTimeout)
+func (nr *NoResult) WithCtxSto(ctx context.Context, submitTimeout time.Duration) (*NoResult, context.Context) {
+	g, ctx := (*Group[struct{}])(nr).WithCtxSto(ctx, submitTimeout)
 	return (*NoResult)(g), ctx
 }
 
-func (nr *NoResult) WithCtxSubmitTOTraceID(ctx context.Context, submitTimeout time.Duration) (*NoResult, context.Context) {
-	g, ctx := (*Group[struct{}])(nr).WithCtxSubmitTOTraceID(ctx, submitTimeout)
+func (nr *NoResult) WithCtxStoTID(ctx context.Context, submitTimeout time.Duration) (*NoResult, context.Context) {
+	g, ctx := (*Group[struct{}])(nr).WithCtxStoTID(ctx, submitTimeout)
 	return (*NoResult)(g), ctx
 }
 
@@ -129,8 +129,8 @@ func (nr *NoResult) WithCtxTimeout(ctx context.Context, timeout time.Duration) (
 	return (*NoResult)(g), ctx
 }
 
-func (nr *NoResult) WithCtxTimeoutTraceID(ctx context.Context, timeout time.Duration) (*NoResult, context.Context) {
-	g, ctx := (*Group[struct{}])(nr).WithCtxTimeoutTraceID(ctx, timeout)
+func (nr *NoResult) WithCtxTOTID(ctx context.Context, timeout time.Duration) (*NoResult, context.Context) {
+	g, ctx := (*Group[struct{}])(nr).WithCtxTOTID(ctx, timeout)
 	return (*NoResult)(g), ctx
 }
 
@@ -250,9 +250,9 @@ func (nr *NoResult) TotalCount() int64 {
 	return (*Group[struct{}])(nr).TotalCount()
 }
 
-// Concurrency 返回最大并发数。
-func (nr *NoResult) Concurrency() int {
-	return (*Group[struct{}])(nr).Concurrency()
+// Worker 返回最大并发数。
+func (nr *NoResult) Worker() int {
+	return (*Group[struct{}])(nr).Worker()
 }
 
 // Active 返回当前活跃 goroutine 数。

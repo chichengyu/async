@@ -516,8 +516,8 @@ func TestNewShardedGroup_Custom(t *testing.T) {
 	if sg.ShardCount() != 8 {
 		t.Fatalf("expected 8 shards, got %d", sg.ShardCount())
 	}
-	if tc := sg.TotalConcurrency(); tc != 16 {
-		t.Fatalf("TotalConcurrency: expected 16, got %d", tc)
+	if tc := sg.TotalWorker(); tc != 16 {
+		t.Fatalf("TotalWorker: expected 16, got %d", tc)
 	}
 }
 
@@ -746,10 +746,10 @@ func TestShardedGroup_TotalFailCount(t *testing.T) {
 	}
 }
 
-func TestShardedGroup_TotalConcurrency(t *testing.T) {
+func TestShardedGroup_TotalWorker(t *testing.T) {
 	sg := NewShardedGroup(ShardGroupConfig[int]{Shards: 4, ConcurrencyPerShard: 5})
-	if tc := sg.TotalConcurrency(); tc != 20 {
-		t.Fatalf("TotalConcurrency: expected 20, got %d", tc)
+	if tc := sg.TotalWorker(); tc != 20 {
+		t.Fatalf("TotalWorker: expected 20, got %d", tc)
 	}
 }
 

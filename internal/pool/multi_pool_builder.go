@@ -183,7 +183,7 @@ func (b *MultiPoolBuilder[T]) Streaming(buf int) *MultiPoolBuilder[T] {
 }
 
 // Pool 注入外部协程池，MultiPool 使用该池进行分片。
-// 注入后 Worker/Timeout 等配置方法不再生效。
+// 注入后 Conc/Timeout 等配置方法不再生效。
 // 外部池生命周期由 Run 接管：外部池成为 shard[0]，defer mp.Close() 会同时关闭它。
 // 调用方不得在 Run 之后再使用该池。
 //

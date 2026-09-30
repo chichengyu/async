@@ -95,24 +95,24 @@ func (b *TaskBuilder[T]) GoResult(fn func(context.Context) (T, error)) Task[T] {
 	return GoResult(b.ctx, fn)
 }
 
-// GoAction 启动无返回值异步任务，返回 AsyncResult[NoResult]。
+// GoAct 启动无返回值异步任务，返回 AsyncResult[NoResult]。
 // fn 签名为 func(ctx) error。
-func (b *TaskBuilder[T]) GoAction(fn func(context.Context) error) *AsyncResult[NoResult] {
-	fn = b.wrapTimeoutAction(fn)
+func (b *TaskBuilder[T]) GoAct(fn func(context.Context) error) *AsyncResult[NoResult] {
+	fn = b.wrapTimeoutAct(fn)
 	if b.bounded != nil {
-		return BoundedGoAction(b.bounded, b.ctx, fn)
+		return BoundedGoAct(b.bounded, b.ctx, fn)
 	}
-	return GoAction(b.ctx, fn)
+	return GoAct(b.ctx, fn)
 }
 
-// GoResultAction 启动无返回值的可取消异步任务，返回 Task[NoResult]。
+// GoResultAct 启动无返回值的可取消异步任务，返回 Task[NoResult]。
 // fn 签名为 func(ctx) error，可通过 Task.Cancel() 主动取消。
-func (b *TaskBuilder[T]) GoResultAction(fn func(context.Context) error) Task[NoResult] {
-	fn = b.wrapTimeoutAction(fn)
+func (b *TaskBuilder[T]) GoResultAct(fn func(context.Context) error) Task[NoResult] {
+	fn = b.wrapTimeoutAct(fn)
 	if b.bounded != nil {
-		return boundedGoResultAction(b.bounded, b.ctx, fn)
+		return boundedGoResultAct(b.bounded, b.ctx, fn)
 	}
-	return GoResultAction(b.ctx, fn)
+	return GoResultAct(b.ctx, fn)
 }
 
 // ── 内部辅助方法 ──
@@ -130,8 +130,8 @@ func (b *TaskBuilder[T]) wrapTimeout(fn func(context.Context) (T, error)) func(c
 	}
 }
 
-// wrapTimeoutAction 无返回值版本的超时包裹。
-func (b *TaskBuilder[T]) wrapTimeoutAction(fn func(context.Context) error) func(context.Context) error {
+// wrapTimeoutAct 无返回值版本的超时包裹。
+func (b *TaskBuilder[T]) wrapTimeoutAct(fn func(context.Context) error) func(context.Context) error {
 	if b.timeout <= 0 {
 		return fn
 	}
@@ -143,8 +143,8 @@ func (b *TaskBuilder[T]) wrapTimeoutAction(fn func(context.Context) error) func(
 	}
 }
 
-// boundedGoResultAction 带限流的无返回值可取消异步任务。
-func boundedGoResultAction(r *BoundedRunner, ctx context.Context, fn func(context.Context) error) Task[NoResult] {
+// boundedGoResultAct 带限流的无返回值可取消异步任务。
+func boundedGoResultAct(r *BoundedRunner, ctx context.Context, fn func(context.Context) error) Task[NoResult] {
 	select {
 	case r.sem <- struct{}{}:
 	case <-ctx.Done():
@@ -157,7 +157,7 @@ func boundedGoResultAction(r *BoundedRunner, ctx context.Context, fn func(contex
 		}
 	}
 
-	t := GoResultAction(ctx, fn)
+	t := GoResultAct(ctx, fn)
 	orig := t.Result
 	t.Result = func() (NoResult, error) {
 		defer func() { <-r.sem }()

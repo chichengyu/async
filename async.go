@@ -511,7 +511,7 @@ type Mu[T any] = task.Mu[T]
 // ──────────────────────────── Task 链式 API ────────────────────────────
 
 // TaskBuilder 泛型异步任务链式构建器，统一入口为 async.Task[T]()。
-// 支持 Context、WithTimeout、Bounded 限流等链式配置，终端方法 Go/GoResult/GoAction/GoResultAction 启动异步任务。
+// 支持 Context、WithTimeout、Bounded 限流等链式配置，终端方法 Go/GoResult/GoAct/GoResultAct 启动异步任务。
 //
 // 使用示例：
 //
@@ -532,7 +532,7 @@ type Mu[T any] = task.Mu[T]
 //	val, err := t.Result()
 //
 //	// 无返回值任务
-//	err := async.Task[struct{}]().Context(ctx).GoAction(func(ctx context.Context) error {
+//	err := async.Task[struct{}]().Context(ctx).GoAct(func(ctx context.Context) error {
 //	    return sendNotification(ctx, userID, msg)
 //	}).Wait()
 type TaskBuilder[T any] = task.TaskBuilder[T]
@@ -596,7 +596,7 @@ type TokenBucketSubBuilder = ratelimit.TokenBucketSubBuilder
 // SlidingWindowSubBuilder SlidingWindow 模式子构建器，设置 Limit/Window 后 Build()。
 type SlidingWindowSubBuilder = ratelimit.SlidingWindowSubBuilder
 
-// AdaptiveSubBuilder Adaptive 模式子构建器，设置 MinConcurrency/MaxConcurrency 后 Build()。
+// AdaptiveSubBuilder Adaptive 模式子构建器，设置 MinWorker/MaxWorker 后 Build()。
 type AdaptiveSubBuilder = ratelimit.AdaptiveSubBuilder
 
 // ShardedRatelimitBuilder 分片限流器入口构建器，通过 RatelimitBuilder.Sharded() 创建。
@@ -611,7 +611,7 @@ type ShardedTokenBucketSubBuilder = ratelimit.ShardedTokenBucketSubBuilder
 // ShardedSlidingWindowSubBuilder 分片 SlidingWindow 子构建器，设置 Shards/Limit/Window 后 Build()。
 type ShardedSlidingWindowSubBuilder = ratelimit.ShardedSlidingWindowSubBuilder
 
-// ShardedAdaptiveSubBuilder 分片 Adaptive 子构建器，设置 Shards/MinConcurrency/MaxConcurrency 后 Build()。
+// ShardedAdaptiveSubBuilder 分片 Adaptive 子构建器，设置 Shards/MinWorker/MaxWorker 后 Build()。
 type ShardedAdaptiveSubBuilder = ratelimit.ShardedAdaptiveSubBuilder
 
 // Ratelimit 创建限流器链式构建器，统一入口。
@@ -631,9 +631,9 @@ type ShardedAdaptiveSubBuilder = ratelimit.ShardedAdaptiveSubBuilder
 //	sw := async.Ratelimit(ctx).SlidingWindow().Limit(100).Window(10*time.Second).Build()
 //	sw := async.Ratelimit(ctx).SlidingWindow().DefaultLimit().DefaultWindow().Build()
 //
-//	// Adaptive 模式：MinConcurrency / MaxConcurrency + Default*()
-//	al := async.Ratelimit(ctx).Adaptive().MinConcurrency(5).MaxConcurrency(100).Build()
-//	al := async.Ratelimit(ctx).Adaptive().DefaultMinConcurrency().DefaultMaxConcurrency().Build()
+//	// Adaptive 模式：MinWorker / MaxWorker + Default*()
+//	al := async.Ratelimit(ctx).Adaptive().MinWorker(5).MaxWorker(100).Build()
+//	al := async.Ratelimit(ctx).Adaptive().DefaultMinWorker().DefaultMaxWorker().Build()
 //
 //	// Sharded 模式：Shards + 模式参数 + Default*()
 //	srl := async.Ratelimit(ctx).Sharded().RateLimiter().Shards(16).Rate(10000).Per(time.Second).Build()
@@ -825,9 +825,9 @@ func BoundedGo[T any](r *BoundedRunner, ctx context.Context, fn func(context.Con
 	return task.BoundedGo(r, ctx, fn)
 }
 
-// BoundedGoAction 通过限流器启动无返回值异步任务。
-func BoundedGoAction(r *BoundedRunner, ctx context.Context, fn func(context.Context) error) *AsyncErr {
-	return task.BoundedGoAction(r, ctx, fn)
+// BoundedGoAct 通过限流器启动无返回值异步任务。
+func BoundedGoAct(r *BoundedRunner, ctx context.Context, fn func(context.Context) error) *AsyncErr {
+	return task.BoundedGoAct(r, ctx, fn)
 }
 
 // BoundedGoResult 通过限流器启动可取消异步任务。
@@ -882,7 +882,7 @@ func (p *SerialPipeline[T]) Run(input T) (T, error) {
 
 // ──────────────────────────── NoResultPool 辅助函数 ────────────────────────────
 
-// SubmitAction 向 NoResultPool 提交一个无返回值的动作。
+// SubmitAct 向 NoResultPool 提交一个无返回值的动作。
 //
 // 参数：
 //   - p：无返回值协程池
@@ -893,61 +893,61 @@ func (p *SerialPipeline[T]) Run(input T) (T, error) {
 //
 //	p := async.NewNoResultPool(10)
 //	defer p.Close()
-//	async.SubmitAction(p, ctx, func(ctx context.Context) error {
+//	async.SubmitAct(p, ctx, func(ctx context.Context) error {
 //	    return processItem(ctx)
 //	})
-func SubmitAction(p *NoResultPool, ctx context.Context, fn func(context.Context) error) error {
+func SubmitAct(p *NoResultPool, ctx context.Context, fn func(context.Context) error) error {
 	return p.Submit(ctx, func(ctx context.Context) (struct{}, error) {
 		return struct{}{}, fn(ctx)
 	})
 }
 
-// TrySubmitAction 非阻塞地向 NoResultPool 提交动作，队列满时返回 ErrSubmitTimeout。
+// TrySubmitAct 非阻塞地向 NoResultPool 提交动作，队列满时返回 ErrSubmitTimeout。
 //
 // 参数：
 //   - p：无返回值协程池
 //   - ctx：上下文
 //   - fn：动作函数
-func TrySubmitAction(p *NoResultPool, ctx context.Context, fn func(context.Context) error) error {
+func TrySubmitAct(p *NoResultPool, ctx context.Context, fn func(context.Context) error) error {
 	return p.TrySubmit(ctx, func(ctx context.Context) (struct{}, error) {
 		return struct{}{}, fn(ctx)
 	})
 }
 
-// TrySubmitAtAction 指定位置非阻塞地向 NoResultPool 提交动作。
+// TrySubmitAtAct 指定位置非阻塞地向 NoResultPool 提交动作。
 //
 // 参数：
 //   - p：无返回值协程池
 //   - index：在结果切片中的索引位置
 //   - ctx：上下文
 //   - fn：动作函数
-func TrySubmitAtAction(p *NoResultPool, index int, ctx context.Context, fn func(context.Context) error) error {
+func TrySubmitAtAct(p *NoResultPool, index int, ctx context.Context, fn func(context.Context) error) error {
 	return p.TrySubmit(ctx, func(ctx context.Context) (struct{}, error) {
 		return struct{}{}, fn(ctx)
 	})
 }
 
-// SubmitAtAction 向 NoResultPool 指定位置提交动作。
+// SubmitAtAct 向 NoResultPool 指定位置提交动作。
 //
 // 参数：
 //   - p：无返回值协程池
 //   - index：在结果切片中的索引位置
 //   - ctx：上下文
 //   - fn：动作函数
-func SubmitAtAction(p *NoResultPool, index int, ctx context.Context, fn func(context.Context) error) error {
+func SubmitAtAct(p *NoResultPool, index int, ctx context.Context, fn func(context.Context) error) error {
 	return p.SubmitAt(index, ctx, func(ctx context.Context) (struct{}, error) {
 		return struct{}{}, fn(ctx)
 	})
 }
 
-// GoAction 向 NoResultPool 提交动作，失败时会 panic。
+// GoAct 向 NoResultPool 提交动作，失败时会 panic。
 // 适用于初始化阶段必须成功的任务提交。
 //
 // 参数：
 //   - p：无返回值协程池
 //   - ctx：上下文
 //   - fn：动作函数
-func GoAction(p *NoResultPool, ctx context.Context, fn func(context.Context) error) {
+func GoAct(p *NoResultPool, ctx context.Context, fn func(context.Context) error) {
 	if err := p.Submit(ctx, func(ctx context.Context) (struct{}, error) {
 		return struct{}{}, fn(ctx)
 	}); err != nil {
@@ -955,22 +955,22 @@ func GoAction(p *NoResultPool, ctx context.Context, fn func(context.Context) err
 	}
 }
 
-// SubmitActionWithTimeout 带超时地向 NoResultPool 提交动作。
+// SubmitActWithTimeout 带超时地向 NoResultPool 提交动作。
 //
 // 参数：
 //   - p：无返回值协程池
 //   - ctx：上下文
 //   - timeout：任务超时时间
 //   - fn：动作函数
-func SubmitActionWithTimeout(p *NoResultPool, ctx context.Context, timeout time.Duration, fn func(context.Context) error) error {
+func SubmitActWithTimeout(p *NoResultPool, ctx context.Context, timeout time.Duration, fn func(context.Context) error) error {
 	tCtx, cancel := context.WithTimeout(ctx, timeout)
-	return SubmitAction(p, tCtx, func(ctx context.Context) error {
+	return SubmitAct(p, tCtx, func(ctx context.Context) error {
 		defer cancel()
 		return fn(ctx)
 	})
 }
 
-// SubmitAtActionWithTimeout 指定位置带超时地向 NoResultPool 提交动作。
+// SubmitAtActWithTimeout 指定位置带超时地向 NoResultPool 提交动作。
 //
 // 参数：
 //   - p：无返回值协程池
@@ -978,18 +978,18 @@ func SubmitActionWithTimeout(p *NoResultPool, ctx context.Context, timeout time.
 //   - ctx：上下文
 //   - timeout：任务超时时间
 //   - fn：动作函数
-func SubmitAtActionWithTimeout(p *NoResultPool, index int, ctx context.Context, timeout time.Duration, fn func(context.Context) error) error {
+func SubmitAtActWithTimeout(p *NoResultPool, index int, ctx context.Context, timeout time.Duration, fn func(context.Context) error) error {
 	tCtx, cancel := context.WithTimeout(ctx, timeout)
-	return SubmitAtAction(p, index, tCtx, func(ctx context.Context) error {
+	return SubmitAtAct(p, index, tCtx, func(ctx context.Context) error {
 		defer cancel()
 		return fn(ctx)
 	})
 }
 
-// GoActionWithTimeout 带超时地向 NoResultPool 提交动作，失败时会 panic。
-func GoActionWithTimeout(p *NoResultPool, ctx context.Context, timeout time.Duration, fn func(context.Context) error) {
+// GoActWithTimeout 带超时地向 NoResultPool 提交动作，失败时会 panic。
+func GoActWithTimeout(p *NoResultPool, ctx context.Context, timeout time.Duration, fn func(context.Context) error) {
 	tCtx, cancel := context.WithTimeout(ctx, timeout)
-	GoAction(p, tCtx, func(ctx context.Context) error {
+	GoAct(p, tCtx, func(ctx context.Context) error {
 		defer cancel()
 		return fn(ctx)
 	})

@@ -308,11 +308,11 @@ func (sg *ShardedGroup[T]) TotalBusy() int {
 	return total
 }
 
-// TotalConcurrency 汇总所有分片并发度之和。
-func (sg *ShardedGroup[T]) TotalConcurrency() int {
+// TotalWorker 汇总所有分片并发度之和。
+func (sg *ShardedGroup[T]) TotalWorker() int {
 	var total int
 	for _, g := range sg.groups {
-		total += g.Concurrency()
+		total += g.Worker()
 	}
 	return total
 }

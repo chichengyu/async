@@ -255,7 +255,7 @@ func (p *Pool[T]) Shard(shards int) *MultiPool[T] {
 		}
 
 		if p.ringBufFlag.Load() && p.ringBuf != nil {
-			clone.ringBuf = core.NewRingBuffer[core.Result[T]](p.ringBuf.Cap(), p.ringBuf.OverflowStrategy())
+			clone.ringBuf = core.NewRingBuffer[core.Result[T]](p.ringBuf.Cap(), p.ringBuf.Overflow())
 			clone.ringBufFlag.Store(true)
 		}
 

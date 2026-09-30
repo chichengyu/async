@@ -142,8 +142,8 @@ func (rb *RingBuffer[T]) Cap() int {
 	return rb.capacity
 }
 
-// OverflowStrategy 返回当前溢出策略。
-func (rb *RingBuffer[T]) OverflowStrategy() OverflowStrategy {
+// Overflow 返回当前溢出策略。
+func (rb *RingBuffer[T]) Overflow() OverflowStrategy {
 	return rb.overflow
 }
 

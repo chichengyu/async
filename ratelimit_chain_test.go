@@ -345,14 +345,14 @@ func TestRatelimit_Chain_SlidingWindow_AllMethods(t *testing.T) {
 
 // ============================================================
 // Section 4: AdaptiveSubBuilder 链式方法全覆盖测试
-// MinConcurrency / MaxConcurrency / Build
+// MinWorker / MaxWorker / Build
 // ============================================================
 
 func TestRatelimit_Chain_Adaptive_AllMethods(t *testing.T) {
 	ctx := rlFreshCtx()
 
-	t.Run("MinConcurrency+MaxConcurrency", func(t *testing.T) {
-		al := Ratelimit(ctx).Adaptive().MinConcurrency(5).MaxConcurrency(100).Build()
+	t.Run("MinWorker+MaxWorker", func(t *testing.T) {
+		al := Ratelimit(ctx).Adaptive().MinWorker(5).MaxWorker(100).Build()
 		for i := 0; i < 20; i++ {
 			if err := al.Acquire(ctx); err != nil {
 				t.Fatalf("Acquire %d failed: %v", i, err)
@@ -364,7 +364,7 @@ func TestRatelimit_Chain_Adaptive_AllMethods(t *testing.T) {
 	})
 
 	t.Run("Max+Min_order_independent", func(t *testing.T) {
-		al := Ratelimit(ctx).Adaptive().MaxConcurrency(200).MinConcurrency(10).Build()
+		al := Ratelimit(ctx).Adaptive().MaxWorker(200).MinWorker(10).Build()
 		for i := 0; i < 10; i++ {
 			if err := al.Acquire(ctx); err != nil {
 				t.Fatalf("Acquire %d failed: %v", i, err)
@@ -376,14 +376,14 @@ func TestRatelimit_Chain_Adaptive_AllMethods(t *testing.T) {
 	})
 
 	t.Run("RecordSuccess", func(t *testing.T) {
-		al := Ratelimit(ctx).Adaptive().MinConcurrency(1).MaxConcurrency(100).Build()
+		al := Ratelimit(ctx).Adaptive().MinWorker(1).MaxWorker(100).Build()
 		al.Acquire(ctx)
 		al.RecordSuccess()
 		al.Release()
 	})
 
 	t.Run("RecordFailure", func(t *testing.T) {
-		al := Ratelimit(ctx).Adaptive().MinConcurrency(1).MaxConcurrency(100).Build()
+		al := Ratelimit(ctx).Adaptive().MinWorker(1).MaxWorker(100).Build()
 		al.Acquire(ctx)
 		al.RecordFailure()
 		al.Release()
@@ -398,7 +398,7 @@ func TestRatelimit_Chain_Adaptive_AllMethods(t *testing.T) {
 	})
 
 	t.Run("DefaultMin+DefaultMax", func(t *testing.T) {
-		al := Ratelimit(ctx).Adaptive().DefaultMinConcurrency().DefaultMaxConcurrency().Build()
+		al := Ratelimit(ctx).Adaptive().DefaultMinWorker().DefaultMaxWorker().Build()
 		if err := al.Acquire(ctx); err != nil {
 			t.Fatalf("Default-built Adaptive Acquire failed: %v", err)
 		}
@@ -406,7 +406,7 @@ func TestRatelimit_Chain_Adaptive_AllMethods(t *testing.T) {
 	})
 
 	t.Run("cancel_context_Acquire", func(t *testing.T) {
-		al := Ratelimit(ctx).Adaptive().MinConcurrency(1).MaxConcurrency(1).Build()
+		al := Ratelimit(ctx).Adaptive().MinWorker(1).MaxWorker(1).Build()
 		al.Acquire(ctx)
 		cancelCtx, cancel := context.WithCancel(ctx)
 		cancel()
@@ -479,7 +479,7 @@ func TestRatelimit_Chain_Sharded_AllMethods(t *testing.T) {
 	})
 
 	t.Run("Sharded_Adaptive_Shards+Min+Max", func(t *testing.T) {
-		sal := Ratelimit(ctx).Sharded().Adaptive().Shards(2).MinConcurrency(4).MaxConcurrency(10).Build()
+		sal := Ratelimit(ctx).Sharded().Adaptive().Shards(2).MinWorker(4).MaxWorker(10).Build()
 		defer sal.Close()
 		if sal.ShardCount() != 2 {
 			t.Fatalf("expected 2 shards, got %d", sal.ShardCount())
@@ -492,7 +492,7 @@ func TestRatelimit_Chain_Sharded_AllMethods(t *testing.T) {
 	})
 
 	t.Run("Sharded_Adaptive_AllOrders", func(t *testing.T) {
-		sal := Ratelimit(ctx).Sharded().Adaptive().MaxConcurrency(20).Shards(2).MinConcurrency(4).Build()
+		sal := Ratelimit(ctx).Sharded().Adaptive().MaxWorker(20).Shards(2).MinWorker(4).Build()
 		defer sal.Close()
 		if sal.TotalMin() <= 0 {
 			t.Fatal("expected positive TotalMin")
@@ -554,7 +554,7 @@ func TestRatelimit_Chain_Sharded_AllMethods(t *testing.T) {
 	})
 
 	t.Run("Sharded_Adaptive_all_defaults", func(t *testing.T) {
-		sal := Ratelimit(ctx).Sharded().Adaptive().DefaultShards().DefaultMinConcurrency().DefaultMaxConcurrency().Build()
+		sal := Ratelimit(ctx).Sharded().Adaptive().DefaultShards().DefaultMinWorker().DefaultMaxWorker().Build()
 		defer sal.Close()
 		if sal.ShardCount() < 2 {
 			t.Fatalf("DefaultShards expected >=2, got %d", sal.ShardCount())
@@ -724,7 +724,7 @@ func TestRatelimit_Chain_HighConcurrency_Adaptive(t *testing.T) {
 			if tier.load < maxC {
 				maxC = tier.load
 			}
-			al := Ratelimit(ctx).Adaptive().MinConcurrency(100).MaxConcurrency(maxC).Build()
+			al := Ratelimit(ctx).Adaptive().MinWorker(100).MaxWorker(maxC).Build()
 
 			var wg sync.WaitGroup
 			var success, fail atomic.Int64
@@ -930,8 +930,8 @@ func TestRatelimit_Chain_CrossScenario_ShardedVsNonSharded(t *testing.T) {
 	})
 
 	t.Run("Adaptive_vs_ShardedAdaptive", func(t *testing.T) {
-		al := Ratelimit(ctx).Adaptive().MinConcurrency(4).MaxConcurrency(10).Build()
-		sal := Ratelimit(ctx).Sharded().Adaptive().Shards(2).MinConcurrency(4).MaxConcurrency(10).Build()
+		al := Ratelimit(ctx).Adaptive().MinWorker(4).MaxWorker(10).Build()
+		sal := Ratelimit(ctx).Sharded().Adaptive().Shards(2).MinWorker(4).MaxWorker(10).Build()
 		defer sal.Close()
 		if err := al.Acquire(ctx); err != nil {
 			t.Fatalf("Adaptive Acquire failed: %v", err)
@@ -966,7 +966,7 @@ func TestRatelimit_Chain_CrossScenario_ErrorHandling(t *testing.T) {
 	})
 
 	t.Run("Adaptive_repeated_RecordSuccess", func(t *testing.T) {
-		al := Ratelimit(ctx).Adaptive().MinConcurrency(1).MaxConcurrency(100).Build()
+		al := Ratelimit(ctx).Adaptive().MinWorker(1).MaxWorker(100).Build()
 		for i := 0; i < 50; i++ {
 			al.Acquire(ctx)
 			al.RecordSuccess()
@@ -975,7 +975,7 @@ func TestRatelimit_Chain_CrossScenario_ErrorHandling(t *testing.T) {
 	})
 
 	t.Run("Adaptive_repeated_RecordFailure", func(t *testing.T) {
-		al := Ratelimit(ctx).Adaptive().MinConcurrency(5).MaxConcurrency(50).Build()
+		al := Ratelimit(ctx).Adaptive().MinWorker(5).MaxWorker(50).Build()
 		for i := 0; i < 50; i++ {
 			if err := al.Acquire(ctx); err != nil {
 				t.Fatalf("Acquire %d failed: %v", i, err)
@@ -1170,8 +1170,8 @@ func TestRatelimit_Chain_CrossScenario_AllOrderings(t *testing.T) {
 	})
 
 	t.Run("Adaptive_all_2_orders", func(t *testing.T) {
-		al1 := Ratelimit(ctx).Adaptive().MinConcurrency(5).MaxConcurrency(10).Build()
-		al2 := Ratelimit(ctx).Adaptive().MaxConcurrency(10).MinConcurrency(5).Build()
+		al1 := Ratelimit(ctx).Adaptive().MinWorker(5).MaxWorker(10).Build()
+		al2 := Ratelimit(ctx).Adaptive().MaxWorker(10).MinWorker(5).Build()
 		for i := 0; i < 5; i++ {
 			if err := al1.Acquire(ctx); err != nil {
 				t.Fatalf("al1 Acquire %d failed: %v", i, err)
@@ -1276,7 +1276,7 @@ func TestRatelimit_Chain_Boundary(t *testing.T) {
 	})
 
 	t.Run("Adaptive_min_equals_max", func(t *testing.T) {
-		al := Ratelimit(ctx).Adaptive().MinConcurrency(5).MaxConcurrency(5).Build()
+		al := Ratelimit(ctx).Adaptive().MinWorker(5).MaxWorker(5).Build()
 		if err := al.Acquire(ctx); err != nil {
 			t.Fatalf("min==max Acquire failed: %v", err)
 		}
@@ -1284,7 +1284,7 @@ func TestRatelimit_Chain_Boundary(t *testing.T) {
 	})
 
 	t.Run("Adaptive_min_greater_than_max", func(t *testing.T) {
-		al := Ratelimit(ctx).Adaptive().MinConcurrency(100).MaxConcurrency(5).Build()
+		al := Ratelimit(ctx).Adaptive().MinWorker(100).MaxWorker(5).Build()
 		if err := al.Acquire(ctx); err != nil {
 			t.Fatalf("min>max should be handled: %v", err)
 		}
@@ -1516,7 +1516,7 @@ func TestRatelimit_Chain_Race_SlidingWindow(t *testing.T) {
 
 func TestRatelimit_Chain_Race_Adaptive(t *testing.T) {
 	ctx := rlFreshCtx()
-	al := Ratelimit(ctx).Adaptive().MinConcurrency(100).MaxConcurrency(500).Build()
+	al := Ratelimit(ctx).Adaptive().MinWorker(100).MaxWorker(500).Build()
 	var wg sync.WaitGroup
 	n := 200
 	wg.Add(n)
@@ -1557,7 +1557,7 @@ func TestRatelimit_Chain_Race_ShardedRateLimiter(t *testing.T) {
 
 func TestRatelimit_Chain_Race_ShardedAdaptive(t *testing.T) {
 	ctx := rlFreshCtx()
-	sal := Ratelimit(ctx).Sharded().Adaptive().Shards(4).MinConcurrency(40).MaxConcurrency(200).Build()
+	sal := Ratelimit(ctx).Sharded().Adaptive().Shards(4).MinWorker(40).MaxWorker(200).Build()
 	defer sal.Close()
 	var wg sync.WaitGroup
 	n := 200
@@ -1608,7 +1608,7 @@ func TestRatelimit_Chain_Independence(t *testing.T) {
 	})
 
 	t.Run("Adaptive_standalone", func(t *testing.T) {
-		al := Ratelimit(ctx).Adaptive().MinConcurrency(1).MaxConcurrency(10).Build()
+		al := Ratelimit(ctx).Adaptive().MinWorker(1).MaxWorker(10).Build()
 		if err := al.Acquire(ctx); err != nil {
 			t.Fatalf("standalone Adaptive failed: %v", err)
 		}

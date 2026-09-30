@@ -15,7 +15,7 @@ import (
 //
 // 只测试对外暴露 API：
 //
-//	GroupMulti[T](ctx).Shards(n).Concurrency(n).FailFast().Timeout(d).Run(fn)
+//	GroupMulti[T](ctx).Shards(n).Worker(n).FailFast().Timeout(d).Run(fn)
 // ============================================================
 
 func TestMultiGroupBuilder_Chain_Basic(t *testing.T) {
@@ -26,7 +26,7 @@ func TestMultiGroupBuilder_Chain_Basic(t *testing.T) {
 			var sum int64
 			err := GroupMulti[int]().Context(freshCtx()).
 				Shards(2).
-				Concurrency(16).
+				Worker(16).
 				Run(func(ctx context.Context, mg *group.MultiGroup[int]) error {
 					for i := 0; i < tier.size; i++ {
 						v := i
@@ -66,7 +66,7 @@ func TestMultiGroupBuilder_Chain_FailFast(t *testing.T) {
 			var errCount int32
 			err := GroupMulti[int]().Context(freshCtx()).
 				Shards(2).
-				Concurrency(4).
+				Worker(4).
 				FailFast().
 				Timeout(5 * time.Second).
 				Run(func(ctx context.Context, mg *group.MultiGroup[int]) error {
@@ -111,7 +111,7 @@ func TestMultiGroupBuilder_Chain_Timeout(t *testing.T) {
 			var timeoutCount int32
 			err := GroupMulti[int]().Context(freshCtx()).
 				Shards(2).
-				Concurrency(2).
+				Worker(2).
 				Timeout(10 * time.Millisecond).
 				Run(func(ctx context.Context, mg *group.MultiGroup[int]) error {
 					for i := 0; i < sz.n; i++ {
@@ -147,7 +147,7 @@ func TestMultiGroupBuilder_Chain_ErrorInFn(t *testing.T) {
 	myErr := errors.New("multi group run error")
 	err := GroupMulti[int]().Context(freshCtx()).
 		Shards(2).
-		Concurrency(8).
+		Worker(8).
 		Run(func(ctx context.Context, mg *group.MultiGroup[int]) error {
 			return myErr
 		})
@@ -159,7 +159,7 @@ func TestMultiGroupBuilder_Chain_ErrorInFn(t *testing.T) {
 func TestMultiGroupBuilder_Chain_EmptyRun(t *testing.T) {
 	err := GroupMulti[int]().Context(freshCtx()).
 		Shards(2).
-		Concurrency(4).
+		Worker(4).
 		Run(func(ctx context.Context, mg *group.MultiGroup[int]) error {
 			results := mg.Wait()
 			if len(results) != 0 {
@@ -204,7 +204,7 @@ func TestMultiGroupBuilder_Chain_WithBG(t *testing.T) {
 	var count int32
 	err := GroupMulti[int]().
 		Shards(2).
-		Concurrency(8).
+		Worker(8).
 		Run(func(ctx context.Context, mg *group.MultiGroup[int]) error {
 			for i := 0; i < 100; i++ {
 				mg.Go(ctx, func(ctx context.Context) (int, error) {
@@ -227,7 +227,7 @@ func TestMultiGroupBuilder_Chain_NilCtx(t *testing.T) {
 	var count int32
 	err := GroupMulti[int]().
 		Shards(2).
-		Concurrency(8).
+		Worker(8).
 		Run(func(ctx context.Context, mg *group.MultiGroup[int]) error {
 			for i := 0; i < 100; i++ {
 				mg.Go(ctx, func(ctx context.Context) (int, error) {
@@ -252,7 +252,7 @@ func TestMultiGroupBuilder_Chain_ContextSwitch(t *testing.T) {
 	var sum int64
 	err := GroupMulti[int]().Context(ctx1).
 		Shards(2).
-		Concurrency(8).
+		Worker(8).
 		Context(ctx2).
 		Run(func(ctx context.Context, mg *group.MultiGroup[int]) error {
 			for i := 0; i < 100; i++ {
@@ -280,7 +280,7 @@ func TestMultiGroupBuilder_Chain_SubmitTimeout(t *testing.T) {
 		var count int32
 		err := GroupMulti[int]().Context(freshCtx()).
 			Shards(2).
-			Concurrency(8).
+			Worker(8).
 			SubmitTimeout(5 * time.Second).
 			Run(func(ctx context.Context, mg *group.MultiGroup[int]) error {
 				for i := 0; i < 100; i++ {

@@ -107,10 +107,10 @@ func TestTask_Chain_GoResultTimeout(t *testing.T) {
 	}
 }
 
-func TestTask_Chain_GoAction(t *testing.T) {
+func TestTask_Chain_GoAct(t *testing.T) {
 	var called atomic.Bool
 	ar := Task[struct{}]().Context(freshCtx()).
-		GoAction(func(ctx context.Context) error {
+		GoAct(func(ctx context.Context) error {
 			called.Store(true)
 			return nil
 		})
@@ -123,10 +123,10 @@ func TestTask_Chain_GoAction(t *testing.T) {
 	}
 }
 
-func TestTask_Chain_GoActionError(t *testing.T) {
+func TestTask_Chain_GoActError(t *testing.T) {
 	sentinel := errors.New("action error")
 	ar := Task[struct{}]().Context(freshCtx()).
-		GoAction(func(ctx context.Context) error {
+		GoAct(func(ctx context.Context) error {
 			return sentinel
 		})
 	_, err := ar.Wait()
@@ -135,9 +135,9 @@ func TestTask_Chain_GoActionError(t *testing.T) {
 	}
 }
 
-func TestTask_Chain_GoResultAction(t *testing.T) {
+func TestTask_Chain_GoResultAct(t *testing.T) {
 	tk := Task[struct{}]().Context(freshCtx()).
-		GoResultAction(func(ctx context.Context) error {
+		GoResultAct(func(ctx context.Context) error {
 			return nil
 		})
 	_, err := tk.Result()

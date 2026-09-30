@@ -112,9 +112,9 @@ func BoundedGo[T any](r *BoundedRunner, ctx context.Context, fn func(context.Con
 	})
 }
 
-// BoundedGoAction 带限流的无返回值异步任务，返回 AsyncResultNoResult。
+// BoundedGoAct 带限流的无返回值异步任务，返回 AsyncResultNoResult。
 // 关于 ctx 响应的注意事项与 BoundedGo 相同。
-func BoundedGoAction(r *BoundedRunner, ctx context.Context, fn func(context.Context) error) *AsyncResultNoResult {
+func BoundedGoAct(r *BoundedRunner, ctx context.Context, fn func(context.Context) error) *AsyncResultNoResult {
 	select {
 	case r.sem <- struct{}{}:
 	case <-ctx.Done():
@@ -124,7 +124,7 @@ func BoundedGoAction(r *BoundedRunner, ctx context.Context, fn func(context.Cont
 		return ar
 	}
 
-	return GoAction(ctx, func(ctx context.Context) error {
+	return GoAct(ctx, func(ctx context.Context) error {
 		defer func() { <-r.sem }()
 		return fn(ctx)
 	})
