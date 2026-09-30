@@ -381,6 +381,11 @@ func (r Result[T]) IsPanic() bool {
 	return errors.As(r.Err, &pe)
 }
 
+// Error 返回任务的错误，成功时为 nil。统一命名，与其他 Result 类型一致。
+func (r Result[T]) Error() error {
+	return r.Err
+}
+
 // ──────────────────────────── PanicError ────────────────────────────
 
 // PanicError 封装 panic 的错误类型，包含原始值和完整调用栈。

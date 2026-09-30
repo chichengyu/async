@@ -7,16 +7,23 @@ import (
 	"github.com/chichengyu/async/internal/core"
 )
 
-// PoolBuilder 协程池构造器，统一入口为 async.Pool[T](ctx)。
+// PoolBuilder 协程池构造器，统一入口为 async.Pool[T]()。
 // 支持链式配置和函数式配置，Run 自动创建池→执行→Close。
 type PoolBuilder[T any] struct {
 	ctx context.Context // 请求上下文，自动注入 trace_id
 	cfg Config          // 协程池配置
 }
 
-// NewBuilder 创建协程池构造器，内部自动注入 trace_id。
-func NewBuilder[T any](ctx context.Context) *PoolBuilder[T] {
-	return &PoolBuilder[T]{ctx: core.EnsureTraceID(ctx), cfg: DefaultConfig()}
+// NewBuilder 创建协程池构造器，默认使用 context.Background()。
+// 通过 .Context(ctx) 链式设置上下文。
+func NewBuilder[T any]() *PoolBuilder[T] {
+	return &PoolBuilder[T]{ctx: context.Background(), cfg: DefaultConfig()}
+}
+
+// Context 链式设置上下文，自动注入 trace_id。
+func (b *PoolBuilder[T]) Context(ctx context.Context) *PoolBuilder[T] {
+	b.ctx = core.EnsureTraceID(ctx)
+	return b
 }
 
 // DefaultPoolConfig 重置为默认配置

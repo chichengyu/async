@@ -6,7 +6,7 @@ import (
 	"github.com/chichengyu/async/internal/core"
 )
 
-// ShardedGroupBuilder 分片 Group 构造器，统一入口为 async.ShardedGroup[T](ctx)。
+// ShardedGroupBuilder 分片 Group 构造器，统一入口为 async.GroupSharded[T]()。
 // 将任务分发到 N 个 Group 实例，支持按 Key 亲和或 RoundRobin。
 // 支持链式配置，Run 自动创建→执行→Close 所有分片 Group。
 type ShardedGroupBuilder[T any] struct {
@@ -14,20 +14,13 @@ type ShardedGroupBuilder[T any] struct {
 	cfg ShardGroupConfig[T] // 分片 Group 配置
 }
 
-// NewGroupBuilder 创建分片 Group 构造器，内部自动注入 trace_id。
-func NewGroupBuilder[T any](ctx context.Context) *ShardedGroupBuilder[T] {
-	if ctx == nil {
-		ctx = context.Background()
-	}
+// NewGroupBuilder 创建分片 Group 构造器，默认使用 context.Background()。
+// 通过 .Context(ctx) 链式设置上下文。
+func NewGroupBuilder[T any]() *ShardedGroupBuilder[T] {
 	return &ShardedGroupBuilder[T]{
-		ctx: core.EnsureTraceID(ctx),
+		ctx: context.Background(),
 		cfg: ShardGroupConfig[T]{},
 	}
-}
-
-// NewGroupBuilderBG 无上下文快捷构造，内部使用 context.Background()。
-func NewGroupBuilderBG[T any]() *ShardedGroupBuilder[T] {
-	return NewGroupBuilder[T](context.Background())
 }
 
 // Context 链式设置上下文
@@ -84,9 +77,10 @@ func (b *ShardedGroupBuilder[T]) Distribution(d Distribution) *ShardedGroupBuild
 	return b
 }
 
-// Run 终端方法：创建 ShardedGroup → 执行 fn。
+// Run 终端方法：创建 ShardedGroup → 执行 fn → 关闭所有分片。
 // 调用方应在 fn 内调用 sg.Wait() / sg.WaitTimeout() / sg.WaitContext() 等待结果。
 func (b *ShardedGroupBuilder[T]) Run(fn func(ctx context.Context, sg *ShardedGroup[T]) error) error {
 	sg := NewShardedGroup(b.cfg)
+	defer sg.Close()
 	return fn(b.ctx, sg)
 }

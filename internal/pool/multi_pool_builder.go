@@ -7,7 +7,7 @@ import (
 	"github.com/chichengyu/async/internal/core"
 )
 
-// MultiPoolBuilder 分片协程池构造器，统一入口为 async.MultiPool[T](ctx)。
+// MultiPoolBuilder 分片协程池构造器，统一入口为 async.PoolMulti[T]()。
 // 内部创建 Pool → 水平分片为 N 份，支持极限高并发（百万~千万 QPS）。
 // 支持链式配置，Run 自动创建→执行→Close 所有分片。
 type MultiPoolBuilder[T any] struct {
@@ -17,20 +17,13 @@ type MultiPoolBuilder[T any] struct {
 	extP   *Pool[T]        // 外部注入的协程池（非 nil 时跳过内部创建）
 }
 
-// NewMultiBuilder 创建分片协程池构造器，内部自动注入 trace_id。
-func NewMultiBuilder[T any](ctx context.Context) *MultiPoolBuilder[T] {
-	if ctx == nil {
-		ctx = context.Background()
-	}
+// NewMultiBuilder 创建分片协程池构造器，默认使用 context.Background()。
+// 通过 .Context(ctx) 链式设置上下文。
+func NewMultiBuilder[T any]() *MultiPoolBuilder[T] {
 	return &MultiPoolBuilder[T]{
-		ctx: core.EnsureTraceID(ctx),
+		ctx: context.Background(),
 		cfg: DefaultConfig(),
 	}
-}
-
-// NewMultiBuilderBG 无上下文快捷构造，内部使用 context.Background()。
-func NewMultiBuilderBG[T any]() *MultiPoolBuilder[T] {
-	return NewMultiBuilder[T](context.Background())
 }
 
 // Context 链式设置上下文

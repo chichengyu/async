@@ -56,6 +56,12 @@ type Task[T any] struct {
 	Result func() (T, error)  // 获取结果的函数
 }
 
+// Error 阻塞等待任务完成，只返回错误（成功时为 nil）。
+func (t Task[T]) Error() error {
+	_, err := t.Result()
+	return err
+}
+
 // AsyncResult 持有一个 results chan（只读），通过它等待并获取任务结果。
 // 内部有缓存机制，多次调用 Wait 安全且不会重复读取 channel。
 //
@@ -109,6 +115,18 @@ func (ar *AsyncResult[T]) getResult() core.Result[T] {
 func (ar *AsyncResult[T]) Wait() (T, error) {
 	r := ar.getResult()
 	return r.Value, r.Err
+}
+
+// Values 是 Wait 的别名，统一命名风格。
+// 阻塞等待任务完成，返回值和错误。
+func (ar *AsyncResult[T]) Values() (T, error) {
+	return ar.Wait()
+}
+
+// Error 阻塞等待任务完成，只返回错误（成功时为 nil）。
+func (ar *AsyncResult[T]) Error() error {
+	r := ar.getResult()
+	return r.Err
 }
 
 // WaitCh 返回只读结果 channel，可用于 select 多路复用。

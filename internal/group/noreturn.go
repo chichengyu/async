@@ -291,6 +291,11 @@ func (nr *NoResult) Reset() (*NoResult, error) {
 	return nr, err
 }
 
+// Close 关闭任务组，等待所有已提交任务完成并清理资源。
+func (nr *NoResult) Close() {
+	(*Group[struct{}])(nr).Close()
+}
+
 // EnableAutoScale 启用自动扩缩容（委托给 Group[struct{}]）。
 func (nr *NoResult) EnableAutoScale(config *core.AutoScaleConfig) {
 	(*Group[struct{}])(nr).EnableAutoScale(config)

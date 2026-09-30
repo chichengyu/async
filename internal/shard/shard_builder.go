@@ -7,19 +7,26 @@ import (
 	"github.com/chichengyu/async/internal/core"
 )
 
-// ShardPoolBuilder 分片池构造器，统一入口为 async.ShardedPool[T](ctx)。
+// ShardPoolBuilder 分片池构造器，统一入口为 async.PoolSharded[T]()。
 // 支持链式配置和函数式配置，Run 自动创建分片池→执行→Close。
 type ShardPoolBuilder[T any] struct {
 	ctx context.Context    // 请求上下文，自动注入 trace_id
 	cfg ShardPoolConfig[T] // 分片池配置
 }
 
-// NewPoolBuilder 创建分片池构造器，内部自动注入 trace_id。
-func NewPoolBuilder[T any](ctx context.Context) *ShardPoolBuilder[T] {
+// NewPoolBuilder 创建分片池构造器，默认使用 context.Background()。
+// 通过 .Context(ctx) 链式设置上下文。
+func NewPoolBuilder[T any]() *ShardPoolBuilder[T] {
 	return &ShardPoolBuilder[T]{
-		ctx: core.EnsureTraceID(ctx),
+		ctx: context.Background(),
 		cfg: DefaultShardConfig[T](),
 	}
+}
+
+// Context 链式设置上下文，自动注入 trace_id。
+func (b *ShardPoolBuilder[T]) Context(ctx context.Context) *ShardPoolBuilder[T] {
+	b.ctx = core.EnsureTraceID(ctx)
+	return b
 }
 
 // DefaultShardPoolConfig 重置为默认配置

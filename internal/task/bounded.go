@@ -17,8 +17,11 @@ import (
 //
 // 使用示例：
 //
-//	// 限制最多 1000 个并发 goroutine
+//	// 直接创建
 //	runner := task.NewBoundedRunner(1000)
+//
+//	// 链式创建
+//	runner := task.NewBoundedRunnerBuilder().Max(1000).Build()
 //
 //	for i := 0; i < 10_000_000; i++ {
 //	    idx := i
@@ -28,6 +31,32 @@ import (
 //	}
 type BoundedRunner struct {
 	sem chan struct{}
+}
+
+// BoundedRunnerBuilder 链式构建 BoundedRunner。
+// 与 TaskBuilder.Bounded(max) 等价，提供独立入口用于提前创建复用。
+//
+// 使用示例：
+//
+//	runner := async.NewBoundedRunner().Max(1000).Build()
+type BoundedRunnerBuilder struct {
+	max int
+}
+
+// NewBoundedRunnerBuilder 创建 BoundedRunner 链式构建器。
+func NewBoundedRunnerBuilder() *BoundedRunnerBuilder {
+	return &BoundedRunnerBuilder{max: core.IO()}
+}
+
+// Max 设置最大并发 goroutine 数。<=0 使用默认 IO 并发度。
+func (b *BoundedRunnerBuilder) Max(n int) *BoundedRunnerBuilder {
+	b.max = n
+	return b
+}
+
+// Build 创建 BoundedRunner 实例。
+func (b *BoundedRunnerBuilder) Build() *BoundedRunner {
+	return NewBoundedRunner(b.max)
 }
 
 // NewBoundedRunner 创建一个限制并发 goroutine 数的执行器。

@@ -3,7 +3,7 @@
 // 主要功能模块：
 //   - 协程池（Pool）：复用 goroutine，适合高频小任务
 //   - 任务组（Group）：一次性批量并发，用完即销毁
-//   - 异步任务（Task/Go）：启动异步任务，非阻塞获取结果
+//   - 异步任务（Task）：启动异步任务，非阻塞获取结果
 //   - 数据并行（Map/ForEach/Reduce）：对切片元素并发处理
 //   - 重试（Retry）：指数退避/线性退避重试策略
 //   - 限流（RateLimiter）：令牌桶/滑动窗口/自适应限流
@@ -37,8 +37,8 @@ import (
 	"github.com/chichengyu/async/internal/retry"
 	"github.com/chichengyu/async/internal/shard"
 	"github.com/chichengyu/async/internal/sliceops"
+	"github.com/chichengyu/async/internal/task"
 	"github.com/chichengyu/async/pipeline"
-	"github.com/chichengyu/async/task"
 )
 
 // ──────────────────────────── core 重导出 ────────────────────────────
@@ -280,133 +280,50 @@ func SafeCallVoid[T any](ctx context.Context, item T, fn func(ctx context.Contex
 // Group[T] 泛型任务组，适合一次性批量并发任务。
 // 每次 Go 新建 goroutine，任务完成后销毁。
 // 支持超时控制、FailFast、提交超时等选项。
-type Group[T any] = group.Group[T]
-
-// NoResult 无返回值任务组，适合只需要 error 的批量操作。
-type NoResult = group.NoResult
+//
+// 通过 async.Group[T](ctx) 构造器链式创建：
+//
+//	g := async.Group[string](ctx).Concurrency(10).Timeout(5 * time.Second).Build()
+//	defer g.Close()
 
 // GroupStats 任务组的统计信息。
 type GroupStats = group.GroupStats
 
-// NewGroup 创建带返回值的新任务组。
-// concurrency 为并发度，<=0 时默认为 1。
-//
-// 示例：
-//
-//	// 并发度为 4 的任务组
-//	g := async.NewGroup[int](4)
-//	g.Go(ctx, func(ctx context.Context) (int, error) {
-//	    return fetchUserCount(ctx), nil
-//	})
-//	g.Go(ctx, func(ctx context.Context) (int, error) {
-//	    return fetchOrderCount(ctx), nil
-//	})
-//	results := g.Wait() // 阻塞等待所有任务完成
-//	for _, r := range results {
-//	    fmt.Printf("结果=%v 错误=%v\n", r.Value, r.Err)
-//	}
-func NewGroup[T any](concurrency int) *Group[T] {
-	return group.NewGroup[T](concurrency)
-}
+// ── Group 链式构建器 API ──
 
-// DefaultGroup 使用默认 IO 并发度创建任务组。
-//
-// 示例：
-//
-//	g := async.DefaultGroup[string]()
-//	g.WithTimeout(10 * time.Second)
-//	g.Go(ctx, fn1)
-//	results := g.Wait()
-func DefaultGroup[T any]() *Group[T] {
-	return group.DefaultGroup[T]()
-}
+// GroupBuilder 任务组链式构造器类型。
+type GroupBuilder[T any] = group.GroupBuilder[T]
 
-// NewNoResult 创建无返回值任务组。
+// ── Group 构造方式 ──
 //
-// 参数：
-//   - concurrency：最大并发数
+//	async.Group[int]()     → GroupBuilder 链式构造
+//	async.GroupVoid()        → GroupNoResultBuilder 无返回值链式构造
+//	async.GroupSharded[int]() → ShardedGroupBuilder 分片链式构造
+//	async.GroupMulti[int]()   → MultiGroupBuilder 分片链式构造
 //
-// 示例：
-//
-//	nr := async.NewNoResult(8)
-//	for _, url := range urls {
-//	    nr.Go(ctx, func(ctx context.Context) error {
-//	        return downloadFile(ctx, url)
-//	    })
-//	}
-//	nr.Wait()
-//	if err := nr.FirstError(); err != nil {
-//	    log.Printf("下载失败: %v", err)
-//	}
-func NewNoResult(concurrency int) *NoResult {
-	return group.NewNoResult(concurrency)
-}
+// 详见 async_group.go。
 
-// DefaultNoResult 使用默认 IO 并发度创建无返回值任务组。
-func DefaultNoResult() *NoResult {
-	return group.DefaultNoResult()
-}
-
-// ──────────────────────────── Group 自动扩缩容 ────────────────────────────
-
-// EnableGroupAutoScale 为任务组启用自动扩缩容，适用于不确定任务量的场景。
-// 后台会根据 busy/concurrency 比率周期性检测负载，自动调整并发数。
-//
-// config 为 nil 时使用 DefaultAutoScaleConfig()（CPU*2 ~ CPU*100，每 5s 检测）。
-//
-// 示例：
-//
-//	// 默认配置
-//	g := async.NewGroup[int](4)
-//	async.EnableGroupAutoScale(g, nil)
-//
-//	// 自定义配置
-//	async.EnableGroupAutoScale(g, &async.AutoScaleConfig{
-//	    MinWorkers:     2,
-//	    MaxWorkers:     200,
-//	    CheckInterval:  3 * time.Second,
-//	    ScaleUpChecks:  2,
-//	    ScaleDownChecks: 3,
-//	})
-func EnableGroupAutoScale[T any](g *Group[T], config *AutoScaleConfig) {
-	g.EnableAutoScale(config)
-}
-
-// DisableGroupAutoScale 停止任务组的自动扩缩容，并发数恢复到 MinWorkers。
-func DisableGroupAutoScale[T any](g *Group[T]) {
-	g.DisableAutoScale()
-}
-
-// EnableNoResultAutoScale 为无返回值任务组启用自动扩缩容。
-//
-// 示例：
-//
-//	nr := async.NewNoResult(4)
-//	async.EnableNoResultAutoScale(nr, nil)           // 默认配置
-//	async.EnableNoResultAutoScale(nr, &async.AutoScaleConfig{
-//	    MinWorkers: 2, MaxWorkers: 100,
-//	}) // 自定义配置
-func EnableNoResultAutoScale(nr *NoResult, config *AutoScaleConfig) {
-	nr.EnableAutoScale(config)
-}
-
-// DisableNoResultAutoScale 停止无返回值任务组的自动扩缩容。
-func DisableNoResultAutoScale(nr *NoResult) {
-	nr.DisableAutoScale()
-}
+// GroupNoResultBuilder 无返回值任务组链式构造器类型。
+type GroupNoResultBuilder = group.GroupNoResultBuilder
 
 // ──────────────────────────── Pool 协程池 ────────────────────────────
 
 // Pool[T] 泛型协程池，复用 goroutine 处理高频并发任务。
-// 生命周期：NewPool → Submit → Wait → Close。
+// 生命周期：PoolNew → Submit → Wait → Close。
 //
 // 适用场景：需要长期运行、反复提交任务的场景。
 // 不适合一次性批量任务（用 Group 更高效）。
 //
+// 构造方式（详见 async_pool.go）：
+//
+//	async.PoolNew[int](8)           → 直接创建
+//	async.Pool[int]()          → 链式构建器
+//	async.PoolVoid(8)               → 无返回值协程池
+//
 // 示例：
 //
 //	// 创建 4 个 worker 的协程池
-//	p := async.NewPool[int](4)
+//	p := async.PoolNew[int](4)
 //	defer p.Close()
 //
 //	// 提交 100 个任务
@@ -489,358 +406,53 @@ func SliceWith[R any, T any](ctx context.Context, items []T) *SliceBuilder[T, R]
 	return sliceops.NewSliceWithBuilder[R, T](ctx, items)
 }
 
-// ── MultiPoolBuilder 链式 API ──
+// ── Pool / Group 构造方式 ──
+//
+//	async.Pool[int]()            → PoolBuilder 链式构造
+//	async.PoolNew[int](8)             → 直接创建协程池
+//	async.PoolVoid(8)                 → 无返回值协程池
+//	async.PoolAutoScale[int](4, nil)  → 自动扩缩容协程池
+//	async.PoolSharded[int]()       → 分片池构建器
+//	async.PoolMulti[int]()             → 分片协程池构建器
+//
+//	async.Group[int]()           → GroupBuilder 链式构造
+//	async.GroupVoid()              → GroupNoResultBuilder 无返回值链式构造
+//	async.GroupSharded[int]()      → ShardedGroupBuilder 分片链式构造
+//	async.GroupMulti[int]()        → MultiGroupBuilder 分片链式构造
+//
+// 详见 async_pool.go / async_group.go。
+
+// ── Pool / Group 类型别名 ──
 
 // MultiPoolBuilder 分片协程池构造器类型。
 type MultiPoolBuilder[T any] = pool.MultiPoolBuilder[T]
 
-// MultiPool 创建分片协程池构造器，内部自动注入 trace_id。
-func MultiPool[T any](ctx context.Context) *MultiPoolBuilder[T] {
-	return pool.NewMultiBuilder[T](ctx)
-}
-
-// MultiPoolBG 无上下文快捷构造，内部使用 context.Background()。
-func MultiPoolBG[T any]() *MultiPoolBuilder[T] {
-	return pool.NewMultiBuilderBG[T]()
-}
-
-// ── MultiPool：Pool 水平分片，极限高并发 ──
-
-// ShardPool 将 Pool 水平分片为 N 个实例的便捷函数。
-// 等价于 p.Shard(shards)。
-//
-// 示例：
-//
-//	p := async.NewPool[int](50).
-//	    WithMaxPending(5000).
-//	    WithOverflow(async.OverflowDrop)
-//	mp := async.ShardPool(p, 16)
-//	defer mp.Close()
-func ShardPool[T any](p *pool.Pool[T], shards int) *pool.MultiPool[T] {
-	return p.Shard(shards)
-}
-
-// DefaultShardPool 使用默认分片数（runtime.GOMAXPROCS(0)，最少 2）对 Pool 进行水平分片。
-//
-// 等效于 p.DefaultShard()。
-//
-// 示例：
-//
-//	p := async.NewPool[int](100).
-//	    WithMaxPending(5000)
-//	mp := async.DefaultShardPool(p)
-//	defer mp.Close()
-func DefaultShardPool[T any](p *pool.Pool[T]) *pool.MultiPool[T] {
-	return p.DefaultShard()
-}
-
-// ── WithPool / WithMultiPool：自动 Close 便捷包装函数 ──
-
-// WithPool 创建协程池并执行 fn，fn 返回后自动 Close。
-//
-// 示例：
-//
-//	err := async.WithPool(64, func(p *pool.Pool[int]) error {
-//	    for _, item := range items {
-//	        p.Submit(ctx, func(ctx context.Context) (int, error) {
-//	            return process(item)
-//	        })
-//	    }
-//	    results := p.Wait()
-//	    return check(results)
-//	})
-func WithPool[T any](size int, fn func(p *pool.Pool[T]) error) error {
-	return pool.WithPool[T](size, fn)
-}
-
-// WithMultiPool 创建分片协程池并执行 fn，fn 返回后自动 Close 所有分片。
-//
-// 示例：
-//
-//	err := async.WithMultiPool(64, 16, func(mp *MultiPool[int]) error {
-//	    for i := 0; i < 10_000_000; i++ {
-//	        mp.Submit(ctx, func(ctx context.Context) (int, error) {
-//	            return process(i)
-//	        })
-//	    }
-//	    results := mp.Wait()
-//	    return check(results)
-//	})
-func WithMultiPool[T any](size int, shards int, fn func(mp *pool.MultiPool[T]) error) error {
-	return pool.WithMultiPool[T](size, shards, fn)
-}
-
-// ── PoolBuilder 链式 API ──
-
 // PoolBuilder 协程池构造器类型。
 type PoolBuilder[T any] = pool.PoolBuilder[T]
 
-// Pool 创建协程池构造器，内部自动注入 trace_id。
-// 通过链式方法配置后调用 Run 执行。
-//
-// 示例：
-//
-//	async.Pool[string](ctx).
-//	    Worker(64).FailFast().Timeout(5*time.Second).
-//	    Run(func(ctx context.Context, p *pool.Pool[string]) error {
-//	        for _, item := range items {
-//	            p.Submit(ctx, func(ctx context.Context) (string, error) {
-//	                return process(ctx, item)
-//	            })
-//	        }
-//	        return check(p.Wait())
-//	    })
-func Pool[T any](ctx context.Context) *PoolBuilder[T] {
-	return pool.NewBuilder[T](ctx)
-}
-
-// ── Pool Config：自动 Close 便捷包装函数（支持完整配置或链式设置）──
-
 // PoolConfig 汇集 Pool 的所有可配置项。
-// 支持一次性传入或链式设置：
-//
-//	// 方式一：完整 Config
-//	cfg := async.PoolConfig{Size: 64, Timeout: 5 * time.Second, FailFast: true}
-//
-//	// 方式二：链式设置
-//	cfg := async.DefaultPoolConfig().WithSize(64).WithTimeout(5*time.Second).WithFailFast()
 type PoolConfig = pool.Config
 
-// DefaultPoolConfig 返回使用默认 Size（core.IO()）的 PoolConfig。
+// DefaultPoolConfig 返回使用默认 Size 的 PoolConfig。
 var DefaultPoolConfig = pool.DefaultConfig
-
-// WithPoolCfg 使用 PoolConfig 创建协程池并执行 fn，fn 返回后自动 Close。
-//
-//	cfg := async.DefaultPoolConfig().WithSize(64).WithFailFast()
-//	err := async.WithPoolCfg[int](ctx, cfg, func(p *pool.Pool[int]) error {
-//	    for _, item := range items {
-//	        p.Submit(p.Ctx(), func(ctx context.Context) (int, error) { return process(ctx, item) })
-//	    }
-//	    results := p.Wait()
-//	    return check(results)
-//	})
-func WithPoolCfg[T any](ctx context.Context, cfg PoolConfig, fn func(p *pool.Pool[T]) error) error {
-	return pool.WithCfg[T](ctx, cfg, fn)
-}
-
-// ── ShardPoolBuilder 链式 API ──
 
 // ShardPoolBuilder 分片池构造器类型。
 type ShardPoolBuilder[T any] = shard.ShardPoolBuilder[T]
 
-// ShardedPool 创建分片池构造器，内部自动注入 trace_id。
-func ShardedPool[T any](ctx context.Context) *ShardPoolBuilder[T] {
-	return shard.NewPoolBuilder[T](ctx)
-}
-
-// ── 分片池（多实例水平扩展）──
-
 // ShardPoolConfig 分片池配置。
 type ShardPoolConfig[T any] = shard.ShardPoolConfig[T]
-
-// NewShardedPool 创建分片池。
-//
-// 示例：
-//
-//	p := async.NewShardedPool(async.ShardPoolConfig[int]{
-//	    Shards: 4,
-//	    SizePerShard: 8,
-//	    Distribution: async.RoundRobin,
-//	})
-//	defer p.Close()
-func NewShardedPool[T any](cfg ShardPoolConfig[T]) *shard.ShardedPool[T] {
-	return shard.NewShardedPool(cfg)
-}
-
-// DefaultShardedPool 使用默认配置创建分片池（4 分片、IO 并发度、RoundRobin）。
-func DefaultShardedPool[T any]() *shard.ShardedPool[T] {
-	return shard.DefaultShardedPool[T]()
-}
-
-// NewShardedPoolSimple 用简单参数创建分片池。
-// shards 是分片数量，sizePerShard 是每个分片的 worker 数量（<=0 时使用 IO 并发度）。
-//
-// 示例：
-//
-//	// 8 个分片，每个分片 16 个 worker
-//	sp := async.NewShardedPoolSimple[string](8, 16)
-//	defer sp.Close()
-//
-//	// 4 个分片，每个使用默认 IO 并发度
-//	sp := async.NewShardedPoolSimple[int](4, 0)
-func NewShardedPoolSimple[T any](shards int, sizePerShard int) *shard.ShardedPool[T] {
-	return shard.NewShardedPoolSimple[T](shards, sizePerShard)
-}
-
-// DefaultShardedPoolWith 用自定义分片数创建分片池，其余使用默认值。
-// shards 是分片数量，<=0 时默认 4。
-//
-// 示例：
-//
-//	sp := async.DefaultShardedPoolWith[string](16) // 16 个分片
-//	defer sp.Close()
-func DefaultShardedPoolWith[T any](shards int) *shard.ShardedPool[T] {
-	return shard.DefaultShardedPoolWith[T](shards)
-}
-
-// NewAutoScaleShardedPool 创建带自动扩缩容的分片池。
-// 每个分片独立扩缩容，根据各自负载自动调整 worker 数量。
-//
-// config 为 nil 时使用 DefaultAutoScaleConfig()。
-//
-// 示例：
-//
-//	// 默认扩缩容配置
-//	sp := async.NewAutoScaleShardedPool[string](8, 4, nil)
-//	defer sp.Close()
-//
-//	// 自定义配置
-//	sp := async.NewAutoScaleShardedPool[int](4, 8, &async.AutoScaleConfig{
-//	    MaxWorkers: 200,
-//	})
-func NewAutoScaleShardedPool[T any](shards int, initialSizePerShard int, config *AutoScaleConfig) *shard.ShardedPool[T] {
-	return shard.NewAutoScaleShardedPool[T](shards, initialSizePerShard, config)
-}
-
-// WithShardedPool 创建分片池并执行 fn，fn 返回后自动 Close。
-//
-// 示例：
-//
-//	err := async.WithShardedPool(16, 64, func(sp *ShardedPoolInstance[int]) error {
-//	    for _, item := range items {
-//	        sp.Submit(ctx, func(ctx context.Context) (int, error) {
-//	            return process(item)
-//	        })
-//	    }
-//	    results := sp.Wait()
-//	    return check(results)
-//	})
-func WithShardedPool[T any](shards int, sizePerShard int, fn func(sp *shard.ShardedPool[T]) error) error {
-	return shard.WithShardedPool[T](shards, sizePerShard, fn)
-}
 
 // SubmitBatchResult 分片池批量提交的单条结果。
 type SubmitBatchResult = shard.SubmitBatchResult
 
-// ── ShardedPool Config：自动 Close 便捷包装函数 ──
-
-// DefaultShardConfig 返回使用默认值的 ShardPoolConfig。
-// 配合链式设置使用：
-//
-//	cfg := async.DefaultShardConfig[string]().
-//	    WithTimeout(5 * time.Second).
-//	    WithFailFast()
-func DefaultShardConfig[T any]() ShardPoolConfig[T] {
-	return shard.DefaultShardConfig[T]()
-}
-
-// WithShardedPoolCfg 使用 ShardPoolConfig 创建分片池并执行 fn，fn 返回后自动 Close。
-//
-//	cfg := async.DefaultShardConfig[string]().
-//	    WithTimeout(5 * time.Second).WithFailFast()
-//	err := async.WithShardedPoolCfg[string](ctx, cfg, func(sp *ShardedPoolInstance[string]) error {
-//	    for _, item := range items {
-//	        sp.Submit(sp.Ctx(), func(ctx context.Context) (string, error) { return process(ctx, item) })
-//	    }
-//	    results := sp.Wait()
-//	    return check(results)
-//	})
-func WithShardedPoolCfg[T any](ctx context.Context, cfg ShardPoolConfig[T], fn func(sp *shard.ShardedPool[T]) error) error {
-	return shard.WithShardCfg[T](ctx, cfg, fn)
-}
-
-// ── 分片 Group（多实例水平扩展）──
-
 // ShardGroupConfig 分片 Group 配置。
 type ShardGroupConfig[T any] = shard.ShardGroupConfig[T]
-
-// ── ShardedGroupBuilder 链式 API ──
 
 // ShardedGroupBuilder 分片 Group 构造器类型。
 type ShardedGroupBuilder[T any] = shard.ShardedGroupBuilder[T]
 
-// ShardedGroup 创建分片 Group 构造器，内部自动注入 trace_id。
-func ShardedGroup[T any](ctx context.Context) *ShardedGroupBuilder[T] {
-	return shard.NewGroupBuilder[T](ctx)
-}
-
-// ShardedGroupBG 无上下文快捷构造，内部使用 context.Background()。
-func ShardedGroupBG[T any]() *ShardedGroupBuilder[T] {
-	return shard.NewGroupBuilderBG[T]()
-}
-
-// NewShardedGroup 创建分片 Group。
-func NewShardedGroup[T any](cfg ShardGroupConfig[T]) *shard.ShardedGroup[T] {
-	return shard.NewShardedGroup(cfg)
-}
-
-// DefaultShardedGroup 使用默认配置创建分片 Group（4 分片、IO 并发度、RoundRobin）。
-func DefaultShardedGroup[T any]() *shard.ShardedGroup[T] {
-	return shard.DefaultShardedGroup[T]()
-}
-
-// ── MultiGroupBuilder 链式 API ──
-
 // MultiGroupBuilder 分片任务组构造器类型。
 type MultiGroupBuilder[T any] = group.MultiGroupBuilder[T]
-
-// MultiGroup 创建分片任务组构造器，内部自动注入 trace_id。
-func MultiGroup[T any](ctx context.Context) *MultiGroupBuilder[T] {
-	return group.NewMultiBuilder[T](ctx)
-}
-
-// MultiGroupBG 无上下文快捷构造，内部使用 context.Background()。
-func MultiGroupBG[T any]() *MultiGroupBuilder[T] {
-	return group.NewMultiBuilderBG[T]()
-}
-
-// ── MultiGroup：Group 水平分片，极限高并发 ──
-
-// ShardGroup 将 Group 水平分片为 N 个实例的便捷函数。
-// 等效于 g.Shard(shards)。
-//
-// 使用示例：
-//
-//	g, _ := async.NewGroup[int](50).WithCtx(ctx)
-//	mg := async.ShardGroup(g, 16)
-//	defer mg.Close()
-func ShardGroup[T any](g *Group[T], shards int) *group.MultiGroup[T] {
-	return g.Shard(shards)
-}
-
-// DefaultShardGroup 使用默认分片数（runtime.GOMAXPROCS(0)，最少 2）对 Group 进行水平分片。
-//
-// 等效于 g.DefaultShard()。
-//
-// 使用示例：
-//
-//	g, _ := async.NewGroup[int](50).WithCtx(ctx)
-//	mg := async.DefaultShardGroup(g)
-//	defer mg.Close()
-func DefaultShardGroup[T any](g *Group[T]) *group.MultiGroup[T] {
-	return g.DefaultShard()
-}
-
-// ── WithMultiGroup：自动 Close 便捷包装函数 ──
-
-// WithMultiGroup 创建分片任务组并执行 fn，fn 返回后自动 Close。
-//
-// 示例：
-//
-//	err := async.WithMultiGroup(64, 16, func(mg *MultiGroup[string]) error {
-//	    for _, item := range items {
-//	        mg.Go(ctx, func(ctx context.Context) (string, error) {
-//	            return process(item)
-//	        })
-//	    }
-//	    results, firstErr := mg.Wait()
-//	    if firstErr != nil { return firstErr }
-//	    _ = results
-//	    return nil
-//	})
-func WithMultiGroup[T any](concurrency int, shards int, fn func(mg *group.MultiGroup[T]) error) error {
-	return group.WithMultiGroup[T](concurrency, shards, fn)
-}
 
 // GoBatchResult 分片 Group 批量分发结果。
 type GoBatchResult = shard.GoBatchResult
@@ -853,83 +465,21 @@ const (
 	Hash       = shard.Hash
 )
 
+// ── Pool 类型别名 ──
+
 // PoolStats 协程池的统计信息。
 type PoolStats = pool.PoolStats
 
-// SubmitResult 封装 Pool.Submit 的返回结果，包含提交索引和可能发生的错误。
+// SubmitResult 封装 Pool.Submit 的返回结果。
 type SubmitResult = pool.SubmitResult
-
-// NewPool 创建泛型协程池，size 个 worker goroutine 立即启动。
-// size <= 0 时使用默认 IO 并发度。
-//
-// 参数：
-//   - size：worker 数量，<=0 时使用默认 IO 并发度
-//
-// 示例：
-//
-//	p := async.NewPool[string](8)
-//	defer p.Close()
-func NewPool[T any](size int) *pool.Pool[T] {
-	return pool.NewPool[T](size)
-}
-
-// DefaultPool 使用默认 IO 并发度创建协程池。
-func DefaultPool[T any]() *pool.Pool[T] {
-	return pool.DefaultPool[T]()
-}
-
-// NewNoResultPool 创建无返回值协程池。
-//
-// 参数：
-//   - size：worker 数量
-//
-// 示例：
-//
-//	p := async.NewNoResultPool(10)
-//	defer p.Close()
-//	for _, item := range items {
-//	    async.GoAction(p, ctx, func(ctx context.Context) error {
-//	        return process(ctx, item)
-//	    })
-//	}
-//	p.Wait()
-func NewNoResultPool(size int) *NoResultPool {
-	return pool.NewPool[struct{}](size)
-}
-
-// DefaultNoResultPool 使用默认 IO 并发度创建无返回值协程池。
-func DefaultNoResultPool() *NoResultPool {
-	return pool.DefaultPool[struct{}]()
-}
 
 // AutoScaleConfig 协程池自动扩缩容配置。
 type AutoScaleConfig = core.AutoScaleConfig
 
-// NewAutoScalePool 创建带自动扩缩容的协程池，初始 worker 数为 initialSize。
-// 池会根据负载自动调整 worker 数量（上限 MaxWorkers，下限 MinWorkers）。
-//
-// config 为 nil 时使用 DefaultAutoScaleConfig()（CPU*2 ~ CPU*100，每 5s 检测）。
-//
-// 示例：
-//
-//	p := async.NewAutoScalePool[int](4, nil) // 默认自动扩缩容
-//	defer p.Close()
-//
-//	p.EnableAutoScale(&async.AutoScaleConfig{  // 自定义配置
-//	    MinWorkers: 2,
-//	    MaxWorkers: 200,
-//	    CheckInterval: 3 * time.Second,
-//	})
-func NewAutoScalePool[T any](initialSize int, config *core.AutoScaleConfig) *pool.Pool[T] {
-	p := pool.NewPool[T](initialSize)
-	p.EnableAutoScale(config)
-	return p
-}
-
 // ──────────────────────────── Task 异步任务 ────────────────────────────
 
-// Task[T] 可取消的异步任务，提供 Ctx、Cancel、Result。
-type Task[T any] = task.Task[T]
+// TaskHandle[T] 可取消的异步任务，提供 Ctx、Cancel、Result。
+type TaskHandle[T any] = task.Task[T]
 
 // AsyncResult[T] 异步结果句柄，支持 Wait/WaitTimeout/Cancel/Ok/IsPanic。
 type AsyncResult[T any] = task.AsyncResult[T]
@@ -958,168 +508,39 @@ type AsyncErr = task.AsyncResultNoResult
 //	all := mu.Snapshot()
 type Mu[T any] = task.Mu[T]
 
-// TaskVoid 无返回值异步任务句柄，Wait() 只返回 error。
-//
-// 示例：
-//
-//	t := async.Go(ctx, func(ctx context.Context) {
-//	    slowOperation(ctx)
-//	})
-//	// 做其他事情...
-//	if err := t.Wait(); err != nil {
-//	    log.Printf("任务失败: %v", err)
-//	}
-type TaskVoid struct {
-	ar *task.AsyncResult[struct{}] // 内部的异步结果持有者
-}
+// ──────────────────────────── Task 链式 API ────────────────────────────
 
-// Wait 阻塞等待任务完成，返回错误。
-func (t *TaskVoid) Wait() error {
-	_, err := t.ar.Wait()
-	return err
-}
-
-// Ok 阻塞等待并返回任务是否成功。
-func (t *TaskVoid) Ok() bool {
-	return t.ar.Ok()
-}
-
-// IsPanic 阻塞等待并返回错误是否由 panic 导致。
-func (t *TaskVoid) IsPanic() bool {
-	return t.ar.IsPanic()
-}
-
-// Go 启动一个无返回值的异步任务（fire-and-forget）。
-// ctx 会自动注入 trace_id。
-//
-// 适用场景：日志上报、指标采集、缓存刷新等不需要等待结果的后台操作。
-//
-// 示例：
-//
-//	// 不阻塞当前 goroutine
-//	async.Go(ctx, func(ctx context.Context) {
-//	    metrics.Record(ctx, "request.count", 1)
-//	})
-//	// 继续处理主逻辑...
-//
-//	// 需要等待结果时
-//	task := async.Go(ctx, func(ctx context.Context) {
-//	    uploadFile(ctx, data)
-//	})
-//	err := task.Wait()
-func Go(ctx context.Context, fn func(ctx context.Context)) *TaskVoid {
-	return &TaskVoid{ar: task.Go(ctx, func(ctx context.Context) (struct{}, error) {
-		fn(ctx)
-		return struct{}{}, nil
-	})}
-}
-
-// GoWithTimeout 启动无返回值异步任务，指定超时。
-//
-// 参数：
-//   - ctx：上下文
-//   - timeout：任务超时时间
-//   - fn：异步执行的函数
+// TaskBuilder 泛型异步任务链式构建器，统一入口为 async.Task[T]()。
+// 支持 Context、WithTimeout、Bounded 限流等链式配置，终端方法 Go/GoResult/GoAction/GoResultAction 启动异步任务。
 //
 // 使用示例：
 //
-//	// 最多等 3 秒
-//	async.GoWithTimeout(ctx, 3*time.Second, func(ctx context.Context) {
-//	    slowCleanup(ctx)
+//	// 基础异步任务
+//	ar := async.Task[int]().Context(ctx).Go(func(ctx context.Context) (int, error) {
+//	    return compute(ctx)
 //	})
-func GoWithTimeout(ctx context.Context, timeout time.Duration, fn func(ctx context.Context)) *TaskVoid {
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	return Go(ctx, func(ctx context.Context) {
-		defer cancel()
-		fn(ctx)
-	})
-}
-
-// GoResult 启动带返回值的异步任务。
-// 返回 AsyncResult[T]，通过 Wait() 获取结果。
+//	val, err := ar.Wait()
 //
-// 适用场景：需要并发执行多个独立任务并获取各自结果的场景。
+//	// 带超时和限流
+//	ar := async.Task[int]().Context(ctx).WithTimeout(5*time.Second).Bounded(1000).Go(fn)
 //
-// 示例：
-//
-//	// 并发查询多个数据源
-//	ar1 := async.GoResult(ctx, func(ctx context.Context) (*User, error) {
-//	    return db.GetUser(ctx, userID)
-//	})
-//	ar2 := async.GoResult(ctx, func(ctx context.Context) (*Order, error) {
-//	    return db.GetOrders(ctx, userID)
-//	})
-//
-//	user, err1 := ar1.Wait()
-//	orders, err2 := ar2.Wait()
-func GoResult[T any](ctx context.Context, fn func(ctx context.Context) (T, error)) *AsyncResult[T] {
-	return task.Go(ctx, fn)
-}
-
-// GoResultWithTimeout 启动带返回值和超时的异步任务。
-//
-// 参数：
-//   - ctx：上下文
-//   - timeout：任务超时时间
-//   - fn：任务执行函数
-//
-// 示例：
-//
-//	ar := async.GoResultWithTimeout(ctx, 5*time.Second, func(ctx context.Context) (*Data, error) {
-//	    return fetchFromAPI(ctx)
-//	})
-func GoResultWithTimeout[T any](ctx context.Context, timeout time.Duration, fn func(ctx context.Context) (T, error)) *AsyncResult[T] {
-	return task.Go(ctx, func(ctx context.Context) (T, error) {
-		ctx, cancel := context.WithTimeout(ctx, timeout)
-		defer cancel()
-		return fn(ctx)
-	})
-}
-
-// GoCancel 启动可取消的异步任务，返回 Task[T] 句柄。
-// fn 签名为 func(ctx) (T, error)，ctx 可在外部通过 Task.Cancel() 取消。
-//
-// 示例：
-//
-//	t := async.GoCancel(ctx, func(ctx context.Context) (*Data, error) {
-//	    return fetchData(ctx)
-//	})
-//	time.Sleep(5 * time.Second)
-//	t.Cancel()
-//	result, err := t.Result()
-func GoCancel[T any](ctx context.Context, fn func(ctx context.Context) (T, error)) Task[T] {
-	return task.GoResult(ctx, fn)
-}
-
-// GoErr 启动无返回值异步任务，fn 签名为 func(ctx) error。
-// 返回 *AsyncErr，通过 Wait() 阻塞等待并获取最终 error。
-//
-// 示例：
-//
-//	ar := async.GoErr(ctx, func(ctx context.Context) error {
-//	    return sendData(ctx, payload)
-//	})
-//	if err := ar.Wait(); err != nil {
-//	    log.Printf("发送失败: %v", err)
-//	}
-func GoErr(ctx context.Context, fn func(context.Context) error) *AsyncErr {
-	return task.GoAction(ctx, fn)
-}
-
-// GoCancelErr 启动可取消的无返回值异步任务，fn 签名为 func(ctx) error。
-// 返回 TaskErr，支持通过 Cancel() 主动取消。
-//
-// 示例：
-//
-//	t := async.GoCancelErr(ctx, func(ctx context.Context) error {
+//	// 可取消任务
+//	t := async.Task[int]().Context(ctx).GoResult(func(ctx context.Context) (int, error) {
 //	    return longRunning(ctx)
 //	})
-//	// 超时后主动取消
-//	time.Sleep(3 * time.Second)
 //	t.Cancel()
-//	err := t.Result()
-func GoCancelErr(ctx context.Context, fn func(context.Context) error) TaskErr {
-	return task.GoResultAction(ctx, fn)
+//	val, err := t.Result()
+//
+//	// 无返回值任务
+//	err := async.Task[struct{}]().Context(ctx).GoAction(func(ctx context.Context) error {
+//	    return sendNotification(ctx, userID, msg)
+//	}).Wait()
+type TaskBuilder[T any] = task.TaskBuilder[T]
+
+// Task 创建任务链式构建器，统一入口。
+// 通过 .Context(ctx) 设置上下文，.Run(fn) 自动管理生命周期。
+func Task[T any]() *TaskBuilder[T] {
+	return task.NewTaskBuilder[T]()
 }
 
 // ──────────────────────────── RateLimiter 限流 ────────────────────────────
@@ -1280,86 +701,46 @@ type Stage[T any] = pipeline.Stage[T]
 // ResultWithMeta[T] 带阶段元信息的结果。
 type ResultWithMeta[T any] = pipeline.ResultWithMeta[T]
 
-// Execute 执行多阶段管道，前一阶段的输出作为后一阶段的输入。
-// 每个阶段使用分块并发处理所有元素。
-//
-// 适用场景：ETL 数据处理、多步数据清洗、请求-响应处理链。
-//
-// 示例：
-//
-//	// 数据清洗管道：解析 -> 增强 -> 校验
-//	stages := []async.Stage[Record]{
-//	    {Name: "parse", Concurrency: 4},
-//	    {Name: "enrich", Concurrency: 8},
-//	    {Name: "validate", Concurrency: 2},
-//	}
-//	results, err := async.Execute(ctx, stages, rawRecords, func(ctx context.Context, stage string, r Record) (Record, error) {
-//	    switch stage {
-//	    case "parse":
-//	        return parseRecord(ctx, r)
-//	    case "enrich":
-//	        return enrichRecord(ctx, r)
-//	    case "validate":
-//	        return validateRecord(ctx, r)
-//	    }
-//	    return r, nil
-//	})
-func Execute[T any](ctx context.Context, stages []Stage[T], items []T, fn func(context.Context, string, T) (T, error)) ([]core.Result[T], error) {
-	return pipeline.Execute(ctx, stages, items, fn)
-}
+// ──────────────────────────── Pipeline 链式 API ────────────────────────────
 
-// ExecuteWithMeta 与 Execute 相同，但返回带阶段信息的元数据结果。
-// 可追踪每个元素在每个阶段的处理情况。
+// PipelineBuilder 多阶段管道链式构建器，统一入口为 async.Pipeline[T](items)。
+// 支持链式追加 Stage，终端方法 Execute/ExecuteWithMeta/ExecuteStream 执行管道。
 //
-// 示例：
+// 使用示例：
 //
-//	metaResults := async.ExecuteWithMeta(ctx, stages, items, fn)
-//	for _, mr := range metaResults {
-//	    fmt.Printf("阶段=%s 值=%v 错误=%v\n", mr.Stage, mr.Value, mr.Err)
-//	}
-func ExecuteWithMeta[T any](ctx context.Context, stages []Stage[T], items []T, fn func(context.Context, string, T) (T, error)) []ResultWithMeta[T] {
-	return pipeline.ExecuteWithMeta(ctx, stages, items, fn)
-}
-
-// ExecuteWithGroup 使用 Group 执行管道，支持错误聚合。
-func ExecuteWithGroup[T any](ctx context.Context, items []T, fn func(context.Context, T) (T, error), concurrency int) ([]core.Result[T], error) {
-	return pipeline.ExecuteWithGroup(ctx, items, fn, concurrency)
-}
-
-// ExecuteStream 执行多阶段管道，通过 channel 流式返回最终阶段结果，实现边执行边消费。
-// 非最终阶段与 Execute() 行为一致（分批并发、保序），最终阶段结果逐条实时发送到 channel。
+//	// 多阶段管道
+//	results, err := async.Pipeline[Data](items).Context(ctx).
+//	    Stage("parse", 4).
+//	    Stage("enrich", 8).
+//	    Stage("validate", 2).
+//	    Execute(func(ctx context.Context, stage string, item Data) (Data, error) {
+//	        switch stage {
+//	        case "parse":
+//	            return parseData(ctx, item)
+//	        case "enrich":
+//	            return enrichData(ctx, item)
+//	        case "validate":
+//	            return validateData(ctx, item)
+//	        }
+//	        return item, nil
+//	    })
 //
-// 适用场景：多阶段数据处理后逐条实时入库、流式验证管道等。
-//
-// 参数：
-//   - ctx：上下文
-//   - stages：阶段定义列表
-//   - items：初始数据
-//   - fn：处理函数，接收 ctx、阶段名和当前元素
-//   - bufSize：channel 缓冲区大小，<=0 时自动计算
-//
-// 示例：
-//
-//	stages := []async.Stage[Record]{
-//	    {Name: "parse", Concurrency: 4},
-//	    {Name: "validate", Concurrency: 2},
-//	}
-//	ch := async.ExecuteStream(ctx, stages, records, func(ctx context.Context, stage string, r Record) (Record, error) {
-//	    switch stage {
-//	    case "parse":
-//	        return parseRecord(ctx, r)
-//	    case "validate":
-//	        return validateRecord(ctx, r)
-//	    }
-//	    return r, nil
-//	}, 1024)
+//	// 流式管道
+//	ch := async.Pipeline[Data](items).Context(ctx).
+//	    Stage("parse", 4).
+//	    Stage("validate", 2).
+//	    ExecuteStream(fn, 1024)
 //	for r := range ch {
 //	    if r.Ok() {
 //	        saveToDB(r.Value)
 //	    }
 //	}
-func ExecuteStream[T any](ctx context.Context, stages []Stage[T], items []T, fn func(context.Context, string, T) (T, error), bufSize int) <-chan core.Result[T] {
-	return pipeline.ExecuteStream(ctx, stages, items, fn, bufSize)
+type PipelineBuilder[T any] = pipeline.PipelineBuilder[T]
+
+// Pipeline 创建管道链式构建器，统一入口。
+// 通过 .Context(ctx) 设置上下文，.Run(fn) / .Execute(fn) 执行管道。
+func Pipeline[T any](items []T) *PipelineBuilder[T] {
+	return pipeline.NewPipelineBuilder[T](items)
 }
 
 // ── ParallelPipeline：链式分片管道 ──
@@ -1417,6 +798,13 @@ func DefaultShardParallelPipeline[T any](p *ParallelPipeline[T]) *ParallelPipeli
 //	}
 type BoundedRunner = task.BoundedRunner
 
+// BoundedRunnerBuilder 链式构建 BoundedRunner，支持 .Max(n).Build() 模式。
+//
+// 使用示例：
+//
+//	runner := async.NewBoundedRunnerBuilder().Max(1000).Build()
+type BoundedRunnerBuilder = task.BoundedRunnerBuilder
+
 // NewBoundedRunner 创建限流执行器。
 func NewBoundedRunner(max int) *BoundedRunner {
 	return task.NewBoundedRunner(max)
@@ -1425,6 +813,11 @@ func NewBoundedRunner(max int) *BoundedRunner {
 // NewDefaultBoundedRunner 使用默认 IO 并发度创建限流执行器。
 func NewDefaultBoundedRunner() *BoundedRunner {
 	return task.NewDefaultBoundedRunner()
+}
+
+// NewBoundedRunnerBuilder 创建 BoundedRunner 链式构建器。
+func NewBoundedRunnerBuilder() *BoundedRunnerBuilder {
+	return task.NewBoundedRunnerBuilder()
 }
 
 // BoundedGo 通过限流器启动异步任务。
@@ -1438,43 +831,43 @@ func BoundedGoAction(r *BoundedRunner, ctx context.Context, fn func(context.Cont
 }
 
 // BoundedGoResult 通过限流器启动可取消异步任务。
-func BoundedGoResult[T any](r *BoundedRunner, ctx context.Context, fn func(context.Context) (T, error)) Task[T] {
+func BoundedGoResult[T any](r *BoundedRunner, ctx context.Context, fn func(context.Context) (T, error)) TaskHandle[T] {
 	return task.BoundedGoResult(r, ctx, fn)
 }
 
-// Pipeline 串行管道（原始 API），每个阶段串行执行。
+// SerialPipeline 串行管道（原始 API），每个阶段串行执行。
 // 适合阶段间有严格依赖关系的场景。
 //
 // 示例：
 //
-//	p := async.NewPipeline[int](ctx,
+//	p := async.NewSerialPipeline[int](ctx,
 //	    func(ctx context.Context, n int) (int, error) { return n * 2, nil },
 //	    func(ctx context.Context, n int) (int, error) { return n + 1, nil },
 //	)
 //	result, err := p.Run(5) // 结果: 11 = (5*2)+1
-type Pipeline[T any] struct {
+type SerialPipeline[T any] struct {
 	stages []func(context.Context, T) (T, error)
 	ctx    context.Context
 }
 
-// NewPipeline 创建串行管道。
+// NewSerialPipeline 创建串行管道。
 // stages 按顺序执行，前一个阶段的输出是后一个阶段的输入。
-func NewPipeline[T any](ctx context.Context, stages ...func(context.Context, T) (T, error)) *Pipeline[T] {
-	return &Pipeline[T]{stages: stages, ctx: ctx}
+func NewSerialPipeline[T any](ctx context.Context, stages ...func(context.Context, T) (T, error)) *SerialPipeline[T] {
+	return &SerialPipeline[T]{stages: stages, ctx: ctx}
 }
 
 // WithTraceID 设置带 trace_id 的 context。
-func (p *Pipeline[T]) WithTraceID(ctx context.Context) {
+func (p *SerialPipeline[T]) WithTraceID(ctx context.Context) {
 	p.ctx = ctx
 }
 
 // Stages 返回阶段数量。
-func (p *Pipeline[T]) Stages() int {
+func (p *SerialPipeline[T]) Stages() int {
 	return len(p.stages)
 }
 
 // Run 串行执行所有阶段。
-func (p *Pipeline[T]) Run(input T) (T, error) {
+func (p *SerialPipeline[T]) Run(input T) (T, error) {
 	result := input
 	ctx := p.ctx
 	for _, stage := range p.stages {

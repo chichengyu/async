@@ -15,7 +15,7 @@ import (
 //
 // 只测试对外暴露 API：
 //
-//	MultiPool[T](ctx).Shards(n).Worker(n).FailFast().Timeout(d).Run(fn)
+//	PoolMulti[T](ctx).Shards(n).Worker(n).FailFast().Timeout(d).Run(fn)
 // ============================================================
 
 func TestMultiPoolBuilder_Chain_Basic(t *testing.T) {
@@ -24,7 +24,7 @@ func TestMultiPoolBuilder_Chain_Basic(t *testing.T) {
 			skipIfTooLarge(t, tier.size)
 
 			var sum int64
-			err := MultiPool[int](freshCtx()).
+			err := PoolMulti[int]().Context(freshCtx()).
 				Shards(2).
 				Worker(16).
 				MaxPending(0).
@@ -65,7 +65,7 @@ func TestMultiPoolBuilder_Chain_FailFast(t *testing.T) {
 
 			var errCount int32
 			var okCount int32
-			err := MultiPool[int](freshCtx()).
+			err := PoolMulti[int]().Context(freshCtx()).
 				Shards(2).
 				Worker(4).
 				FailFast().
@@ -111,7 +111,7 @@ func TestMultiPoolBuilder_Chain_Timeout(t *testing.T) {
 	for _, sz := range sizes {
 		t.Run(sz.name, func(t *testing.T) {
 			var timeoutCount int32
-			err := MultiPool[int](freshCtx()).
+			err := PoolMulti[int]().Context(freshCtx()).
 				Shards(2).
 				Worker(2).
 				Timeout(10 * time.Millisecond).
@@ -150,7 +150,7 @@ func TestMultiPoolBuilder_Chain_ConfigFunc(t *testing.T) {
 			skipIfTooLarge(t, tier.size)
 
 			var sum int64
-			err := MultiPool[int](freshCtx()).
+			err := PoolMulti[int]().Context(freshCtx()).
 				Shards(2).
 				Config(func(c PoolConfig) PoolConfig {
 					c.Size = 16
@@ -189,7 +189,7 @@ func TestMultiPoolBuilder_Chain_DefaultReset(t *testing.T) {
 			skipIfTooLarge(t, tier.size)
 
 			var count int32
-			err := MultiPool[int](freshCtx()).
+			err := PoolMulti[int]().Context(freshCtx()).
 				Shards(100).
 				Worker(200).
 				DefaultMultiPoolConfig().
@@ -216,7 +216,7 @@ func TestMultiPoolBuilder_Chain_DefaultReset(t *testing.T) {
 
 func TestMultiPoolBuilder_Chain_ErrorInFn(t *testing.T) {
 	myErr := errors.New("multi pool run error")
-	err := MultiPool[int](freshCtx()).
+	err := PoolMulti[int]().Context(freshCtx()).
 		Shards(2).
 		Worker(8).
 		Run(func(ctx context.Context, mp *pool.MultiPool[int]) error {
@@ -228,7 +228,7 @@ func TestMultiPoolBuilder_Chain_ErrorInFn(t *testing.T) {
 }
 
 func TestMultiPoolBuilder_Chain_EmptyRun(t *testing.T) {
-	err := MultiPool[int](freshCtx()).
+	err := PoolMulti[int]().Context(freshCtx()).
 		Shards(2).
 		Worker(4).
 		Run(func(ctx context.Context, mp *pool.MultiPool[int]) error {
@@ -254,7 +254,7 @@ func TestMultiPoolBuilder_Chain_SubmitTimeout(t *testing.T) {
 	for _, sz := range sizes {
 		t.Run(sz.name, func(t *testing.T) {
 			var submitOK int32
-			err := MultiPool[int](freshCtx()).
+			err := PoolMulti[int]().Context(freshCtx()).
 				Shards(2).
 				Worker(2).
 				SubmitTimeout(50 * time.Millisecond).
@@ -287,7 +287,7 @@ func TestMultiPoolBuilder_Chain_Streaming(t *testing.T) {
 			skipIfTooLarge(t, tier.size)
 
 			var count int32
-			err := MultiPool[int](freshCtx()).
+			err := PoolMulti[int]().Context(freshCtx()).
 				Shards(2).
 				Worker(16).
 				Streaming(256).
@@ -317,7 +317,7 @@ func TestMultiPoolBuilder_Chain_RingBuf(t *testing.T) {
 
 			var count int32
 			bufSize := 1024
-			err := MultiPool[int](freshCtx()).
+			err := PoolMulti[int]().Context(freshCtx()).
 				Shards(2).
 				Worker(32).
 				MaxPending(0).
@@ -346,7 +346,7 @@ func TestMultiPoolBuilder_Chain_RingBuf(t *testing.T) {
 func TestMultiPoolBuilder_Chain_ShardsOnly(t *testing.T) {
 	ctx := freshCtx()
 	var sum int64
-	err := MultiPool[int](ctx).
+	err := PoolMulti[int]().Context(ctx).
 		Shards(4).
 		Run(func(ctx context.Context, mp *pool.MultiPool[int]) error {
 			if mp.ShardCount() != 4 {
@@ -373,7 +373,7 @@ func TestMultiPoolBuilder_Chain_ShardsOnly(t *testing.T) {
 
 func TestMultiPoolBuilder_Chain_WithBG(t *testing.T) {
 	var count int32
-	err := MultiPoolBG[int]().
+	err := PoolMulti[int]().
 		Shards(2).
 		Worker(8).
 		Run(func(ctx context.Context, mp *pool.MultiPool[int]) error {
@@ -395,7 +395,7 @@ func TestMultiPoolBuilder_Chain_WithBG(t *testing.T) {
 
 func TestMultiPoolBuilder_Chain_NilCtx(t *testing.T) {
 	var count int32
-	err := MultiPool[int](nil).
+	err := PoolMulti[int]().
 		Shards(2).
 		Worker(8).
 		Run(func(ctx context.Context, mp *pool.MultiPool[int]) error {
@@ -419,7 +419,7 @@ func TestMultiPoolBuilder_Chain_ContextSwitch(t *testing.T) {
 	ctx1 := freshCtx()
 	ctx2 := freshCtx()
 	var sum int64
-	err := MultiPool[int](ctx1).
+	err := PoolMulti[int]().Context(ctx1).
 		Shards(2).
 		Worker(8).
 		Context(ctx2).
@@ -448,7 +448,7 @@ func TestMultiPoolBuilder_Chain_MaxResults(t *testing.T) {
 			skipIfTooLarge(t, tier.size)
 
 			var count int32
-			err := MultiPool[int](freshCtx()).
+			err := PoolMulti[int]().Context(freshCtx()).
 				Shards(2).
 				Worker(16).
 				MaxResults(tier.size / 2).
@@ -482,7 +482,7 @@ func TestMultiPoolBuilder_Chain_OverflowDrop(t *testing.T) {
 
 			var totalSubmit int32
 			var totalResults int32
-			err := MultiPool[int](freshCtx()).
+			err := PoolMulti[int]().Context(freshCtx()).
 				Shards(2).
 				Worker(4).
 				MaxPending(2).

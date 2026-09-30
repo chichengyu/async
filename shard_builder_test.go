@@ -15,10 +15,10 @@ import (
 //
 // 只测试对外暴露 API：
 //
-//	ShardedPool[T](ctx).Shards(n).Worker(n).Run(fn)
-//	ShardedPool[T](ctx).Config(fn).Run(fn)
-//	ShardedPool[T](ctx).FailFast().Timeout(d).MaxPending(n).Run(fn)
-//	ShardedPool[T](ctx).DefaultShardPoolConfig().Shards(n).Run(fn)
+//	PoolSharded[T](ctx).Shards(n).Worker(n).Run(fn)
+//	PoolSharded[T](ctx).Config(fn).Run(fn)
+//	PoolSharded[T](ctx).FailFast().Timeout(d).MaxPending(n).Run(fn)
+//	PoolSharded[T](ctx).DefaultShardPoolConfig().Shards(n).Run(fn)
 // ============================================================
 
 func TestShardPoolBuilder_Chain_Basic(t *testing.T) {
@@ -27,7 +27,7 @@ func TestShardPoolBuilder_Chain_Basic(t *testing.T) {
 			skipIfTooLarge(t, tier.size)
 
 			var sum int64
-			err := ShardedPool[int](freshCtx()).
+			err := PoolSharded[int]().Context(freshCtx()).
 				Shards(4).
 				Worker(8).
 				MaxPending(0).
@@ -66,7 +66,7 @@ func TestShardPoolBuilder_Chain_FailFast(t *testing.T) {
 			sentinel := errors.New("shard_fail_boom")
 			var errorCount int32
 
-			err := ShardedPool[int](freshCtx()).
+			err := PoolSharded[int]().Context(freshCtx()).
 				Shards(4).
 				Worker(4).
 				FailFast().
@@ -109,7 +109,7 @@ func TestShardPoolBuilder_Chain_Timeout(t *testing.T) {
 	for _, sz := range sizes {
 		t.Run(sz.name, func(t *testing.T) {
 			var timeoutCount int32
-			err := ShardedPool[int](freshCtx()).
+			err := PoolSharded[int]().Context(freshCtx()).
 				Shards(2).
 				Worker(2).
 				Timeout(10 * time.Millisecond).
@@ -149,7 +149,7 @@ func TestShardPoolBuilder_Chain_ConfigFunc(t *testing.T) {
 			skipIfTooLarge(t, tier.size)
 
 			var sum int64
-			err := ShardedPool[int](freshCtx()).
+			err := PoolSharded[int]().Context(freshCtx()).
 				Config(func(cfg ShardPoolConfig[int]) ShardPoolConfig[int] {
 					cfg.Shards = 2
 					cfg.SizePerShard = 32
@@ -190,7 +190,7 @@ func TestShardPoolBuilder_Chain_DefaultReset(t *testing.T) {
 			skipIfTooLarge(t, tier.size)
 
 			var count int32
-			err := ShardedPool[int](freshCtx()).
+			err := PoolSharded[int]().Context(freshCtx()).
 				Shards(100).
 				Worker(200).
 				DefaultShardPoolConfig().
@@ -221,7 +221,7 @@ func TestShardPoolBuilder_Chain_Distribution(t *testing.T) {
 			skipIfTooLarge(t, tier.size)
 
 			var count int32
-			err := ShardedPool[int](freshCtx()).
+			err := PoolSharded[int]().Context(freshCtx()).
 				Shards(4).
 				Worker(8).
 				Distribution(RoundRobin).
@@ -250,7 +250,7 @@ func TestShardPoolBuilder_Chain_KeyFn(t *testing.T) {
 			skipIfTooLarge(t, tier.size)
 
 			var count int32
-			err := ShardedPool[int](freshCtx()).
+			err := PoolSharded[int]().Context(freshCtx()).
 				Shards(4).
 				Worker(8).
 				Distribution(Hash).
@@ -285,7 +285,7 @@ func TestShardPoolBuilder_Chain_MaxPending(t *testing.T) {
 			skipIfTooLarge(t, tier.size)
 
 			var total int32
-			err := ShardedPool[int](freshCtx()).
+			err := PoolSharded[int]().Context(freshCtx()).
 				Shards(2).
 				Worker(4).
 				MaxPending(10).
@@ -313,7 +313,7 @@ func TestShardPoolBuilder_Chain_MaxPending(t *testing.T) {
 
 func TestShardPoolBuilder_Chain_ErrorInFn(t *testing.T) {
 	sentinel := errors.New("shard_builder_error")
-	err := ShardedPool[int](freshCtx()).
+	err := PoolSharded[int]().Context(freshCtx()).
 		Shards(2).
 		Worker(2).
 		Run(func(ctx context.Context, sp *shard.ShardedPool[int]) error {
@@ -328,7 +328,7 @@ func TestShardPoolBuilder_Chain_ErrorInFn(t *testing.T) {
 }
 
 func TestShardPoolBuilder_Chain_EmptyRun(t *testing.T) {
-	err := ShardedPool[string](freshCtx()).
+	err := PoolSharded[string]().Context(freshCtx()).
 		Shards(2).
 		Worker(2).
 		Run(func(ctx context.Context, sp *shard.ShardedPool[string]) error {
@@ -345,7 +345,7 @@ func TestShardPoolBuilder_Chain_MinimalConfig(t *testing.T) {
 			skipIfTooLarge(t, tier.size)
 
 			var count int32
-			err := ShardedPool[int](freshCtx()).
+			err := PoolSharded[int]().Context(freshCtx()).
 				Shards(2).
 				Worker(4).
 				Run(func(ctx context.Context, sp *shard.ShardedPool[int]) error {

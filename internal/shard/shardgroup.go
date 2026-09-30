@@ -175,6 +175,13 @@ func (sg *ShardedGroup[T]) WaitContext(ctx context.Context) ([]core.Result[T], b
 	return all, allOk
 }
 
+// Close 关闭所有分片 Group，等待所有已提交任务完成并清理资源。
+func (sg *ShardedGroup[T]) Close() {
+	for _, g := range sg.groups {
+		g.Close()
+	}
+}
+
 // Reset 重置所有分片（需在 Wait 后无活跃任务时调用）。
 func (sg *ShardedGroup[T]) Reset() error {
 	for _, g := range sg.groups {

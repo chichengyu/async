@@ -7,7 +7,7 @@ import (
 	"github.com/chichengyu/async/internal/core"
 )
 
-// MultiGroupBuilder 分片任务组构造器，统一入口为 async.MultiGroup[T](ctx)。
+// MultiGroupBuilder 分片任务组构造器，统一入口为 async.GroupMulti[T]()。
 // 内部创建 Group → 水平分片为 N 份，支持极限高并发。
 // 支持链式配置，Run 自动创建→执行→Close 所有分片。
 type MultiGroupBuilder[T any] struct {
@@ -19,19 +19,12 @@ type MultiGroupBuilder[T any] struct {
 	failFast      bool
 }
 
-// NewMultiBuilder 创建分片任务组构造器，内部自动注入 trace_id。
-func NewMultiBuilder[T any](ctx context.Context) *MultiGroupBuilder[T] {
-	if ctx == nil {
-		ctx = context.Background()
-	}
+// NewMultiBuilder 创建分片任务组构造器，默认使用 context.Background()。
+// 通过 .Context(ctx) 链式设置上下文。
+func NewMultiBuilder[T any]() *MultiGroupBuilder[T] {
 	return &MultiGroupBuilder[T]{
-		ctx: core.EnsureTraceID(ctx),
+		ctx: context.Background(),
 	}
-}
-
-// NewMultiBuilderBG 无上下文快捷构造，内部使用 context.Background()。
-func NewMultiBuilderBG[T any]() *MultiGroupBuilder[T] {
-	return NewMultiBuilder[T](context.Background())
 }
 
 // Context 链式设置上下文

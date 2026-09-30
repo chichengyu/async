@@ -875,6 +875,12 @@ func (g *Group[T]) signalDone() {
 	}
 }
 
+// Close 关闭任务组，等待所有已提交任务完成并清理资源。
+// 等价于 g.Wait() 但不返回结果。由构建器的 Run 终端方法自动调用。
+func (g *Group[T]) Close() {
+	g.Wait()
+}
+
 func (g *Group[T]) cancelAll() {
 	for _, c := range g.cancels {
 		c()

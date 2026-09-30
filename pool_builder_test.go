@@ -15,10 +15,10 @@ import (
 //
 // 只测试对外暴露 API：
 //
-//	Pool[T](ctx).Worker(n).FailFast().Timeout(d).MaxPending(n).Run(fn)
-//	Pool[T](ctx).Config(fn).Run(fn)
-//	Pool[T](ctx).DefaultPoolConfig().Worker(n).Run(fn)
-//	Pool[T](ctx).SubmitTimeout(d).Overflow(s).RingBuf(c).Streaming(n).MaxResults(n).Run(fn)
+//	Pool[T]().Context(ctx).Worker(n).FailFast().Timeout(d).MaxPending(n).Run(fn)
+//	Pool[T]().Context(ctx).Config(fn).Run(fn)
+//	Pool[T]().Context(ctx).DefaultPoolConfig().Worker(n).Run(fn)
+//	Pool[T]().Context(ctx).SubmitTimeout(d).Overflow(s).RingBuf(c).Streaming(n).MaxResults(n).Run(fn)
 // ============================================================
 
 func TestPoolBuilder_Chain_Basic(t *testing.T) {
@@ -27,7 +27,7 @@ func TestPoolBuilder_Chain_Basic(t *testing.T) {
 			skipIfTooLarge(t, tier.size)
 
 			var sum int64
-			err := Pool[int](freshCtx()).
+			err := Pool[int]().Context(freshCtx()).
 				Worker(32).
 				MaxPending(0).
 				Run(func(ctx context.Context, p *pool.Pool[int]) error {
@@ -66,7 +66,7 @@ func TestPoolBuilder_Chain_FailFast(t *testing.T) {
 			var errorCount int32
 			var okCount int32
 
-			err := Pool[int](freshCtx()).
+			err := Pool[int]().Context(freshCtx()).
 				Worker(16).
 				FailFast().
 				Run(func(ctx context.Context, p *pool.Pool[int]) error {
@@ -112,7 +112,7 @@ func TestPoolBuilder_Chain_Timeout(t *testing.T) {
 	for _, sz := range sizes {
 		t.Run(sz.name, func(t *testing.T) {
 			var timeoutCount int32
-			err := Pool[int](freshCtx()).
+			err := Pool[int]().Context(freshCtx()).
 				Worker(2).
 				Timeout(10 * time.Millisecond).
 				Run(func(ctx context.Context, p *pool.Pool[int]) error {
@@ -157,7 +157,7 @@ func TestPoolBuilder_Chain_MaxResults(t *testing.T) {
 
 			maxR := 100
 			var count int32
-			err := Pool[int](freshCtx()).
+			err := Pool[int]().Context(freshCtx()).
 				Worker(16).
 				MaxResults(maxR).
 				Run(func(ctx context.Context, p *pool.Pool[int]) error {
@@ -188,7 +188,7 @@ func TestPoolBuilder_Chain_ConfigFunc(t *testing.T) {
 			skipIfTooLarge(t, tier.size)
 
 			var sum int64
-			err := Pool[int](freshCtx()).
+			err := Pool[int]().Context(freshCtx()).
 				Config(func(cfg PoolConfig) PoolConfig {
 					cfg.Size = 64
 					cfg.FailFast = false
@@ -229,7 +229,7 @@ func TestPoolBuilder_Chain_DefaultReset(t *testing.T) {
 			skipIfTooLarge(t, tier.size)
 
 			var count int32
-			err := Pool[int](freshCtx()).
+			err := Pool[int]().Context(freshCtx()).
 				Worker(200).
 				DefaultPoolConfig().
 				Worker(32).
@@ -263,7 +263,7 @@ func TestPoolBuilder_Chain_SubmitTimeout(t *testing.T) {
 	for _, sz := range sizes {
 		t.Run(sz.name, func(t *testing.T) {
 			var submitOK int32
-			err := Pool[int](freshCtx()).
+			err := Pool[int]().Context(freshCtx()).
 				Worker(2).
 				SubmitTimeout(50 * time.Millisecond).
 				MaxPending(2).
@@ -296,7 +296,7 @@ func TestPoolBuilder_Chain_Streaming(t *testing.T) {
 			skipIfTooLarge(t, tier.size)
 
 			var count int32
-			err := Pool[int](freshCtx()).
+			err := Pool[int]().Context(freshCtx()).
 				Worker(16).
 				Streaming(256).
 				Run(func(ctx context.Context, p *pool.Pool[int]) error {
@@ -329,7 +329,7 @@ func TestPoolBuilder_Chain_OverflowDrop(t *testing.T) {
 
 			var totalSubmit int32
 			var totalResults int32
-			err := Pool[int](freshCtx()).
+			err := Pool[int]().Context(freshCtx()).
 				Worker(4).
 				MaxPending(2).
 				Overflow(OverflowDrop).
@@ -360,7 +360,7 @@ func TestPoolBuilder_Chain_RingBuf(t *testing.T) {
 
 			var count int32
 			bufSize := 1024
-			err := Pool[int](freshCtx()).
+			err := Pool[int]().Context(freshCtx()).
 				Worker(32).
 				MaxPending(0).
 				RingBuf(bufSize).
@@ -387,7 +387,7 @@ func TestPoolBuilder_Chain_RingBuf(t *testing.T) {
 
 func TestPoolBuilder_Chain_ErrorInFn(t *testing.T) {
 	sentinel := errors.New("builder_run_error")
-	err := Pool[int](freshCtx()).
+	err := Pool[int]().Context(freshCtx()).
 		Worker(4).
 		Run(func(ctx context.Context, p *pool.Pool[int]) error {
 			return sentinel
@@ -401,7 +401,7 @@ func TestPoolBuilder_Chain_ErrorInFn(t *testing.T) {
 }
 
 func TestPoolBuilder_Chain_EmptyRun(t *testing.T) {
-	err := Pool[string](freshCtx()).
+	err := Pool[string]().Context(freshCtx()).
 		Worker(2).
 		Run(func(ctx context.Context, p *pool.Pool[string]) error {
 			return nil
