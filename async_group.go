@@ -48,13 +48,3 @@ func GroupSharded[T any]() *ShardedGroupBuilder[T] {
 func GroupMulti[T any]() *MultiGroupBuilder[T] {
 	return group.NewMultiBuilder[T]()
 }
-
-// GroupNewSharded 创建分片 Group。
-func GroupNewSharded[T any](cfg ShardGroupConfig[T]) *shard.ShardedGroup[T] {
-	return shard.NewShardedGroup(cfg)
-}
-
-// GroupDefaultSharded 使用默认配置创建分片 Group。
-func GroupDefaultSharded[T any]() *shard.ShardedGroup[T] {
-	return shard.DefaultShardedGroup[T]()
-}

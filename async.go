@@ -28,7 +28,6 @@ package async
 
 import (
 	"context"
-	"time"
 
 	"github.com/chichengyu/async/internal/core"
 	"github.com/chichengyu/async/internal/group"
@@ -297,7 +296,7 @@ type GroupBuilder[T any] = group.GroupBuilder[T]
 // ── Group 构造方式 ──
 //
 //	async.Group[int]()     → GroupBuilder 链式构造
-//	async.GroupVoid()        → GroupNoResultBuilder 无返回值链式构造
+//	async.GroupVoid()      → GroupNoResultBuilder 无返回值链式构造
 //	async.GroupSharded[int]() → ShardedGroupBuilder 分片链式构造
 //	async.GroupMulti[int]()   → MultiGroupBuilder 分片链式构造
 //
@@ -309,21 +308,19 @@ type GroupNoResultBuilder = group.GroupNoResultBuilder
 // ──────────────────────────── Pool 协程池 ────────────────────────────
 
 // Pool[T] 泛型协程池，复用 goroutine 处理高频并发任务。
-// 生命周期：PoolNew → Submit → Wait → Close。
+// 生命周期：Pool[int]().Worker().Build() → Submit → Wait → Close。
 //
 // 适用场景：需要长期运行、反复提交任务的场景。
 // 不适合一次性批量任务（用 Group 更高效）。
 //
 // 构造方式（详见 async_pool.go）：
 //
-//	async.PoolNew[int](8)           → 直接创建
 //	async.Pool[int]()          → 链式构建器
-//	async.PoolVoid(8)               → 无返回值协程池
 //
 // 示例：
 //
 //	// 创建 4 个 worker 的协程池
-//	p := async.PoolNew[int](4)
+//	p := async.Pool[int]().Worker(4).Build()
 //	defer p.Close()
 //
 //	// 提交 100 个任务
@@ -343,7 +340,7 @@ type GroupNoResultBuilder = group.GroupNoResultBuilder
 type NoResultPool = pool.Pool[struct{}]
 
 // SliceData[T,R] 泛型切片数据操作对象（Sort/Filter/Chunk 等纯数据操作）。
-// T 为元素类型，R 为 Map/Reduce 输出类型。通过 DataSlice 构造。
+// T 为元素类型，R 为 Map/Reduce 输出类型。
 //
 // MapReduce 并发操作使用 Builder 链式调用：
 //
@@ -357,11 +354,6 @@ type Policy = sliceops.Policy
 
 // Runner[T,R] 统一执行器，根据 Policy 策略分派到对应的核心实现。
 type Runner[T any, R any] = sliceops.Runner[T, R]
-
-// DataSlice 创建纯数据操作的切片对象（Sort/Filter/Append 等），不包含 ctx。
-func DataSlice[T any](items []T) *SliceData[T, T] {
-	return sliceops.New(items)
-}
 
 // ── Slice 链式 API ──
 
@@ -409,9 +401,6 @@ func SliceWith[R any, T any](ctx context.Context, items []T) *SliceBuilder[T, R]
 // ── Pool / Group 构造方式 ──
 //
 //	async.Pool[int]()            → PoolBuilder 链式构造
-//	async.PoolNew[int](8)             → 直接创建协程池
-//	async.PoolVoid(8)                 → 无返回值协程池
-//	async.PoolAutoScale[int](4, nil)  → 自动扩缩容协程池
 //	async.PoolSharded[int]()       → 分片池构建器
 //	async.PoolMulti[int]()             → 分片协程池构建器
 //
@@ -532,7 +521,7 @@ type Mu[T any] = task.Mu[T]
 //	val, err := t.Result()
 //
 //	// 无返回值任务
-//	err := async.Task[struct{}]().Context(ctx).GoAct(func(ctx context.Context) error {
+//	err := async.TaskVoid().Context(ctx).GoAct(func(ctx context.Context) error {
 //	    return sendNotification(ctx, userID, msg)
 //	}).Wait()
 type TaskBuilder[T any] = task.TaskBuilder[T]
@@ -541,6 +530,12 @@ type TaskBuilder[T any] = task.TaskBuilder[T]
 // 通过 .Context(ctx) 设置上下文，.Run(fn) 自动管理生命周期。
 func Task[T any]() *TaskBuilder[T] {
 	return task.NewTaskBuilder[T]()
+}
+
+// TaskVoid 创建无返回值异步任务构造器，语义等价于 Task[struct{}]()。
+// 通过 TaskVoid().Context(ctx).GoAct(fn) 启动无需返回值的异步任务。
+func TaskVoid() *TaskBuilder[struct{}] {
+	return task.NewTaskBuilder[struct{}]()
 }
 
 // ──────────────────────────── RateLimiter 限流 ────────────────────────────
@@ -654,8 +649,8 @@ func Ratelimit(ctx context.Context) *RatelimitBuilder {
 //	    Exponential().MaxRetries(3).Backoff(100*time.Millisecond, 5*time.Second).
 //	    Execute(fn)
 //
-//	// 无返回值（struct{} = void）
-//	err := async.Retry[struct{}](ctx).
+//	// 无返回值（struct{} = void，推荐用 RetryVoid 更简洁）
+//	err := async.RetryVoid(ctx).
 //	    TokenBucket().Rate(5).Capacity(20).
 //	    Run(func() error { return doSomething() })
 //
@@ -676,13 +671,23 @@ type RetryChain[T any] = retry.RetryChain[T]
 //	    Exponential().MaxRetries(3).Backoff(100*time.Millisecond, 5*time.Second).
 //	    Execute(fn)
 //
-// 无返回值（用 struct{} 或 any）：
+// 无返回值（用 struct{} 或 RetryVoid）：
 //
-//	err := async.Retry[struct{}](ctx).
+//	err := async.RetryVoid(ctx).
 //	    Linear().MaxRetries(5).Backoff(1*time.Second).
 //	    Run(func() error { return doSomething() })
 func Retry[T any](ctx context.Context) *RetryChain[T] {
 	return retry.New[T](ctx)
+}
+
+// RetryVoid 创建无返回值重试构造器。
+// 等价于 Retry[struct{}](ctx)，提供更简洁的无返回值重试语义。
+//
+//	err := async.RetryVoid(ctx).
+//	    Exponential().MaxRetries(3).Backoff(100*time.Millisecond, 5*time.Second).
+//	    Run(func() error { return doSomething() })
+func RetryVoid(ctx context.Context) *RetryChain[struct{}] {
+	return retry.New[struct{}](ctx)
 }
 
 // ──────────────────────────── Pipeline 管道 ────────────────────────────
@@ -752,7 +757,7 @@ type SerialChain[T any] = pipeline.SerialChain[T]
 // 在公共方法基础上额外暴露 Pool/Shard/AutoScale/Worker 等并行专属配置。
 type ParallelChain[T any] = pipeline.ParallelChain[T]
 
-// ── ParallelPipeline：链式分片管道 ──
+// ── ParallelPipeline 类型 ──
 
 // ParallelPipeline 多阶段并行数据处理管道，支持水平分片以提升极限高并发性能。
 // 与串行 Pipeline 不同，ParallelPipeline 每个阶段并发处理所有元素。
@@ -764,33 +769,12 @@ type ParallelChain[T any] = pipeline.ParallelChain[T]
 //	    {Name: "validate", Concurrency: 5},
 //	}
 //
-//	// 无分片
-//	p := async.NewParallelPipeline(stages)
-//	results, _ := p.Execute(ctx, items, fn)
-//
-//	// 链式分片
-//	results, _ := async.NewParallelPipeline(stages).Shard(8).Execute(ctx, items, fn)
-//
-//	// 自动分片
-//	results, _ := async.NewParallelPipeline(stages).DefaultShard().Execute(ctx, items, fn)
+//	// 链式构建
+//	p := async.Pipeline(stages).
+//	    Parallel().
+//	    Shard(8).
+//	    Run(ctx, items, fn)
 type ParallelPipeline[T any] = pipeline.Pipeline[T]
-
-// NewParallelPipeline 创建并行管道。
-func NewParallelPipeline[T any](stages []Stage[T]) *ParallelPipeline[T] {
-	return pipeline.NewPipeline(stages)
-}
-
-// ShardParallelPipeline 对并行管道进行水平分片的便捷函数。
-// 等效于 p.Shard(shards)。
-func ShardParallelPipeline[T any](p *ParallelPipeline[T], shards int) *ParallelPipeline[T] {
-	return p.Shard(shards)
-}
-
-// DefaultShardParallelPipeline 使用默认分片数对并行管道进行水平分片。
-// 等效于 p.DefaultShard()。
-func DefaultShardParallelPipeline[T any](p *ParallelPipeline[T]) *ParallelPipeline[T] {
-	return p.DefaultShard()
-}
 
 // ── BoundedRunner：Task goroutine 限流 ──
 
@@ -798,10 +782,10 @@ func DefaultShardParallelPipeline[T any](p *ParallelPipeline[T]) *ParallelPipeli
 //
 // 使用示例：
 //
-//	runner := async.NewBoundedRunner(1000)
+//	runner := async.NewBoundedRunnerBuilder().Max(1000).Build()
 //	for i := 0; i < 1000000; i++ {
 //	    idx := i
-//	    async.BoundedGo(runner, ctx, func(ctx context.Context) (int, error) {
+//	    task.BoundedGo(runner, ctx, func(ctx context.Context) (int, error) {
 //	        return processData(ctx, idx)
 //	    })
 //	}
@@ -814,274 +798,12 @@ type BoundedRunner = task.BoundedRunner
 //	runner := async.NewBoundedRunnerBuilder().Max(1000).Build()
 type BoundedRunnerBuilder = task.BoundedRunnerBuilder
 
-// NewBoundedRunner 创建限流执行器。
-func NewBoundedRunner(max int) *BoundedRunner {
-	return task.NewBoundedRunner(max)
-}
-
-// NewDefaultBoundedRunner 使用默认 IO 并发度创建限流执行器。
-func NewDefaultBoundedRunner() *BoundedRunner {
-	return task.NewDefaultBoundedRunner()
-}
-
 // NewBoundedRunnerBuilder 创建 BoundedRunner 链式构建器。
 func NewBoundedRunnerBuilder() *BoundedRunnerBuilder {
 	return task.NewBoundedRunnerBuilder()
 }
 
-// BoundedGo 通过限流器启动异步任务。
-func BoundedGo[T any](r *BoundedRunner, ctx context.Context, fn func(context.Context) (T, error)) *AsyncResult[T] {
-	return task.BoundedGo(r, ctx, fn)
-}
-
-// BoundedGoAct 通过限流器启动无返回值异步任务。
-func BoundedGoAct(r *BoundedRunner, ctx context.Context, fn func(context.Context) error) *AsyncErr {
-	return task.BoundedGoAct(r, ctx, fn)
-}
-
-// BoundedGoResult 通过限流器启动可取消异步任务。
-func BoundedGoResult[T any](r *BoundedRunner, ctx context.Context, fn func(context.Context) (T, error)) TaskHandle[T] {
-	return task.BoundedGoResult(r, ctx, fn)
-}
-
-// SerialPipeline 串行管道（原始 API），每个阶段串行执行。
-// 适合阶段间有严格依赖关系的场景。
-//
-// 示例：
-//
-//	p := async.NewSerialPipeline[int](ctx,
-//	    func(ctx context.Context, n int) (int, error) { return n * 2, nil },
-//	    func(ctx context.Context, n int) (int, error) { return n + 1, nil },
-//	)
-//	result, err := p.Run(5) // 结果: 11 = (5*2)+1
-type SerialPipeline[T any] struct {
-	stages []func(context.Context, T) (T, error)
-	ctx    context.Context
-}
-
-// NewSerialPipeline 创建串行管道。
-// stages 按顺序执行，前一个阶段的输出是后一个阶段的输入。
-func NewSerialPipeline[T any](ctx context.Context, stages ...func(context.Context, T) (T, error)) *SerialPipeline[T] {
-	return &SerialPipeline[T]{stages: stages, ctx: ctx}
-}
-
-// WithTraceID 设置带 trace_id 的 context。
-func (p *SerialPipeline[T]) WithTraceID(ctx context.Context) {
-	p.ctx = ctx
-}
-
-// Stages 返回阶段数量。
-func (p *SerialPipeline[T]) Stages() int {
-	return len(p.stages)
-}
-
-// Run 串行执行所有阶段。
-func (p *SerialPipeline[T]) Run(input T) (T, error) {
-	result := input
-	ctx := p.ctx
-	for _, stage := range p.stages {
-		val, err := stage(ctx, result)
-		if err != nil {
-			return result, err
-		}
-		result = val
-	}
-	return result, nil
-}
-
-// ──────────────────────────── NoResultPool 辅助函数 ────────────────────────────
-
-// SubmitAct 向 NoResultPool 提交一个无返回值的动作。
-//
-// 参数：
-//   - p：无返回值协程池
-//   - ctx：上下文
-//   - fn：动作函数，只返回 error
-//
-// 示例：
-//
-//	p := async.NewNoResultPool(10)
-//	defer p.Close()
-//	async.SubmitAct(p, ctx, func(ctx context.Context) error {
-//	    return processItem(ctx)
-//	})
-func SubmitAct(p *NoResultPool, ctx context.Context, fn func(context.Context) error) error {
-	return p.Submit(ctx, func(ctx context.Context) (struct{}, error) {
-		return struct{}{}, fn(ctx)
-	})
-}
-
-// TrySubmitAct 非阻塞地向 NoResultPool 提交动作，队列满时返回 ErrSubmitTimeout。
-//
-// 参数：
-//   - p：无返回值协程池
-//   - ctx：上下文
-//   - fn：动作函数
-func TrySubmitAct(p *NoResultPool, ctx context.Context, fn func(context.Context) error) error {
-	return p.TrySubmit(ctx, func(ctx context.Context) (struct{}, error) {
-		return struct{}{}, fn(ctx)
-	})
-}
-
-// TrySubmitAtAct 指定位置非阻塞地向 NoResultPool 提交动作。
-//
-// 参数：
-//   - p：无返回值协程池
-//   - index：在结果切片中的索引位置
-//   - ctx：上下文
-//   - fn：动作函数
-func TrySubmitAtAct(p *NoResultPool, index int, ctx context.Context, fn func(context.Context) error) error {
-	return p.TrySubmit(ctx, func(ctx context.Context) (struct{}, error) {
-		return struct{}{}, fn(ctx)
-	})
-}
-
-// SubmitAtAct 向 NoResultPool 指定位置提交动作。
-//
-// 参数：
-//   - p：无返回值协程池
-//   - index：在结果切片中的索引位置
-//   - ctx：上下文
-//   - fn：动作函数
-func SubmitAtAct(p *NoResultPool, index int, ctx context.Context, fn func(context.Context) error) error {
-	return p.SubmitAt(index, ctx, func(ctx context.Context) (struct{}, error) {
-		return struct{}{}, fn(ctx)
-	})
-}
-
-// GoAct 向 NoResultPool 提交动作，失败时会 panic。
-// 适用于初始化阶段必须成功的任务提交。
-//
-// 参数：
-//   - p：无返回值协程池
-//   - ctx：上下文
-//   - fn：动作函数
-func GoAct(p *NoResultPool, ctx context.Context, fn func(context.Context) error) {
-	if err := p.Submit(ctx, func(ctx context.Context) (struct{}, error) {
-		return struct{}{}, fn(ctx)
-	}); err != nil {
-		panic(err)
-	}
-}
-
-// SubmitActWithTimeout 带超时地向 NoResultPool 提交动作。
-//
-// 参数：
-//   - p：无返回值协程池
-//   - ctx：上下文
-//   - timeout：任务超时时间
-//   - fn：动作函数
-func SubmitActWithTimeout(p *NoResultPool, ctx context.Context, timeout time.Duration, fn func(context.Context) error) error {
-	tCtx, cancel := context.WithTimeout(ctx, timeout)
-	return SubmitAct(p, tCtx, func(ctx context.Context) error {
-		defer cancel()
-		return fn(ctx)
-	})
-}
-
-// SubmitAtActWithTimeout 指定位置带超时地向 NoResultPool 提交动作。
-//
-// 参数：
-//   - p：无返回值协程池
-//   - index：在结果切片中的索引位置
-//   - ctx：上下文
-//   - timeout：任务超时时间
-//   - fn：动作函数
-func SubmitAtActWithTimeout(p *NoResultPool, index int, ctx context.Context, timeout time.Duration, fn func(context.Context) error) error {
-	tCtx, cancel := context.WithTimeout(ctx, timeout)
-	return SubmitAtAct(p, index, tCtx, func(ctx context.Context) error {
-		defer cancel()
-		return fn(ctx)
-	})
-}
-
-// GoActWithTimeout 带超时地向 NoResultPool 提交动作，失败时会 panic。
-func GoActWithTimeout(p *NoResultPool, ctx context.Context, timeout time.Duration, fn func(context.Context) error) {
-	tCtx, cancel := context.WithTimeout(ctx, timeout)
-	GoAct(p, tCtx, func(ctx context.Context) error {
-		defer cancel()
-		return fn(ctx)
-	})
-}
-
-// ──────────────────────────── Pool 便捷函数 ────────────────────────────
-
-// Submit 创建默认协程池并提交单个任务，返回池、索引和错误。
-// 适用于快速的单次提交场景。
-//
-// 示例：
-//
-//	p, idx, err := async.Submit(ctx, func(ctx context.Context) (string, error) {
-//	    return processData(ctx)
-//	})
-//	defer p.Close()
-//	results := p.Wait()
-func Submit[T any](ctx context.Context, fn func(context.Context) (T, error)) (*pool.Pool[T], int, error) {
-	return pool.Submit(ctx, fn)
-}
-
-// SubmitN 创建默认协程池并重复提交同一个任务 n 次。
-//
-// 示例：
-//
-//	// 并发执行 100 次相同的处理逻辑
-//	p, results, err := async.SubmitN(ctx, fn, 100)
-//	defer p.Close()
-//	for _, r := range results {
-//	    if r.Err != nil {
-//	        log.Printf("提交失败 index=%d: %v", r.Index, r.Err)
-//	    }
-//	}
-func SubmitN[T any](ctx context.Context, fn func(context.Context) (T, error), n int) (*pool.Pool[T], []SubmitResult, error) {
-	return pool.SubmitN(ctx, fn, n)
-}
-
-// SubmitSafeN 创建默认协程池并重复提交同一个任务 n 次，提交失败直接 panic。
-// 适用于初始化阶段必须成功的批量提交。
-//
-// 示例：
-//
-//	// 初始化阶段：必须全部提交成功
-//	p, results := async.SubmitSafeN(ctx, initFn, 50)
-//	defer p.Close()
-func SubmitSafeN[T any](ctx context.Context, fn func(context.Context) (T, error), n int) (*pool.Pool[T], []SubmitResult) {
-	return pool.SubmitSafeN(ctx, fn, n)
-}
-
-// SubmitBatch 创建默认协程池并对切片中每个元素提交独立任务。
-//
-// 示例：
-//
-//	users := []string{"alice", "bob", "charlie"}
-//	p, results, err := async.SubmitBatch(ctx, users, func(ctx context.Context, name string) (*User, error) {
-//	    return db.QueryUser(ctx, name)
-//	})
-//	defer p.Close()
-//	for _, r := range results {
-//	    fmt.Printf("index=%d err=%v\n", r.Index, r.Err)
-//	}
-func SubmitBatch[T any, S ~[]E, E any](ctx context.Context, items S, fn func(context.Context, E) (T, error)) (*pool.Pool[T], []SubmitResult, error) {
-	return pool.SubmitBatch(ctx, items, fn)
-}
-
-// MapPool 为切片每个元素创建协程池任务，等价于 Pool 版本的 Map。
-// 返回池和结果切片，结果顺序与输入一致。
-//
-// 示例：
-//
-//	urls := []string{"url1", "url2", "url3"}
-//	p, results, err := async.MapPool(ctx, urls, func(ctx context.Context, url string) (*Response, error) {
-//	    return httpGet(ctx, url)
-//	}, async.IO())
-//	// p 已自动 Close，结果在 results 中
-//	for _, r := range results {
-//	    if r.Ok() {
-//	        fmt.Println(r.Value)
-//	    }
-//	}
-func MapPool[T any, R any](ctx context.Context, items []T, fn func(context.Context, T) (R, error), concurrency int) (*pool.Pool[R], []core.Result[R], error) {
-	return pool.MapPool(ctx, items, fn, concurrency)
-}
+// ── PipelineBuilder：Pipeline 链式构建器 ──
 
 // ForEachPool 为切片每个元素创建协程池任务，只关心错误。
 // 等价于 Pool 版本的 ForEach。
