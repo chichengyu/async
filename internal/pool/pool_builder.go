@@ -10,8 +10,8 @@ import (
 // PoolBuilder 协程池构造器，统一入口为 async.Pool[T](ctx)。
 // 支持链式配置和函数式配置，Run 自动创建池→执行→Close。
 type PoolBuilder[T any] struct {
-	ctx context.Context
-	cfg Config
+	ctx context.Context // 请求上下文，自动注入 trace_id
+	cfg Config          // 协程池配置
 }
 
 // NewBuilder 创建协程池构造器，内部自动注入 trace_id。

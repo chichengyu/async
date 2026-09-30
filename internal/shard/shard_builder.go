@@ -10,8 +10,8 @@ import (
 // ShardPoolBuilder 分片池构造器，统一入口为 async.ShardedPool[T](ctx)。
 // 支持链式配置和函数式配置，Run 自动创建分片池→执行→Close。
 type ShardPoolBuilder[T any] struct {
-	ctx context.Context
-	cfg ShardPoolConfig[T]
+	ctx context.Context    // 请求上下文，自动注入 trace_id
+	cfg ShardPoolConfig[T] // 分片池配置
 }
 
 // NewPoolBuilder 创建分片池构造器，内部自动注入 trace_id。

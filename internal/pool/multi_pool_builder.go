@@ -11,9 +11,9 @@ import (
 // 内部创建 Pool → 水平分片为 N 份，支持极限高并发（百万~千万 QPS）。
 // 支持链式配置，Run 自动创建→执行→Close 所有分片。
 type MultiPoolBuilder[T any] struct {
-	ctx    context.Context
-	cfg    Config
-	shards int
+	ctx    context.Context // 请求上下文，自动注入 trace_id
+	cfg    Config          // 协程池配置
+	shards int             // 水平分片数
 }
 
 // NewMultiBuilder 创建分片协程池构造器，内部自动注入 trace_id。

@@ -29,7 +29,7 @@ import (
 //	// 分片模式
 //	srl := async.Ratelimit(ctx).Sharded().RateLimiter().Rate(100).Per(time.Second).Shards(16).Build()
 type RatelimitBuilder struct {
-	ctx context.Context
+	ctx context.Context // 请求上下文
 }
 
 // NewRatelimitBuilder 创建限流器链式构建器。
@@ -70,10 +70,10 @@ func (b *RatelimitBuilder) Sharded() *ShardedRatelimitBuilder {
 //
 //	rl := async.Ratelimit(ctx).RateLimiter().Rate(100).Per(time.Second).Burst(200).Build()
 type RatelimiterSubBuilder struct {
-	ctx         context.Context
-	rate        int
-	perDuration time.Duration
-	burst       int
+	ctx         context.Context // 请求上下文
+	rate        int             // 每时间窗口操作次数
+	perDuration time.Duration   // 时间窗口大小
+	burst       int             // 突发容量
 }
 
 // Rate 设置速率：每 PerDuration 内允许的操作次数。
@@ -128,9 +128,9 @@ func (b *RatelimiterSubBuilder) DefaultBurst() *RatelimiterSubBuilder {
 //
 //	tb := async.Ratelimit(ctx).TokenBucket().Rate(10).Capacity(20).Build()
 type TokenBucketSubBuilder struct {
-	ctx      context.Context
-	rate     float64
-	capacity float64
+	ctx      context.Context // 请求上下文
+	rate     float64         // 每秒生成的令牌数
+	capacity float64         // 最大令牌容量（允许的突发流量）
 }
 
 // Rate 设置每秒生成的令牌数。
@@ -170,9 +170,9 @@ func (b *TokenBucketSubBuilder) DefaultCapacity() *TokenBucketSubBuilder {
 //
 //	sw := async.Ratelimit(ctx).SlidingWindow().Limit(100).Window(10*time.Second).Build()
 type SlidingWindowSubBuilder struct {
-	ctx    context.Context
-	limit  int
-	window time.Duration
+	ctx    context.Context // 请求上下文
+	limit  int             // 时间窗口内允许的最大请求数
+	window time.Duration   // 时间窗口大小
 }
 
 // Limit 设置时间窗口内允许的最大请求数。
@@ -212,9 +212,9 @@ func (b *SlidingWindowSubBuilder) DefaultWindow() *SlidingWindowSubBuilder {
 //
 //	al := async.Ratelimit(ctx).Adaptive().MinConcurrency(5).MaxConcurrency(100).Build()
 type AdaptiveSubBuilder struct {
-	ctx     context.Context
-	minRate int
-	maxRate int
+	ctx     context.Context // 请求上下文
+	minRate int             // 最小并发度（负载低时不下于此值）
+	maxRate int             // 最大并发度（负载高时不超于此值）
 }
 
 // MinConcurrency 设置最小并发度（负载低时不会低于此值）。
@@ -251,7 +251,7 @@ func (b *AdaptiveSubBuilder) DefaultMaxConcurrency() *AdaptiveSubBuilder {
 // ShardedRatelimitBuilder 分片限流器入口构建器，通过 RatelimitBuilder.Sharded() 创建。
 // 各分片独立运行，round-robin 分发请求，将锁竞争降低到 1/N。
 type ShardedRatelimitBuilder struct {
-	ctx context.Context
+	ctx context.Context // 请求上下文
 }
 
 // RateLimiter 返回分片 RateLimiter 子构建器。
@@ -282,11 +282,11 @@ func (b *ShardedRatelimitBuilder) Adaptive() *ShardedAdaptiveSubBuilder {
 //
 //	srl := async.Ratelimit(ctx).Sharded().RateLimiter().Shards(16).Rate(10000).Per(time.Second).Build()
 type ShardedRatelimiterSubBuilder struct {
-	ctx         context.Context
-	shards      int
-	rate        int
-	perDuration time.Duration
-	burst       int
+	ctx         context.Context // 请求上下文
+	shards      int             // 水平分片数
+	rate        int             // 总速率（每时间窗口操作次数）
+	perDuration time.Duration   // 时间窗口大小
+	burst       int             // 突发容量
 }
 
 // Shards 设置水平分片数。<=0 时自动使用 DefaultShardCount()。
@@ -353,10 +353,10 @@ func (b *ShardedRatelimiterSubBuilder) DefaultBurst() *ShardedRatelimiterSubBuil
 //
 //	stb := async.Ratelimit(ctx).Sharded().TokenBucket().Shards(16).Rate(10).Capacity(20).Build()
 type ShardedTokenBucketSubBuilder struct {
-	ctx      context.Context
-	shards   int
-	rate     float64
-	capacity float64
+	ctx      context.Context // 请求上下文
+	shards   int             // 水平分片数
+	rate     float64         // 每片每秒生成的令牌数
+	capacity float64         // 每片最大令牌容量
 }
 
 // Shards 设置水平分片数。
@@ -408,10 +408,10 @@ func (b *ShardedTokenBucketSubBuilder) DefaultCapacity() *ShardedTokenBucketSubB
 //
 //	ssw := async.Ratelimit(ctx).Sharded().SlidingWindow().Shards(16).Limit(10000).Window(time.Second).Build()
 type ShardedSlidingWindowSubBuilder struct {
-	ctx    context.Context
-	shards int
-	limit  int
-	window time.Duration
+	ctx    context.Context // 请求上下文
+	shards int             // 水平分片数
+	limit  int             // 总限制次数（每窗口），平均分配到各分片
+	window time.Duration   // 时间窗口大小
 }
 
 // Shards 设置水平分片数。
@@ -463,10 +463,10 @@ func (b *ShardedSlidingWindowSubBuilder) DefaultWindow() *ShardedSlidingWindowSu
 //
 //	sal := async.Ratelimit(ctx).Sharded().Adaptive().Shards(16).MinConcurrency(32).MaxConcurrency(800).Build()
 type ShardedAdaptiveSubBuilder struct {
-	ctx     context.Context
-	shards  int
-	minRate int
-	maxRate int
+	ctx     context.Context // 请求上下文
+	shards  int             // 水平分片数
+	minRate int             // 最小并发度（平均分配到各分片）
+	maxRate int             // 最大并发度（平均分配到各分片）
 }
 
 // Shards 设置水平分片数。

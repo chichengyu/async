@@ -10,8 +10,8 @@ import (
 // 将任务分发到 N 个 Group 实例，支持按 Key 亲和或 RoundRobin。
 // 支持链式配置，Run 自动创建→执行→Close 所有分片 Group。
 type ShardedGroupBuilder[T any] struct {
-	ctx context.Context
-	cfg ShardGroupConfig[T]
+	ctx context.Context     // 请求上下文，自动注入 trace_id
+	cfg ShardGroupConfig[T] // 分片 Group 配置
 }
 
 // NewGroupBuilder 创建分片 Group 构造器，内部自动注入 trace_id。

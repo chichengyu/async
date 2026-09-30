@@ -62,34 +62,34 @@ const (
 //	    Adaptive().MinConcurrency(5).MaxConcurrency(100).Shards(16).
 //	    ExecuteVoid(fn)
 type RetryChain[T any] struct {
-	ctx context.Context
+	ctx context.Context // 请求上下文
 
-	maxRetries     int
-	initialBackoff time.Duration
-	maxBackoff     time.Duration
-	perCallTimeout time.Duration
-	isLinear       bool
+	maxRetries     int           // 最大重试次数
+	initialBackoff time.Duration // 初始退避时间
+	maxBackoff     time.Duration // 最大退避时间上限
+	perCallTimeout time.Duration // 单次调用超时（0=不限）
+	isLinear       bool          // 退避策略：true=线性，false=指数
 
 	// 限流模式
-	mode limitMode
+	mode limitMode // 当前限流模式
 
-	// RateLimiter / SlidingWindow 共用
-	rlRate   int
-	rlPer    time.Duration
-	rlBurst  int
-	rlShards int
-	swLimit  int
-	swWindow time.Duration
-	swShards int
+	// RateLimiter / SlidingWindow 共用参数
+	rlRate   int           // RateLimiter 速率（每时间窗口操作次数）
+	rlPer    time.Duration // RateLimiter 时间窗口
+	rlBurst  int           // RateLimiter 突发容量
+	rlShards int           // RateLimiter 水平分片数
+	swLimit  int           // SlidingWindow 窗口内最大请求数
+	swWindow time.Duration // SlidingWindow 时间窗口
+	swShards int           // SlidingWindow 水平分片数
 
-	// TokenBucket
-	tbRate     float64
-	tbCapacity float64
+	// TokenBucket 参数
+	tbRate     float64 // TokenBucket 每秒令牌生成速率
+	tbCapacity float64 // TokenBucket 最大令牌容量
 
-	// Adaptive
-	adMinRate int
-	adMaxRate int
-	adShards  int
+	// Adaptive 参数
+	adMinRate int // Adaptive 最小并发度
+	adMaxRate int // Adaptive 最大并发度
+	adShards  int // Adaptive 水平分片数
 }
 
 // ── 构造函数 ──
