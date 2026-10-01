@@ -441,7 +441,7 @@ func (g *Group[T]) worker() {
 func (g *Group[T]) executeTask(task groupTask[T]) {
 	g.busy.Add(1)
 	if g.pool != nil {
-		g.pool.Submit(task.taskCtx, func(ctx context.Context) (T, error) {
+		err := g.pool.Submit(task.taskCtx, func(ctx context.Context) (T, error) {
 			defer g.busy.Add(-1)
 			defer g.active.Add(-1)
 			defer g.wg.Done()
@@ -449,6 +449,14 @@ func (g *Group[T]) executeTask(task groupTask[T]) {
 			var zero T
 			return zero, nil
 		})
+		if err != nil {
+			g.busy.Add(-1)
+			atomic.AddInt64(&g.errCnt, 1)
+			task.record(core.Result[T]{Err: err, Occupied: true})
+			task.taskCancel()
+			g.active.Add(-1)
+			g.wg.Done()
+		}
 		return
 	}
 	g.runTaskImpl(task.taskCtx, task.taskCancel, task.record, task.timeout, task.failFast, task.failCancel, task.fn)
@@ -905,7 +913,9 @@ func (g *Group[T]) Close() {
 
 func (g *Group[T]) cancelAll() {
 	for _, c := range g.cancels {
-		c()
+		if c != nil {
+			c()
+		}
 	}
 	g.cancels = nil
 }

@@ -1093,7 +1093,7 @@ func TestRetryChain_Logger(t *testing.T) {
 // ==================== Concurrent Tests ====================
 
 func TestRetry_Backoff_Concurrent(t *testing.T) {
-	for _, tier := range testutil.AllTiers {
+	for _, tier := range testutil.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
 			testutil.SkipIfTooLarge(t, tier.Size)
 
@@ -1127,7 +1127,7 @@ func TestRetry_Backoff_Concurrent(t *testing.T) {
 }
 
 func TestRetry_LinearBackoff_Concurrent(t *testing.T) {
-	for _, tier := range testutil.AllTiers {
+	for _, tier := range testutil.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
 			testutil.SkipIfTooLarge(t, tier.Size)
 
@@ -1153,7 +1153,7 @@ func TestRetry_LinearBackoff_Concurrent(t *testing.T) {
 }
 
 func TestRetryFn_Concurrent(t *testing.T) {
-	for _, tier := range testutil.AllTiers {
+	for _, tier := range testutil.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
 			testutil.SkipIfTooLarge(t, tier.Size)
 
@@ -1171,7 +1171,7 @@ func TestRetryFn_Concurrent(t *testing.T) {
 }
 
 func TestRetry_TimedCancellation_Concurrent(t *testing.T) {
-	for _, tier := range testutil.AllTiers {
+	for _, tier := range testutil.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
 			testutil.SkipIfTooLarge(t, tier.Size)
 
@@ -1193,7 +1193,7 @@ func TestRetry_TimedCancellation_Concurrent(t *testing.T) {
 }
 
 func TestRetry_WithConfig_Concurrent(t *testing.T) {
-	for _, tier := range testutil.AllTiers {
+	for _, tier := range testutil.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
 			testutil.SkipIfTooLarge(t, tier.Size)
 
@@ -1214,7 +1214,7 @@ func TestRetry_WithConfig_Concurrent(t *testing.T) {
 }
 
 func TestRetry_WithTimeout_Concurrent(t *testing.T) {
-	for _, tier := range testutil.AllTiers {
+	for _, tier := range testutil.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
 			testutil.SkipIfTooLarge(t, tier.Size)
 

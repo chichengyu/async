@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/chichengyu/async/internal/core"
+	"github.com/chichengyu/async/internal/pool"
 )
 
 func init() {
@@ -1326,4 +1327,76 @@ func TestProduction_ValuesRace(t *testing.T) {
 			t.Errorf("Values[%d] = %d, want %d", i, v, i*2)
 		}
 	}
+}
+
+// ==================== Closed Pool 不死锁 ====================
+
+func TestProduction_GroupClosedPool_NoDeadlock(t *testing.T) {
+	p := pool.NewPool[int](16)
+	p.Close()
+
+	ctx := context.Background()
+	b := NewGroupBuilder[int]()
+	b.Context(ctx)
+	b.Worker(2)
+	b.Pool(p)
+	g := b.Build()
+
+	for i := 0; i < 10; i++ {
+		_ = g.Go(ctx, func(ctx context.Context) (int, error) {
+			return i, nil
+		})
+	}
+
+	done := make(chan struct{})
+	go func() {
+		g.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Wait timed out after 5s — possible deadlock")
+	}
+}
+
+func TestProduction_GroupSubmitError_Consistency(t *testing.T) {
+	p := pool.NewPool[int](16)
+	p.Close()
+
+	ctx := context.Background()
+	b := NewGroupBuilder[int]()
+	b.Context(ctx)
+	b.Worker(4)
+	b.Pool(p)
+	g := b.Build()
+
+	taskCount := 200
+	var submitErrCount int64
+	var wg sync.WaitGroup
+
+	for i := 0; i < taskCount; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			if err := g.Go(ctx, func(ctx context.Context) (int, error) {
+				return idx, nil
+			}); err != nil {
+				atomic.AddInt64(&submitErrCount, 1)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	results := g.Wait()
+	failCnt := g.FailCount()
+
+	if failCnt == 0 {
+		t.Error("expected some failures when using closed pool")
+	}
+	if len(results) < 1 {
+		t.Error("expected results to be populated even on failure")
+	}
+	_ = submitErrCount
 }

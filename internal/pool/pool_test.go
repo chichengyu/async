@@ -3,6 +3,7 @@ package pool
 import (
 	"context"
 	"errors"
+	"math"
 	"runtime"
 	"sort"
 	"sync"
@@ -815,6 +816,84 @@ func TestPool_WithCtxTimeout(t *testing.T) {
 	ctx := context.Background()
 	p, ctx = p.WithCtxTimeout(ctx, 10*time.Second)
 	_ = ctx
+}
+
+// ==================== SubmitAt 边界与并发 ====================
+
+func TestSubmitAt_IndexBounds(t *testing.T) {
+	p := NewPool[int](16)
+	defer p.Close()
+	ctx := context.Background()
+
+	if err := p.SubmitAt(0, ctx, func(ctx context.Context) (int, error) { return 1, nil }); err != nil {
+		t.Fatalf("SubmitAt(0): %v", err)
+	}
+	if err := p.SubmitAt(100, ctx, func(ctx context.Context) (int, error) { return 100, nil }); err != nil {
+		t.Fatalf("SubmitAt(100): %v", err)
+	}
+
+	if err := p.SubmitAt(core.MaxPoolIndex+1, ctx, func(ctx context.Context) (int, error) {
+		return 0, nil
+	}); err != core.ErrInvalidIndex {
+		t.Fatalf("SubmitAt(MaxPoolIndex+1) = %v, want ErrInvalidIndex", err)
+	}
+
+	if err := p.SubmitAt(math.MaxInt, ctx, func(ctx context.Context) (int, error) {
+		return 0, nil
+	}); err != core.ErrInvalidIndex {
+		t.Fatalf("SubmitAt(MaxInt) = %v, want ErrInvalidIndex", err)
+	}
+
+	if err := p.SubmitAt(-1, ctx, func(ctx context.Context) (int, error) {
+		return 0, nil
+	}); err != core.ErrInvalidIndex {
+		t.Fatalf("SubmitAt(-1) = %v, want ErrInvalidIndex", err)
+	}
+}
+
+func TestProduction_SubmitAt_Concurrent(t *testing.T) {
+	p := NewPool[int](16)
+	defer p.Close()
+	ctx := context.Background()
+
+	var wg sync.WaitGroup
+	concurrency := 100
+	eachCount := 1000
+	var errCount int64
+
+	for g := 0; g < concurrency; g++ {
+		wg.Add(1)
+		go func(gid int) {
+			defer wg.Done()
+			for i := 0; i < eachCount; i++ {
+				idx := gid*eachCount + i
+				if err := p.SubmitAt(idx, ctx, func(ctx context.Context) (int, error) {
+					return idx, nil
+				}); err != nil {
+					atomic.AddInt64(&errCount, 1)
+				}
+			}
+		}(g)
+	}
+	wg.Wait()
+	p.Close()
+
+	if errCount > 0 {
+		t.Errorf("concurrent SubmitAt: %d failures, want 0", errCount)
+	}
+}
+
+func TestProduction_SubmitAt_ClosedPool(t *testing.T) {
+	p := NewPool[int](16)
+	p.Close()
+	ctx := context.Background()
+
+	err := p.SubmitAt(0, ctx, func(ctx context.Context) (int, error) {
+		return 0, nil
+	})
+	if err == nil {
+		t.Fatal("expected error on closed pool, got nil")
+	}
 }
 
 func TestPool_WithCtxTOTID(t *testing.T) {

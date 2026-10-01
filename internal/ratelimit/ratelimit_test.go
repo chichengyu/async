@@ -1407,7 +1407,7 @@ func TestShardedSubBuilder_Logger(t *testing.T) {
 // ============================================================
 
 func TestRateLimiter_AcquireRelease_Concurrent(t *testing.T) {
-	for _, tier := range testutil.AllTiers {
+	for _, tier := range testutil.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
 			testutil.SkipIfTooLarge(t, tier.Size)
 
@@ -1436,7 +1436,7 @@ func TestRateLimiter_AcquireRelease_Concurrent(t *testing.T) {
 }
 
 func TestTokenBucket_Allow_Concurrent(t *testing.T) {
-	for _, tier := range testutil.AllTiers {
+	for _, tier := range testutil.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
 			testutil.SkipIfTooLarge(t, tier.Size)
 
@@ -1463,7 +1463,7 @@ func TestTokenBucket_Allow_Concurrent(t *testing.T) {
 }
 
 func TestSlidingWindow_Allow_Concurrent(t *testing.T) {
-	for _, tier := range testutil.AllTiers {
+	for _, tier := range testutil.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
 			testutil.SkipIfTooLarge(t, tier.Size)
 
@@ -1486,7 +1486,7 @@ func TestSlidingWindow_Allow_Concurrent(t *testing.T) {
 }
 
 func TestAdaptiveRateLimiter_Concurrent(t *testing.T) {
-	for _, tier := range testutil.AllTiers {
+	for _, tier := range testutil.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
 			testutil.SkipIfTooLarge(t, tier.Size)
 
@@ -1519,7 +1519,7 @@ func TestAdaptiveRateLimiter_Concurrent(t *testing.T) {
 }
 
 func TestRateLimiter_Token_Concurrent(t *testing.T) {
-	for _, tier := range testutil.AllTiers {
+	for _, tier := range testutil.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
 			testutil.SkipIfTooLarge(t, tier.Size)
 
@@ -1543,7 +1543,7 @@ func TestRateLimiter_Token_Concurrent(t *testing.T) {
 }
 
 func TestRateLimiter_BlockForce_Concurrent(t *testing.T) {
-	for _, tier := range testutil.AllTiers {
+	for _, tier := range testutil.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
 			testutil.SkipIfTooLarge(t, tier.Size)
 
@@ -1570,7 +1570,7 @@ func TestRateLimiter_BlockForce_Concurrent(t *testing.T) {
 }
 
 func TestShardedRateLimiter_Concurrent(t *testing.T) {
-	for _, tier := range testutil.AllTiers {
+	for _, tier := range testutil.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
 			testutil.SkipIfTooLarge(t, tier.Size)
 
@@ -1597,7 +1597,7 @@ func TestShardedRateLimiter_Concurrent(t *testing.T) {
 }
 
 func TestShardedTokenBucket_Concurrent(t *testing.T) {
-	for _, tier := range testutil.AllTiers {
+	for _, tier := range testutil.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
 			testutil.SkipIfTooLarge(t, tier.Size)
 
@@ -1620,7 +1620,7 @@ func TestShardedTokenBucket_Concurrent(t *testing.T) {
 }
 
 func TestShardedSlidingWindow_Concurrent(t *testing.T) {
-	for _, tier := range testutil.AllTiers {
+	for _, tier := range testutil.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
 			testutil.SkipIfTooLarge(t, tier.Size)
 
@@ -1643,7 +1643,7 @@ func TestShardedSlidingWindow_Concurrent(t *testing.T) {
 }
 
 func TestShardedAdaptive_Concurrent(t *testing.T) {
-	for _, tier := range testutil.AllTiers {
+	for _, tier := range testutil.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
 			testutil.SkipIfTooLarge(t, tier.Size)
 

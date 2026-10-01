@@ -1288,7 +1288,7 @@ func TestMaps_Concurrent_MapVsMapChain(t *testing.T) {
 // ============================================================
 
 func TestMapChain_Map_Concurrent_Tiers(t *testing.T) {
-	for _, tier := range testutil.SmallAllTiers {
+	for _, tier := range testutil.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
 			testutil.SkipIfTooLarge(t, tier.Size)
 			ctx := context.Background()
@@ -1317,7 +1317,7 @@ func TestMapChain_Map_Concurrent_Tiers(t *testing.T) {
 }
 
 func TestMapChain_ForEach_Concurrent_Tiers(t *testing.T) {
-	for _, tier := range testutil.SmallAllTiers {
+	for _, tier := range testutil.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
 			testutil.SkipIfTooLarge(t, tier.Size)
 			ctx := context.Background()
@@ -1349,7 +1349,7 @@ func TestMapChain_ForEach_Concurrent_Tiers(t *testing.T) {
 }
 
 func TestMapChain_Stream_Concurrent_Tiers(t *testing.T) {
-	for _, tier := range testutil.SmallAllTiers {
+	for _, tier := range testutil.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
 			testutil.SkipIfTooLarge(t, tier.Size)
 			ctx := context.Background()

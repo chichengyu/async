@@ -257,7 +257,7 @@ func mapSharded[T any, R any](ctx context.Context, items []T, fn func(context.Co
 				select {
 				case <-ctx.Done():
 					mu.Lock()
-					results[j] = core.Result[R]{Err: ctx.Err()}
+					results[j] = core.Result[R]{Err: ctx.Err(), Occupied: true}
 					mu.Unlock()
 					continue
 				default:
@@ -410,7 +410,7 @@ func eachSharded[T any](ctx context.Context, items []T, fn func(context.Context,
 				select {
 				case <-ctx.Done():
 					mu.Lock()
-					results[j] = core.Result[struct{}]{Err: ctx.Err()}
+					results[j] = core.Result[struct{}]{Err: ctx.Err(), Occupied: true}
 					failCnt++
 					mu.Unlock()
 					continue
@@ -488,6 +488,7 @@ func eachParFF[T any](ctx context.Context, items []T, fn func(context.Context, T
 	}
 
 	g := group.NewNoResult(conc)
+	g.WithFailFast(ffCtx)
 	for i := range items {
 		g.Go(ffCtx, func(ctx context.Context) error {
 			err := fn(ctx, items[i])
@@ -593,9 +594,11 @@ func stream[T any, R any](ctx context.Context, items []T, fn func(context.Contex
 	go func() {
 		for i := range items {
 			idx := i
-			g.Go(ctx, func(ctx context.Context) (R, error) {
+			if err := g.Go(ctx, func(ctx context.Context) (R, error) {
 				return fn(ctx, items[idx])
-			})
+			}); err != nil {
+				break
+			}
 		}
 		g.Wait()
 	}()
@@ -649,7 +652,7 @@ func streamFF[T any, R any](ctx context.Context, items []T, fn func(context.Cont
 	go func() {
 		for i := range items {
 			idx := i
-			g.Go(ffCtx, func(ctx context.Context) (R, error) {
+			if err := g.Go(ffCtx, func(ctx context.Context) (R, error) {
 				defer func() {
 					if r := recover(); r != nil {
 						ffCancel()
@@ -661,7 +664,9 @@ func streamFF[T any, R any](ctx context.Context, items []T, fn func(context.Cont
 					ffCancel()
 				}
 				return val, err
-			})
+			}); err != nil {
+				break
+			}
 		}
 		g.Wait()
 		ffCancel()
@@ -716,9 +721,11 @@ func eachStream[T any](ctx context.Context, items []T, fn func(context.Context, 
 	go func() {
 		for i := range items {
 			idx := i
-			nr.Go(ctx, func(ctx context.Context) error {
+			if err := nr.Go(ctx, func(ctx context.Context) error {
 				return fn(ctx, items[idx])
-			})
+			}); err != nil {
+				break
+			}
 		}
 		nr.Wait()
 		close(outCh)
@@ -759,13 +766,15 @@ func eachStreamFF[T any](ctx context.Context, items []T, fn func(context.Context
 	go func() {
 		for i := range items {
 			idx := i
-			nr.Go(ffCtx, func(ctx context.Context) error {
+			if err := nr.Go(ffCtx, func(ctx context.Context) error {
 				err := fn(ctx, items[idx])
 				if err != nil {
 					ffCancel()
 				}
 				return err
-			})
+			}); err != nil {
+				break
+			}
 		}
 		nr.Wait()
 		ffCancel()

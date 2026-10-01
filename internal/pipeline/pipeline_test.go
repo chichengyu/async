@@ -494,7 +494,7 @@ func TestPipelineBuilder_MultiStage(t *testing.T) {
 // 六、四档并发压力测试（�?十万/百万/千万�?// ============================================================
 
 func TestExecute_Concurrent(t *testing.T) {
-	for _, tier := range testutil.SmallAllTiers {
+	for _, tier := range testutil.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
 			testutil.SkipIfTooLarge(t, tier.Size)
 			ctx := context.Background()
@@ -516,7 +516,7 @@ func TestExecute_Concurrent(t *testing.T) {
 }
 
 func TestExecute_MultiStage_Concurrent(t *testing.T) {
-	for _, tier := range testutil.SmallAllTiers {
+	for _, tier := range testutil.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
 			testutil.SkipIfTooLarge(t, tier.Size)
 			ctx := context.Background()
@@ -540,7 +540,7 @@ func TestExecute_MultiStage_Concurrent(t *testing.T) {
 }
 
 func TestExecuteWithGroup_Concurrent(t *testing.T) {
-	for _, tier := range testutil.SmallAllTiers {
+	for _, tier := range testutil.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
 			testutil.SkipIfTooLarge(t, tier.Size)
 			ctx := context.Background()
@@ -559,7 +559,7 @@ func TestExecuteWithGroup_Concurrent(t *testing.T) {
 }
 
 func TestExecuteWithMeta_Concurrent(t *testing.T) {
-	for _, tier := range testutil.SmallAllTiers {
+	for _, tier := range testutil.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
 			testutil.SkipIfTooLarge(t, tier.Size)
 			ctx := context.Background()
@@ -583,7 +583,7 @@ func TestExecuteWithMeta_Concurrent(t *testing.T) {
 }
 
 func TestExecuteStream_Concurrent(t *testing.T) {
-	for _, tier := range testutil.SmallAllTiers {
+	for _, tier := range testutil.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
 			testutil.SkipIfTooLarge(t, tier.Size)
 			ctx := context.Background()
@@ -1149,5 +1149,34 @@ func TestPipeline_Race_Builder_ConcurrentExecute(t *testing.T) {
 		if len(results) < 10 {
 			t.Fatalf("round %d: expected at least 10 results, got %d", round, len(results))
 		}
+	}
+}
+
+// ==================== 错误透传 ====================
+
+func TestPipeline_ErrorsInResult(t *testing.T) {
+	ctx := context.Background()
+	items := []int{1, 2, 3, 4, 5}
+	results, err := Execute(ctx, []Stage[int]{
+		{Name: "double", Concurrency: 2},
+	}, items, func(ctx context.Context, stage string, item int) (int, error) {
+		if item == 3 {
+			return 0, errors.New("stage error")
+		}
+		return item * 2, nil
+	})
+	if err != nil {
+		t.Fatalf("Execute returned error, expected nil: %v", err)
+	}
+
+	hasErr := false
+	for _, r := range results {
+		if r.Err != nil {
+			hasErr = true
+			break
+		}
+	}
+	if !hasErr {
+		t.Error("expected stage errors in Result.Err")
 	}
 }

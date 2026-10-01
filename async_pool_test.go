@@ -23,7 +23,7 @@ import (
 // ============================================================
 
 func TestPoolBuilder_Chain_Basic(t *testing.T) {
-	for _, tier := range testutil.AllTiers {
+	for _, tier := range testutil.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
 			testutil.SkipIfTooLarge1M(t, tier.Size)
 
@@ -59,7 +59,7 @@ func TestPoolBuilder_Chain_Basic(t *testing.T) {
 }
 
 func TestPoolBuilder_Chain_FailFast(t *testing.T) {
-	for _, tier := range testutil.AllTiers {
+	for _, tier := range testutil.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
 			testutil.SkipIfTooLarge1M(t, tier.Size)
 
@@ -184,7 +184,7 @@ func TestPoolBuilder_Chain_MaxResults(t *testing.T) {
 }
 
 func TestPoolBuilder_Chain_ConfigFunc(t *testing.T) {
-	for _, tier := range testutil.AllTiers {
+	for _, tier := range testutil.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
 			testutil.SkipIfTooLarge1M(t, tier.Size)
 
@@ -225,7 +225,7 @@ func TestPoolBuilder_Chain_ConfigFunc(t *testing.T) {
 }
 
 func TestPoolBuilder_Chain_DefaultReset(t *testing.T) {
-	for _, tier := range testutil.AllTiers {
+	for _, tier := range testutil.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
 			testutil.SkipIfTooLarge1M(t, tier.Size)
 
@@ -292,7 +292,7 @@ func TestPoolBuilder_Chain_SubmitTimeout(t *testing.T) {
 }
 
 func TestPoolBuilder_Chain_Streaming(t *testing.T) {
-	for _, tier := range testutil.AllTiers {
+	for _, tier := range testutil.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
 			testutil.SkipIfTooLarge1M(t, tier.Size)
 
@@ -355,7 +355,7 @@ func TestPoolBuilder_Chain_OverflowDrop(t *testing.T) {
 }
 
 func TestPoolBuilder_Chain_RingBuf(t *testing.T) {
-	for _, tier := range testutil.AllTiers {
+	for _, tier := range testutil.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
 			testutil.SkipIfTooLarge1M(t, tier.Size)
 

@@ -246,7 +246,13 @@ var (
 
 	// ErrPoolWaiting 表示 Pool.Submit 在 Wait 之后调用。
 	ErrPoolWaiting = errors.New("async: Pool.Submit called after Wait, task discarded")
+
+	// ErrInvalidIndex 表示 SubmitAt 的 index 参数超出允许范围。
+	ErrInvalidIndex = errors.New("async: index exceeds maximum allowed range")
 )
+
+// MaxPoolIndex 是 SubmitAt 允许的最大索引值，防止恶意或错误的大 index 导致 OOM。
+const MaxPoolIndex = 1 << 24 // ~16M
 
 // ──────────────────────────── 全局日志级别 ────────────────────────────
 

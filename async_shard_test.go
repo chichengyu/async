@@ -23,7 +23,7 @@ import (
 // ============================================================
 
 func TestShardPoolBuilder_Chain_Basic(t *testing.T) {
-	for _, tier := range testutil.AllTiers {
+	for _, tier := range testutil.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
 			testutil.SkipIfTooLarge1M(t, tier.Size)
 
@@ -60,7 +60,7 @@ func TestShardPoolBuilder_Chain_Basic(t *testing.T) {
 }
 
 func TestShardPoolBuilder_Chain_FailFast(t *testing.T) {
-	for _, tier := range testutil.AllTiers {
+	for _, tier := range testutil.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
 			testutil.SkipIfTooLarge1M(t, tier.Size)
 
@@ -145,7 +145,7 @@ func TestShardPoolBuilder_Chain_Timeout(t *testing.T) {
 }
 
 func TestShardPoolBuilder_Chain_ConfigFunc(t *testing.T) {
-	for _, tier := range testutil.AllTiers {
+	for _, tier := range testutil.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
 			testutil.SkipIfTooLarge1M(t, tier.Size)
 
@@ -186,7 +186,7 @@ func TestShardPoolBuilder_Chain_ConfigFunc(t *testing.T) {
 }
 
 func TestShardPoolBuilder_Chain_DefaultReset(t *testing.T) {
-	for _, tier := range testutil.AllTiers {
+	for _, tier := range testutil.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
 			testutil.SkipIfTooLarge1M(t, tier.Size)
 
@@ -217,7 +217,7 @@ func TestShardPoolBuilder_Chain_DefaultReset(t *testing.T) {
 }
 
 func TestShardPoolBuilder_Chain_Distribution(t *testing.T) {
-	for _, tier := range testutil.AllTiers {
+	for _, tier := range testutil.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
 			testutil.SkipIfTooLarge1M(t, tier.Size)
 
@@ -246,7 +246,7 @@ func TestShardPoolBuilder_Chain_Distribution(t *testing.T) {
 }
 
 func TestShardPoolBuilder_Chain_KeyFn(t *testing.T) {
-	for _, tier := range testutil.AllTiers {
+	for _, tier := range testutil.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
 			testutil.SkipIfTooLarge1M(t, tier.Size)
 
@@ -341,7 +341,7 @@ func TestShardPoolBuilder_Chain_EmptyRun(t *testing.T) {
 }
 
 func TestShardPoolBuilder_Chain_MinimalConfig(t *testing.T) {
-	for _, tier := range testutil.AllTiers {
+	for _, tier := range testutil.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
 			testutil.SkipIfTooLarge1M(t, tier.Size)
 

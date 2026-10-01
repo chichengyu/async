@@ -16,7 +16,7 @@ import (
 var errRatelimitSentinel = errors.New("ratelimit sentinel error")
 
 // ============================================================
-// 测试档位统一使用 testutil.AllRateLimitTiers
+// 测试档位统一使用 testutil.UseTier
 // ============================================================
 
 func rlFreshCtx() context.Context {
@@ -554,10 +554,10 @@ func TestRatelimit_Chain_Sharded_AllMethods(t *testing.T) {
 
 func TestRatelimit_Chain_HighConcurrency_RateLimiter(t *testing.T) {
 	ctx := rlFreshCtx()
-	for _, tier := range testutil.AllRateLimitTiers {
+	for _, tier := range testutil.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge1M(t, tier.Load)
-			rate := tier.Load
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			rate := tier.Size
 			if rate > 100000 {
 				rate = 100000
 			}
@@ -566,7 +566,7 @@ func TestRatelimit_Chain_HighConcurrency_RateLimiter(t *testing.T) {
 
 			var wg sync.WaitGroup
 			var success, fail atomic.Int64
-			n := tier.Load
+			n := tier.Size
 			wg.Add(n)
 			for i := 0; i < n; i++ {
 				go func() {
@@ -594,10 +594,10 @@ func TestRatelimit_Chain_HighConcurrency_RateLimiter(t *testing.T) {
 
 func TestRatelimit_Chain_HighConcurrency_Token(t *testing.T) {
 	ctx := rlFreshCtx()
-	for _, tier := range testutil.AllRateLimitTiers {
+	for _, tier := range testutil.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge1M(t, tier.Load)
-			rate := tier.Load
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			rate := tier.Size
 			if rate > 100000 {
 				rate = 100000
 			}
@@ -606,7 +606,7 @@ func TestRatelimit_Chain_HighConcurrency_Token(t *testing.T) {
 
 			var wg sync.WaitGroup
 			var success atomic.Int64
-			n := tier.Load
+			n := tier.Size
 			wg.Add(n)
 			for i := 0; i < n; i++ {
 				go func() {
@@ -630,15 +630,15 @@ func TestRatelimit_Chain_HighConcurrency_Token(t *testing.T) {
 
 func TestRatelimit_Chain_HighConcurrency_TokenBucket(t *testing.T) {
 	ctx := rlFreshCtx()
-	for _, tier := range testutil.AllRateLimitTiers {
+	for _, tier := range testutil.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge1M(t, tier.Load)
+			testutil.SkipIfTooLarge1M(t, tier.Size)
 			capacity := float64(tier.Burst)
 			tb := Ratelimit(ctx).TokenBucket().Rate(100000).Capacity(capacity).Build()
 
 			var wg sync.WaitGroup
 			var allowed atomic.Int64
-			n := tier.Load
+			n := tier.Size
 			wg.Add(n)
 			for i := 0; i < n; i++ {
 				go func() {
@@ -649,9 +649,9 @@ func TestRatelimit_Chain_HighConcurrency_TokenBucket(t *testing.T) {
 				}()
 			}
 			wg.Wait()
-			t.Logf("TokenBucket %s: allowed=%d (capacity=%.0f)", tier.Name, allowed.Load(), capacity)
-			if allowed.Load() < int64(capacity) {
-				t.Fatalf("expected at least %d allowed, got %d", int64(capacity), allowed.Load())
+			t.Logf("TokenBucket %s: allowed=%d (n=%d capacity=%.0f)", tier.Name, allowed.Load(), n, capacity)
+			if allowed.Load() < int64(n) {
+				t.Fatalf("expected at least %d allowed, got %d", n, allowed.Load())
 			}
 		})
 	}
@@ -663,10 +663,10 @@ func TestRatelimit_Chain_HighConcurrency_TokenBucket(t *testing.T) {
 
 func TestRatelimit_Chain_HighConcurrency_SlidingWindow(t *testing.T) {
 	ctx := rlFreshCtx()
-	for _, tier := range testutil.AllRateLimitTiers {
+	for _, tier := range testutil.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge1M(t, tier.Load)
-			limit := tier.Load
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			limit := tier.Size
 			if limit > 500000 {
 				limit = 500000
 			}
@@ -699,18 +699,18 @@ func TestRatelimit_Chain_HighConcurrency_SlidingWindow(t *testing.T) {
 
 func TestRatelimit_Chain_HighConcurrency_Adaptive(t *testing.T) {
 	ctx := rlFreshCtx()
-	for _, tier := range testutil.AllRateLimitTiers {
+	for _, tier := range testutil.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge1M(t, tier.Load)
+			testutil.SkipIfTooLarge1M(t, tier.Size)
 			maxC := 50000
-			if tier.Load < maxC {
-				maxC = tier.Load
+			if tier.Size < maxC {
+				maxC = tier.Size
 			}
 			al := Ratelimit(ctx).Adaptive().MinWorker(100).MaxWorker(maxC).Build()
 
 			var wg sync.WaitGroup
 			var success, fail atomic.Int64
-			n := tier.Load
+			n := tier.Size
 			wg.Add(n)
 			for i := 0; i < n; i++ {
 				go func(idx int) {
@@ -740,10 +740,10 @@ func TestRatelimit_Chain_HighConcurrency_Adaptive(t *testing.T) {
 
 func TestRatelimit_Chain_HighConcurrency_ShardedRateLimiter(t *testing.T) {
 	ctx := rlFreshCtx()
-	for _, tier := range testutil.AllRateLimitTiers {
+	for _, tier := range testutil.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge1M(t, tier.Load)
-			rate := tier.Load
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			rate := tier.Size
 			if rate > 100000 {
 				rate = 100000
 			}
@@ -752,7 +752,7 @@ func TestRatelimit_Chain_HighConcurrency_ShardedRateLimiter(t *testing.T) {
 
 			var wg sync.WaitGroup
 			var success, fail atomic.Int64
-			n := tier.Load
+			n := tier.Size
 			wg.Add(n)
 			for i := 0; i < n; i++ {
 				go func() {
@@ -777,14 +777,14 @@ func TestRatelimit_Chain_HighConcurrency_ShardedRateLimiter(t *testing.T) {
 
 func TestRatelimit_Chain_HighConcurrency_ShardedTokenBucket(t *testing.T) {
 	ctx := rlFreshCtx()
-	for _, tier := range testutil.AllRateLimitTiers {
+	for _, tier := range testutil.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge1M(t, tier.Load)
+			testutil.SkipIfTooLarge1M(t, tier.Size)
 			stb := Ratelimit(ctx).Sharded().TokenBucket().Shards(16).Rate(50000).Capacity(float64(tier.Burst)).Build()
 
 			var wg sync.WaitGroup
 			var allowed atomic.Int64
-			n := tier.Load
+			n := tier.Size
 			wg.Add(n)
 			for i := 0; i < n; i++ {
 				go func() {

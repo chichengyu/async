@@ -619,7 +619,7 @@ func TestShardedGroup_Reset(t *testing.T) {
 // 十二、四档并发压力测试（�?十万/百万/千万�?// ============================================================
 
 func TestShardedPool_Submit_Concurrent(t *testing.T) {
-	for _, tier := range testutil.SmallAllTiers {
+	for _, tier := range testutil.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
 			testutil.SkipIfTooLarge(t, tier.Size)
 			sp := NewShardedPool(ShardPoolConfig[int]{Shards: 8, SizePerShard: 16})
@@ -663,7 +663,7 @@ func TestShardedPool_Submit_Concurrent(t *testing.T) {
 }
 
 func TestShardedPool_SubmitKeyed_Concurrent(t *testing.T) {
-	for _, tier := range testutil.SmallAllTiers {
+	for _, tier := range testutil.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
 			testutil.SkipIfTooLarge(t, tier.Size)
 			sp := NewShardedPool(ShardPoolConfig[int]{Shards: 8, SizePerShard: 16})
@@ -698,7 +698,7 @@ func TestShardedPool_SubmitKeyed_Concurrent(t *testing.T) {
 }
 
 func TestShardedGroup_Go_Concurrent(t *testing.T) {
-	for _, tier := range testutil.SmallAllTiers {
+	for _, tier := range testutil.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
 			testutil.SkipIfTooLarge(t, tier.Size)
 			sg := NewShardedGroup(ShardGroupConfig[int]{Shards: 8, ConcurrencyPerShard: 16})
@@ -1267,20 +1267,32 @@ func TestShardedPool_StreamResults(t *testing.T) {
 	defer sp.Close()
 	sp.WithStreaming(64)
 	ctx := context.Background()
-	for i := 0; i < 200; i++ {
+
+	n := 200
+	for i := 0; i < n; i++ {
 		_ = sp.Submit(ctx, func(ctx context.Context) (int, error) { return i, nil })
 	}
-	go sp.Wait()
+
 	ch := sp.StreamResults()
-	count := 0
-	for r := range ch {
-		if r.Err != nil {
-			t.Fatalf("unexpected error: %v", r.Err)
+	var wg sync.WaitGroup
+	var count int
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for r := range ch {
+			if r.Err != nil {
+				t.Errorf("unexpected error: %v", r.Err)
+			}
+			count++
 		}
-		count++
-	}
-	if count < 0 {
-		t.Fatalf("streamed count = %d, want 200", count)
+	}()
+
+	sp.Wait()
+	wg.Wait()
+
+	if count != n {
+		t.Fatalf("streamed count = %d, want %d", count, n)
 	}
 }
 

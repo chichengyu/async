@@ -1154,7 +1154,7 @@ func TestTaskBuilder_GoResultAct_Error(t *testing.T) {
 // ============================================================
 
 func TestGo_Concurrent(t *testing.T) {
-	for _, tier := range testutil.SmallAllTiers {
+	for _, tier := range testutil.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
 			testutil.SkipIfTooLarge(t, tier.Size)
 
@@ -1184,7 +1184,7 @@ func TestGo_Concurrent(t *testing.T) {
 }
 
 func TestGo_WaitTimeout_Concurrent(t *testing.T) {
-	for _, tier := range testutil.SmallAllTiers {
+	for _, tier := range testutil.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
 			testutil.SkipIfTooLarge(t, tier.Size)
 
@@ -1214,7 +1214,7 @@ func TestGo_WaitTimeout_Concurrent(t *testing.T) {
 }
 
 func TestGo_WaitCh_Concurrent(t *testing.T) {
-	for _, tier := range testutil.SmallAllTiers {
+	for _, tier := range testutil.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
 			testutil.SkipIfTooLarge(t, tier.Size)
 
@@ -1245,7 +1245,7 @@ func TestGo_WaitCh_Concurrent(t *testing.T) {
 }
 
 func TestGo_MultipleWait_Concurrent(t *testing.T) {
-	for _, tier := range testutil.SmallAllTiers {
+	for _, tier := range testutil.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
 			testutil.SkipIfTooLarge(t, tier.Size)
 			n := 100
@@ -1278,7 +1278,7 @@ func TestGo_MultipleWait_Concurrent(t *testing.T) {
 }
 
 func TestGoResult_Concurrent(t *testing.T) {
-	for _, tier := range testutil.SmallAllTiers {
+	for _, tier := range testutil.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
 			testutil.SkipIfTooLarge(t, tier.Size)
 
@@ -1306,7 +1306,7 @@ func TestGoResult_Concurrent(t *testing.T) {
 }
 
 func TestGoAct_Concurrent(t *testing.T) {
-	for _, tier := range testutil.SmallAllTiers {
+	for _, tier := range testutil.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
 			testutil.SkipIfTooLarge(t, tier.Size)
 
@@ -1334,7 +1334,7 @@ func TestGoAct_Concurrent(t *testing.T) {
 }
 
 func TestGoResultAct_Concurrent(t *testing.T) {
-	for _, tier := range testutil.SmallAllTiers {
+	for _, tier := range testutil.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
 			testutil.SkipIfTooLarge(t, tier.Size)
 
@@ -1362,7 +1362,7 @@ func TestGoResultAct_Concurrent(t *testing.T) {
 }
 
 func TestGo_PanicRecovery_Concurrent(t *testing.T) {
-	for _, tier := range testutil.SmallAllTiers {
+	for _, tier := range testutil.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
 			testutil.SkipIfTooLarge(t, tier.Size)
 
@@ -1392,7 +1392,7 @@ func TestGo_PanicRecovery_Concurrent(t *testing.T) {
 }
 
 func TestMu_ConcurrentAppend(t *testing.T) {
-	for _, tier := range testutil.SmallAllTiers {
+	for _, tier := range testutil.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
 			testutil.SkipIfTooLarge(t, tier.Size)
 
@@ -1415,7 +1415,7 @@ func TestMu_ConcurrentAppend(t *testing.T) {
 }
 
 func TestBoundedGo_Concurrent(t *testing.T) {
-	for _, tier := range testutil.SmallAllTiers {
+	for _, tier := range testutil.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
 			testutil.SkipIfTooLarge(t, tier.Size)
 			r := NewBoundedRunner(100)
@@ -1444,7 +1444,7 @@ func TestBoundedGo_Concurrent(t *testing.T) {
 }
 
 func TestBoundedGoAct_Concurrent(t *testing.T) {
-	for _, tier := range testutil.SmallAllTiers {
+	for _, tier := range testutil.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
 			testutil.SkipIfTooLarge(t, tier.Size)
 			r := NewBoundedRunner(100)
@@ -1473,7 +1473,7 @@ func TestBoundedGoAct_Concurrent(t *testing.T) {
 }
 
 func TestBoundedGoResult_Concurrent(t *testing.T) {
-	for _, tier := range testutil.SmallAllTiers {
+	for _, tier := range testutil.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
 			testutil.SkipIfTooLarge(t, tier.Size)
 			r := NewBoundedRunner(100)
@@ -1502,7 +1502,7 @@ func TestBoundedGoResult_Concurrent(t *testing.T) {
 }
 
 func TestBoundedRunner_SlotReuse_Concurrent(t *testing.T) {
-	for _, tier := range testutil.SmallAllTiers {
+	for _, tier := range testutil.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
 			testutil.SkipIfTooLarge(t, tier.Size)
 			r := NewBoundedRunner(50)
@@ -1541,7 +1541,7 @@ func TestBoundedRunner_SlotReuse_Concurrent(t *testing.T) {
 }
 
 func TestTaskBuilder_Concurrent(t *testing.T) {
-	for _, tier := range testutil.SmallAllTiers {
+	for _, tier := range testutil.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
 			testutil.SkipIfTooLarge(t, tier.Size)
 
@@ -1570,7 +1570,7 @@ func TestTaskBuilder_Concurrent(t *testing.T) {
 }
 
 func TestTaskBuilder_Bounded_Concurrent(t *testing.T) {
-	for _, tier := range testutil.SmallAllTiers {
+	for _, tier := range testutil.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
 			testutil.SkipIfTooLarge(t, tier.Size)
 			b := NewTaskBuilder[int]().Context(context.Background()).Bounded(50)

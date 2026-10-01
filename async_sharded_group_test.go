@@ -20,7 +20,7 @@ import (
 // ============================================================
 
 func TestShardedGroupBuilder_Chain_Basic(t *testing.T) {
-	for _, tier := range testutil.AllTiers {
+	for _, tier := range testutil.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
 			testutil.SkipIfTooLarge1M(t, tier.Size)
 
@@ -91,7 +91,7 @@ func TestShardedGroupBuilder_Chain_Distribution(t *testing.T) {
 }
 
 func TestShardedGroupBuilder_Chain_ConfigFunc(t *testing.T) {
-	for _, tier := range testutil.AllTiers {
+	for _, tier := range testutil.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
 			testutil.SkipIfTooLarge1M(t, tier.Size)
 
@@ -130,7 +130,7 @@ func TestShardedGroupBuilder_Chain_ConfigFunc(t *testing.T) {
 }
 
 func TestShardedGroupBuilder_Chain_DefaultReset(t *testing.T) {
-	for _, tier := range testutil.AllTiers {
+	for _, tier := range testutil.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
 			testutil.SkipIfTooLarge1M(t, tier.Size)
 
@@ -286,7 +286,7 @@ func TestShardedGroupBuilder_Chain_ContextSwitch(t *testing.T) {
 }
 
 func TestShardedGroupBuilder_Chain_WaitContext(t *testing.T) {
-	for _, tier := range testutil.AllTiers {
+	for _, tier := range testutil.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
 			testutil.SkipIfTooLarge1M(t, tier.Size)
 
@@ -318,7 +318,7 @@ func TestShardedGroupBuilder_Chain_WaitContext(t *testing.T) {
 }
 
 func TestShardedGroupBuilder_Chain_WaitTimeout(t *testing.T) {
-	for _, tier := range testutil.AllTiers {
+	for _, tier := range testutil.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
 			testutil.SkipIfTooLarge1M(t, tier.Size)
 
@@ -345,7 +345,7 @@ func TestShardedGroupBuilder_Chain_WaitTimeout(t *testing.T) {
 }
 
 func TestShardedGroupBuilder_Chain_FailFast(t *testing.T) {
-	for _, tier := range testutil.AllTiers {
+	for _, tier := range testutil.UseTier {
 		if tier.Size > 100_000 {
 			t.Skip("skip large tier for failfast")
 		}

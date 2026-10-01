@@ -1107,6 +1107,10 @@ func (p *Pool[T]) submitIndexed(ctx context.Context, fn func(context.Context) (T
 //	    })
 //	}
 func (p *Pool[T]) SubmitAt(index int, ctx context.Context, fn func(context.Context) (T, error)) error {
+	if index < 0 || index > core.MaxPoolIndex {
+		return core.ErrInvalidIndex
+	}
+
 	p.addInFlight.Add(1)
 	if err := p.poolPrecheck(ctx, "SubmitAt"); err != nil {
 		p.addInFlight.Add(-1)

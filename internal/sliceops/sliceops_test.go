@@ -2674,7 +2674,7 @@ func TestSlice_ForEachChunkedWithFailFast(t *testing.T) {
 // ============================================================
 
 func TestSlice_Do_Concurrent(t *testing.T) {
-	for _, tier := range testutil.SmallAllTiers {
+	for _, tier := range testutil.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
 			testutil.SkipIfTooLarge(t, tier.Size)
 			ctx := context.Background()
@@ -2693,7 +2693,7 @@ func TestSlice_Do_Concurrent(t *testing.T) {
 }
 
 func TestSlice_Each_Concurrent(t *testing.T) {
-	for _, tier := range testutil.SmallAllTiers {
+	for _, tier := range testutil.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
 			testutil.SkipIfTooLarge(t, tier.Size)
 			ctx := context.Background()
@@ -2709,7 +2709,7 @@ func TestSlice_Each_Concurrent(t *testing.T) {
 }
 
 func TestSlice_Stream_Concurrent(t *testing.T) {
-	for _, tier := range testutil.SmallAllTiers {
+	for _, tier := range testutil.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
 			testutil.SkipIfTooLarge(t, tier.Size)
 			ctx := context.Background()
@@ -2730,7 +2730,7 @@ func TestSlice_Stream_Concurrent(t *testing.T) {
 }
 
 func TestSlice_Reduce_Concurrent(t *testing.T) {
-	for _, tier := range testutil.SmallAllTiers {
+	for _, tier := range testutil.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
 			testutil.SkipIfTooLarge(t, tier.Size)
 			ctx := context.Background()
@@ -2746,7 +2746,7 @@ func TestSlice_Reduce_Concurrent(t *testing.T) {
 }
 
 func TestSlice_EachStream_Concurrent(t *testing.T) {
-	for _, tier := range testutil.SmallAllTiers {
+	for _, tier := range testutil.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
 			testutil.SkipIfTooLarge(t, tier.Size)
 			ctx := context.Background()
@@ -3070,5 +3070,203 @@ func TestRace_Slice_NewSliceResult_Concurrent(t *testing.T) {
 			}()
 		}
 		wg.Wait()
+	}
+}
+
+// ============================================================
+//  二十二、FailFast & Stream & 组合并发
+// ============================================================
+
+func TestSlice_Each_FailFast_ExecutionLimit(t *testing.T) {
+	ctx := context.Background()
+	items := genIntItems(2000)
+	bomb := errors.New("failfast")
+	var executed int64
+
+	s := NewWithResult[int, int](items)
+	total, failCnt, firstErr := s.Each(ctx, func(ctx context.Context, n int) error {
+		atomic.AddInt64(&executed, 1)
+		if n == 10 {
+			return bomb
+		}
+		time.Sleep(time.Millisecond)
+		return nil
+	}, Par(32).FF())
+
+	if total != int64(len(items)) || failCnt == 0 || firstErr == nil {
+		t.Fatalf("Each FF: total=%d fail=%d err=%v", total, failCnt, firstErr)
+	}
+	ex := atomic.LoadInt64(&executed)
+	if ex >= int64(len(items)) {
+		t.Errorf("FailFast did not block redundant execution: executed=%d, total=%d", ex, len(items))
+	}
+}
+
+func TestSlice_Stream_ContextCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	items := genIntItems(3000)
+	s := NewWithResult[int, int](items)
+
+	ch := s.Stream(ctx, func(ctx context.Context, n int) (int, error) {
+		time.Sleep(10 * time.Millisecond)
+		return n, nil
+	}, Par(16).Buf(256))
+
+	var consumed int64
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for range ch {
+			atomic.AddInt64(&consumed, 1)
+		}
+	}()
+
+	time.Sleep(30 * time.Millisecond)
+	cancel()
+	wg.Wait()
+
+	if consumed == int64(len(items)) {
+		t.Errorf("expected cancel to stop stream before all consumed, got %d/%d", consumed, len(items))
+	}
+}
+
+func TestSlice_Stream_FailFast_ExecutionLimit(t *testing.T) {
+	ctx := context.Background()
+	items := genIntItems(2000)
+	bomb := errors.New("stream ff")
+	var executed int64
+
+	s := NewWithResult[int, int](items)
+	ch := s.Stream(ctx, func(ctx context.Context, n int) (int, error) {
+		atomic.AddInt64(&executed, 1)
+		if n == 20 {
+			return 0, bomb
+		}
+		time.Sleep(time.Millisecond)
+		return n, nil
+	}, Par(32).FF().Buf(512))
+
+	var consumed int64
+	for range ch {
+		consumed++
+	}
+
+	ex := atomic.LoadInt64(&executed)
+	if ex >= int64(len(items)) {
+		t.Errorf("Stream FF did not block redundant: executed=%d cons=%d total=%d", ex, consumed, len(items))
+	}
+}
+
+func TestSlice_Combined_Concurrent(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip combined concurrent stress test (use -short)")
+	}
+
+	ctx := context.Background()
+	var panicCount int64
+	var wg sync.WaitGroup
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		defer func() {
+			if r := recover(); r != nil {
+				atomic.AddInt64(&panicCount, 1)
+				t.Errorf("Map FF panic: %v", r)
+			}
+		}()
+		items := genIntItems(2000)
+		s := NewWithResult[int, int](items)
+		results, _ := s.Do(ctx, func(ctx context.Context, v int) (int, error) {
+			if v == 100 {
+				return 0, errors.New("trigger")
+			}
+			return v * 2, nil
+		}, Par(16).FF())
+		_ = results
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		defer func() {
+			if r := recover(); r != nil {
+				atomic.AddInt64(&panicCount, 1)
+				t.Errorf("Stream panic: %v", r)
+			}
+		}()
+		items := genIntItems(1000)
+		s := NewWithResult[int, int](items)
+		ch := s.Stream(ctx, func(ctx context.Context, n int) (int, error) {
+			return n, nil
+		}, Par(8).Buf(128))
+		for range ch {
+		}
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		defer func() {
+			if r := recover(); r != nil {
+				atomic.AddInt64(&panicCount, 1)
+				t.Errorf("Each panic: %v", r)
+			}
+		}()
+		items := genIntItems(500)
+		s := NewWithResult[int, int](items)
+		total, fail, firstErr := s.Each(ctx, func(ctx context.Context, n int) error {
+			return nil
+		}, Par(8))
+		if total != int64(len(items)) || fail != 0 || firstErr != nil {
+			t.Errorf("Each: total=%d fail=%d err=%v", total, fail, firstErr)
+		}
+	}()
+
+	wg.Wait()
+
+	if panicCount > 0 {
+		t.Fatalf("combined concurrent: %d panics", panicCount)
+	}
+}
+
+func TestRace_Slice_Combined(t *testing.T) {
+	ctx := context.Background()
+	for round := 0; round < 5; round++ {
+		var wg sync.WaitGroup
+		var totalOps atomic.Int64
+
+		for g := 0; g < 4; g++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				items := genIntItems(200)
+				s := NewWithResult[int, int](items)
+				results, err := s.Do(ctx, func(ctx context.Context, v int) (int, error) {
+					return v, nil
+				}, Par(8))
+				if err == nil && len(results) == 200 {
+					totalOps.Add(1)
+				}
+			}()
+
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				items := genIntItems(100)
+				s := NewWithResult[int, int](items)
+				ch := s.Stream(ctx, func(ctx context.Context, n int) (int, error) {
+					return n, nil
+				}, Par(4).Buf(64))
+				for range ch {
+				}
+				totalOps.Add(1)
+			}()
+		}
+		wg.Wait()
+		if totalOps.Load() < 4 {
+			t.Fatalf("round %d: totalOps=%d", round, totalOps.Load())
+		}
 	}
 }

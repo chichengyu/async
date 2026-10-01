@@ -22,9 +22,10 @@ import (
 //	doRequest()
 //	rl.Release()
 type ShardedRateLimiter struct {
-	limiters []*RateLimiter
-	nextIdx  atomic.Uint64
-	total    int32
+	limiters   []*RateLimiter
+	nextIdx    atomic.Uint64
+	releaseIdx atomic.Uint64
+	total      int32
 }
 
 // NewShardedRateLimiter 创建分片限流器。
@@ -115,7 +116,7 @@ func (sl *ShardedRateLimiter) Acquire(ctx context.Context) error {
 
 // Release 归还令牌，round-robin 分发。
 func (sl *ShardedRateLimiter) Release() {
-	idx := int(sl.nextIdx.Add(1)-1) % len(sl.limiters)
+	idx := int(sl.releaseIdx.Add(1)-1) % len(sl.limiters)
 	sl.limiters[idx].Release()
 }
 
@@ -321,8 +322,10 @@ func (sw *ShardedSlidingWindowRateLimiter) GetShard(idx int) *SlidingWindowRateL
 //	}
 //	al.Release()
 type ShardedAdaptiveRateLimiter struct {
-	limiters []*AdaptiveRateLimiter
-	nextIdx  atomic.Uint64
+	limiters   []*AdaptiveRateLimiter
+	nextIdx    atomic.Uint64
+	releaseIdx atomic.Uint64
+	recordIdx  atomic.Uint64
 }
 
 // NewShardedAdaptiveRateLimiter 创建分片自适应限流器。

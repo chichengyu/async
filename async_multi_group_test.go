@@ -20,7 +20,7 @@ import (
 // ============================================================
 
 func TestMultiGroupBuilder_Chain_Basic(t *testing.T) {
-	for _, tier := range testutil.AllTiers {
+	for _, tier := range testutil.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
 			testutil.SkipIfTooLarge1M(t, tier.Size)
 
@@ -57,7 +57,7 @@ func TestMultiGroupBuilder_Chain_Basic(t *testing.T) {
 }
 
 func TestMultiGroupBuilder_Chain_FailFast(t *testing.T) {
-	for _, tier := range testutil.AllTiers {
+	for _, tier := range testutil.UseTier {
 		if tier.Size > 100_000 {
 			t.Skip("skip large tier for failfast")
 		}
