@@ -74,19 +74,25 @@ func (t Task[T]) Error() error {
 //	go func() { v1, _ := ar.Wait() }()
 //	go func() { v2, _ := ar.Wait() }()
 type AsyncResult[T any] struct {
-	results <-chan core.Result[T] // 结果 channel（只读）
-	mu      sync.Mutex            // 保护 result 字段
-	ready   chan struct{}         // 结果就绪信号
-	result  core.Result[T]        // 缓存的结果
-	once    sync.Once             // 保证只从 channel 读取一次，消除 startReader goroutine
+	results   <-chan core.Result[T] // 结果 channel（只读）
+	mu        sync.Mutex            // 保护 result / populated 字段
+	ready     chan struct{}         // 结果就绪信号
+	result    core.Result[T]        // 缓存的结果
+	once      sync.Once             // 保证只从 channel 读取一次
+	populated bool                  // result 是否已从 channel 成功读取
 }
 
 func (ar *AsyncResult[T]) getResult() core.Result[T] {
 	ar.once.Do(func() {
-		if ar.results != nil {
+		ar.mu.Lock()
+		if !ar.populated && ar.results != nil {
+			ar.mu.Unlock()
 			r := <-ar.results
 			ar.mu.Lock()
 			ar.result = r
+			ar.populated = true
+			ar.mu.Unlock()
+		} else {
 			ar.mu.Unlock()
 		}
 		select {
@@ -159,7 +165,7 @@ func (ar *AsyncResult[T]) WaitCh() <-chan core.Result[T] {
 //	    fmt.Println("任务被取消")
 //	}
 func (ar *AsyncResult[T]) Cancel() (T, error) {
-	go ar.getResult()
+	// 步骤 1：快速路径 — 检查 ready 是否已关闭（结果已缓存）
 	select {
 	case <-ar.ready:
 		ar.mu.Lock()
@@ -167,6 +173,48 @@ func (ar *AsyncResult[T]) Cancel() (T, error) {
 		ar.mu.Unlock()
 		return r.Value, r.Err
 	default:
+	}
+
+	// 步骤 2：检查 populated — Cancel 或 WaitTimeout 之前已经非阻塞读到了结果
+	ar.mu.Lock()
+	if ar.populated {
+		r := ar.result
+		ar.mu.Unlock()
+		return r.Value, r.Err
+	}
+
+	// 步骤 3：非阻塞尝试从 channel 读取结果（绕过 sync.Once）
+	if ar.results != nil {
+		select {
+		case r, ok := <-ar.results:
+			if ok {
+				ar.result = r
+				ar.populated = true
+				ar.mu.Unlock()
+				// 关闭 ready，通知所有 Wait 调用者结果已就绪
+				select {
+				case <-ar.ready:
+				default:
+					close(ar.ready)
+				}
+				return r.Value, r.Err
+			}
+		default:
+		}
+	}
+	ar.mu.Unlock()
+
+	// 步骤 4：短暂等待（1ms），给 goroutine 一个完成窗口再判定
+	timer := time.NewTimer(time.Millisecond)
+	defer timer.Stop()
+	go ar.getResult()
+	select {
+	case <-ar.ready:
+		ar.mu.Lock()
+		r := ar.result
+		ar.mu.Unlock()
+		return r.Value, r.Err
+	case <-timer.C:
 		var zero T
 		return zero, context.Canceled
 	}
@@ -198,6 +246,45 @@ func (ar *AsyncResult[T]) IsPanic() bool {
 //	    return
 //	}
 func (ar *AsyncResult[T]) WaitTimeout(timeout time.Duration) (T, error, bool) {
+	// 步骤 1：快速路径 — ready 已关闭，结果已缓存
+	select {
+	case <-ar.ready:
+		ar.mu.Lock()
+		r := ar.result
+		ar.mu.Unlock()
+		return r.Value, r.Err, true
+	default:
+	}
+
+	// 步骤 2：检查 populated — 之前 Cancel/WaitTimeout 已经读到结果
+	ar.mu.Lock()
+	if ar.populated {
+		r := ar.result
+		ar.mu.Unlock()
+		return r.Value, r.Err, true
+	}
+
+	// 步骤 3：非阻塞尝试从 channel 读取
+	if ar.results != nil {
+		select {
+		case r, ok := <-ar.results:
+			if ok {
+				ar.result = r
+				ar.populated = true
+				ar.mu.Unlock()
+				select {
+				case <-ar.ready:
+				default:
+					close(ar.ready)
+				}
+				return r.Value, r.Err, true
+			}
+		default:
+		}
+	}
+	ar.mu.Unlock()
+
+	// 步骤 4：阻塞等待结果或超时
 	go ar.getResult()
 	select {
 	case <-ar.ready:
@@ -236,12 +323,22 @@ func Go[T any](ctx context.Context, fn func(context.Context) (T, error)) *AsyncR
 		defer func() {
 			if r := recover(); r != nil {
 				var zero T
-				results <- core.Result[T]{Value: zero, Err: core.NewPanicError(r)}
+				r := core.Result[T]{Value: zero, Err: core.NewPanicError(r)}
+				ar.mu.Lock()
+				ar.result = r
+				ar.populated = true
+				ar.mu.Unlock()
+				results <- r
 			}
 			close(results)
 		}()
 		val, err := fn(ctx)
-		results <- core.Result[T]{Value: val, Err: err}
+		r := core.Result[T]{Value: val, Err: err}
+		ar.mu.Lock()
+		ar.result = r
+		ar.populated = true
+		ar.mu.Unlock()
+		results <- r
 	}()
 	return ar
 }
@@ -277,12 +374,19 @@ func GoResult[T any](ctx context.Context, fn func(context.Context) (T, error)) T
 		val, err := fn(ctx)
 		results <- core.Result[T]{Value: val, Err: err}
 	}()
+	var once sync.Once
+	var cachedVal T
+	var cachedErr error
 	return Task[T]{
 		Ctx:    ctx,
 		Cancel: cancel,
 		Result: func() (T, error) {
-			r := <-results
-			return r.Value, r.Err
+			once.Do(func() {
+				r := <-results
+				cachedVal = r.Value
+				cachedErr = r.Err
+			})
+			return cachedVal, cachedErr
 		},
 	}
 }

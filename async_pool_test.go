@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/chichengyu/async/internal/pool"
+	"github.com/chichengyu/async/testutil"
 )
 
 // ============================================================
@@ -22,16 +23,16 @@ import (
 // ============================================================
 
 func TestPoolBuilder_Chain_Basic(t *testing.T) {
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
 
 			var sum int64
 			err := Pool[int]().Context(freshCtx()).
 				Worker(32).
 				MaxPending(0).
 				Run(func(ctx context.Context, p *pool.Pool[int]) error {
-					for i := 0; i < tier.size; i++ {
+					for i := 0; i < tier.Size; i++ {
 						v := i
 						p.Submit(ctx, func(ctx context.Context) (int, error) {
 							return v * 2, nil
@@ -48,7 +49,7 @@ func TestPoolBuilder_Chain_Basic(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			n := int64(tier.size)
+			n := int64(tier.Size)
 			expected := n * (n - 1) // sum(0..n-1) * 2
 			if sum != expected {
 				t.Fatalf("sum mismatch: expected %d, got %d", expected, sum)
@@ -58,9 +59,9 @@ func TestPoolBuilder_Chain_Basic(t *testing.T) {
 }
 
 func TestPoolBuilder_Chain_FailFast(t *testing.T) {
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
 
 			sentinel := errors.New("fail_fast_boom")
 			var errorCount int32
@@ -70,7 +71,7 @@ func TestPoolBuilder_Chain_FailFast(t *testing.T) {
 				Worker(16).
 				FailFast().
 				Run(func(ctx context.Context, p *pool.Pool[int]) error {
-					for i := 0; i < tier.size; i++ {
+					for i := 0; i < tier.Size; i++ {
 						v := i
 						p.Submit(ctx, func(ctx context.Context) (int, error) {
 							if v%100 == 0 {
@@ -94,7 +95,7 @@ func TestPoolBuilder_Chain_FailFast(t *testing.T) {
 			if errorCount == 0 {
 				t.Fatal("FailFast enabled but no errors captured")
 			}
-			if okCount == 0 && int32(tier.size) > 100 {
+			if okCount == 0 && int32(tier.Size) > 100 {
 				t.Log("FailFast: all tasks failed or early-exit — acceptable for fail-fast mode")
 			}
 		})
@@ -146,14 +147,14 @@ func TestPoolBuilder_Chain_Timeout(t *testing.T) {
 }
 
 func TestPoolBuilder_Chain_MaxResults(t *testing.T) {
-	tiers := []dataTier{
-		{"万级_10K", 10_000},
-		{"十万级_100K", 100_000},
-		{"百万级_1M", 1_000_000},
+	tiers := []testutil.Tier{
+		{Name: "万级_10K", Size: 10_000},
+		{Name: "十万级_100K", Size: 100_000},
+		{Name: "百万级_1M", Size: 1_000_000},
 	}
 	for _, tier := range tiers {
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
 
 			maxR := 100
 			var count int32
@@ -161,7 +162,7 @@ func TestPoolBuilder_Chain_MaxResults(t *testing.T) {
 				Worker(16).
 				MaxResults(maxR).
 				Run(func(ctx context.Context, p *pool.Pool[int]) error {
-					for i := 0; i < tier.size; i++ {
+					for i := 0; i < tier.Size; i++ {
 						v := i
 						p.Submit(ctx, func(ctx context.Context) (int, error) {
 							return v, nil
@@ -177,15 +178,15 @@ func TestPoolBuilder_Chain_MaxResults(t *testing.T) {
 			if count > int32(maxR) {
 				t.Fatalf("MaxResults=%d but got %d results", maxR, count)
 			}
-			t.Logf("results: %d / %d (max=%d)", count, tier.size, maxR)
+			t.Logf("results: %d / %d (max=%d)", count, tier.Size, maxR)
 		})
 	}
 }
 
 func TestPoolBuilder_Chain_ConfigFunc(t *testing.T) {
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
 
 			var sum int64
 			err := Pool[int]().Context(freshCtx()).
@@ -197,7 +198,7 @@ func TestPoolBuilder_Chain_ConfigFunc(t *testing.T) {
 				Worker(32). // override
 				MaxPending(0).
 				Run(func(ctx context.Context, p *pool.Pool[int]) error {
-					for i := 0; i < tier.size; i++ {
+					for i := 0; i < tier.Size; i++ {
 						v := i
 						p.Submit(ctx, func(ctx context.Context) (int, error) {
 							return v, nil
@@ -214,7 +215,7 @@ func TestPoolBuilder_Chain_ConfigFunc(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			n := int64(tier.size)
+			n := int64(tier.Size)
 			expected := n * (n - 1) / 2
 			if sum != expected {
 				t.Fatalf("sum mismatch: expected %d, got %d", expected, sum)
@@ -224,9 +225,9 @@ func TestPoolBuilder_Chain_ConfigFunc(t *testing.T) {
 }
 
 func TestPoolBuilder_Chain_DefaultReset(t *testing.T) {
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
 
 			var count int32
 			err := Pool[int]().Context(freshCtx()).
@@ -234,7 +235,7 @@ func TestPoolBuilder_Chain_DefaultReset(t *testing.T) {
 				DefaultPoolConfig().
 				Worker(32).
 				Run(func(ctx context.Context, p *pool.Pool[int]) error {
-					for i := 0; i < tier.size; i++ {
+					for i := 0; i < tier.Size; i++ {
 						p.Submit(ctx, func(ctx context.Context) (int, error) {
 							return 1, nil
 						})
@@ -245,8 +246,8 @@ func TestPoolBuilder_Chain_DefaultReset(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if int32(tier.size) != count {
-				t.Fatalf("expected %d results, got %d", tier.size, count)
+			if int32(tier.Size) != count {
+				t.Fatalf("expected %d results, got %d", tier.Size, count)
 			}
 		})
 	}
@@ -291,16 +292,16 @@ func TestPoolBuilder_Chain_SubmitTimeout(t *testing.T) {
 }
 
 func TestPoolBuilder_Chain_Streaming(t *testing.T) {
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
 
 			var count int32
 			err := Pool[int]().Context(freshCtx()).
 				Worker(16).
 				Streaming(256).
 				Run(func(ctx context.Context, p *pool.Pool[int]) error {
-					for i := 0; i < tier.size; i++ {
+					for i := 0; i < tier.Size; i++ {
 						p.Submit(ctx, func(ctx context.Context) (int, error) {
 							return i, nil
 						})
@@ -311,21 +312,21 @@ func TestPoolBuilder_Chain_Streaming(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if int(count) != tier.size {
-				t.Fatalf("expected %d results, got %d", tier.size, count)
+			if int(count) != tier.Size {
+				t.Fatalf("expected %d results, got %d", tier.Size, count)
 			}
 		})
 	}
 }
 
 func TestPoolBuilder_Chain_OverflowDrop(t *testing.T) {
-	tiers := []dataTier{
-		{"万级_10K", 10_000},
-		{"十万级_100K", 100_000},
+	tiers := []testutil.Tier{
+		{Name: "万级_10K", Size: 10_000},
+		{Name: "十万级_100K", Size: 100_000},
 	}
 	for _, tier := range tiers {
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
 
 			var totalSubmit int32
 			var totalResults int32
@@ -335,7 +336,7 @@ func TestPoolBuilder_Chain_OverflowDrop(t *testing.T) {
 				Overflow(OverflowDrop).
 				RingBuf(0).
 				Run(func(ctx context.Context, p *pool.Pool[int]) error {
-					for i := 0; i < tier.size; i++ {
+					for i := 0; i < tier.Size; i++ {
 						p.Submit(ctx, func(ctx context.Context) (int, error) {
 							time.Sleep(10 * time.Microsecond)
 							return i, nil
@@ -348,15 +349,15 @@ func TestPoolBuilder_Chain_OverflowDrop(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			t.Logf("submitted=%d results=%d total=%d (OverflowDrop)", totalSubmit, totalResults, tier.size)
+			t.Logf("submitted=%d results=%d total=%d (OverflowDrop)", totalSubmit, totalResults, tier.Size)
 		})
 	}
 }
 
 func TestPoolBuilder_Chain_RingBuf(t *testing.T) {
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
 
 			var count int32
 			bufSize := 1024
@@ -365,7 +366,7 @@ func TestPoolBuilder_Chain_RingBuf(t *testing.T) {
 				MaxPending(0).
 				RingBuf(bufSize).
 				Run(func(ctx context.Context, p *pool.Pool[int]) error {
-					for i := 0; i < tier.size; i++ {
+					for i := 0; i < tier.Size; i++ {
 						v := i
 						p.Submit(ctx, func(ctx context.Context) (int, error) {
 							return v, nil
@@ -378,8 +379,8 @@ func TestPoolBuilder_Chain_RingBuf(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if int(count) != tier.size {
-				t.Fatalf("expected %d results, got %d", tier.size, count)
+			if int(count) != tier.Size {
+				t.Fatalf("expected %d results, got %d", tier.Size, count)
 			}
 		})
 	}

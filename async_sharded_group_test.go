@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/chichengyu/async/internal/shard"
+	"github.com/chichengyu/async/testutil"
 )
 
 // ============================================================
@@ -19,9 +20,9 @@ import (
 // ============================================================
 
 func TestShardedGroupBuilder_Chain_Basic(t *testing.T) {
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
 
 			var sum int64
 			err := GroupSharded[int]().Context(freshCtx()).
@@ -29,7 +30,7 @@ func TestShardedGroupBuilder_Chain_Basic(t *testing.T) {
 				Worker(16).
 				Distribution(RoundRobin).
 				Run(func(ctx context.Context, sg *shard.ShardedGroup[int]) error {
-					for i := 0; i < tier.size; i++ {
+					for i := 0; i < tier.Size; i++ {
 						v := i
 						sg.Go(ctx, func(ctx context.Context) (int, error) {
 							return v * 2, nil
@@ -46,7 +47,7 @@ func TestShardedGroupBuilder_Chain_Basic(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			n := int64(tier.size)
+			n := int64(tier.Size)
 			expected := n * (n - 1)
 			if sum != expected {
 				t.Fatalf("sum mismatch: expected %d, got %d", expected, sum)
@@ -90,9 +91,9 @@ func TestShardedGroupBuilder_Chain_Distribution(t *testing.T) {
 }
 
 func TestShardedGroupBuilder_Chain_ConfigFunc(t *testing.T) {
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
 
 			var sum int64
 			err := GroupSharded[int]().Context(freshCtx()).
@@ -102,7 +103,7 @@ func TestShardedGroupBuilder_Chain_ConfigFunc(t *testing.T) {
 					return cfg
 				}).
 				Run(func(ctx context.Context, sg *shard.ShardedGroup[int]) error {
-					for i := 0; i < tier.size; i++ {
+					for i := 0; i < tier.Size; i++ {
 						v := i
 						sg.Go(ctx, func(ctx context.Context) (int, error) {
 							return v * 2, nil
@@ -119,7 +120,7 @@ func TestShardedGroupBuilder_Chain_ConfigFunc(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			n := int64(tier.size)
+			n := int64(tier.Size)
 			expected := n * (n - 1)
 			if sum != expected {
 				t.Fatalf("sum mismatch: expected %d, got %d", expected, sum)
@@ -129,9 +130,9 @@ func TestShardedGroupBuilder_Chain_ConfigFunc(t *testing.T) {
 }
 
 func TestShardedGroupBuilder_Chain_DefaultReset(t *testing.T) {
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
 
 			var count int32
 			err := GroupSharded[int]().Context(freshCtx()).
@@ -141,7 +142,7 @@ func TestShardedGroupBuilder_Chain_DefaultReset(t *testing.T) {
 				Shards(2).
 				Worker(16).
 				Run(func(ctx context.Context, sg *shard.ShardedGroup[int]) error {
-					for i := 0; i < tier.size; i++ {
+					for i := 0; i < tier.Size; i++ {
 						sg.Go(ctx, func(ctx context.Context) (int, error) {
 							return 1, nil
 						})
@@ -152,8 +153,8 @@ func TestShardedGroupBuilder_Chain_DefaultReset(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if int(count) != tier.size {
-				t.Fatalf("expected %d results, got %d", tier.size, count)
+			if int(count) != tier.Size {
+				t.Fatalf("expected %d results, got %d", tier.Size, count)
 			}
 		})
 	}
@@ -285,16 +286,16 @@ func TestShardedGroupBuilder_Chain_ContextSwitch(t *testing.T) {
 }
 
 func TestShardedGroupBuilder_Chain_WaitContext(t *testing.T) {
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
 
 			var count int32
 			err := GroupSharded[int]().Context(freshCtx()).
 				Shards(2).
 				Worker(16).
 				Run(func(ctx context.Context, sg *shard.ShardedGroup[int]) error {
-					for i := 0; i < tier.size; i++ {
+					for i := 0; i < tier.Size; i++ {
 						sg.Go(ctx, func(ctx context.Context) (int, error) {
 							return i, nil
 						})
@@ -309,23 +310,23 @@ func TestShardedGroupBuilder_Chain_WaitContext(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if int(count) != tier.size {
-				t.Fatalf("expected %d results, got %d", tier.size, count)
+			if int(count) != tier.Size {
+				t.Fatalf("expected %d results, got %d", tier.Size, count)
 			}
 		})
 	}
 }
 
 func TestShardedGroupBuilder_Chain_WaitTimeout(t *testing.T) {
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
 
 			err := GroupSharded[int]().Context(freshCtx()).
 				Shards(2).
 				Worker(16).
 				Run(func(ctx context.Context, sg *shard.ShardedGroup[int]) error {
-					for i := 0; i < tier.size; i++ {
+					for i := 0; i < tier.Size; i++ {
 						sg.Go(ctx, func(ctx context.Context) (int, error) {
 							return i, nil
 						})
@@ -344,12 +345,12 @@ func TestShardedGroupBuilder_Chain_WaitTimeout(t *testing.T) {
 }
 
 func TestShardedGroupBuilder_Chain_FailFast(t *testing.T) {
-	for _, tier := range allTiers {
-		if tier.size > 100_000 {
+	for _, tier := range testutil.AllTiers {
+		if tier.Size > 100_000 {
 			t.Skip("skip large tier for failfast")
 		}
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
 
 			var errCount int32
 			err := GroupSharded[int]().Context(freshCtx()).
@@ -360,7 +361,7 @@ func TestShardedGroupBuilder_Chain_FailFast(t *testing.T) {
 					for s := 0; s < sg.ShardCount(); s++ {
 						sg.GetShard(s).WithFailFast(ctx)
 					}
-					for i := 0; i < tier.size; i++ {
+					for i := 0; i < tier.Size; i++ {
 						v := i
 						sg.Go(ctx, func(ctx context.Context) (int, error) {
 							if v%10 == 0 {
@@ -382,7 +383,7 @@ func TestShardedGroupBuilder_Chain_FailFast(t *testing.T) {
 			if errCount == 0 {
 				t.Fatal("FailFast enabled but no errors detected")
 			}
-			t.Logf("errors: %d / %d", errCount, tier.size)
+			t.Logf("errors: %d / %d", errCount, tier.Size)
 		})
 	}
 }

@@ -2,6 +2,7 @@ package task
 
 import (
 	"context"
+	"sync"
 
 	"github.com/chichengyu/async/internal/core"
 )
@@ -75,12 +76,17 @@ func GoResultAct(ctx context.Context, fn func(context.Context) error) Task[NoRes
 		err := fn(ctx)
 		results <- core.Result[NoResult]{Value: NoResult{}, Err: err}
 	}()
+	var once sync.Once
+	var cachedErr error
 	return Task[NoResult]{
 		Ctx:    ctx,
 		Cancel: cancel,
 		Result: func() (NoResult, error) {
-			r := <-results
-			return r.Value, r.Err
+			once.Do(func() {
+				r := <-results
+				cachedErr = r.Err
+			})
+			return NoResult{}, cachedErr
 		},
 	}
 }

@@ -8,6 +8,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/chichengyu/async/testutil"
 )
 
 // ============================================================
@@ -15,12 +17,12 @@ import (
 // ============================================================
 
 func TestTask_Chain_Basic(t *testing.T) {
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
 
 			var done atomic.Int64
-			for i := 0; i < tier.size; i++ {
+			for i := 0; i < tier.Size; i++ {
 				v := i
 				ar := Task[int]().Context(freshCtx()).
 					Go(func(ctx context.Context) (int, error) {
@@ -35,8 +37,8 @@ func TestTask_Chain_Basic(t *testing.T) {
 				}
 				done.Add(1)
 			}
-			if done.Load() != int64(tier.size) {
-				t.Fatalf("expected %d, got %d", tier.size, done.Load())
+			if done.Load() != int64(tier.Size) {
+				t.Fatalf("expected %d, got %d", tier.Size, done.Load())
 			}
 		})
 	}
@@ -250,7 +252,7 @@ func TestTask_Chain_NoContext(t *testing.T) {
 }
 
 func TestTask_Chain_Concurrent_10K(t *testing.T) {
-	skipIfTooLarge(t, 10000)
+	testutil.SkipIfTooLarge1M(t, 10000)
 
 	var wg sync.WaitGroup
 	n := 10000

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/chichengyu/async/internal/shard"
+	"github.com/chichengyu/async/testutil"
 )
 
 // ============================================================
@@ -22,9 +23,9 @@ import (
 // ============================================================
 
 func TestShardPoolBuilder_Chain_Basic(t *testing.T) {
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
 
 			var sum int64
 			err := PoolSharded[int]().Context(freshCtx()).
@@ -32,7 +33,7 @@ func TestShardPoolBuilder_Chain_Basic(t *testing.T) {
 				Worker(8).
 				MaxPending(0).
 				Run(func(ctx context.Context, sp *shard.ShardedPool[int]) error {
-					for i := 0; i < tier.size; i++ {
+					for i := 0; i < tier.Size; i++ {
 						v := i
 						sp.Submit(ctx, func(ctx context.Context) (int, error) {
 							return v * 2, nil
@@ -49,7 +50,7 @@ func TestShardPoolBuilder_Chain_Basic(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			n := int64(tier.size)
+			n := int64(tier.Size)
 			expected := n * (n - 1)
 			if sum != expected {
 				t.Fatalf("sum mismatch: expected %d, got %d", expected, sum)
@@ -59,9 +60,9 @@ func TestShardPoolBuilder_Chain_Basic(t *testing.T) {
 }
 
 func TestShardPoolBuilder_Chain_FailFast(t *testing.T) {
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
 
 			sentinel := errors.New("shard_fail_boom")
 			var errorCount int32
@@ -71,7 +72,7 @@ func TestShardPoolBuilder_Chain_FailFast(t *testing.T) {
 				Worker(4).
 				FailFast().
 				Run(func(ctx context.Context, sp *shard.ShardedPool[int]) error {
-					for i := 0; i < tier.size; i++ {
+					for i := 0; i < tier.Size; i++ {
 						v := i
 						sp.Submit(ctx, func(ctx context.Context) (int, error) {
 							if v%100 == 0 {
@@ -93,7 +94,7 @@ func TestShardPoolBuilder_Chain_FailFast(t *testing.T) {
 			if errorCount == 0 {
 				t.Fatal("FailFast enabled but no errors captured")
 			}
-			t.Logf("shard fail errors: %d / %d", errorCount, tier.size)
+			t.Logf("shard fail errors: %d / %d", errorCount, tier.Size)
 		})
 	}
 }
@@ -144,9 +145,9 @@ func TestShardPoolBuilder_Chain_Timeout(t *testing.T) {
 }
 
 func TestShardPoolBuilder_Chain_ConfigFunc(t *testing.T) {
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
 
 			var sum int64
 			err := PoolSharded[int]().Context(freshCtx()).
@@ -158,7 +159,7 @@ func TestShardPoolBuilder_Chain_ConfigFunc(t *testing.T) {
 				Shards(4). // override
 				Worker(8). // override
 				Run(func(ctx context.Context, sp *shard.ShardedPool[int]) error {
-					for i := 0; i < tier.size; i++ {
+					for i := 0; i < tier.Size; i++ {
 						v := i
 						sp.Submit(ctx, func(ctx context.Context) (int, error) {
 							return v, nil
@@ -175,7 +176,7 @@ func TestShardPoolBuilder_Chain_ConfigFunc(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			n := int64(tier.size)
+			n := int64(tier.Size)
 			expected := n * (n - 1) / 2
 			if sum != expected {
 				t.Fatalf("sum mismatch: expected %d, got %d", expected, sum)
@@ -185,9 +186,9 @@ func TestShardPoolBuilder_Chain_ConfigFunc(t *testing.T) {
 }
 
 func TestShardPoolBuilder_Chain_DefaultReset(t *testing.T) {
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
 
 			var count int32
 			err := PoolSharded[int]().Context(freshCtx()).
@@ -197,7 +198,7 @@ func TestShardPoolBuilder_Chain_DefaultReset(t *testing.T) {
 				Shards(2).
 				Worker(16).
 				Run(func(ctx context.Context, sp *shard.ShardedPool[int]) error {
-					for i := 0; i < tier.size; i++ {
+					for i := 0; i < tier.Size; i++ {
 						sp.Submit(ctx, func(ctx context.Context) (int, error) {
 							return 1, nil
 						})
@@ -208,17 +209,17 @@ func TestShardPoolBuilder_Chain_DefaultReset(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if int32(tier.size) != count {
-				t.Fatalf("expected %d results, got %d", tier.size, count)
+			if int32(tier.Size) != count {
+				t.Fatalf("expected %d results, got %d", tier.Size, count)
 			}
 		})
 	}
 }
 
 func TestShardPoolBuilder_Chain_Distribution(t *testing.T) {
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
 
 			var count int32
 			err := PoolSharded[int]().Context(freshCtx()).
@@ -226,7 +227,7 @@ func TestShardPoolBuilder_Chain_Distribution(t *testing.T) {
 				Worker(8).
 				Distribution(RoundRobin).
 				Run(func(ctx context.Context, sp *shard.ShardedPool[int]) error {
-					for i := 0; i < tier.size; i++ {
+					for i := 0; i < tier.Size; i++ {
 						sp.Submit(ctx, func(ctx context.Context) (int, error) {
 							return i, nil
 						})
@@ -237,17 +238,17 @@ func TestShardPoolBuilder_Chain_Distribution(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if int(count) != tier.size {
-				t.Fatalf("expected %d results, got %d", tier.size, count)
+			if int(count) != tier.Size {
+				t.Fatalf("expected %d results, got %d", tier.Size, count)
 			}
 		})
 	}
 }
 
 func TestShardPoolBuilder_Chain_KeyFn(t *testing.T) {
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
 
 			var count int32
 			err := PoolSharded[int]().Context(freshCtx()).
@@ -256,7 +257,7 @@ func TestShardPoolBuilder_Chain_KeyFn(t *testing.T) {
 				Distribution(Hash).
 				KeyFn(func(v int) uint64 { return uint64(v) }).
 				Run(func(ctx context.Context, sp *shard.ShardedPool[int]) error {
-					for i := 0; i < tier.size; i++ {
+					for i := 0; i < tier.Size; i++ {
 						v := i
 						sp.Submit(ctx, func(ctx context.Context) (int, error) {
 							return v, nil
@@ -268,21 +269,21 @@ func TestShardPoolBuilder_Chain_KeyFn(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if int(count) != tier.size {
-				t.Fatalf("expected %d results, got %d", tier.size, count)
+			if int(count) != tier.Size {
+				t.Fatalf("expected %d results, got %d", tier.Size, count)
 			}
 		})
 	}
 }
 
 func TestShardPoolBuilder_Chain_MaxPending(t *testing.T) {
-	tiers := []dataTier{
-		{"万级_10K", 10_000},
-		{"十万级_100K", 100_000},
+	tiers := []testutil.Tier{
+		{Name: "万级_10K", Size: 10_000},
+		{Name: "十万级_100K", Size: 100_000},
 	}
 	for _, tier := range tiers {
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
 
 			var total int32
 			err := PoolSharded[int]().Context(freshCtx()).
@@ -290,7 +291,7 @@ func TestShardPoolBuilder_Chain_MaxPending(t *testing.T) {
 				Worker(4).
 				MaxPending(10).
 				Run(func(ctx context.Context, sp *shard.ShardedPool[int]) error {
-					for i := 0; i < tier.size; i++ {
+					for i := 0; i < tier.Size; i++ {
 						sp.Submit(ctx, func(ctx context.Context) (int, error) {
 							time.Sleep(time.Microsecond)
 							return i, nil
@@ -306,7 +307,7 @@ func TestShardPoolBuilder_Chain_MaxPending(t *testing.T) {
 			if total == 0 {
 				t.Fatal("no submissions succeeded")
 			}
-			t.Logf("submitted: %d / %d", total, tier.size)
+			t.Logf("submitted: %d / %d", total, tier.Size)
 		})
 	}
 }
@@ -340,16 +341,16 @@ func TestShardPoolBuilder_Chain_EmptyRun(t *testing.T) {
 }
 
 func TestShardPoolBuilder_Chain_MinimalConfig(t *testing.T) {
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
 
 			var count int32
 			err := PoolSharded[int]().Context(freshCtx()).
 				Shards(2).
 				Worker(4).
 				Run(func(ctx context.Context, sp *shard.ShardedPool[int]) error {
-					for i := 0; i < tier.size; i++ {
+					for i := 0; i < tier.Size; i++ {
 						v := i
 						sp.Submit(ctx, func(ctx context.Context) (int, error) {
 							return v, nil
@@ -361,8 +362,8 @@ func TestShardPoolBuilder_Chain_MinimalConfig(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if int(count) != tier.size {
-				t.Fatalf("expected %d, got %d", tier.size, count)
+			if int(count) != tier.Size {
+				t.Fatalf("expected %d, got %d", tier.Size, count)
 			}
 		})
 	}

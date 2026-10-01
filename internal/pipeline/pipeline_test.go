@@ -9,29 +9,8 @@ import (
 	"time"
 
 	"github.com/chichengyu/async/internal/core"
+	"github.com/chichengyu/async/testutil"
 )
-
-// ============================================================
-// 共享工具：四档数据量（万/十万/百万/千万），short 跳过
-// ============================================================
-
-type tier struct {
-	name string
-	size int
-}
-
-var allTiers = []tier{
-	{"万级_10K", 10_000},
-	{"十万级_100K", 100_000},
-	{"百万级_1M", 1_000_000},
-	{"千万级_10M", 10_000_000},
-}
-
-func skipIfTooLarge(t *testing.T, size int) {
-	if testing.Short() && size >= 100_000 {
-		t.Skip("short mode: skip large scale test")
-	}
-}
 
 func genItems(n int) []int {
 	items := make([]int, n)
@@ -393,8 +372,7 @@ func TestExecuteStream_Progressive(t *testing.T) {
 	items := genItems(n)
 
 	var consumed atomic.Int64
-	var mu sync.Mutex
-	var snapshots []int64
+	snapshotCh := make(chan int64, 100)
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 
@@ -403,9 +381,7 @@ func TestExecuteStream_Progressive(t *testing.T) {
 		for {
 			select {
 			case <-ticker.C:
-				mu.Lock()
-				snapshots = append(snapshots, consumed.Load())
-				mu.Unlock()
+				snapshotCh <- consumed.Load()
 			case <-done:
 				return
 			}
@@ -422,9 +398,18 @@ func TestExecuteStream_Progressive(t *testing.T) {
 	}
 	close(done)
 
-	mu.Lock()
+	var snapshots []int64
+	for {
+		select {
+		case s := <-snapshotCh:
+			snapshots = append(snapshots, s)
+		default:
+			goto doneSnapshots
+		}
+	}
+doneSnapshots:
+
 	t.Logf("ExecuteStream progressive: consumed=%d snapshots=%v", consumed.Load(), snapshots)
-	mu.Unlock()
 
 	if consumed.Load() != int64(n) {
 		t.Errorf("expected %d, got %d", n, consumed.Load())
@@ -506,15 +491,14 @@ func TestPipelineBuilder_MultiStage(t *testing.T) {
 }
 
 // ============================================================
-// 六、四档并发压力测试（万/十万/百万/千万）
-// ============================================================
+// 六、四档并发压力测试（�?十万/百万/千万�?// ============================================================
 
 func TestExecute_Concurrent(t *testing.T) {
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
+	for _, tier := range testutil.SmallAllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge(t, tier.Size)
 			ctx := context.Background()
-			items := genItems(tier.size)
+			items := genItems(tier.Size)
 			stages := []Stage[int]{
 				{Name: "compute", Concurrency: 100},
 			}
@@ -524,19 +508,19 @@ func TestExecute_Concurrent(t *testing.T) {
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			if len(results) != tier.size {
-				t.Fatalf("expected %d results, got %d", tier.size, len(results))
+			if len(results) != tier.Size {
+				t.Fatalf("expected %d results, got %d", tier.Size, len(results))
 			}
 		})
 	}
 }
 
 func TestExecute_MultiStage_Concurrent(t *testing.T) {
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
+	for _, tier := range testutil.SmallAllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge(t, tier.Size)
 			ctx := context.Background()
-			items := genItems(tier.size)
+			items := genItems(tier.Size)
 			stages := []Stage[int]{
 				{Name: "s1", Concurrency: 50},
 				{Name: "s2", Concurrency: 50},
@@ -548,46 +532,46 @@ func TestExecute_MultiStage_Concurrent(t *testing.T) {
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			if len(results) != tier.size {
-				t.Fatalf("expected %d results, got %d", tier.size, len(results))
+			if len(results) != tier.Size {
+				t.Fatalf("expected %d results, got %d", tier.Size, len(results))
 			}
 		})
 	}
 }
 
 func TestExecuteWithGroup_Concurrent(t *testing.T) {
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
+	for _, tier := range testutil.SmallAllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge(t, tier.Size)
 			ctx := context.Background()
-			items := genItems(tier.size)
+			items := genItems(tier.Size)
 			results, err := ExecuteWithGroup(ctx, items, func(ctx context.Context, item int) (int, error) {
 				return item * 2, nil
 			}, 200)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			if len(results) != tier.size {
-				t.Fatalf("expected %d results, got %d", tier.size, len(results))
+			if len(results) != tier.Size {
+				t.Fatalf("expected %d results, got %d", tier.Size, len(results))
 			}
 		})
 	}
 }
 
 func TestExecuteWithMeta_Concurrent(t *testing.T) {
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
+	for _, tier := range testutil.SmallAllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge(t, tier.Size)
 			ctx := context.Background()
-			items := genItems(tier.size)
+			items := genItems(tier.Size)
 			stages := []Stage[int]{
 				{Name: "only", Concurrency: 200},
 			}
 			results := ExecuteWithMeta(ctx, stages, items, func(ctx context.Context, stage string, item int) (int, error) {
 				return item, nil
 			})
-			if len(results) != tier.size {
-				t.Fatalf("expected %d results, got %d", tier.size, len(results))
+			if len(results) != tier.Size {
+				t.Fatalf("expected %d results, got %d", tier.Size, len(results))
 			}
 			for _, r := range results {
 				if r.Stage != "only" {
@@ -599,11 +583,11 @@ func TestExecuteWithMeta_Concurrent(t *testing.T) {
 }
 
 func TestExecuteStream_Concurrent(t *testing.T) {
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
+	for _, tier := range testutil.SmallAllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge(t, tier.Size)
 			ctx := context.Background()
-			items := genItems(tier.size)
+			items := genItems(tier.Size)
 			stages := []Stage[int]{
 				{Name: "process", Concurrency: 64},
 			}
@@ -617,16 +601,15 @@ func TestExecuteStream_Concurrent(t *testing.T) {
 				_ = r
 			}
 
-			if consumed.Load() != int64(tier.size) {
-				t.Fatalf("expected %d consumed, got %d", tier.size, consumed.Load())
+			if consumed.Load() != int64(tier.Size) {
+				t.Fatalf("expected %d consumed, got %d", tier.Size, consumed.Load())
 			}
 		})
 	}
 }
 
 // ============================================================
-// 七、Race 竞态测试（go test -race）
-// ============================================================
+// 七、Race 竞态测试（go test -race�?// ============================================================
 
 func TestPipeline_Race_ConcurrentCalls(t *testing.T) {
 	ctx := context.Background()
@@ -685,6 +668,459 @@ func TestPipeline_Race_ExecuteStream_Concurrent(t *testing.T) {
 		}
 	}
 }
+
+// ============================================================
+// 八、PipelineBuilder 配置方法测试
+// ============================================================
+
+func TestPipelineBuilder_Timeout(t *testing.T) {
+	b := NewPipelineBuilder([]int{1, 2, 3})
+	b.Context(context.Background()).Stage("fast", 4).Timeout(10 * time.Second)
+	results, err := b.Execute(func(ctx context.Context, stage string, v int) (int, error) {
+		return v, nil
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) != 3 {
+		t.Fatalf("expected 3, got %d", len(results))
+	}
+}
+
+func TestPipelineBuilder_FailFast(t *testing.T) {
+	b := NewPipelineBuilder([]int{1, 2, 3, 4, 5})
+	b.Context(context.Background()).Stage("s1", 4).FailFast()
+	results, err := b.Execute(func(ctx context.Context, stage string, v int) (int, error) {
+		if v == 3 {
+			return 0, errors.New("fail")
+		}
+		return v, nil
+	})
+	_ = err
+	hasError := false
+	for _, r := range results {
+		if r.Err != nil {
+			hasError = true
+			break
+		}
+	}
+	if !hasError {
+		t.Fatal("expected error with FailFast")
+	}
+}
+
+func TestPipelineBuilder_OnResult(t *testing.T) {
+	var mu sync.Mutex
+	var collected []int
+	b := NewPipelineBuilder([]int{1, 2, 3})
+	b.Context(context.Background()).Stage("s1", 2).OnResult(func(stage string, r core.Result[int]) {
+		mu.Lock()
+		collected = append(collected, r.Value)
+		mu.Unlock()
+	})
+	results, err := b.Execute(func(ctx context.Context, stage string, v int) (int, error) {
+		return v * 10, nil
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) != 3 {
+		t.Fatalf("expected 3, got %d", len(results))
+	}
+}
+
+func TestPipelineBuilder_MultiStage_Config(t *testing.T) {
+	b := NewPipelineBuilder([]int{1, 2, 3})
+	b.Context(context.Background()).
+		Timeout(5*time.Second).FailFast().
+		Stage("load", 8).
+		Stage("transform", 4).
+		Stage("save", 2)
+
+	if len(b.stages) != 3 {
+		t.Fatalf("expected 3 stages, got %d", len(b.stages))
+	}
+	if b.stages[0].Concurrency != 8 {
+		t.Fatalf("s0 concurrency = %d, want 8", b.stages[0].Concurrency)
+	}
+	if b.stages[1].Concurrency != 4 {
+		t.Fatalf("s1 concurrency = %d, want 4", b.stages[1].Concurrency)
+	}
+}
+
+func TestPipelineBuilder_DefaultStage(t *testing.T) {
+	b := NewPipelineBuilder([]int{1, 2, 3, 4, 5})
+	b.Context(context.Background()).Stage("s1", 4).DefaultStage("default")
+	if len(b.stages) != 2 {
+		t.Fatalf("expected 2 stages, got %d", len(b.stages))
+	}
+	if b.stages[1].Name != "default" {
+		t.Fatalf("stage[1].Name = %s, want 'default'", b.stages[1].Name)
+	}
+	results, err := b.Execute(func(ctx context.Context, stage string, v int) (int, error) {
+		return v, nil
+	})
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	if len(results) != 5 {
+		t.Fatalf("expected 5, got %d", len(results))
+	}
+}
+
+func TestPipelineBuilder_StageOpts(t *testing.T) {
+	b := NewPipelineBuilder([]int{1, 2, 3})
+	b.Context(context.Background()).
+		Stage("s1", 8).FailFast().Timeout(time.Second)
+	if b.stages[0].Concurrency != 8 {
+		t.Fatalf("expected Concurrency=8, got %d", b.stages[0].Concurrency)
+	}
+}
+
+// ============================================================
+// 九、PipelineStreamBuilder 详细测试
+// ============================================================
+
+func TestPipelineStreamBuilder_Buf(t *testing.T) {
+	b := NewPipelineBuilder(genItems(100))
+	ch := b.Context(context.Background()).Stage("s1", 4).Stream().Buf(512).
+		Run(func(ctx context.Context, stage string, v int) (int, error) {
+			return v, nil
+		}).Receive()
+	count := 0
+	for range ch {
+		count++
+	}
+	if count != 100 {
+		t.Fatalf("expected 100, got %d", count)
+	}
+}
+
+func TestPipelineStreamBuilder_Run_ToSlice(t *testing.T) {
+	b := NewPipelineBuilder([]int{1, 2, 3})
+	stream := b.Context(context.Background()).Stage("s1", 2).Stream().
+		Run(func(ctx context.Context, stage string, v int) (int, error) {
+			return v * 10, nil
+		})
+	ch := stream.Receive()
+	var result []core.Result[int]
+	for r := range ch {
+		result = append(result, r)
+	}
+	if len(result) != 3 {
+		t.Fatalf("expected 3, got %d", len(result))
+	}
+	sum := 0
+	for _, r := range result {
+		sum += r.Value
+	}
+	if sum != 60 {
+		t.Fatalf("sum = %d, want 60", sum)
+	}
+}
+
+func TestPipelineStreamBuilder_Run_ForEach(t *testing.T) {
+	b := NewPipelineBuilder(genItems(500))
+	var sum atomic.Int64
+	stream := b.Context(context.Background()).Stage("s1", 8).Stream().
+		Run(func(ctx context.Context, stage string, v int) (int, error) {
+			return v, nil
+		})
+	stream.Drain(func(r core.Result[int]) {
+		sum.Add(int64(r.Value))
+	})
+	expected := int64(500) * int64(499) / 2
+	if sum.Load() != expected {
+		t.Fatalf("sum = %d, want %d", sum.Load(), expected)
+	}
+}
+
+func TestPipelineStreamBuilder_Run_Map(t *testing.T) {
+	b := NewPipelineBuilder([]int{1, 2, 3})
+	stream := b.Context(context.Background()).Stage("s1", 4).Stream().
+		Run(func(ctx context.Context, stage string, v int) (int, error) {
+			return v * 100, nil
+		})
+	ch := stream.Receive()
+	var vals []int
+	for r := range ch {
+		vals = append(vals, r.Value)
+	}
+	if len(vals) != 3 {
+		t.Fatalf("expected 3, got %d", len(vals))
+	}
+}
+
+// ============================================================
+// 十、Panic 恢复测试
+// ============================================================
+
+func TestExecute_PanicRecovery(t *testing.T) {
+	ctx := context.Background()
+	stages := []Stage[int]{
+		{Name: "danger", Concurrency: 4},
+	}
+	items := genItems(10)
+	results, err := Execute(ctx, stages, items, func(ctx context.Context, stage string, item int) (int, error) {
+		if item == 5 {
+			panic("test panic")
+		}
+		return item, nil
+	})
+	if err != nil {
+		t.Fatalf("unexpected top-level error: %v", err)
+	}
+	hasPanicErr := false
+	for _, r := range results {
+		if r.Err != nil {
+			hasPanicErr = true
+			break
+		}
+	}
+	if !hasPanicErr {
+		t.Fatal("expected panic error in results")
+	}
+}
+
+func TestExecuteStream_PanicRecovery(t *testing.T) {
+	ctx := context.Background()
+	stages := []Stage[int]{
+		{Name: "danger", Concurrency: 4},
+	}
+	items := genItems(20)
+	ch := ExecuteStream(ctx, stages, items, func(ctx context.Context, stage string, v int) (int, error) {
+		if v == 10 {
+			panic("stream panic")
+		}
+		return v, nil
+	}, 64)
+	hasErr := false
+	for r := range ch {
+		if r.Err != nil {
+			hasErr = true
+		}
+	}
+	if !hasErr {
+		t.Fatal("expected at least one error from panic recovery")
+	}
+}
+
+// ============================================================
+// 十一、交叉验证：Execute vs ExecuteStream vs ExecuteWithMeta
+// ============================================================
+
+func TestPipeline_CrossValidation_ExecuteVsStream(t *testing.T) {
+	ctx := context.Background()
+	stages := []Stage[int]{
+		{Name: "x2", Concurrency: 4},
+		{Name: "x4", Concurrency: 2},
+	}
+	items := genItems(200)
+
+	results1, _ := Execute(ctx, stages, items, func(ctx context.Context, stage string, item int) (int, error) {
+		switch stage {
+		case "x2":
+			return item * 2, nil
+		case "x4":
+			return item * 4, nil
+		}
+		return item, nil
+	})
+
+	ch := ExecuteStream(ctx, stages, items, func(ctx context.Context, stage string, v int) (int, error) {
+		switch stage {
+		case "x2":
+			return v * 2, nil
+		case "x4":
+			return v * 4, nil
+		}
+		return v, nil
+	}, 128)
+
+	results2 := make([]core.Result[int], 0, 200)
+	for r := range ch {
+		results2 = append(results2, r)
+	}
+
+	if len(results1) != len(results2) {
+		t.Fatalf("mismatch: Execute=%d Stream=%d", len(results1), len(results2))
+	}
+}
+
+func TestPipeline_CrossValidation_ExecuteVsBuilder(t *testing.T) {
+	ctx := context.Background()
+	stages := []Stage[int]{
+		{Name: "stage1", Concurrency: 4},
+	}
+	items := genItems(100)
+
+	results1, _ := Execute(ctx, stages, items, func(ctx context.Context, stage string, item int) (int, error) {
+		return item ^ 0xFF, nil
+	})
+
+	b := NewPipelineBuilder(items)
+	results2, err := b.Context(ctx).Stage("stage1", 4).Run(func(ctx context.Context, stage string, v int) (int, error) {
+		return v ^ 0xFF, nil
+	})
+	if err != nil {
+		t.Fatalf("builder error: %v", err)
+	}
+
+	if len(results1) != len(results2) {
+		t.Fatalf("mismatch: Execute=%d Builder=%d", len(results1), len(results2))
+	}
+	for i := range results1 {
+		if results1[i].Value != results2[i].Value {
+			t.Fatalf("i=%d: Execute=%d Builder=%d", i, results1[i].Value, results2[i].Value)
+		}
+		if (results1[i].Err != nil) != (results2[i].Err != nil) {
+			t.Fatalf("i=%d: error mismatch", i)
+		}
+	}
+}
+
+// ============================================================
+// 十二、Execute 黑箱场景测试
+// ============================================================
+
+func TestExecute_LargeItems_SmallConcurrency(t *testing.T) {
+	ctx := context.Background()
+	stages := []Stage[int]{
+		{Name: "process", Concurrency: 2},
+	}
+	items := genItems(1000)
+	results, err := Execute(ctx, stages, items, func(ctx context.Context, stage string, item int) (int, error) {
+		return item + 1, nil
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) != 1000 {
+		t.Fatalf("expected 1000, got %d", len(results))
+	}
+}
+
+func TestExecute_FewItems_LargeConcurrency(t *testing.T) {
+	ctx := context.Background()
+	stages := []Stage[int]{
+		{Name: "process", Concurrency: 100},
+	}
+	items := genItems(5)
+	results, err := Execute(ctx, stages, items, func(ctx context.Context, stage string, item int) (int, error) {
+		return item * 2, nil
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) != 5 {
+		t.Fatalf("expected 5, got %d", len(results))
+	}
+}
+
+func TestExecute_SingleItem(t *testing.T) {
+	ctx := context.Background()
+	stages := []Stage[int]{
+		{Name: "s1", Concurrency: 10},
+		{Name: "s2", Concurrency: 10},
+	}
+	results, err := Execute(ctx, stages, []int{42}, func(ctx context.Context, stage string, item int) (int, error) {
+		return item, nil
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) != 1 || results[0].Value != 42 {
+		t.Fatalf("expected single result 42, got %v", results)
+	}
+}
+
+func TestExecute_EmptyStagesAndItems(t *testing.T) {
+	ctx := context.Background()
+	results, err := Execute(ctx, nil, nil, func(ctx context.Context, stage string, item int) (int, error) {
+		return item, nil
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) != 0 {
+		t.Fatalf("expected 0, got %d", len(results))
+	}
+}
+
+func TestExecuteWithGroup_Empty(t *testing.T) {
+	ctx := context.Background()
+	results, err := ExecuteWithGroup(ctx, []int{}, func(ctx context.Context, item int) (int, error) {
+		return item, nil
+	}, 4)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) != 0 {
+		t.Fatalf("expected 0, got %d", len(results))
+	}
+}
+
+func TestExecuteWithGroup_PanicRecovery(t *testing.T) {
+	ctx := context.Background()
+	items := genItems(10)
+	results, err := ExecuteWithGroup(ctx, items, func(ctx context.Context, item int) (int, error) {
+		if item == 3 {
+			panic("group panic")
+		}
+		return item, nil
+	}, 4)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	hasPanic := false
+	for _, r := range results {
+		if r.Err != nil {
+			hasPanic = true
+			break
+		}
+	}
+	if !hasPanic {
+		t.Fatal("expected panic error in results")
+	}
+}
+
+func TestExecuteWithMeta_Empty(t *testing.T) {
+	ctx := context.Background()
+	results := ExecuteWithMeta(ctx, nil, nil, func(ctx context.Context, stage string, item int) (int, error) {
+		return item, nil
+	})
+	if len(results) != 0 {
+		t.Fatalf("expected 0, got %d", len(results))
+	}
+}
+
+func TestExecuteWithMeta_PanicRecovery(t *testing.T) {
+	ctx := context.Background()
+	stages := []Stage[int]{
+		{Name: "danger", Concurrency: 4},
+	}
+	items := genItems(10)
+	results := ExecuteWithMeta(ctx, stages, items, func(ctx context.Context, stage string, item int) (int, error) {
+		if item == 7 {
+			panic("meta panic")
+		}
+		return item, nil
+	})
+	hasPanic := false
+	for _, r := range results {
+		if r.Err != nil {
+			hasPanic = true
+			break
+		}
+	}
+	if !hasPanic {
+		t.Fatal("expected panic error in results")
+	}
+}
+
+// ============================================================
+// 十三、Race 竞态测试
+// ============================================================
 
 func TestPipeline_Race_Builder_ConcurrentExecute(t *testing.T) {
 	for round := 0; round < 50; round++ {

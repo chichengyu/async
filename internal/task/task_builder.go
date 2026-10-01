@@ -163,11 +163,8 @@ func boundedGoResultAct(r *BoundedRunner, ctx context.Context, fn func(context.C
 		}
 	}
 
-	t := GoResultAct(ctx, fn)
-	orig := t.Result
-	t.Result = func() (NoResult, error) {
+	return GoResultAct(ctx, func(ctx context.Context) error {
 		defer func() { <-r.sem }()
-		return orig()
-	}
-	return t
+		return fn(ctx)
+	})
 }

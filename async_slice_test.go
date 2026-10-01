@@ -13,34 +13,10 @@ import (
 
 	"github.com/chichengyu/async/internal/core"
 	"github.com/chichengyu/async/internal/pool"
+	"github.com/chichengyu/async/testutil"
 )
 
 var errTestSentinel = errors.New("test sentinel error")
-
-// ============================================================
-// 共享工具：测试档位 & 辅助函数
-//
-// 所有 slice 链式调用测试的公共基础设施。
-// 未来新增的包如果也需要多档位测试，可以复用 dataTier / allTiers 模式。
-// ============================================================
-
-type dataTier struct {
-	name string
-	size int
-}
-
-var allTiers = []dataTier{
-	{"万级_10K", 10_000},
-	{"十万级_100K", 100_000},
-	{"百万级_1M", 1_000_000},
-	{"千万级_10M", 10_000_000},
-}
-
-func skipIfTooLarge(t *testing.T, size int) {
-	if testing.Short() && size >= 1_000_000 {
-		t.Skip("short mode: skip large scale test")
-	}
-}
 
 func genInts(n int) []int {
 	s := make([]int, n)
@@ -67,10 +43,10 @@ func freshCtx() context.Context {
 // ============================================================
 
 func TestSlice_Chain_Sort(t *testing.T) {
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
-			data := genInts(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genInts(tier.Size)
 			shuffleData(data)
 
 			sb := Slice(freshCtx(), data)
@@ -86,13 +62,13 @@ func TestSlice_Chain_Sort(t *testing.T) {
 }
 
 func TestSlice_Chain_StableSort(t *testing.T) {
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
 			type pair struct{ v, tag int }
-			pairs := make([]pair, tier.size)
+			pairs := make([]pair, tier.Size)
 			for i := range pairs {
-				pairs[i] = pair{v: tier.size - i, tag: i}
+				pairs[i] = pair{v: tier.Size - i, tag: i}
 			}
 			sb := Slice(freshCtx(), pairs)
 			result := sb.StableSort(func(a, b pair) int { return a.v - b.v }).Values()
@@ -110,10 +86,10 @@ func TestSlice_Chain_StableSort(t *testing.T) {
 }
 
 func TestSlice_Chain_IsSorted(t *testing.T) {
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
-			data := genInts(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genInts(tier.Size)
 
 			if !Slice(freshCtx(), data).IsSorted(cmpInt) {
 				t.Fatal("sorted data should be IsSorted=true")
@@ -127,10 +103,10 @@ func TestSlice_Chain_IsSorted(t *testing.T) {
 }
 
 func TestSlice_Chain_Reverse(t *testing.T) {
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
-			data := genInts(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genInts(tier.Size)
 			result := Slice(freshCtx(), data).Reverse().Values()
 			n := len(result)
 			for i := 0; i < n; i++ {
@@ -143,10 +119,10 @@ func TestSlice_Chain_Reverse(t *testing.T) {
 }
 
 func TestSlice_Chain_Shuffle(t *testing.T) {
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
-			data := genInts(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genInts(tier.Size)
 			first := Slice(freshCtx(), data).Shuffle().Values()
 			second := Slice(freshCtx(), data).Shuffle().Values()
 
@@ -156,7 +132,7 @@ func TestSlice_Chain_Shuffle(t *testing.T) {
 					sameCount++
 				}
 			}
-			if tier.size >= 100 && sameCount == tier.size {
+			if tier.Size >= 100 && sameCount == tier.Size {
 				t.Fatal("Shuffle should produce different order")
 			}
 		})
@@ -164,11 +140,11 @@ func TestSlice_Chain_Shuffle(t *testing.T) {
 }
 
 func TestSlice_Chain_Repeat(t *testing.T) {
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
 			base := []int{1, 2, 3}
-			repeatN := tier.size / 3
+			repeatN := tier.Size / 3
 			if repeatN < 1 {
 				repeatN = 1
 			}
@@ -186,10 +162,10 @@ func TestSlice_Chain_Repeat(t *testing.T) {
 // ============================================================
 
 func TestSlice_Chain_Filter(t *testing.T) {
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
-			data := genInts(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genInts(tier.Size)
 			even := func(v int) bool { return v%2 == 0 }
 			result := Slice(freshCtx(), data).Filter(even).Values()
 			for _, v := range result {
@@ -202,10 +178,10 @@ func TestSlice_Chain_Filter(t *testing.T) {
 }
 
 func TestSlice_Chain_DeleteFunc(t *testing.T) {
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
-			data := genInts(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genInts(tier.Size)
 			odd := func(v int) bool { return v%2 != 0 }
 			result := Slice(freshCtx(), data).DeleteFunc(odd).Values()
 			for _, v := range result {
@@ -218,16 +194,16 @@ func TestSlice_Chain_DeleteFunc(t *testing.T) {
 }
 
 func TestSlice_Chain_Compact(t *testing.T) {
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
-			data := make([]int, 0, tier.size)
-			chunk := tier.size / 10
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := make([]int, 0, tier.Size)
+			chunk := tier.Size / 10
 			if chunk < 2 {
 				chunk = 2
 			}
-			for i := 0; i < tier.size; i += chunk {
-				for j := 0; j < chunk && len(data) < tier.size; j++ {
+			for i := 0; i < tier.Size; i += chunk {
+				for j := 0; j < chunk && len(data) < tier.Size; j++ {
 					data = append(data, i)
 				}
 			}
@@ -243,14 +219,14 @@ func TestSlice_Chain_Compact(t *testing.T) {
 }
 
 func TestSlice_Chain_Dedup(t *testing.T) {
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
-			data := genInts(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genInts(tier.Size)
 			eq := func(a, b int) bool { return a == b }
 			result := Slice(freshCtx(), data).Dedup(eq).Values()
-			if len(result) != tier.size {
-				t.Fatalf("Dedup on distinct values: expected %d, got %d", tier.size, len(result))
+			if len(result) != tier.Size {
+				t.Fatalf("Dedup on distinct values: expected %d, got %d", tier.Size, len(result))
 			}
 		})
 	}
@@ -261,15 +237,15 @@ func TestSlice_Chain_Dedup(t *testing.T) {
 // ============================================================
 
 func TestSlice_Chain_Append(t *testing.T) {
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
-			data := genInts(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genInts(tier.Size)
 			result := Slice(freshCtx(), data).Append(-1, -2).Values()
-			if len(result) != tier.size+2 {
-				t.Fatalf("Append: expected len %d, got %d", tier.size+2, len(result))
+			if len(result) != tier.Size+2 {
+				t.Fatalf("Append: expected len %d, got %d", tier.Size+2, len(result))
 			}
-			if result[tier.size] != -1 || result[tier.size+1] != -2 {
+			if result[tier.Size] != -1 || result[tier.Size+1] != -2 {
 				t.Fatal("Append: last elements mismatch")
 			}
 		})
@@ -277,13 +253,13 @@ func TestSlice_Chain_Append(t *testing.T) {
 }
 
 func TestSlice_Chain_Prepend(t *testing.T) {
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
-			data := genInts(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genInts(tier.Size)
 			result := Slice(freshCtx(), data).Prepend(-2, -1).Values()
-			if len(result) != tier.size+2 {
-				t.Fatalf("Prepend: expected len %d, got %d", tier.size+2, len(result))
+			if len(result) != tier.Size+2 {
+				t.Fatalf("Prepend: expected len %d, got %d", tier.Size+2, len(result))
 			}
 			if result[0] != -2 || result[1] != -1 {
 				t.Fatal("Prepend: first elements mismatch")
@@ -293,14 +269,14 @@ func TestSlice_Chain_Prepend(t *testing.T) {
 }
 
 func TestSlice_Chain_Insert(t *testing.T) {
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
-			data := genInts(tier.size)
-			pos := tier.size / 2
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genInts(tier.Size)
+			pos := tier.Size / 2
 			result := Slice(freshCtx(), data).Insert(pos, 999, 1000).Values()
-			if len(result) != tier.size+2 {
-				t.Fatalf("Insert: expected len %d, got %d", tier.size+2, len(result))
+			if len(result) != tier.Size+2 {
+				t.Fatalf("Insert: expected len %d, got %d", tier.Size+2, len(result))
 			}
 			if result[pos] != 999 || result[pos+1] != 1000 {
 				t.Fatal("Insert: inserted elements mismatch")
@@ -310,13 +286,13 @@ func TestSlice_Chain_Insert(t *testing.T) {
 }
 
 func TestSlice_Chain_Delete(t *testing.T) {
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
-			data := genInts(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genInts(tier.Size)
 			result := Slice(freshCtx(), data).Delete(0).Values()
-			if len(result) != tier.size-1 {
-				t.Fatalf("Delete: expected len %d, got %d", tier.size-1, len(result))
+			if len(result) != tier.Size-1 {
+				t.Fatalf("Delete: expected len %d, got %d", tier.Size-1, len(result))
 			}
 			if result[0] != 1 {
 				t.Fatalf("Delete: expected first=1, got %d", result[0])
@@ -326,16 +302,16 @@ func TestSlice_Chain_Delete(t *testing.T) {
 }
 
 func TestSlice_Chain_DeleteRange(t *testing.T) {
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
-			data := genInts(tier.size)
-			n := tier.size / 5
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genInts(tier.Size)
+			n := tier.Size / 5
 			if n < 1 {
 				n = 1
 			}
 			result := Slice(freshCtx(), data).DeleteRange(0, n).Values()
-			expectedLen := tier.size - n
+			expectedLen := tier.Size - n
 			if len(result) != expectedLen {
 				t.Fatalf("DeleteRange: expected len %d, got %d", expectedLen, len(result))
 			}
@@ -347,13 +323,13 @@ func TestSlice_Chain_DeleteRange(t *testing.T) {
 }
 
 func TestSlice_Chain_Replace(t *testing.T) {
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
-			data := genInts(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genInts(tier.Size)
 			result := Slice(freshCtx(), data).Replace(0, 2, 99, 100).Values()
-			if len(result) != tier.size {
-				t.Fatalf("Replace: expected len %d, got %d", tier.size, len(result))
+			if len(result) != tier.Size {
+				t.Fatalf("Replace: expected len %d, got %d", tier.Size, len(result))
 			}
 			if result[0] != 99 || result[1] != 100 {
 				t.Fatal("Replace: replaced elements mismatch")
@@ -367,11 +343,11 @@ func TestSlice_Chain_Replace(t *testing.T) {
 // ============================================================
 
 func TestSlice_Chain_Take(t *testing.T) {
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
-			data := genInts(tier.size)
-			n := tier.size / 2
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genInts(tier.Size)
+			n := tier.Size / 2
 			if n < 1 {
 				n = 1
 			}
@@ -384,16 +360,16 @@ func TestSlice_Chain_Take(t *testing.T) {
 }
 
 func TestSlice_Chain_Drop(t *testing.T) {
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
-			data := genInts(tier.size)
-			n := tier.size / 2
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genInts(tier.Size)
+			n := tier.Size / 2
 			if n < 1 {
 				n = 1
 			}
 			result := Slice(freshCtx(), data).Drop(n).Values()
-			expectedLen := tier.size - n
+			expectedLen := tier.Size - n
 			if len(result) != expectedLen {
 				t.Fatalf("Drop: expected len %d, got %d", expectedLen, len(result))
 			}
@@ -402,11 +378,11 @@ func TestSlice_Chain_Drop(t *testing.T) {
 }
 
 func TestSlice_Chain_SliceRange(t *testing.T) {
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
-			data := genInts(tier.size)
-			n := tier.size / 4
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genInts(tier.Size)
+			n := tier.Size / 4
 			if n < 1 {
 				n = 1
 			}
@@ -420,11 +396,11 @@ func TestSlice_Chain_SliceRange(t *testing.T) {
 }
 
 func TestSlice_Chain_SliceAlias(t *testing.T) {
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
-			data := genInts(tier.size)
-			n := tier.size / 4
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genInts(tier.Size)
+			n := tier.Size / 4
 			if n < 1 {
 				n = 1
 			}
@@ -438,26 +414,26 @@ func TestSlice_Chain_SliceAlias(t *testing.T) {
 }
 
 func TestSlice_Chain_Clip(t *testing.T) {
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
-			data := genInts(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genInts(tier.Size)
 			result := Slice(freshCtx(), data).Clip().Values()
-			if len(result) != tier.size {
-				t.Fatalf("Clip: len should equal %d, got %d", tier.size, len(result))
+			if len(result) != tier.Size {
+				t.Fatalf("Clip: len should equal %d, got %d", tier.Size, len(result))
 			}
 		})
 	}
 }
 
 func TestSlice_Chain_Grow(t *testing.T) {
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
-			data := genInts(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genInts(tier.Size)
 			result := Slice(freshCtx(), data).Grow(100).Values()
-			if len(result) != tier.size {
-				t.Fatalf("Grow: len should not change, expected %d, got %d", tier.size, len(result))
+			if len(result) != tier.Size {
+				t.Fatalf("Grow: len should not change, expected %d, got %d", tier.Size, len(result))
 			}
 		})
 	}
@@ -468,24 +444,24 @@ func TestSlice_Chain_Grow(t *testing.T) {
 // ============================================================
 
 func TestSlice_Chain_Len(t *testing.T) {
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
-			data := genInts(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genInts(tier.Size)
 			l := Slice(freshCtx(), data).Len()
-			if l != tier.size {
-				t.Fatalf("Len: expected %d, got %d", tier.size, l)
+			if l != tier.Size {
+				t.Fatalf("Len: expected %d, got %d", tier.Size, l)
 			}
 		})
 	}
 }
 
 func TestSlice_Chain_IsEmpty(t *testing.T) {
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
-			data := genInts(tier.size)
-			if Slice(freshCtx(), data).IsEmpty() && tier.size > 0 {
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genInts(tier.Size)
+			if Slice(freshCtx(), data).IsEmpty() && tier.Size > 0 {
 				t.Fatal("IsEmpty: non-empty slice should return false")
 			}
 			if !Slice(freshCtx(), []int{}).IsEmpty() {
@@ -496,10 +472,10 @@ func TestSlice_Chain_IsEmpty(t *testing.T) {
 }
 
 func TestSlice_Chain_First(t *testing.T) {
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
-			data := genInts(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genInts(tier.Size)
 			v, ok := Slice(freshCtx(), data).First()
 			if !ok || v != 0 {
 				t.Fatalf("First: expected (0, true), got (%d, %v)", v, ok)
@@ -509,52 +485,52 @@ func TestSlice_Chain_First(t *testing.T) {
 }
 
 func TestSlice_Chain_Last(t *testing.T) {
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
-			data := genInts(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genInts(tier.Size)
 			v, ok := Slice(freshCtx(), data).Last()
-			if !ok || v != tier.size-1 {
-				t.Fatalf("Last: expected (%d, true), got (%d, %v)", tier.size-1, v, ok)
+			if !ok || v != tier.Size-1 {
+				t.Fatalf("Last: expected (%d, true), got (%d, %v)", tier.Size-1, v, ok)
 			}
 		})
 	}
 }
 
 func TestSlice_Chain_Items(t *testing.T) {
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
-			data := genInts(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genInts(tier.Size)
 			ref := Slice(freshCtx(), data).Items()
-			if len(ref) != tier.size {
-				t.Fatalf("Items: expected len %d, got %d", tier.size, len(ref))
+			if len(ref) != tier.Size {
+				t.Fatalf("Items: expected len %d, got %d", tier.Size, len(ref))
 			}
 		})
 	}
 }
 
 func TestSlice_Chain_Values(t *testing.T) {
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
-			data := genInts(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genInts(tier.Size)
 			vals := Slice(freshCtx(), data).Values()
-			if len(vals) != tier.size {
-				t.Fatalf("Values: expected len %d, got %d", tier.size, len(vals))
+			if len(vals) != tier.Size {
+				t.Fatalf("Values: expected len %d, got %d", tier.Size, len(vals))
 			}
 		})
 	}
 }
 
 func TestSlice_Chain_Clone(t *testing.T) {
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
-			data := genInts(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genInts(tier.Size)
 			cloned := Slice(freshCtx(), data).Clone()
-			if len(cloned) != tier.size {
-				t.Fatalf("Clone: expected len %d, got %d", tier.size, len(cloned))
+			if len(cloned) != tier.Size {
+				t.Fatalf("Clone: expected len %d, got %d", tier.Size, len(cloned))
 			}
 		})
 	}
@@ -565,15 +541,15 @@ func TestSlice_Chain_Clone(t *testing.T) {
 // ============================================================
 
 func TestSlice_Chain_Contains(t *testing.T) {
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
-			data := genInts(tier.size)
-			mid := tier.size / 2
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genInts(tier.Size)
+			mid := tier.Size / 2
 			if !Slice(freshCtx(), data).Contains(func(v int) bool { return v == mid }) {
 				t.Fatalf("Contains: should find %d", mid)
 			}
-			if Slice(freshCtx(), data).Contains(func(v int) bool { return v == tier.size+999 }) {
+			if Slice(freshCtx(), data).Contains(func(v int) bool { return v == tier.Size+999 }) {
 				t.Fatal("Contains: should not find out-of-range value")
 			}
 		})
@@ -581,11 +557,11 @@ func TestSlice_Chain_Contains(t *testing.T) {
 }
 
 func TestSlice_Chain_Index(t *testing.T) {
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
-			data := genInts(tier.size)
-			mid := tier.size / 2
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genInts(tier.Size)
+			mid := tier.Size / 2
 			idx := Slice(freshCtx(), data).Index(func(v int) bool { return v == mid })
 			if idx != mid {
 				t.Fatalf("Index: expected %d, got %d", mid, idx)
@@ -595,11 +571,11 @@ func TestSlice_Chain_Index(t *testing.T) {
 }
 
 func TestSlice_Chain_Find(t *testing.T) {
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
-			data := genInts(tier.size)
-			mid := tier.size / 2
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genInts(tier.Size)
+			mid := tier.Size / 2
 			v, ok := Slice(freshCtx(), data).Find(func(x int) bool { return x >= mid })
 			if !ok || v != mid {
 				t.Fatalf("Find: expected (%d, true), got (%d, %v)", mid, v, ok)
@@ -609,10 +585,10 @@ func TestSlice_Chain_Find(t *testing.T) {
 }
 
 func TestSlice_Chain_FindLast(t *testing.T) {
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
-			data := genInts(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genInts(tier.Size)
 			v, ok := Slice(freshCtx(), data).FindLast(func(x int) bool { return x%2 == 0 })
 			if !ok {
 				t.Fatal("FindLast: should find an even number")
@@ -625,15 +601,15 @@ func TestSlice_Chain_FindLast(t *testing.T) {
 }
 
 func TestSlice_Chain_All(t *testing.T) {
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
-			data := genInts(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genInts(tier.Size)
 			if !Slice(freshCtx(), data).All(func(v int) bool { return v >= 0 }) {
 				t.Fatal("All: all values should be >=0")
 			}
-			if tier.size > 10 {
-				if Slice(freshCtx(), data).All(func(v int) bool { return v < tier.size/2 }) {
+			if tier.Size > 10 {
+				if Slice(freshCtx(), data).All(func(v int) bool { return v < tier.Size/2 }) {
 					t.Fatal("All: not all values should be < mid")
 				}
 			}
@@ -642,11 +618,11 @@ func TestSlice_Chain_All(t *testing.T) {
 }
 
 func TestSlice_Chain_Any(t *testing.T) {
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
-			data := genInts(tier.size)
-			mid := tier.size / 2
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genInts(tier.Size)
+			mid := tier.Size / 2
 			if !Slice(freshCtx(), data).Any(func(v int) bool { return v == mid }) {
 				t.Fatalf("Any: should find %d", mid)
 			}
@@ -658,12 +634,12 @@ func TestSlice_Chain_Any(t *testing.T) {
 }
 
 func TestSlice_Chain_Count(t *testing.T) {
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
-			data := genInts(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genInts(tier.Size)
 			cnt := Slice(freshCtx(), data).Count(func(v int) bool { return v%2 == 0 })
-			expected := tier.size/2 + tier.size%2
+			expected := tier.Size/2 + tier.Size%2
 			if cnt != expected {
 				t.Fatalf("Count: expected %d, got %d", expected, cnt)
 			}
@@ -672,24 +648,24 @@ func TestSlice_Chain_Count(t *testing.T) {
 }
 
 func TestSlice_Chain_Max(t *testing.T) {
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
-			data := genInts(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genInts(tier.Size)
 			shuffleData(data)
 			maxV, ok := Slice(freshCtx(), data).Max(cmpInt)
-			if !ok || maxV != tier.size-1 {
-				t.Fatalf("Max: expected %d, got (%d, %v)", tier.size-1, maxV, ok)
+			if !ok || maxV != tier.Size-1 {
+				t.Fatalf("Max: expected %d, got (%d, %v)", tier.Size-1, maxV, ok)
 			}
 		})
 	}
 }
 
 func TestSlice_Chain_Min(t *testing.T) {
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
-			data := genInts(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genInts(tier.Size)
 			shuffleData(data)
 			minV, ok := Slice(freshCtx(), data).Min(cmpInt)
 			if !ok || minV != 0 {
@@ -700,11 +676,11 @@ func TestSlice_Chain_Min(t *testing.T) {
 }
 
 func TestSlice_Chain_BinarySearch(t *testing.T) {
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
-			data := genInts(tier.size)
-			mid := tier.size / 2
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genInts(tier.Size)
+			mid := tier.Size / 2
 			idx, found := Slice(freshCtx(), data).BinarySearch(mid, cmpInt)
 			if !found || idx != mid {
 				t.Fatalf("BinarySearch: expected (%d, true), got (%d, %v)", mid, idx, found)
@@ -718,50 +694,50 @@ func TestSlice_Chain_BinarySearch(t *testing.T) {
 // ============================================================
 
 func TestSlice_Chain_Chunked(t *testing.T) {
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
-			data := genInts(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genInts(tier.Size)
 			chunks := Slice(freshCtx(), data).Chunked(100)
 			total := 0
 			for _, c := range chunks {
 				total += len(c)
 			}
-			if total != tier.size {
-				t.Fatalf("Chunked: total=%d, expected %d", total, tier.size)
+			if total != tier.Size {
+				t.Fatalf("Chunked: total=%d, expected %d", total, tier.Size)
 			}
 		})
 	}
 }
 
 func TestSlice_Chain_ChunkedN(t *testing.T) {
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
-			data := genInts(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genInts(tier.Size)
 			chunks := Slice(freshCtx(), data).ChunkedN(16)
 			total := 0
 			for _, c := range chunks {
 				total += len(c)
 			}
-			if total != tier.size {
-				t.Fatalf("ChunkedN: total=%d, expected %d", total, tier.size)
+			if total != tier.Size {
+				t.Fatalf("ChunkedN: total=%d, expected %d", total, tier.Size)
 			}
 		})
 	}
 }
 
 func TestSlice_Chain_Split(t *testing.T) {
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
-			data := genInts(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genInts(tier.Size)
 			matched, unmatched := Slice(freshCtx(), data).Split(func(v int) bool { return v%2 == 0 })
-			expectedEven := tier.size/2 + tier.size%2
+			expectedEven := tier.Size/2 + tier.Size%2
 			if len(matched) != expectedEven {
 				t.Fatalf("Split matched: expected %d, got %d", expectedEven, len(matched))
 			}
-			expectedOdd := tier.size / 2
+			expectedOdd := tier.Size / 2
 			if len(unmatched) != expectedOdd {
 				t.Fatalf("Split unmatched: expected %d, got %d", expectedOdd, len(unmatched))
 			}
@@ -774,16 +750,16 @@ func TestSlice_Chain_Split(t *testing.T) {
 // ============================================================
 
 func TestSlice_Chain_Map_SliceBuilder(t *testing.T) {
-	for _, tier := range allTiers {
+	for _, tier := range testutil.AllTiers {
 		for _, conc := range mapConcurrencies {
-			name := fmt.Sprintf("%s_c%d", tier.name, conc)
+			name := fmt.Sprintf("%s_c%d", tier.Name, conc)
 			t.Run(name, func(t *testing.T) {
-				skipIfTooLarge(t, tier.size)
+				testutil.SkipIfTooLarge1M(t, tier.Size)
 				if testing.Short() && conc > 32 {
 					t.Skip("short mode: skip high concurrency")
 				}
 				t.Parallel()
-				data := genInts(tier.size)
+				data := genInts(tier.Size)
 				r := Slice(freshCtx(), data).Worker(conc).Map(func(ctx context.Context, v int) (int, error) {
 					return v * 2, nil
 				})
@@ -791,8 +767,8 @@ func TestSlice_Chain_Map_SliceBuilder(t *testing.T) {
 					t.Fatalf("Map error: %v", r.Error())
 				}
 				vals := r.Values()
-				if len(vals) != tier.size {
-					t.Fatalf("Map: expected %d values, got %d", tier.size, len(vals))
+				if len(vals) != tier.Size {
+					t.Fatalf("Map: expected %d values, got %d", tier.Size, len(vals))
 				}
 				for i := range vals {
 					if vals[i] != data[i]*2 {
@@ -805,16 +781,16 @@ func TestSlice_Chain_Map_SliceBuilder(t *testing.T) {
 }
 
 func TestSlice_Chain_Map_ParallelSlice(t *testing.T) {
-	for _, tier := range allTiers {
+	for _, tier := range testutil.AllTiers {
 		for _, conc := range mapConcurrencies {
-			name := fmt.Sprintf("%s_c%d", tier.name, conc)
+			name := fmt.Sprintf("%s_c%d", tier.Name, conc)
 			t.Run(name, func(t *testing.T) {
-				skipIfTooLarge(t, tier.size)
+				testutil.SkipIfTooLarge1M(t, tier.Size)
 				if testing.Short() && conc > 32 {
 					t.Skip("short mode: skip high concurrency")
 				}
 				t.Parallel()
-				data := genInts(tier.size)
+				data := genInts(tier.Size)
 				r := Slice(freshCtx(), data).Parallel().Worker(conc).Map(func(ctx context.Context, v int) (int, error) {
 					return v * 2, nil
 				})
@@ -822,8 +798,8 @@ func TestSlice_Chain_Map_ParallelSlice(t *testing.T) {
 					t.Fatalf("Map error: %v", r.Error())
 				}
 				vals := r.Values()
-				if len(vals) != tier.size {
-					t.Fatalf("Map: expected %d values, got %d", tier.size, len(vals))
+				if len(vals) != tier.Size {
+					t.Fatalf("Map: expected %d values, got %d", tier.Size, len(vals))
 				}
 			})
 		}
@@ -831,10 +807,10 @@ func TestSlice_Chain_Map_ParallelSlice(t *testing.T) {
 }
 
 func TestSlice_Chain_Map_SerialSlice(t *testing.T) {
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
-			data := genInts(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genInts(tier.Size)
 			r := Slice(freshCtx(), data).Serial().Map(func(ctx context.Context, v int) (int, error) {
 				return v * 2, nil
 			})
@@ -842,18 +818,18 @@ func TestSlice_Chain_Map_SerialSlice(t *testing.T) {
 				t.Fatalf("Map error: %v", r.Error())
 			}
 			vals := r.Values()
-			if len(vals) != tier.size {
-				t.Fatalf("Map: expected %d values, got %d", tier.size, len(vals))
+			if len(vals) != tier.Size {
+				t.Fatalf("Map: expected %d values, got %d", tier.Size, len(vals))
 			}
 		})
 	}
 }
 
 func TestSlice_Chain_Map_SerialSlice_FailFast(t *testing.T) {
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
-			data := genInts(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genInts(tier.Size)
 			// 成功路径：FailFast 模式无错误时所有结果正确
 			r := Slice(freshCtx(), data).Serial().FailFast().Map(func(ctx context.Context, v int) (int, error) {
 				return v * 2, nil
@@ -862,12 +838,12 @@ func TestSlice_Chain_Map_SerialSlice_FailFast(t *testing.T) {
 				t.Fatalf("Map Serial FF: unexpected error: %v", r.Error())
 			}
 			vals := r.Values()
-			if len(vals) != tier.size {
-				t.Fatalf("Map Serial FF: expected %d values, got %d", tier.size, len(vals))
+			if len(vals) != tier.Size {
+				t.Fatalf("Map Serial FF: expected %d values, got %d", tier.Size, len(vals))
 			}
 			// 失败路径：FailFast 模式下首个错误立即返回
 			r2 := Slice(freshCtx(), data).Serial().FailFast().Map(func(ctx context.Context, v int) (int, error) {
-				if v == tier.size/2 {
+				if v == tier.Size/2 {
 					return 0, errors.New("injected error")
 				}
 				return v * 2, nil
@@ -875,18 +851,18 @@ func TestSlice_Chain_Map_SerialSlice_FailFast(t *testing.T) {
 			if !r2.Err() {
 				t.Fatalf("Map Serial FF: expected error but got none")
 			}
-			if r2.Len() != tier.size {
-				t.Fatalf("Map Serial FF: expected results len %d, got %d", tier.size, r2.Len())
+			if r2.Len() != tier.Size {
+				t.Fatalf("Map Serial FF: expected results len %d, got %d", tier.Size, r2.Len())
 			}
 		})
 	}
 }
 
 func TestSlice_Chain_Map_SliceWith(t *testing.T) {
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
-			data := genInts(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genInts(tier.Size)
 			r := SliceWith[string](freshCtx(), data).Map(func(ctx context.Context, v int) (string, error) {
 				return strconv.Itoa(v), nil
 			})
@@ -894,8 +870,8 @@ func TestSlice_Chain_Map_SliceWith(t *testing.T) {
 				t.Fatalf("SliceWith Map error: %v", r.Error())
 			}
 			vals := r.Values()
-			if len(vals) != tier.size {
-				t.Fatalf("SliceWith Map: expected %d values, got %d", tier.size, len(vals))
+			if len(vals) != tier.Size {
+				t.Fatalf("SliceWith Map: expected %d values, got %d", tier.Size, len(vals))
 			}
 		})
 	}
@@ -906,16 +882,16 @@ func TestSlice_Chain_Map_SliceWith(t *testing.T) {
 // ============================================================
 
 func TestSlice_Chain_ForEach_SliceBuilder(t *testing.T) {
-	for _, tier := range allTiers {
+	for _, tier := range testutil.AllTiers {
 		for _, conc := range mapConcurrencies {
-			name := fmt.Sprintf("%s_c%d", tier.name, conc)
+			name := fmt.Sprintf("%s_c%d", tier.Name, conc)
 			t.Run(name, func(t *testing.T) {
-				skipIfTooLarge(t, tier.size)
+				testutil.SkipIfTooLarge1M(t, tier.Size)
 				if testing.Short() && conc > 32 {
 					t.Skip("short mode: skip high concurrency")
 				}
 				t.Parallel()
-				data := genInts(tier.size)
+				data := genInts(tier.Size)
 				var sum int64
 				r := Slice(freshCtx(), data).Worker(conc).ForEach(func(ctx context.Context, v int) error {
 					atomic.AddInt64(&sum, int64(v))
@@ -924,8 +900,8 @@ func TestSlice_Chain_ForEach_SliceBuilder(t *testing.T) {
 				if r.Err() {
 					t.Fatalf("ForEach error: %v", r.Error())
 				}
-				if r.SuccessCount() != int64(tier.size) {
-					t.Fatalf("ForEach SuccessCount: expected %d, got %d", tier.size, r.SuccessCount())
+				if r.SuccessCount() != int64(tier.Size) {
+					t.Fatalf("ForEach SuccessCount: expected %d, got %d", tier.Size, r.SuccessCount())
 				}
 			})
 		}
@@ -933,16 +909,16 @@ func TestSlice_Chain_ForEach_SliceBuilder(t *testing.T) {
 }
 
 func TestSlice_Chain_ForEach_ParallelSlice(t *testing.T) {
-	for _, tier := range allTiers {
+	for _, tier := range testutil.AllTiers {
 		for _, conc := range mapConcurrencies {
-			name := fmt.Sprintf("%s_c%d", tier.name, conc)
+			name := fmt.Sprintf("%s_c%d", tier.Name, conc)
 			t.Run(name, func(t *testing.T) {
-				skipIfTooLarge(t, tier.size)
+				testutil.SkipIfTooLarge1M(t, tier.Size)
 				if testing.Short() && conc > 32 {
 					t.Skip("short mode: skip high concurrency")
 				}
 				t.Parallel()
-				data := genInts(tier.size)
+				data := genInts(tier.Size)
 				var sum int64
 				r := Slice(freshCtx(), data).Parallel().Worker(conc).ForEach(func(ctx context.Context, v int) error {
 					atomic.AddInt64(&sum, int64(v))
@@ -951,8 +927,8 @@ func TestSlice_Chain_ForEach_ParallelSlice(t *testing.T) {
 				if r.Err() {
 					t.Fatalf("ForEach error: %v", r.Error())
 				}
-				if r.SuccessCount() != int64(tier.size) {
-					t.Fatalf("ForEach SuccessCount: expected %d, got %d", tier.size, r.SuccessCount())
+				if r.SuccessCount() != int64(tier.Size) {
+					t.Fatalf("ForEach SuccessCount: expected %d, got %d", tier.Size, r.SuccessCount())
 				}
 			})
 		}
@@ -960,10 +936,10 @@ func TestSlice_Chain_ForEach_ParallelSlice(t *testing.T) {
 }
 
 func TestSlice_Chain_ForEach_SerialSlice(t *testing.T) {
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
-			data := genInts(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genInts(tier.Size)
 			var sum int64
 			r := Slice(freshCtx(), data).Serial().ForEach(func(ctx context.Context, v int) error {
 				atomic.AddInt64(&sum, int64(v))
@@ -972,18 +948,18 @@ func TestSlice_Chain_ForEach_SerialSlice(t *testing.T) {
 			if r.Err() {
 				t.Fatalf("ForEach error: %v", r.Error())
 			}
-			if r.SuccessCount() != int64(tier.size) {
-				t.Fatalf("ForEach SuccessCount: expected %d, got %d", tier.size, r.SuccessCount())
+			if r.SuccessCount() != int64(tier.Size) {
+				t.Fatalf("ForEach SuccessCount: expected %d, got %d", tier.Size, r.SuccessCount())
 			}
 		})
 	}
 }
 
 func TestSlice_Chain_ForEach_SerialSlice_FailFast(t *testing.T) {
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
-			data := genInts(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genInts(tier.Size)
 			// 成功路径：FailFast 模式无错误时所有任务成功
 			var counter int64
 			r := Slice(freshCtx(), data).Serial().FailFast().ForEach(func(ctx context.Context, v int) error {
@@ -993,12 +969,12 @@ func TestSlice_Chain_ForEach_SerialSlice_FailFast(t *testing.T) {
 			if r.Err() {
 				t.Fatalf("ForEach Serial FF: unexpected error: %v", r.Error())
 			}
-			if r.SuccessCount() != int64(tier.size) {
-				t.Fatalf("ForEach Serial FF: expected %d, got %d", tier.size, r.SuccessCount())
+			if r.SuccessCount() != int64(tier.Size) {
+				t.Fatalf("ForEach Serial FF: expected %d, got %d", tier.Size, r.SuccessCount())
 			}
 			// 失败路径：FailFast 模式下首个错误立即返回
 			r2 := Slice(freshCtx(), data).Serial().FailFast().ForEach(func(ctx context.Context, v int) error {
-				if v == tier.size/2 {
+				if v == tier.Size/2 {
 					return errors.New("injected error")
 				}
 				return nil
@@ -1015,17 +991,17 @@ func TestSlice_Chain_ForEach_SerialSlice_FailFast(t *testing.T) {
 // ============================================================
 
 func TestSlice_Chain_Reduce_SliceBuilder(t *testing.T) {
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
-			data := genInts(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genInts(tier.Size)
 			sum, err := Slice(freshCtx(), data).Reduce(0, func(ctx context.Context, acc int, v int) (int, error) {
 				return acc + v, nil
 			})
 			if err != nil {
 				t.Fatalf("Reduce error: %v", err)
 			}
-			expected := tier.size * (tier.size - 1) / 2
+			expected := tier.Size * (tier.Size - 1) / 2
 			if sum != expected {
 				t.Fatalf("Reduce: expected sum %d, got %d", expected, sum)
 			}
@@ -1034,17 +1010,17 @@ func TestSlice_Chain_Reduce_SliceBuilder(t *testing.T) {
 }
 
 func TestSlice_Chain_Reduce_SerialSlice(t *testing.T) {
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
-			data := genInts(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genInts(tier.Size)
 			sum, err := Slice(freshCtx(), data).Serial().Reduce(0, func(ctx context.Context, acc int, v int) (int, error) {
 				return acc + v, nil
 			})
 			if err != nil {
 				t.Fatalf("Reduce error: %v", err)
 			}
-			expected := tier.size * (tier.size - 1) / 2
+			expected := tier.Size * (tier.Size - 1) / 2
 			if sum != expected {
 				t.Fatalf("Reduce: expected sum %d, got %d", expected, sum)
 			}
@@ -1057,16 +1033,16 @@ func TestSlice_Chain_Reduce_SerialSlice(t *testing.T) {
 // ============================================================
 
 func TestSlice_Chain_Stream_SliceBuilder(t *testing.T) {
-	for _, tier := range allTiers {
+	for _, tier := range testutil.AllTiers {
 		for _, conc := range mapConcurrencies {
-			name := fmt.Sprintf("%s_c%d", tier.name, conc)
+			name := fmt.Sprintf("%s_c%d", tier.Name, conc)
 			t.Run(name, func(t *testing.T) {
-				skipIfTooLarge(t, tier.size)
+				testutil.SkipIfTooLarge1M(t, tier.Size)
 				if testing.Short() && conc > 32 {
 					t.Skip("short mode: skip high concurrency")
 				}
 				t.Parallel()
-				data := genInts(tier.size)
+				data := genInts(tier.Size)
 				ch := Slice(freshCtx(), data).Worker(conc).Stream(func(ctx context.Context, v int) (int, error) {
 					return v * 2, nil
 				}, 0)
@@ -1077,8 +1053,8 @@ func TestSlice_Chain_Stream_SliceBuilder(t *testing.T) {
 					}
 					count++
 				}
-				if count != tier.size {
-					t.Fatalf("Stream: expected %d results, got %d", tier.size, count)
+				if count != tier.Size {
+					t.Fatalf("Stream: expected %d results, got %d", tier.Size, count)
 				}
 			})
 		}
@@ -1086,16 +1062,16 @@ func TestSlice_Chain_Stream_SliceBuilder(t *testing.T) {
 }
 
 func TestSlice_Chain_Stream_ParallelSlice(t *testing.T) {
-	for _, tier := range allTiers {
+	for _, tier := range testutil.AllTiers {
 		for _, conc := range mapConcurrencies {
-			name := fmt.Sprintf("%s_c%d", tier.name, conc)
+			name := fmt.Sprintf("%s_c%d", tier.Name, conc)
 			t.Run(name, func(t *testing.T) {
-				skipIfTooLarge(t, tier.size)
+				testutil.SkipIfTooLarge1M(t, tier.Size)
 				if testing.Short() && conc > 32 {
 					t.Skip("short mode: skip high concurrency")
 				}
 				t.Parallel()
-				data := genInts(tier.size)
+				data := genInts(tier.Size)
 				ch := Slice(freshCtx(), data).Parallel().Worker(conc).Stream(func(ctx context.Context, v int) (int, error) {
 					return v * 2, nil
 				}, 0)
@@ -1106,8 +1082,8 @@ func TestSlice_Chain_Stream_ParallelSlice(t *testing.T) {
 					}
 					count++
 				}
-				if count != tier.size {
-					t.Fatalf("Stream: expected %d results, got %d", tier.size, count)
+				if count != tier.Size {
+					t.Fatalf("Stream: expected %d results, got %d", tier.Size, count)
 				}
 			})
 		}
@@ -1119,10 +1095,10 @@ func TestSlice_Chain_Stream_ParallelSlice(t *testing.T) {
 // ============================================================
 
 func TestSlice_Chain_MapBatch_SliceBuilder(t *testing.T) {
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
-			data := genInts(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genInts(tier.Size)
 			r := Slice(freshCtx(), data).Chunk(100).MapBatch(func(ctx context.Context, chunk []int) (int, error) {
 				sum := 0
 				for _, v := range chunk {
@@ -1141,10 +1117,10 @@ func TestSlice_Chain_MapBatch_SliceBuilder(t *testing.T) {
 }
 
 func TestSlice_Chain_MapBatch_ParallelSlice(t *testing.T) {
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
-			data := genInts(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genInts(tier.Size)
 			r := Slice(freshCtx(), data).Parallel().Chunk(100).MapBatch(func(ctx context.Context, chunk []int) (int, error) {
 				sum := 0
 				for _, v := range chunk {
@@ -1167,10 +1143,10 @@ func TestSlice_Chain_MapBatch_ParallelSlice(t *testing.T) {
 // ============================================================
 
 func TestSlice_Chain_ForEachBatch_SliceBuilder(t *testing.T) {
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
-			data := genInts(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genInts(tier.Size)
 			var processed int64
 			r := Slice(freshCtx(), data).Chunk(100).ForEachBatch(func(ctx context.Context, chunk []int) error {
 				atomic.AddInt64(&processed, int64(len(chunk)))
@@ -1179,18 +1155,18 @@ func TestSlice_Chain_ForEachBatch_SliceBuilder(t *testing.T) {
 			if r.Err() {
 				t.Fatalf("ForEachBatch error: %v", r.Error())
 			}
-			if processed != int64(tier.size) {
-				t.Fatalf("ForEachBatch: expected %d, got %d", tier.size, processed)
+			if processed != int64(tier.Size) {
+				t.Fatalf("ForEachBatch: expected %d, got %d", tier.Size, processed)
 			}
 		})
 	}
 }
 
 func TestSlice_Chain_ForEachBatch_ParallelSlice(t *testing.T) {
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
-			data := genInts(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genInts(tier.Size)
 			var processed int64
 			r := Slice(freshCtx(), data).Parallel().Chunk(100).ForEachBatch(func(ctx context.Context, chunk []int) error {
 				atomic.AddInt64(&processed, int64(len(chunk)))
@@ -1199,8 +1175,8 @@ func TestSlice_Chain_ForEachBatch_ParallelSlice(t *testing.T) {
 			if r.Err() {
 				t.Fatalf("ForEachBatch error: %v", r.Error())
 			}
-			if processed != int64(tier.size) {
-				t.Fatalf("ForEachBatch: expected %d, got %d", tier.size, processed)
+			if processed != int64(tier.Size) {
+				t.Fatalf("ForEachBatch: expected %d, got %d", tier.Size, processed)
 			}
 		})
 	}
@@ -1665,13 +1641,13 @@ func TestSlice_Chain_DefaultLogger(t *testing.T) {
 // ============================================================
 
 func TestSlice_Chain_FailFast_Stress(t *testing.T) {
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			data := genInts(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			data := genInts(tier.Size)
 			var called int64
 			r := Slice(freshCtx(), data).Worker(64).FailFast().Map(func(ctx context.Context, v int) (int, error) {
 				atomic.AddInt64(&called, 1)
-				if v == tier.size/2 {
+				if v == tier.Size/2 {
 					return 0, errTestSentinel
 				}
 				return v, nil
@@ -1679,8 +1655,8 @@ func TestSlice_Chain_FailFast_Stress(t *testing.T) {
 			if r.Error() == nil {
 				t.Fatal("FailFast: expected error but got nil")
 			}
-			if called >= int64(tier.size) && tier.size > 0 {
-				t.Logf("FailFast: early exit verified, called=%d/%d", called, tier.size)
+			if called >= int64(tier.Size) && tier.Size > 0 {
+				t.Logf("FailFast: early exit verified, called=%d/%d", called, tier.Size)
 			}
 		})
 	}
@@ -1696,18 +1672,18 @@ func TestSlice_Chain_FailFast_Stress(t *testing.T) {
 
 func TestSlice_Chain_HighConcurrency_Map(t *testing.T) {
 	if testing.Short() {
-		for _, tier := range allTiers {
-			t.Run(fmt.Sprintf("%s_c8", tier.name), func(t *testing.T) {
+		for _, tier := range testutil.AllTiers {
+			t.Run(fmt.Sprintf("%s_c8", tier.Name), func(t *testing.T) {
 				t.Parallel()
-				data := genInts(tier.size)
+				data := genInts(tier.Size)
 				r := Slice(freshCtx(), data).Worker(8).Map(func(ctx context.Context, v int) (int, error) {
 					return v + 1, nil
 				})
 				if r.Err() {
 					t.Fatalf("Map error: %v", r.Error())
 				}
-				if r.Len() != tier.size {
-					t.Fatalf("expected %d results, got %d", tier.size, r.Len())
+				if r.Len() != tier.Size {
+					t.Fatalf("expected %d results, got %d", tier.Size, r.Len())
 				}
 			})
 		}
@@ -1715,38 +1691,38 @@ func TestSlice_Chain_HighConcurrency_Map(t *testing.T) {
 	}
 	basicConc := []int{64, 128}
 	extremeConc := []int{256, 512, 1024}
-	for _, tier := range allTiers {
+	for _, tier := range testutil.AllTiers {
 		for _, conc := range basicConc {
-			name := fmt.Sprintf("%s_c%d", tier.name, conc)
+			name := fmt.Sprintf("%s_c%d", tier.Name, conc)
 			t.Run(name, func(t *testing.T) {
 				t.Parallel()
-				data := genInts(tier.size)
+				data := genInts(tier.Size)
 				r := Slice(freshCtx(), data).Worker(conc).Map(func(ctx context.Context, v int) (int, error) {
 					return v + 1, nil
 				})
 				if r.Err() {
 					t.Fatalf("Map error: %v", r.Error())
 				}
-				if r.Len() != tier.size {
-					t.Fatalf("expected %d results, got %d", tier.size, r.Len())
+				if r.Len() != tier.Size {
+					t.Fatalf("expected %d results, got %d", tier.Size, r.Len())
 				}
 			})
 		}
 	}
-	for _, tier := range allTiers {
+	for _, tier := range testutil.AllTiers {
 		for _, conc := range extremeConc {
-			name := fmt.Sprintf("%s_c%d", tier.name, conc)
+			name := fmt.Sprintf("%s_c%d", tier.Name, conc)
 			t.Run(name, func(t *testing.T) {
 				t.Parallel()
-				data := genInts(tier.size)
+				data := genInts(tier.Size)
 				r := Slice(freshCtx(), data).Worker(conc).Map(func(ctx context.Context, v int) (int, error) {
 					return v + 1, nil
 				})
 				if r.Err() {
 					t.Fatalf("Map error: %v", r.Error())
 				}
-				if r.Len() != tier.size {
-					t.Fatalf("expected %d results, got %d", tier.size, r.Len())
+				if r.Len() != tier.Size {
+					t.Fatalf("expected %d results, got %d", tier.Size, r.Len())
 				}
 			})
 		}
@@ -1755,10 +1731,10 @@ func TestSlice_Chain_HighConcurrency_Map(t *testing.T) {
 
 func TestSlice_Chain_HighConcurrency_Pool_Map(t *testing.T) {
 	if testing.Short() {
-		for _, tier := range allTiers {
-			t.Run(fmt.Sprintf("%s_c8", tier.name), func(t *testing.T) {
+		for _, tier := range testutil.AllTiers {
+			t.Run(fmt.Sprintf("%s_c8", tier.Name), func(t *testing.T) {
 				t.Parallel()
-				data := genInts(tier.size)
+				data := genInts(tier.Size)
 				p := pool.NewPool[int](8)
 				r := Slice(freshCtx(), data).PoolAuto(p).Worker(8).Map(func(ctx context.Context, v int) (int, error) {
 					return v, nil
@@ -1766,8 +1742,8 @@ func TestSlice_Chain_HighConcurrency_Pool_Map(t *testing.T) {
 				if r.Err() {
 					t.Fatalf("Pool Map error: %v", r.Error())
 				}
-				if r.Len() != tier.size {
-					t.Fatalf("expected %d results, got %d", tier.size, r.Len())
+				if r.Len() != tier.Size {
+					t.Fatalf("expected %d results, got %d", tier.Size, r.Len())
 				}
 			})
 		}
@@ -1775,12 +1751,12 @@ func TestSlice_Chain_HighConcurrency_Pool_Map(t *testing.T) {
 	}
 	basicConc := []int{32, 64}
 	extremeConc := []int{128, 256}
-	for _, tier := range allTiers {
+	for _, tier := range testutil.AllTiers {
 		for _, conc := range basicConc {
-			name := fmt.Sprintf("%s_c%d", tier.name, conc)
+			name := fmt.Sprintf("%s_c%d", tier.Name, conc)
 			t.Run(name, func(t *testing.T) {
 				t.Parallel()
-				data := genInts(tier.size)
+				data := genInts(tier.Size)
 				p := pool.NewPool[int](conc)
 				r := Slice(freshCtx(), data).PoolAuto(p).Worker(conc).Map(func(ctx context.Context, v int) (int, error) {
 					return v, nil
@@ -1788,18 +1764,18 @@ func TestSlice_Chain_HighConcurrency_Pool_Map(t *testing.T) {
 				if r.Err() {
 					t.Fatalf("Pool Map error: %v", r.Error())
 				}
-				if r.Len() != tier.size {
-					t.Fatalf("expected %d results, got %d", tier.size, r.Len())
+				if r.Len() != tier.Size {
+					t.Fatalf("expected %d results, got %d", tier.Size, r.Len())
 				}
 			})
 		}
 	}
-	for _, tier := range allTiers {
+	for _, tier := range testutil.AllTiers {
 		for _, conc := range extremeConc {
-			name := fmt.Sprintf("%s_c%d", tier.name, conc)
+			name := fmt.Sprintf("%s_c%d", tier.Name, conc)
 			t.Run(name, func(t *testing.T) {
 				t.Parallel()
-				data := genInts(tier.size)
+				data := genInts(tier.Size)
 				p := pool.NewPool[int](conc)
 				r := Slice(freshCtx(), data).PoolAuto(p).Worker(conc).Map(func(ctx context.Context, v int) (int, error) {
 					return v, nil
@@ -1807,8 +1783,8 @@ func TestSlice_Chain_HighConcurrency_Pool_Map(t *testing.T) {
 				if r.Err() {
 					t.Fatalf("Pool Map error: %v", r.Error())
 				}
-				if r.Len() != tier.size {
-					t.Fatalf("expected %d results, got %d", tier.size, r.Len())
+				if r.Len() != tier.Size {
+					t.Fatalf("expected %d results, got %d", tier.Size, r.Len())
 				}
 			})
 		}
@@ -1817,18 +1793,18 @@ func TestSlice_Chain_HighConcurrency_Pool_Map(t *testing.T) {
 
 func TestSlice_Chain_HighConcurrency_Shards_Map(t *testing.T) {
 	if testing.Short() {
-		for _, tier := range allTiers {
-			t.Run(fmt.Sprintf("%s_s8", tier.name), func(t *testing.T) {
+		for _, tier := range testutil.AllTiers {
+			t.Run(fmt.Sprintf("%s_s8", tier.Name), func(t *testing.T) {
 				t.Parallel()
-				data := genInts(tier.size)
+				data := genInts(tier.Size)
 				r := Slice(freshCtx(), data).Shards(8).Map(func(ctx context.Context, v int) (int, error) {
 					return v * 2, nil
 				})
 				if r.Err() {
 					t.Fatalf("Shards Map error: %v", r.Error())
 				}
-				if r.Len() != tier.size {
-					t.Fatalf("expected %d results, got %d", tier.size, r.Len())
+				if r.Len() != tier.Size {
+					t.Fatalf("expected %d results, got %d", tier.Size, r.Len())
 				}
 			})
 		}
@@ -1836,38 +1812,38 @@ func TestSlice_Chain_HighConcurrency_Shards_Map(t *testing.T) {
 	}
 	basicShards := []int{8, 16, 32}
 	extremeShards := []int{64, 128}
-	for _, tier := range allTiers {
+	for _, tier := range testutil.AllTiers {
 		for _, shards := range basicShards {
-			name := fmt.Sprintf("%s_s%d", tier.name, shards)
+			name := fmt.Sprintf("%s_s%d", tier.Name, shards)
 			t.Run(name, func(t *testing.T) {
 				t.Parallel()
-				data := genInts(tier.size)
+				data := genInts(tier.Size)
 				r := Slice(freshCtx(), data).Shards(shards).Map(func(ctx context.Context, v int) (int, error) {
 					return v * 2, nil
 				})
 				if r.Err() {
 					t.Fatalf("Shards Map error: %v", r.Error())
 				}
-				if r.Len() != tier.size {
-					t.Fatalf("expected %d results, got %d", tier.size, r.Len())
+				if r.Len() != tier.Size {
+					t.Fatalf("expected %d results, got %d", tier.Size, r.Len())
 				}
 			})
 		}
 	}
-	for _, tier := range allTiers {
+	for _, tier := range testutil.AllTiers {
 		for _, shards := range extremeShards {
-			name := fmt.Sprintf("%s_s%d", tier.name, shards)
+			name := fmt.Sprintf("%s_s%d", tier.Name, shards)
 			t.Run(name, func(t *testing.T) {
 				t.Parallel()
-				data := genInts(tier.size)
+				data := genInts(tier.Size)
 				r := Slice(freshCtx(), data).Shards(shards).Map(func(ctx context.Context, v int) (int, error) {
 					return v * 2, nil
 				})
 				if r.Err() {
 					t.Fatalf("Shards Map error: %v", r.Error())
 				}
-				if r.Len() != tier.size {
-					t.Fatalf("expected %d results, got %d", tier.size, r.Len())
+				if r.Len() != tier.Size {
+					t.Fatalf("expected %d results, got %d", tier.Size, r.Len())
 				}
 			})
 		}
@@ -1876,10 +1852,10 @@ func TestSlice_Chain_HighConcurrency_Shards_Map(t *testing.T) {
 
 func TestSlice_Chain_HighConcurrency_Stream(t *testing.T) {
 	if testing.Short() {
-		for _, tier := range allTiers {
-			t.Run(fmt.Sprintf("%s_c8_b256", tier.name), func(t *testing.T) {
+		for _, tier := range testutil.AllTiers {
+			t.Run(fmt.Sprintf("%s_c8_b256", tier.Name), func(t *testing.T) {
 				t.Parallel()
-				data := genInts(tier.size)
+				data := genInts(tier.Size)
 				ch := Slice(freshCtx(), data).Worker(8).Buf(256).Stream(func(ctx context.Context, v int) (int, error) {
 					return v, nil
 				}, 0)
@@ -1890,8 +1866,8 @@ func TestSlice_Chain_HighConcurrency_Stream(t *testing.T) {
 					}
 					count++
 				}
-				if count != tier.size {
-					t.Fatalf("Stream: expected %d results, got %d", tier.size, count)
+				if count != tier.Size {
+					t.Fatalf("Stream: expected %d results, got %d", tier.Size, count)
 				}
 			})
 		}
@@ -1900,13 +1876,13 @@ func TestSlice_Chain_HighConcurrency_Stream(t *testing.T) {
 	basicConc := []int{64, 128}
 	extremeConc := []int{256, 512, 1024}
 	bufSizes := []int{0, 1024, 8192}
-	for _, tier := range allTiers {
+	for _, tier := range testutil.AllTiers {
 		for _, conc := range basicConc {
 			for _, buf := range bufSizes {
-				name := fmt.Sprintf("%s_c%d_b%d", tier.name, conc, buf)
+				name := fmt.Sprintf("%s_c%d_b%d", tier.Name, conc, buf)
 				t.Run(name, func(t *testing.T) {
 					t.Parallel()
-					data := genInts(tier.size)
+					data := genInts(tier.Size)
 					ch := Slice(freshCtx(), data).Worker(conc).Buf(buf).Stream(func(ctx context.Context, v int) (int, error) {
 						return v, nil
 					}, 0)
@@ -1917,20 +1893,20 @@ func TestSlice_Chain_HighConcurrency_Stream(t *testing.T) {
 						}
 						count++
 					}
-					if count != tier.size {
-						t.Fatalf("Stream: expected %d results, got %d", tier.size, count)
+					if count != tier.Size {
+						t.Fatalf("Stream: expected %d results, got %d", tier.Size, count)
 					}
 				})
 			}
 		}
 	}
-	for _, tier := range allTiers {
+	for _, tier := range testutil.AllTiers {
 		for _, conc := range extremeConc {
 			for _, buf := range bufSizes {
-				name := fmt.Sprintf("%s_c%d_b%d", tier.name, conc, buf)
+				name := fmt.Sprintf("%s_c%d_b%d", tier.Name, conc, buf)
 				t.Run(name, func(t *testing.T) {
 					t.Parallel()
-					data := genInts(tier.size)
+					data := genInts(tier.Size)
 					ch := Slice(freshCtx(), data).Worker(conc).Buf(buf).Stream(func(ctx context.Context, v int) (int, error) {
 						return v, nil
 					}, 0)
@@ -1941,8 +1917,8 @@ func TestSlice_Chain_HighConcurrency_Stream(t *testing.T) {
 						}
 						count++
 					}
-					if count != tier.size {
-						t.Fatalf("Stream: expected %d results, got %d", tier.size, count)
+					if count != tier.Size {
+						t.Fatalf("Stream: expected %d results, got %d", tier.Size, count)
 					}
 				})
 			}
@@ -1952,10 +1928,10 @@ func TestSlice_Chain_HighConcurrency_Stream(t *testing.T) {
 
 func TestSlice_Chain_HighConcurrency_ForEach_Stress(t *testing.T) {
 	if testing.Short() {
-		for _, tier := range allTiers {
-			t.Run(fmt.Sprintf("%s_c8", tier.name), func(t *testing.T) {
+		for _, tier := range testutil.AllTiers {
+			t.Run(fmt.Sprintf("%s_c8", tier.Name), func(t *testing.T) {
 				t.Parallel()
-				data := genInts(tier.size)
+				data := genInts(tier.Size)
 				var counter int64
 				r := Slice(freshCtx(), data).Worker(8).ForEach(func(ctx context.Context, v int) error {
 					atomic.AddInt64(&counter, 1)
@@ -1964,11 +1940,11 @@ func TestSlice_Chain_HighConcurrency_ForEach_Stress(t *testing.T) {
 				if r.Err() {
 					t.Fatalf("ForEach error: %v", r.Error())
 				}
-				if counter != int64(tier.size) {
-					t.Fatalf("ForEach: expected %d calls, got %d", tier.size, counter)
+				if counter != int64(tier.Size) {
+					t.Fatalf("ForEach: expected %d calls, got %d", tier.Size, counter)
 				}
-				if r.SuccessCount() != int64(tier.size) {
-					t.Fatalf("SuccessCount: expected %d, got %d", tier.size, r.SuccessCount())
+				if r.SuccessCount() != int64(tier.Size) {
+					t.Fatalf("SuccessCount: expected %d, got %d", tier.Size, r.SuccessCount())
 				}
 			})
 		}
@@ -1976,12 +1952,12 @@ func TestSlice_Chain_HighConcurrency_ForEach_Stress(t *testing.T) {
 	}
 	basicConc := []int{64, 128}
 	extremeConc := []int{256, 512, 1024}
-	for _, tier := range allTiers {
+	for _, tier := range testutil.AllTiers {
 		for _, conc := range basicConc {
-			name := fmt.Sprintf("%s_c%d", tier.name, conc)
+			name := fmt.Sprintf("%s_c%d", tier.Name, conc)
 			t.Run(name, func(t *testing.T) {
 				t.Parallel()
-				data := genInts(tier.size)
+				data := genInts(tier.Size)
 				var counter int64
 				r := Slice(freshCtx(), data).Worker(conc).ForEach(func(ctx context.Context, v int) error {
 					atomic.AddInt64(&counter, 1)
@@ -1990,21 +1966,21 @@ func TestSlice_Chain_HighConcurrency_ForEach_Stress(t *testing.T) {
 				if r.Err() {
 					t.Fatalf("ForEach error: %v", r.Error())
 				}
-				if counter != int64(tier.size) {
-					t.Fatalf("ForEach: expected %d calls, got %d", tier.size, counter)
+				if counter != int64(tier.Size) {
+					t.Fatalf("ForEach: expected %d calls, got %d", tier.Size, counter)
 				}
-				if r.SuccessCount() != int64(tier.size) {
-					t.Fatalf("SuccessCount: expected %d, got %d", tier.size, r.SuccessCount())
+				if r.SuccessCount() != int64(tier.Size) {
+					t.Fatalf("SuccessCount: expected %d, got %d", tier.Size, r.SuccessCount())
 				}
 			})
 		}
 	}
-	for _, tier := range allTiers {
+	for _, tier := range testutil.AllTiers {
 		for _, conc := range extremeConc {
-			name := fmt.Sprintf("%s_c%d", tier.name, conc)
+			name := fmt.Sprintf("%s_c%d", tier.Name, conc)
 			t.Run(name, func(t *testing.T) {
 				t.Parallel()
-				data := genInts(tier.size)
+				data := genInts(tier.Size)
 				var counter int64
 				r := Slice(freshCtx(), data).Worker(conc).ForEach(func(ctx context.Context, v int) error {
 					atomic.AddInt64(&counter, 1)
@@ -2013,11 +1989,11 @@ func TestSlice_Chain_HighConcurrency_ForEach_Stress(t *testing.T) {
 				if r.Err() {
 					t.Fatalf("ForEach error: %v", r.Error())
 				}
-				if counter != int64(tier.size) {
-					t.Fatalf("ForEach: expected %d calls, got %d", tier.size, counter)
+				if counter != int64(tier.Size) {
+					t.Fatalf("ForEach: expected %d calls, got %d", tier.Size, counter)
 				}
-				if r.SuccessCount() != int64(tier.size) {
-					t.Fatalf("SuccessCount: expected %d, got %d", tier.size, r.SuccessCount())
+				if r.SuccessCount() != int64(tier.Size) {
+					t.Fatalf("SuccessCount: expected %d, got %d", tier.Size, r.SuccessCount())
 				}
 			})
 		}
@@ -2028,37 +2004,37 @@ func TestSlice_Chain_HighConcurrency_ForEach_Stress(t *testing.T) {
 
 func TestSlice_Chain_HighConcurrency_Map_Timeout(t *testing.T) {
 	if testing.Short() {
-		for _, tier := range allTiers {
-			t.Run(fmt.Sprintf("%s_c8", tier.name), func(t *testing.T) {
+		for _, tier := range testutil.AllTiers {
+			t.Run(fmt.Sprintf("%s_c8", tier.Name), func(t *testing.T) {
 				t.Parallel()
-				data := genInts(tier.size)
+				data := genInts(tier.Size)
 				r := Slice(freshCtx(), data).Worker(8).Timeout(30 * time.Second).Map(func(ctx context.Context, v int) (int, error) {
 					return v + 1, nil
 				})
 				if r.Err() {
 					t.Fatalf("Map+Timeout error: %v", r.Error())
 				}
-				if r.Len() != tier.size {
-					t.Fatalf("expected %d results, got %d", tier.size, r.Len())
+				if r.Len() != tier.Size {
+					t.Fatalf("expected %d results, got %d", tier.Size, r.Len())
 				}
 			})
 		}
 		return
 	}
-	for _, tier := range allTiers {
+	for _, tier := range testutil.AllTiers {
 		for _, conc := range []int{64, 128, 256, 512} {
-			name := fmt.Sprintf("%s_c%d", tier.name, conc)
+			name := fmt.Sprintf("%s_c%d", tier.Name, conc)
 			t.Run(name, func(t *testing.T) {
 				t.Parallel()
-				data := genInts(tier.size)
+				data := genInts(tier.Size)
 				r := Slice(freshCtx(), data).Worker(conc).Timeout(30 * time.Second).Map(func(ctx context.Context, v int) (int, error) {
 					return v + 1, nil
 				})
 				if r.Err() {
 					t.Fatalf("Map+Timeout error: %v", r.Error())
 				}
-				if r.Len() != tier.size {
-					t.Fatalf("expected %d results, got %d", tier.size, r.Len())
+				if r.Len() != tier.Size {
+					t.Fatalf("expected %d results, got %d", tier.Size, r.Len())
 				}
 			})
 		}
@@ -2069,37 +2045,37 @@ func TestSlice_Chain_HighConcurrency_Map_Timeout(t *testing.T) {
 
 func TestSlice_Chain_HighConcurrency_Map_FailFast(t *testing.T) {
 	if testing.Short() {
-		for _, tier := range allTiers {
-			t.Run(fmt.Sprintf("%s_c8", tier.name), func(t *testing.T) {
+		for _, tier := range testutil.AllTiers {
+			t.Run(fmt.Sprintf("%s_c8", tier.Name), func(t *testing.T) {
 				t.Parallel()
-				data := genInts(tier.size)
+				data := genInts(tier.Size)
 				r := Slice(freshCtx(), data).Worker(8).FailFast().Map(func(ctx context.Context, v int) (int, error) {
 					return v + 1, nil
 				})
 				if r.Err() {
 					t.Fatalf("Map+FailFast error: %v", r.Error())
 				}
-				if r.Len() != tier.size {
-					t.Fatalf("expected %d results, got %d", tier.size, r.Len())
+				if r.Len() != tier.Size {
+					t.Fatalf("expected %d results, got %d", tier.Size, r.Len())
 				}
 			})
 		}
 		return
 	}
-	for _, tier := range allTiers {
+	for _, tier := range testutil.AllTiers {
 		for _, conc := range []int{64, 128, 256, 512, 1024} {
-			name := fmt.Sprintf("%s_c%d", tier.name, conc)
+			name := fmt.Sprintf("%s_c%d", tier.Name, conc)
 			t.Run(name, func(t *testing.T) {
 				t.Parallel()
-				data := genInts(tier.size)
+				data := genInts(tier.Size)
 				r := Slice(freshCtx(), data).Worker(conc).FailFast().Map(func(ctx context.Context, v int) (int, error) {
 					return v + 1, nil
 				})
 				if r.Err() {
 					t.Fatalf("Map+FailFast error: %v", r.Error())
 				}
-				if r.Len() != tier.size {
-					t.Fatalf("expected %d results, got %d", tier.size, r.Len())
+				if r.Len() != tier.Size {
+					t.Fatalf("expected %d results, got %d", tier.Size, r.Len())
 				}
 			})
 		}
@@ -2110,37 +2086,37 @@ func TestSlice_Chain_HighConcurrency_Map_FailFast(t *testing.T) {
 
 func TestSlice_Chain_HighConcurrency_Map_TimeoutFailFast(t *testing.T) {
 	if testing.Short() {
-		for _, tier := range allTiers {
-			t.Run(fmt.Sprintf("%s_c8", tier.name), func(t *testing.T) {
+		for _, tier := range testutil.AllTiers {
+			t.Run(fmt.Sprintf("%s_c8", tier.Name), func(t *testing.T) {
 				t.Parallel()
-				data := genInts(tier.size)
+				data := genInts(tier.Size)
 				r := Slice(freshCtx(), data).Worker(8).Timeout(30 * time.Second).FailFast().Map(func(ctx context.Context, v int) (int, error) {
 					return v + 1, nil
 				})
 				if r.Err() {
 					t.Fatalf("Map+TO+FF error: %v", r.Error())
 				}
-				if r.Len() != tier.size {
-					t.Fatalf("expected %d results, got %d", tier.size, r.Len())
+				if r.Len() != tier.Size {
+					t.Fatalf("expected %d results, got %d", tier.Size, r.Len())
 				}
 			})
 		}
 		return
 	}
-	for _, tier := range allTiers {
+	for _, tier := range testutil.AllTiers {
 		for _, conc := range []int{64, 128, 256, 512} {
-			name := fmt.Sprintf("%s_c%d", tier.name, conc)
+			name := fmt.Sprintf("%s_c%d", tier.Name, conc)
 			t.Run(name, func(t *testing.T) {
 				t.Parallel()
-				data := genInts(tier.size)
+				data := genInts(tier.Size)
 				r := Slice(freshCtx(), data).Worker(conc).Timeout(30 * time.Second).FailFast().Map(func(ctx context.Context, v int) (int, error) {
 					return v + 1, nil
 				})
 				if r.Err() {
 					t.Fatalf("Map+TO+FF error: %v", r.Error())
 				}
-				if r.Len() != tier.size {
-					t.Fatalf("expected %d results, got %d", tier.size, r.Len())
+				if r.Len() != tier.Size {
+					t.Fatalf("expected %d results, got %d", tier.Size, r.Len())
 				}
 			})
 		}
@@ -2151,10 +2127,10 @@ func TestSlice_Chain_HighConcurrency_Map_TimeoutFailFast(t *testing.T) {
 
 func TestSlice_Chain_HighConcurrency_ForEach_Timeout(t *testing.T) {
 	if testing.Short() {
-		for _, tier := range allTiers {
-			t.Run(fmt.Sprintf("%s_c8", tier.name), func(t *testing.T) {
+		for _, tier := range testutil.AllTiers {
+			t.Run(fmt.Sprintf("%s_c8", tier.Name), func(t *testing.T) {
 				t.Parallel()
-				data := genInts(tier.size)
+				data := genInts(tier.Size)
 				var counter int64
 				r := Slice(freshCtx(), data).Worker(8).Timeout(30 * time.Second).ForEach(func(ctx context.Context, v int) error {
 					atomic.AddInt64(&counter, 1)
@@ -2163,19 +2139,19 @@ func TestSlice_Chain_HighConcurrency_ForEach_Timeout(t *testing.T) {
 				if r.Err() {
 					t.Fatalf("ForEach+Timeout error: %v", r.Error())
 				}
-				if counter != int64(tier.size) {
-					t.Fatalf("expected %d calls, got %d", tier.size, counter)
+				if counter != int64(tier.Size) {
+					t.Fatalf("expected %d calls, got %d", tier.Size, counter)
 				}
 			})
 		}
 		return
 	}
-	for _, tier := range allTiers {
+	for _, tier := range testutil.AllTiers {
 		for _, conc := range []int{64, 128, 256, 512} {
-			name := fmt.Sprintf("%s_c%d", tier.name, conc)
+			name := fmt.Sprintf("%s_c%d", tier.Name, conc)
 			t.Run(name, func(t *testing.T) {
 				t.Parallel()
-				data := genInts(tier.size)
+				data := genInts(tier.Size)
 				var counter int64
 				r := Slice(freshCtx(), data).Worker(conc).Timeout(30 * time.Second).ForEach(func(ctx context.Context, v int) error {
 					atomic.AddInt64(&counter, 1)
@@ -2184,8 +2160,8 @@ func TestSlice_Chain_HighConcurrency_ForEach_Timeout(t *testing.T) {
 				if r.Err() {
 					t.Fatalf("ForEach+Timeout error: %v", r.Error())
 				}
-				if counter != int64(tier.size) {
-					t.Fatalf("expected %d calls, got %d", tier.size, counter)
+				if counter != int64(tier.Size) {
+					t.Fatalf("expected %d calls, got %d", tier.Size, counter)
 				}
 			})
 		}
@@ -2196,10 +2172,10 @@ func TestSlice_Chain_HighConcurrency_ForEach_Timeout(t *testing.T) {
 
 func TestSlice_Chain_HighConcurrency_ForEach_FailFast(t *testing.T) {
 	if testing.Short() {
-		for _, tier := range allTiers {
-			t.Run(fmt.Sprintf("%s_c8", tier.name), func(t *testing.T) {
+		for _, tier := range testutil.AllTiers {
+			t.Run(fmt.Sprintf("%s_c8", tier.Name), func(t *testing.T) {
 				t.Parallel()
-				data := genInts(tier.size)
+				data := genInts(tier.Size)
 				var counter int64
 				r := Slice(freshCtx(), data).Worker(8).FailFast().ForEach(func(ctx context.Context, v int) error {
 					atomic.AddInt64(&counter, 1)
@@ -2208,19 +2184,19 @@ func TestSlice_Chain_HighConcurrency_ForEach_FailFast(t *testing.T) {
 				if r.Err() {
 					t.Fatalf("ForEach+FailFast error: %v", r.Error())
 				}
-				if counter != int64(tier.size) {
-					t.Fatalf("expected %d calls, got %d", tier.size, counter)
+				if counter != int64(tier.Size) {
+					t.Fatalf("expected %d calls, got %d", tier.Size, counter)
 				}
 			})
 		}
 		return
 	}
-	for _, tier := range allTiers {
+	for _, tier := range testutil.AllTiers {
 		for _, conc := range []int{64, 128, 256, 512, 1024} {
-			name := fmt.Sprintf("%s_c%d", tier.name, conc)
+			name := fmt.Sprintf("%s_c%d", tier.Name, conc)
 			t.Run(name, func(t *testing.T) {
 				t.Parallel()
-				data := genInts(tier.size)
+				data := genInts(tier.Size)
 				var counter int64
 				r := Slice(freshCtx(), data).Worker(conc).FailFast().ForEach(func(ctx context.Context, v int) error {
 					atomic.AddInt64(&counter, 1)
@@ -2229,8 +2205,8 @@ func TestSlice_Chain_HighConcurrency_ForEach_FailFast(t *testing.T) {
 				if r.Err() {
 					t.Fatalf("ForEach+FailFast error: %v", r.Error())
 				}
-				if counter != int64(tier.size) {
-					t.Fatalf("expected %d calls, got %d", tier.size, counter)
+				if counter != int64(tier.Size) {
+					t.Fatalf("expected %d calls, got %d", tier.Size, counter)
 				}
 			})
 		}
@@ -2241,10 +2217,10 @@ func TestSlice_Chain_HighConcurrency_ForEach_FailFast(t *testing.T) {
 
 func TestSlice_Chain_HighConcurrency_MapBatch(t *testing.T) {
 	if testing.Short() {
-		for _, tier := range allTiers {
-			t.Run(fmt.Sprintf("%s_c8", tier.name), func(t *testing.T) {
+		for _, tier := range testutil.AllTiers {
+			t.Run(fmt.Sprintf("%s_c8", tier.Name), func(t *testing.T) {
 				t.Parallel()
-				data := genInts(tier.size)
+				data := genInts(tier.Size)
 				r := Slice(freshCtx(), data).Worker(8).Chunk(100).MapBatch(func(ctx context.Context, batch []int) (int, error) {
 					sum := 0
 					for _, v := range batch {
@@ -2259,12 +2235,12 @@ func TestSlice_Chain_HighConcurrency_MapBatch(t *testing.T) {
 		}
 		return
 	}
-	for _, tier := range allTiers {
+	for _, tier := range testutil.AllTiers {
 		for _, conc := range []int{64, 128, 256, 512} {
-			name := fmt.Sprintf("%s_c%d", tier.name, conc)
+			name := fmt.Sprintf("%s_c%d", tier.Name, conc)
 			t.Run(name, func(t *testing.T) {
 				t.Parallel()
-				data := genInts(tier.size)
+				data := genInts(tier.Size)
 				r := Slice(freshCtx(), data).Worker(conc).Chunk(100).MapBatch(func(ctx context.Context, batch []int) (int, error) {
 					sum := 0
 					for _, v := range batch {
@@ -2284,10 +2260,10 @@ func TestSlice_Chain_HighConcurrency_MapBatch(t *testing.T) {
 
 func TestSlice_Chain_HighConcurrency_ForEachBatch(t *testing.T) {
 	if testing.Short() {
-		for _, tier := range allTiers {
-			t.Run(fmt.Sprintf("%s_c8", tier.name), func(t *testing.T) {
+		for _, tier := range testutil.AllTiers {
+			t.Run(fmt.Sprintf("%s_c8", tier.Name), func(t *testing.T) {
 				t.Parallel()
-				data := genInts(tier.size)
+				data := genInts(tier.Size)
 				var counter int64
 				r := Slice(freshCtx(), data).Worker(8).Chunk(100).ForEachBatch(func(ctx context.Context, batch []int) error {
 					atomic.AddInt64(&counter, int64(len(batch)))
@@ -2296,19 +2272,19 @@ func TestSlice_Chain_HighConcurrency_ForEachBatch(t *testing.T) {
 				if r.Err() {
 					t.Fatalf("ForEachBatch error: %v", r.Error())
 				}
-				if counter != int64(tier.size) {
-					t.Fatalf("expected %d, got %d", tier.size, counter)
+				if counter != int64(tier.Size) {
+					t.Fatalf("expected %d, got %d", tier.Size, counter)
 				}
 			})
 		}
 		return
 	}
-	for _, tier := range allTiers {
+	for _, tier := range testutil.AllTiers {
 		for _, conc := range []int{64, 128, 256, 512} {
-			name := fmt.Sprintf("%s_c%d", tier.name, conc)
+			name := fmt.Sprintf("%s_c%d", tier.Name, conc)
 			t.Run(name, func(t *testing.T) {
 				t.Parallel()
-				data := genInts(tier.size)
+				data := genInts(tier.Size)
 				var counter int64
 				r := Slice(freshCtx(), data).Worker(conc).Chunk(100).ForEachBatch(func(ctx context.Context, batch []int) error {
 					atomic.AddInt64(&counter, int64(len(batch)))
@@ -2317,8 +2293,8 @@ func TestSlice_Chain_HighConcurrency_ForEachBatch(t *testing.T) {
 				if r.Err() {
 					t.Fatalf("ForEachBatch error: %v", r.Error())
 				}
-				if counter != int64(tier.size) {
-					t.Fatalf("expected %d, got %d", tier.size, counter)
+				if counter != int64(tier.Size) {
+					t.Fatalf("expected %d, got %d", tier.Size, counter)
 				}
 			})
 		}
@@ -2329,10 +2305,10 @@ func TestSlice_Chain_HighConcurrency_ForEachBatch(t *testing.T) {
 
 func TestSlice_Chain_HighConcurrency_Stream_FailFast(t *testing.T) {
 	if testing.Short() {
-		for _, tier := range allTiers {
-			t.Run(fmt.Sprintf("%s_c8", tier.name), func(t *testing.T) {
+		for _, tier := range testutil.AllTiers {
+			t.Run(fmt.Sprintf("%s_c8", tier.Name), func(t *testing.T) {
 				t.Parallel()
-				data := genInts(tier.size)
+				data := genInts(tier.Size)
 				ch := Slice(freshCtx(), data).Worker(8).FailFast().Stream(func(ctx context.Context, v int) (int, error) {
 					return v, nil
 				}, 256)
@@ -2343,19 +2319,19 @@ func TestSlice_Chain_HighConcurrency_Stream_FailFast(t *testing.T) {
 					}
 					count++
 				}
-				if count != tier.size {
-					t.Fatalf("Stream+FF: expected %d results, got %d", tier.size, count)
+				if count != tier.Size {
+					t.Fatalf("Stream+FF: expected %d results, got %d", tier.Size, count)
 				}
 			})
 		}
 		return
 	}
-	for _, tier := range allTiers {
+	for _, tier := range testutil.AllTiers {
 		for _, conc := range []int{64, 128, 256, 512} {
-			name := fmt.Sprintf("%s_c%d", tier.name, conc)
+			name := fmt.Sprintf("%s_c%d", tier.Name, conc)
 			t.Run(name, func(t *testing.T) {
 				t.Parallel()
-				data := genInts(tier.size)
+				data := genInts(tier.Size)
 				ch := Slice(freshCtx(), data).Worker(conc).FailFast().Stream(func(ctx context.Context, v int) (int, error) {
 					return v, nil
 				}, 256)
@@ -2366,8 +2342,8 @@ func TestSlice_Chain_HighConcurrency_Stream_FailFast(t *testing.T) {
 					}
 					count++
 				}
-				if count != tier.size {
-					t.Fatalf("Stream+FF: expected %d results, got %d", tier.size, count)
+				if count != tier.Size {
+					t.Fatalf("Stream+FF: expected %d results, got %d", tier.Size, count)
 				}
 			})
 		}
@@ -2378,10 +2354,10 @@ func TestSlice_Chain_HighConcurrency_Stream_FailFast(t *testing.T) {
 
 func TestSlice_Chain_HighConcurrency_ForEach_Shards(t *testing.T) {
 	if testing.Short() {
-		for _, tier := range allTiers {
-			t.Run(fmt.Sprintf("%s_s8", tier.name), func(t *testing.T) {
+		for _, tier := range testutil.AllTiers {
+			t.Run(fmt.Sprintf("%s_s8", tier.Name), func(t *testing.T) {
 				t.Parallel()
-				data := genInts(tier.size)
+				data := genInts(tier.Size)
 				var counter int64
 				r := Slice(freshCtx(), data).Shards(8).ForEach(func(ctx context.Context, v int) error {
 					atomic.AddInt64(&counter, 1)
@@ -2390,19 +2366,19 @@ func TestSlice_Chain_HighConcurrency_ForEach_Shards(t *testing.T) {
 				if r.Err() {
 					t.Fatalf("ForEach+Shards error: %v", r.Error())
 				}
-				if counter != int64(tier.size) {
-					t.Fatalf("expected %d calls, got %d", tier.size, counter)
+				if counter != int64(tier.Size) {
+					t.Fatalf("expected %d calls, got %d", tier.Size, counter)
 				}
 			})
 		}
 		return
 	}
-	for _, tier := range allTiers {
+	for _, tier := range testutil.AllTiers {
 		for _, shards := range []int{32, 64, 128} {
-			name := fmt.Sprintf("%s_s%d", tier.name, shards)
+			name := fmt.Sprintf("%s_s%d", tier.Name, shards)
 			t.Run(name, func(t *testing.T) {
 				t.Parallel()
-				data := genInts(tier.size)
+				data := genInts(tier.Size)
 				var counter int64
 				r := Slice(freshCtx(), data).Shards(shards).ForEach(func(ctx context.Context, v int) error {
 					atomic.AddInt64(&counter, 1)
@@ -2411,8 +2387,8 @@ func TestSlice_Chain_HighConcurrency_ForEach_Shards(t *testing.T) {
 				if r.Err() {
 					t.Fatalf("ForEach+Shards error: %v", r.Error())
 				}
-				if counter != int64(tier.size) {
-					t.Fatalf("expected %d calls, got %d", tier.size, counter)
+				if counter != int64(tier.Size) {
+					t.Fatalf("expected %d calls, got %d", tier.Size, counter)
 				}
 			})
 		}
@@ -2423,11 +2399,11 @@ func TestSlice_Chain_HighConcurrency_ForEach_Shards(t *testing.T) {
 
 func TestSlice_Chain_HighConcurrency_ForEach_TOFF(t *testing.T) {
 	if testing.Short() {
-		for _, tier := range allTiers {
-			t.Run(fmt.Sprintf("%s_c8", tier.name), func(t *testing.T) {
-				skipIfTooLarge(t, tier.size)
+		for _, tier := range testutil.AllTiers {
+			t.Run(fmt.Sprintf("%s_c8", tier.Name), func(t *testing.T) {
+				testutil.SkipIfTooLarge1M(t, tier.Size)
 				t.Parallel()
-				data := genInts(tier.size)
+				data := genInts(tier.Size)
 				var counter int64
 				r := Slice(freshCtx(), data).Worker(8).Timeout(30 * time.Second).FailFast().ForEach(func(ctx context.Context, v int) error {
 					atomic.AddInt64(&counter, 1)
@@ -2436,19 +2412,19 @@ func TestSlice_Chain_HighConcurrency_ForEach_TOFF(t *testing.T) {
 				if r.Err() {
 					t.Fatalf("ForEach+TO+FF error: %v", r.Error())
 				}
-				if counter != int64(tier.size) {
-					t.Fatalf("expected %d calls, got %d", tier.size, counter)
+				if counter != int64(tier.Size) {
+					t.Fatalf("expected %d calls, got %d", tier.Size, counter)
 				}
 			})
 		}
 		return
 	}
-	for _, tier := range allTiers {
+	for _, tier := range testutil.AllTiers {
 		for _, conc := range []int{64, 128, 256, 512} {
-			name := fmt.Sprintf("%s_c%d", tier.name, conc)
+			name := fmt.Sprintf("%s_c%d", tier.Name, conc)
 			t.Run(name, func(t *testing.T) {
 				t.Parallel()
-				data := genInts(tier.size)
+				data := genInts(tier.Size)
 				var counter int64
 				r := Slice(freshCtx(), data).Worker(conc).Timeout(30 * time.Second).FailFast().ForEach(func(ctx context.Context, v int) error {
 					atomic.AddInt64(&counter, 1)
@@ -2457,8 +2433,8 @@ func TestSlice_Chain_HighConcurrency_ForEach_TOFF(t *testing.T) {
 				if r.Err() {
 					t.Fatalf("ForEach+TO+FF error: %v", r.Error())
 				}
-				if counter != int64(tier.size) {
-					t.Fatalf("expected %d calls, got %d", tier.size, counter)
+				if counter != int64(tier.Size) {
+					t.Fatalf("expected %d calls, got %d", tier.Size, counter)
 				}
 			})
 		}
@@ -2685,10 +2661,10 @@ func TestSlice_Chain_FirstLast_Empty(t *testing.T) {
 // ============================================================
 
 func TestSlice_Chain_ConcurrentReads(t *testing.T) {
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
-			data := genInts(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genInts(tier.Size)
 			sb := Slice(freshCtx(), data)
 			var wg sync.WaitGroup
 			workers := 32
@@ -2712,9 +2688,9 @@ func TestSlice_Chain_ConcurrentReads(t *testing.T) {
 }
 
 func TestSlice_Chain_ConcurrentMapCalls(t *testing.T) {
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
 			t.Parallel()
 			var wg sync.WaitGroup
 			workers := 16
@@ -2723,7 +2699,7 @@ func TestSlice_Chain_ConcurrentMapCalls(t *testing.T) {
 				wg.Add(1)
 				go func() {
 					defer wg.Done()
-					data := genInts(tier.size / workers)
+					data := genInts(tier.Size / workers)
 					if len(data) == 0 {
 						return
 					}
@@ -2759,9 +2735,9 @@ func TestSlice_Chain_Race_Map(t *testing.T) {
 	if testing.Short() {
 		conc = 4
 	}
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			data := genInts(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			data := genInts(tier.Size)
 			var sum int64
 			r := Slice(freshCtx(), data).Worker(conc).Map(func(ctx context.Context, v int) (int, error) {
 				atomic.AddInt64(&sum, int64(v))
@@ -2770,8 +2746,8 @@ func TestSlice_Chain_Race_Map(t *testing.T) {
 			if r.Err() {
 				t.Fatalf("Race Map: %v", r.Error())
 			}
-			if r.Len() != tier.size {
-				t.Fatalf("Race Map: expected %d, got %d", tier.size, r.Len())
+			if r.Len() != tier.Size {
+				t.Fatalf("Race Map: expected %d, got %d", tier.Size, r.Len())
 			}
 		})
 	}
@@ -2782,9 +2758,9 @@ func TestSlice_Chain_Race_ForEach(t *testing.T) {
 	if testing.Short() {
 		conc = 4
 	}
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			data := genInts(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			data := genInts(tier.Size)
 			var counter int64
 			var errCount int64
 			r := Slice(freshCtx(), data).Worker(conc).ForEach(func(ctx context.Context, v int) error {
@@ -2795,11 +2771,11 @@ func TestSlice_Chain_Race_ForEach(t *testing.T) {
 				return nil
 			})
 			_ = r.Error()
-			if r.Total() != int64(tier.size) {
-				t.Fatalf("Race ForEach Total: expected %d, got %d", tier.size, r.Total())
+			if r.Total() != int64(tier.Size) {
+				t.Fatalf("Race ForEach Total: expected %d, got %d", tier.Size, r.Total())
 			}
-			if counter != int64(tier.size) {
-				t.Fatalf("Race ForEach counter: expected %d, got %d", tier.size, counter)
+			if counter != int64(tier.Size) {
+				t.Fatalf("Race ForEach counter: expected %d, got %d", tier.Size, counter)
 			}
 		})
 	}
@@ -2810,9 +2786,9 @@ func TestSlice_Chain_Race_FailFast(t *testing.T) {
 	if testing.Short() {
 		conc = 4
 	}
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			data := genInts(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			data := genInts(tier.Size)
 			var called int64
 			r := Slice(freshCtx(), data).Worker(conc).FailFast().Map(func(ctx context.Context, v int) (int, error) {
 				idx := atomic.AddInt64(&called, 1)
@@ -2833,9 +2809,9 @@ func TestSlice_Chain_Race_Stream(t *testing.T) {
 	if testing.Short() {
 		conc = 4
 	}
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			data := genInts(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			data := genInts(tier.Size)
 			ch := Slice(freshCtx(), data).Worker(conc).Buf(4096).Stream(func(ctx context.Context, v int) (int, error) {
 				return v, nil
 			}, 0)
@@ -2846,8 +2822,8 @@ func TestSlice_Chain_Race_Stream(t *testing.T) {
 				}
 				count++
 			}
-			if count != tier.size {
-				t.Fatalf("Race Stream: expected %d, got %d", tier.size, count)
+			if count != tier.Size {
+				t.Fatalf("Race Stream: expected %d, got %d", tier.Size, count)
 			}
 		})
 	}
@@ -2858,9 +2834,9 @@ func TestSlice_Chain_Race_PoolShared(t *testing.T) {
 	if testing.Short() {
 		conc = 4
 	}
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			data := genInts(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			data := genInts(tier.Size)
 			p := pool.NewPool[int](16)
 			r := Slice(freshCtx(), data).PoolAuto(p).Worker(conc).Map(func(ctx context.Context, v int) (int, error) {
 				return v, nil
@@ -2868,8 +2844,8 @@ func TestSlice_Chain_Race_PoolShared(t *testing.T) {
 			if r.Err() {
 				t.Fatalf("Race PoolShared: %v", r.Error())
 			}
-			if r.Len() != tier.size {
-				t.Fatalf("Race PoolShared: expected %d, got %d", tier.size, r.Len())
+			if r.Len() != tier.Size {
+				t.Fatalf("Race PoolShared: expected %d, got %d", tier.Size, r.Len())
 			}
 		})
 	}
@@ -2880,17 +2856,17 @@ func TestSlice_Chain_Race_Shards(t *testing.T) {
 	if testing.Short() {
 		conc = 4
 	}
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			data := genInts(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			data := genInts(tier.Size)
 			r := Slice(freshCtx(), data).Worker(conc).Shards(16).Map(func(ctx context.Context, v int) (int, error) {
 				return v * 2, nil
 			})
 			if r.Err() {
 				t.Fatalf("Race Shards: %v", r.Error())
 			}
-			if r.Len() != tier.size {
-				t.Fatalf("Race Shards: expected %d, got %d", tier.size, r.Len())
+			if r.Len() != tier.Size {
+				t.Fatalf("Race Shards: expected %d, got %d", tier.Size, r.Len())
 			}
 		})
 	}
@@ -2901,9 +2877,9 @@ func TestSlice_Chain_Race_MapBatch(t *testing.T) {
 	if testing.Short() {
 		conc = 4
 	}
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			data := genInts(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			data := genInts(tier.Size)
 			r := Slice(freshCtx(), data).Worker(conc).Chunk(100).MapBatch(func(ctx context.Context, batch []int) (int, error) {
 				sum := 0
 				for _, v := range batch {
@@ -2926,9 +2902,9 @@ func TestSlice_Chain_Race_ForEachBatch(t *testing.T) {
 	if testing.Short() {
 		conc = 4
 	}
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			data := genInts(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			data := genInts(tier.Size)
 			var counter int64
 			r := Slice(freshCtx(), data).Worker(conc).Chunk(100).ForEachBatch(func(ctx context.Context, batch []int) error {
 				atomic.AddInt64(&counter, int64(len(batch)))
@@ -2937,8 +2913,8 @@ func TestSlice_Chain_Race_ForEachBatch(t *testing.T) {
 			if r.Err() {
 				t.Fatalf("Race ForEachBatch: %v", r.Error())
 			}
-			if counter != int64(tier.size) {
-				t.Fatalf("Race ForEachBatch: expected %d, got %d", tier.size, counter)
+			if counter != int64(tier.Size) {
+				t.Fatalf("Race ForEachBatch: expected %d, got %d", tier.Size, counter)
 			}
 		})
 	}
@@ -2949,9 +2925,9 @@ func TestSlice_Chain_Race_Reduce(t *testing.T) {
 	if testing.Short() {
 		conc = 4
 	}
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			data := genInts(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			data := genInts(tier.Size)
 			sum, err := Slice(freshCtx(), data).Worker(conc).Reduce(0, func(ctx context.Context, acc int, v int) (int, error) {
 				return acc + v, nil
 			})
@@ -2964,34 +2940,34 @@ func TestSlice_Chain_Race_Reduce(t *testing.T) {
 }
 
 func TestSlice_Chain_Race_SerialMode(t *testing.T) {
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			data := genInts(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			data := genInts(tier.Size)
 			r := Slice(freshCtx(), data).Serial().Map(func(ctx context.Context, v int) (int, error) {
 				return v, nil
 			})
 			if r.Err() {
 				t.Fatalf("Race Serial: %v", r.Error())
 			}
-			if r.Len() != tier.size {
-				t.Fatalf("Race Serial: expected %d, got %d", tier.size, r.Len())
+			if r.Len() != tier.Size {
+				t.Fatalf("Race Serial: expected %d, got %d", tier.Size, r.Len())
 			}
 		})
 	}
 }
 
 func TestSlice_Chain_Race_SerialMode_FailFast(t *testing.T) {
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			data := genInts(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			data := genInts(tier.Size)
 			r := Slice(freshCtx(), data).Serial().FailFast().Map(func(ctx context.Context, v int) (int, error) {
 				return v, nil
 			})
 			if r.Err() {
 				t.Fatalf("Race Serial FF: %v", r.Error())
 			}
-			if r.Len() != tier.size {
-				t.Fatalf("Race Serial FF: expected %d, got %d", tier.size, r.Len())
+			if r.Len() != tier.Size {
+				t.Fatalf("Race Serial FF: expected %d, got %d", tier.Size, r.Len())
 			}
 		})
 	}
@@ -3002,17 +2978,17 @@ func TestSlice_Chain_Race_ParallelMode(t *testing.T) {
 	if testing.Short() {
 		conc = 4
 	}
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			data := genInts(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			data := genInts(tier.Size)
 			r := Slice(freshCtx(), data).Parallel().Worker(conc).Map(func(ctx context.Context, v int) (int, error) {
 				return v, nil
 			})
 			if r.Err() {
 				t.Fatalf("Race Parallel: %v", r.Error())
 			}
-			if r.Len() != tier.size {
-				t.Fatalf("Race Parallel: expected %d, got %d", tier.size, r.Len())
+			if r.Len() != tier.Size {
+				t.Fatalf("Race Parallel: expected %d, got %d", tier.Size, r.Len())
 			}
 		})
 	}
@@ -3023,9 +2999,9 @@ func TestSlice_Chain_Race_ForEach_Shards(t *testing.T) {
 	if testing.Short() {
 		shards = 4
 	}
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			data := genInts(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			data := genInts(tier.Size)
 			var counter int64
 			r := Slice(freshCtx(), data).Shards(shards).ForEach(func(ctx context.Context, v int) error {
 				atomic.AddInt64(&counter, 1)
@@ -3034,8 +3010,8 @@ func TestSlice_Chain_Race_ForEach_Shards(t *testing.T) {
 			if r.Err() {
 				t.Fatalf("Race ForEach Shards: %v", r.Error())
 			}
-			if r.SuccessCount() != int64(tier.size) {
-				t.Fatalf("Race ForEach Shards: expected %d, got %d", tier.size, r.SuccessCount())
+			if r.SuccessCount() != int64(tier.Size) {
+				t.Fatalf("Race ForEach Shards: expected %d, got %d", tier.Size, r.SuccessCount())
 			}
 		})
 	}
@@ -3046,10 +3022,10 @@ func TestSlice_Chain_Race_ForEach_TOFF(t *testing.T) {
 	if testing.Short() {
 		conc = 4
 	}
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
-			data := genInts(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genInts(tier.Size)
 			var counter int64
 			r := Slice(freshCtx(), data).Worker(conc).Timeout(30 * time.Second).FailFast().ForEach(func(ctx context.Context, v int) error {
 				atomic.AddInt64(&counter, 1)
@@ -3058,8 +3034,8 @@ func TestSlice_Chain_Race_ForEach_TOFF(t *testing.T) {
 			if r.Err() {
 				t.Fatalf("Race ForEach TOFF: %v", r.Error())
 			}
-			if r.SuccessCount() != int64(tier.size) {
-				t.Fatalf("Race ForEach TOFF: expected %d, got %d", tier.size, r.SuccessCount())
+			if r.SuccessCount() != int64(tier.Size) {
+				t.Fatalf("Race ForEach TOFF: expected %d, got %d", tier.Size, r.SuccessCount())
 			}
 		})
 	}

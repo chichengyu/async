@@ -12,31 +12,10 @@ import (
 
 	"github.com/chichengyu/async/internal/core"
 	"github.com/chichengyu/async/internal/pool"
+	"github.com/chichengyu/async/testutil"
 )
 
 var errMapTestSentinel = errors.New("test map sentinel error")
-
-// ============================================================
-// Shared helpers: test tiers & auxiliary functions
-// ============================================================
-
-type mapDataTier struct {
-	name string
-	size int
-}
-
-var mapAllTiers = []mapDataTier{
-	{"万级_10K", 10_000},
-	{"十万级_100K", 100_000},
-	{"百万级_1M", 1_000_000},
-	{"千万级_10M", 10_000_000},
-}
-
-func mapSkipIfTooLarge(t *testing.T, size int) {
-	if testing.Short() && size >= 1_000_000 {
-		t.Skip("short mode: skip large scale test")
-	}
-}
 
 func genIntMap(n int) map[string]int {
 	m := make(map[string]int, n)
@@ -64,25 +43,25 @@ func (l *testMapLogger) WithContext(ctx context.Context) context.Context { retur
 // ============================================================
 
 func TestMap_Chain_Len(t *testing.T) {
-	for _, tier := range mapAllTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			mapSkipIfTooLarge(t, tier.size)
-			data := genIntMap(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genIntMap(tier.Size)
 			b := NewMapChain(mapFreshCtx(), data)
 			l := b.Len()
-			if l != tier.size {
-				t.Fatalf("Len: expected %d, got %d", tier.size, l)
+			if l != tier.Size {
+				t.Fatalf("Len: expected %d, got %d", tier.Size, l)
 			}
 		})
 	}
 }
 
 func TestMap_Chain_IsEmpty(t *testing.T) {
-	for _, tier := range mapAllTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			mapSkipIfTooLarge(t, tier.size)
-			data := genIntMap(tier.size)
-			if NewMapChain(mapFreshCtx(), data).IsEmpty() && tier.size > 0 {
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genIntMap(tier.Size)
+			if NewMapChain(mapFreshCtx(), data).IsEmpty() && tier.Size > 0 {
 				t.Fatal("IsEmpty: non-empty map should return false")
 			}
 			if !NewMapChain(mapFreshCtx(), map[string]int{}).IsEmpty() {
@@ -93,51 +72,51 @@ func TestMap_Chain_IsEmpty(t *testing.T) {
 }
 
 func TestMap_Chain_Keys(t *testing.T) {
-	for _, tier := range mapAllTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			mapSkipIfTooLarge(t, tier.size)
-			data := genIntMap(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genIntMap(tier.Size)
 			keys := NewMapChain(mapFreshCtx(), data).Keys()
-			if len(keys) != tier.size {
-				t.Fatalf("Keys: expected %d, got %d", tier.size, len(keys))
+			if len(keys) != tier.Size {
+				t.Fatalf("Keys: expected %d, got %d", tier.Size, len(keys))
 			}
 		})
 	}
 }
 
 func TestMap_Chain_Values(t *testing.T) {
-	for _, tier := range mapAllTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			mapSkipIfTooLarge(t, tier.size)
-			data := genIntMap(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genIntMap(tier.Size)
 			vals := NewMapChain(mapFreshCtx(), data).Values()
-			if len(vals) != tier.size {
-				t.Fatalf("Values: expected %d, got %d", tier.size, len(vals))
+			if len(vals) != tier.Size {
+				t.Fatalf("Values: expected %d, got %d", tier.Size, len(vals))
 			}
 		})
 	}
 }
 
 func TestMap_Chain_AsMap(t *testing.T) {
-	for _, tier := range mapAllTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			mapSkipIfTooLarge(t, tier.size)
-			data := genIntMap(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genIntMap(tier.Size)
 			ref := NewMapChain(mapFreshCtx(), data).AsMap()
-			if len(ref) != tier.size {
-				t.Fatalf("AsMap: expected len %d, got %d", tier.size, len(ref))
+			if len(ref) != tier.Size {
+				t.Fatalf("AsMap: expected len %d, got %d", tier.Size, len(ref))
 			}
 		})
 	}
 }
 
 func TestMap_Chain_Has(t *testing.T) {
-	for _, tier := range mapAllTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			mapSkipIfTooLarge(t, tier.size)
-			data := genIntMap(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genIntMap(tier.Size)
 			b := NewMapChain(mapFreshCtx(), data)
-			mid := strconv.Itoa(tier.size / 2)
+			mid := strconv.Itoa(tier.Size / 2)
 			if !b.Has(mid) {
 				t.Fatalf("Has: key %s should exist", mid)
 			}
@@ -149,12 +128,12 @@ func TestMap_Chain_Has(t *testing.T) {
 }
 
 func TestMap_Chain_Get(t *testing.T) {
-	for _, tier := range mapAllTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			mapSkipIfTooLarge(t, tier.size)
-			data := genIntMap(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genIntMap(tier.Size)
 			b := NewMapChain(mapFreshCtx(), data)
-			mid := tier.size / 2
+			mid := tier.Size / 2
 			v, ok := b.Get(strconv.Itoa(mid))
 			if !ok || v != mid {
 				t.Fatalf("Get: expected (%d, true), got (%d, %v)", mid, v, ok)
@@ -168,14 +147,14 @@ func TestMap_Chain_Get(t *testing.T) {
 }
 
 func TestMap_Chain_Set(t *testing.T) {
-	for _, tier := range mapAllTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			mapSkipIfTooLarge(t, tier.size)
-			data := genIntMap(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genIntMap(tier.Size)
 			b := NewMapChain(mapFreshCtx(), data)
 			b.Set("newkey", 999).Set("newkey2", 1000)
-			if b.Len() != tier.size+2 {
-				t.Fatalf("Set: expected len %d, got %d", tier.size+2, b.Len())
+			if b.Len() != tier.Size+2 {
+				t.Fatalf("Set: expected len %d, got %d", tier.Size+2, b.Len())
 			}
 			v, ok := b.Get("newkey")
 			if !ok || v != 999 {
@@ -186,28 +165,28 @@ func TestMap_Chain_Set(t *testing.T) {
 }
 
 func TestMap_Chain_SetAll(t *testing.T) {
-	for _, tier := range mapAllTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			mapSkipIfTooLarge(t, tier.size)
-			data := genIntMap(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genIntMap(tier.Size)
 			b := NewMapChain(mapFreshCtx(), data)
 			b.SetAll(map[string]int{"x": -1, "y": -2})
-			if b.Len() != tier.size+2 {
-				t.Fatalf("SetAll: expected len %d, got %d", tier.size+2, b.Len())
+			if b.Len() != tier.Size+2 {
+				t.Fatalf("SetAll: expected len %d, got %d", tier.Size+2, b.Len())
 			}
 		})
 	}
 }
 
 func TestMap_Chain_Delete(t *testing.T) {
-	for _, tier := range mapAllTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			mapSkipIfTooLarge(t, tier.size)
-			data := genIntMap(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genIntMap(tier.Size)
 			b := NewMapChain(mapFreshCtx(), data)
 			b.Delete("0")
-			if b.Len() != tier.size-1 {
-				t.Fatalf("Delete: expected len %d, got %d", tier.size-1, b.Len())
+			if b.Len() != tier.Size-1 {
+				t.Fatalf("Delete: expected len %d, got %d", tier.Size-1, b.Len())
 			}
 			if b.Has("0") {
 				t.Fatal("Delete: key '0' should be deleted")
@@ -217,10 +196,10 @@ func TestMap_Chain_Delete(t *testing.T) {
 }
 
 func TestMap_Chain_Clear(t *testing.T) {
-	for _, tier := range mapAllTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			mapSkipIfTooLarge(t, tier.size)
-			data := genIntMap(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genIntMap(tier.Size)
 			b := NewMapChain(mapFreshCtx(), data)
 			b.Clear()
 			if !b.IsEmpty() {
@@ -231,28 +210,28 @@ func TestMap_Chain_Clear(t *testing.T) {
 }
 
 func TestMap_Chain_Range(t *testing.T) {
-	for _, tier := range mapAllTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			mapSkipIfTooLarge(t, tier.size)
-			data := genIntMap(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genIntMap(tier.Size)
 			b := NewMapChain(mapFreshCtx(), data)
 			count := 0
 			b.Range(func(k string, v int) bool {
 				count++
 				return true
 			})
-			if count != tier.size {
-				t.Fatalf("Range: expected %d visits, got %d", tier.size, count)
+			if count != tier.Size {
+				t.Fatalf("Range: expected %d visits, got %d", tier.Size, count)
 			}
 		})
 	}
 }
 
 func TestMap_Chain_Range_EarlyStop(t *testing.T) {
-	for _, tier := range mapAllTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			mapSkipIfTooLarge(t, tier.size)
-			data := genIntMap(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genIntMap(tier.Size)
 			b := NewMapChain(mapFreshCtx(), data)
 			count := 0
 			b.Range(func(k string, v int) bool {
@@ -271,10 +250,10 @@ func TestMap_Chain_Range_EarlyStop(t *testing.T) {
 // ============================================================
 
 func TestMap_Chain_Filter(t *testing.T) {
-	for _, tier := range mapAllTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			mapSkipIfTooLarge(t, tier.size)
-			data := genIntMap(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genIntMap(tier.Size)
 			b := NewMapChain(mapFreshCtx(), data)
 			b.FilterKV(func(k string, v int) bool { return v%2 == 0 })
 			b.Range(func(k string, v int) bool {
@@ -288,10 +267,10 @@ func TestMap_Chain_Filter(t *testing.T) {
 }
 
 func TestMap_Chain_Reject(t *testing.T) {
-	for _, tier := range mapAllTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			mapSkipIfTooLarge(t, tier.size)
-			data := genIntMap(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genIntMap(tier.Size)
 			b := NewMapChain(mapFreshCtx(), data)
 			b.Reject(func(k string, v int) bool { return v%2 != 0 })
 			b.Range(func(k string, v int) bool {
@@ -309,13 +288,13 @@ func TestMap_Chain_Reject(t *testing.T) {
 // ============================================================
 
 func TestMap_Chain_MapValues(t *testing.T) {
-	for _, tier := range mapAllTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			mapSkipIfTooLarge(t, tier.size)
-			data := genIntMap(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genIntMap(tier.Size)
 			b := NewMapChain(mapFreshCtx(), data)
 			b.MapValues(func(k string, v int) int { return v * 2 })
-			mid := tier.size / 2
+			mid := tier.Size / 2
 			v, _ := b.Get(strconv.Itoa(mid))
 			if v != mid*2 {
 				t.Fatalf("MapValues: expected %d, got %d", mid*2, v)
@@ -329,31 +308,31 @@ func TestMap_Chain_MapValues(t *testing.T) {
 // ============================================================
 
 func TestMap_Chain_Merge(t *testing.T) {
-	for _, tier := range mapAllTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			mapSkipIfTooLarge(t, tier.size)
-			data := genIntMap(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genIntMap(tier.Size)
 			b := NewMapChain(mapFreshCtx(), data)
 			extra := map[string]int{"extra_a": -1, "extra_b": -2}
 			b.Merge(extra)
-			if b.Len() != tier.size+2 {
-				t.Fatalf("Merge: expected len %d, got %d", tier.size+2, b.Len())
+			if b.Len() != tier.Size+2 {
+				t.Fatalf("Merge: expected len %d, got %d", tier.Size+2, b.Len())
 			}
 		})
 	}
 }
 
 func TestMap_Chain_MergeMap(t *testing.T) {
-	for _, tier := range mapAllTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			mapSkipIfTooLarge(t, tier.size)
-			data := genIntMap(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genIntMap(tier.Size)
 			b := NewMapChain(mapFreshCtx(), data)
 			other := NewMap[string, int]()
 			other.Set("extra_x", 100)
 			b.MergeMap(other)
-			if b.Len() != tier.size+1 {
-				t.Fatalf("MergeMap: expected len %d, got %d", tier.size+1, b.Len())
+			if b.Len() != tier.Size+1 {
+				t.Fatalf("MergeMap: expected len %d, got %d", tier.Size+1, b.Len())
 			}
 		})
 	}
@@ -369,17 +348,17 @@ func TestMap_Chain_MergeMap_Nil(t *testing.T) {
 }
 
 func TestMap_Chain_MergeWithDefault(t *testing.T) {
-	for _, tier := range mapAllTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			mapSkipIfTooLarge(t, tier.size)
-			data := genIntMap(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genIntMap(tier.Size)
 			b := NewMapChain(mapFreshCtx(), data)
-			mid := strconv.Itoa(tier.size / 2)
+			mid := strconv.Itoa(tier.Size / 2)
 			override := map[string]int{"new_only": -1}
 			override[mid] = 99999
 			b.MergeWithDefault(override)
 			v, _ := b.Get(mid)
-			if v != tier.size/2 {
+			if v != tier.Size/2 {
 				t.Fatalf("MergeWithDefault: existing key should not be overridden, got %d", v)
 			}
 			v2, ok := b.Get("new_only")
@@ -395,12 +374,12 @@ func TestMap_Chain_MergeWithDefault(t *testing.T) {
 // ============================================================
 
 func TestMap_Chain_Find(t *testing.T) {
-	for _, tier := range mapAllTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			mapSkipIfTooLarge(t, tier.size)
-			data := genIntMap(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genIntMap(tier.Size)
 			b := NewMapChain(mapFreshCtx(), data)
-			mid := tier.size / 2
+			mid := tier.Size / 2
 			k, v, found := b.Find(func(key string, val int) bool { return val >= mid })
 			if !found {
 				t.Fatal("Find: should find a value")
@@ -422,16 +401,16 @@ func TestMap_Chain_Find_NotFound(t *testing.T) {
 }
 
 func TestMap_Chain_All(t *testing.T) {
-	for _, tier := range mapAllTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			mapSkipIfTooLarge(t, tier.size)
-			data := genIntMap(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genIntMap(tier.Size)
 			b := NewMapChain(mapFreshCtx(), data)
 			if !b.All(func(k string, v int) bool { return v >= 0 }) {
 				t.Fatal("All: all values should be >= 0")
 			}
-			if tier.size > 10 {
-				if b.All(func(k string, v int) bool { return v < tier.size/2 }) {
+			if tier.Size > 10 {
+				if b.All(func(k string, v int) bool { return v < tier.Size/2 }) {
 					t.Fatal("All: not all values should be < mid")
 				}
 			}
@@ -440,12 +419,12 @@ func TestMap_Chain_All(t *testing.T) {
 }
 
 func TestMap_Chain_Any(t *testing.T) {
-	for _, tier := range mapAllTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			mapSkipIfTooLarge(t, tier.size)
-			data := genIntMap(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genIntMap(tier.Size)
 			b := NewMapChain(mapFreshCtx(), data)
-			mid := tier.size / 2
+			mid := tier.Size / 2
 			if !b.Any(func(k string, v int) bool { return v == mid }) {
 				t.Fatalf("Any: should find %d", mid)
 			}
@@ -457,13 +436,13 @@ func TestMap_Chain_Any(t *testing.T) {
 }
 
 func TestMap_Chain_Count(t *testing.T) {
-	for _, tier := range mapAllTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			mapSkipIfTooLarge(t, tier.size)
-			data := genIntMap(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genIntMap(tier.Size)
 			b := NewMapChain(mapFreshCtx(), data)
 			cnt := b.Count(func(k string, v int) bool { return v%2 == 0 })
-			expected := tier.size/2 + tier.size%2
+			expected := tier.Size/2 + tier.Size%2
 			if cnt != expected {
 				t.Fatalf("Count: expected %d, got %d", expected, cnt)
 			}
@@ -476,28 +455,28 @@ func TestMap_Chain_Count(t *testing.T) {
 // ============================================================
 
 func TestMap_Chain_Map_MapChain(t *testing.T) {
-	for _, tier := range mapAllTiers {
+	for _, tier := range testutil.AllTiers {
 		for _, conc := range mapConcurrencies {
-			name := fmt.Sprintf("%s_c%d", tier.name, conc)
+			name := fmt.Sprintf("%s_c%d", tier.Name, conc)
 			t.Run(name, func(t *testing.T) {
-				mapSkipIfTooLarge(t, tier.size)
+				testutil.SkipIfTooLarge1M(t, tier.Size)
 				if testing.Short() && conc > 32 {
 					t.Skip("short mode: skip high concurrency")
 				}
 				t.Parallel()
-				data := genIntMap(tier.size)
+				data := genIntMap(tier.Size)
 				r := NewMapChain(mapFreshCtx(), data).Worker(conc).Map(func(ctx context.Context, k string, v int) (int, error) {
 					return v * 2, nil
 				})
 				if r.Err() {
 					t.Fatalf("Map error: %v", r.Error())
 				}
-				if r.Len() != tier.size {
-					t.Fatalf("Map: expected %d entries, got %d", tier.size, r.Len())
+				if r.Len() != tier.Size {
+					t.Fatalf("Map: expected %d entries, got %d", tier.Size, r.Len())
 				}
 				keys := r.Keys()
-				if len(keys) != tier.size {
-					t.Fatalf("Map Keys: expected %d, got %d", tier.size, len(keys))
+				if len(keys) != tier.Size {
+					t.Fatalf("Map Keys: expected %d, got %d", tier.Size, len(keys))
 				}
 			})
 		}
@@ -505,24 +484,24 @@ func TestMap_Chain_Map_MapChain(t *testing.T) {
 }
 
 func TestMap_Chain_Map_ParallelMap(t *testing.T) {
-	for _, tier := range mapAllTiers {
+	for _, tier := range testutil.AllTiers {
 		for _, conc := range mapConcurrencies {
-			name := fmt.Sprintf("%s_c%d", tier.name, conc)
+			name := fmt.Sprintf("%s_c%d", tier.Name, conc)
 			t.Run(name, func(t *testing.T) {
-				mapSkipIfTooLarge(t, tier.size)
+				testutil.SkipIfTooLarge1M(t, tier.Size)
 				if testing.Short() && conc > 32 {
 					t.Skip("short mode: skip high concurrency")
 				}
 				t.Parallel()
-				data := genIntMap(tier.size)
+				data := genIntMap(tier.Size)
 				r := NewMapChain(mapFreshCtx(), data).Parallel().Worker(conc).Map(func(ctx context.Context, k string, v int) (int, error) {
 					return v * 2, nil
 				})
 				if r.Err() {
 					t.Fatalf("Map error: %v", r.Error())
 				}
-				if r.Len() != tier.size {
-					t.Fatalf("Map: expected %d entries, got %d", tier.size, r.Len())
+				if r.Len() != tier.Size {
+					t.Fatalf("Map: expected %d entries, got %d", tier.Size, r.Len())
 				}
 			})
 		}
@@ -530,38 +509,38 @@ func TestMap_Chain_Map_ParallelMap(t *testing.T) {
 }
 
 func TestMap_Chain_Map_SerialMap(t *testing.T) {
-	for _, tier := range mapAllTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			mapSkipIfTooLarge(t, tier.size)
-			data := genIntMap(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genIntMap(tier.Size)
 			r := NewMapChain(mapFreshCtx(), data).Serial().Map(func(ctx context.Context, k string, v int) (int, error) {
 				return v * 2, nil
 			})
 			if r.Err() {
 				t.Fatalf("Map error: %v", r.Error())
 			}
-			if r.Len() != tier.size {
-				t.Fatalf("Map: expected %d entries, got %d", tier.size, r.Len())
+			if r.Len() != tier.Size {
+				t.Fatalf("Map: expected %d entries, got %d", tier.Size, r.Len())
 			}
 		})
 	}
 }
 
 func TestMap_Chain_Map_SerialMap_FailFast(t *testing.T) {
-	for _, tier := range mapAllTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			mapSkipIfTooLarge(t, tier.size)
-			data := genIntMap(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genIntMap(tier.Size)
 			r := NewMapChain(mapFreshCtx(), data).Serial().FailFast().Map(func(ctx context.Context, k string, v int) (int, error) {
 				return v * 2, nil
 			})
 			if r.Err() {
 				t.Fatalf("Map Serial FF: unexpected error: %v", r.Error())
 			}
-			if r.Len() != tier.size {
-				t.Fatalf("Map Serial FF: expected %d entries, got %d", tier.size, r.Len())
+			if r.Len() != tier.Size {
+				t.Fatalf("Map Serial FF: expected %d entries, got %d", tier.Size, r.Len())
 			}
-			mid := strconv.Itoa(tier.size / 2)
+			mid := strconv.Itoa(tier.Size / 2)
 			r2 := NewMapChain(mapFreshCtx(), data).Serial().FailFast().Map(func(ctx context.Context, k string, v int) (int, error) {
 				if k == mid {
 					return 0, errors.New("injected error")
@@ -571,18 +550,18 @@ func TestMap_Chain_Map_SerialMap_FailFast(t *testing.T) {
 			if !r2.Err() {
 				t.Fatal("Map Serial FF: expected error but got none")
 			}
-			if r2.Len() >= tier.size && tier.size > 0 {
-				t.Fatalf("Map Serial FF: expected partial results (len<%d), got %d", tier.size, r2.Len())
+			if r2.Len() >= tier.Size && tier.Size > 0 {
+				t.Fatalf("Map Serial FF: expected partial results (len<%d), got %d", tier.Size, r2.Len())
 			}
 		})
 	}
 }
 
 func TestMap_Chain_Map_MapChainWith(t *testing.T) {
-	for _, tier := range mapAllTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			mapSkipIfTooLarge(t, tier.size)
-			data := genIntMap(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genIntMap(tier.Size)
 			r := NewMapChainWith[string, int, string](mapFreshCtx(), data).Map(func(ctx context.Context, k string, v int) (string, error) {
 				return strconv.Itoa(v), nil
 			})
@@ -590,8 +569,8 @@ func TestMap_Chain_Map_MapChainWith(t *testing.T) {
 				t.Fatalf("MapChainWith Map error: %v", r.Error())
 			}
 			vals := r.Values()
-			if len(vals) != tier.size {
-				t.Fatalf("MapChainWith Map: expected %d values, got %d", tier.size, len(vals))
+			if len(vals) != tier.Size {
+				t.Fatalf("MapChainWith Map: expected %d values, got %d", tier.Size, len(vals))
 			}
 		})
 	}
@@ -602,16 +581,16 @@ func TestMap_Chain_Map_MapChainWith(t *testing.T) {
 // ============================================================
 
 func TestMap_Chain_ForEach_MapChain(t *testing.T) {
-	for _, tier := range mapAllTiers {
+	for _, tier := range testutil.AllTiers {
 		for _, conc := range mapConcurrencies {
-			name := fmt.Sprintf("%s_c%d", tier.name, conc)
+			name := fmt.Sprintf("%s_c%d", tier.Name, conc)
 			t.Run(name, func(t *testing.T) {
-				mapSkipIfTooLarge(t, tier.size)
+				testutil.SkipIfTooLarge1M(t, tier.Size)
 				if testing.Short() && conc > 32 {
 					t.Skip("short mode: skip high concurrency")
 				}
 				t.Parallel()
-				data := genIntMap(tier.size)
+				data := genIntMap(tier.Size)
 				var sum int64
 				r := NewMapChain(mapFreshCtx(), data).Worker(conc).ForEach(func(ctx context.Context, k string, v int) error {
 					atomic.AddInt64(&sum, int64(v))
@@ -620,8 +599,8 @@ func TestMap_Chain_ForEach_MapChain(t *testing.T) {
 				if r.Err() {
 					t.Fatalf("ForEach error: %v", r.Error())
 				}
-				if r.SuccessCount() != int64(tier.size) {
-					t.Fatalf("ForEach SuccessCount: expected %d, got %d", tier.size, r.SuccessCount())
+				if r.SuccessCount() != int64(tier.Size) {
+					t.Fatalf("ForEach SuccessCount: expected %d, got %d", tier.Size, r.SuccessCount())
 				}
 			})
 		}
@@ -629,16 +608,16 @@ func TestMap_Chain_ForEach_MapChain(t *testing.T) {
 }
 
 func TestMap_Chain_ForEach_ParallelMap(t *testing.T) {
-	for _, tier := range mapAllTiers {
+	for _, tier := range testutil.AllTiers {
 		for _, conc := range mapConcurrencies {
-			name := fmt.Sprintf("%s_c%d", tier.name, conc)
+			name := fmt.Sprintf("%s_c%d", tier.Name, conc)
 			t.Run(name, func(t *testing.T) {
-				mapSkipIfTooLarge(t, tier.size)
+				testutil.SkipIfTooLarge1M(t, tier.Size)
 				if testing.Short() && conc > 32 {
 					t.Skip("short mode: skip high concurrency")
 				}
 				t.Parallel()
-				data := genIntMap(tier.size)
+				data := genIntMap(tier.Size)
 				var sum int64
 				r := NewMapChain(mapFreshCtx(), data).Parallel().Worker(conc).ForEach(func(ctx context.Context, k string, v int) error {
 					atomic.AddInt64(&sum, int64(v))
@@ -647,8 +626,8 @@ func TestMap_Chain_ForEach_ParallelMap(t *testing.T) {
 				if r.Err() {
 					t.Fatalf("ForEach error: %v", r.Error())
 				}
-				if r.SuccessCount() != int64(tier.size) {
-					t.Fatalf("ForEach SuccessCount: expected %d, got %d", tier.size, r.SuccessCount())
+				if r.SuccessCount() != int64(tier.Size) {
+					t.Fatalf("ForEach SuccessCount: expected %d, got %d", tier.Size, r.SuccessCount())
 				}
 			})
 		}
@@ -656,10 +635,10 @@ func TestMap_Chain_ForEach_ParallelMap(t *testing.T) {
 }
 
 func TestMap_Chain_ForEach_SerialMap(t *testing.T) {
-	for _, tier := range mapAllTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			mapSkipIfTooLarge(t, tier.size)
-			data := genIntMap(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genIntMap(tier.Size)
 			var sum int64
 			r := NewMapChain(mapFreshCtx(), data).Serial().ForEach(func(ctx context.Context, k string, v int) error {
 				atomic.AddInt64(&sum, int64(v))
@@ -668,18 +647,18 @@ func TestMap_Chain_ForEach_SerialMap(t *testing.T) {
 			if r.Err() {
 				t.Fatalf("ForEach error: %v", r.Error())
 			}
-			if r.SuccessCount() != int64(tier.size) {
-				t.Fatalf("ForEach SuccessCount: expected %d, got %d", tier.size, r.SuccessCount())
+			if r.SuccessCount() != int64(tier.Size) {
+				t.Fatalf("ForEach SuccessCount: expected %d, got %d", tier.Size, r.SuccessCount())
 			}
 		})
 	}
 }
 
 func TestMap_Chain_ForEach_SerialMap_FailFast(t *testing.T) {
-	for _, tier := range mapAllTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			mapSkipIfTooLarge(t, tier.size)
-			data := genIntMap(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genIntMap(tier.Size)
 			var counter int64
 			r := NewMapChain(mapFreshCtx(), data).Serial().FailFast().ForEach(func(ctx context.Context, k string, v int) error {
 				atomic.AddInt64(&counter, 1)
@@ -688,10 +667,10 @@ func TestMap_Chain_ForEach_SerialMap_FailFast(t *testing.T) {
 			if r.Err() {
 				t.Fatalf("ForEach Serial FF: unexpected error: %v", r.Error())
 			}
-			if r.SuccessCount() != int64(tier.size) {
-				t.Fatalf("ForEach Serial FF: expected %d, got %d", tier.size, r.SuccessCount())
+			if r.SuccessCount() != int64(tier.Size) {
+				t.Fatalf("ForEach Serial FF: expected %d, got %d", tier.Size, r.SuccessCount())
 			}
-			mid := strconv.Itoa(tier.size / 2)
+			mid := strconv.Itoa(tier.Size / 2)
 			r2 := NewMapChain(mapFreshCtx(), data).Serial().FailFast().ForEach(func(ctx context.Context, k string, v int) error {
 				if k == mid {
 					return errors.New("injected error")
@@ -710,17 +689,17 @@ func TestMap_Chain_ForEach_SerialMap_FailFast(t *testing.T) {
 // ============================================================
 
 func TestMap_Chain_Reduce_MapChain(t *testing.T) {
-	for _, tier := range mapAllTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			mapSkipIfTooLarge(t, tier.size)
-			data := genIntMap(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genIntMap(tier.Size)
 			sum, err := NewMapChain(mapFreshCtx(), data).Reduce(0, func(ctx context.Context, acc int, k string, v int) (int, error) {
 				return acc + v, nil
 			})
 			if err != nil {
 				t.Fatalf("Reduce error: %v", err)
 			}
-			expected := tier.size * (tier.size - 1) / 2
+			expected := tier.Size * (tier.Size - 1) / 2
 			if sum != expected {
 				t.Fatalf("Reduce: expected sum %d, got %d", expected, sum)
 			}
@@ -729,17 +708,17 @@ func TestMap_Chain_Reduce_MapChain(t *testing.T) {
 }
 
 func TestMap_Chain_Reduce_SerialMap(t *testing.T) {
-	for _, tier := range mapAllTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			mapSkipIfTooLarge(t, tier.size)
-			data := genIntMap(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genIntMap(tier.Size)
 			sum, err := NewMapChain(mapFreshCtx(), data).Serial().Reduce(0, func(ctx context.Context, acc int, k string, v int) (int, error) {
 				return acc + v, nil
 			})
 			if err != nil {
 				t.Fatalf("Reduce error: %v", err)
 			}
-			expected := tier.size * (tier.size - 1) / 2
+			expected := tier.Size * (tier.Size - 1) / 2
 			if sum != expected {
 				t.Fatalf("Reduce: expected sum %d, got %d", expected, sum)
 			}
@@ -748,23 +727,23 @@ func TestMap_Chain_Reduce_SerialMap(t *testing.T) {
 }
 
 func TestMap_Chain_Reduce_ParallelMap(t *testing.T) {
-	for _, tier := range mapAllTiers {
+	for _, tier := range testutil.AllTiers {
 		for _, conc := range mapConcurrencies {
-			name := fmt.Sprintf("%s_c%d", tier.name, conc)
+			name := fmt.Sprintf("%s_c%d", tier.Name, conc)
 			t.Run(name, func(t *testing.T) {
-				mapSkipIfTooLarge(t, tier.size)
+				testutil.SkipIfTooLarge1M(t, tier.Size)
 				if testing.Short() && conc > 32 {
 					t.Skip("short mode: skip high concurrency")
 				}
 				t.Parallel()
-				data := genIntMap(tier.size)
+				data := genIntMap(tier.Size)
 				sum, err := NewMapChain(mapFreshCtx(), data).Parallel().Worker(conc).Reduce(0, func(ctx context.Context, acc int, k string, v int) (int, error) {
 					return acc + v, nil
 				})
 				if err != nil {
 					t.Fatalf("Reduce Parallel error: %v", err)
 				}
-				expected := tier.size * (tier.size - 1) / 2
+				expected := tier.Size * (tier.Size - 1) / 2
 				if sum != expected {
 					t.Fatalf("Reduce Parallel: expected sum %d, got %d", expected, sum)
 				}
@@ -778,16 +757,16 @@ func TestMap_Chain_Reduce_ParallelMap(t *testing.T) {
 // ============================================================
 
 func TestMap_Chain_Stream_MapChain(t *testing.T) {
-	for _, tier := range mapAllTiers {
+	for _, tier := range testutil.AllTiers {
 		for _, conc := range mapConcurrencies {
-			name := fmt.Sprintf("%s_c%d", tier.name, conc)
+			name := fmt.Sprintf("%s_c%d", tier.Name, conc)
 			t.Run(name, func(t *testing.T) {
-				mapSkipIfTooLarge(t, tier.size)
+				testutil.SkipIfTooLarge1M(t, tier.Size)
 				if testing.Short() && conc > 32 {
 					t.Skip("short mode: skip high concurrency")
 				}
 				t.Parallel()
-				data := genIntMap(tier.size)
+				data := genIntMap(tier.Size)
 				ch := NewMapChain(mapFreshCtx(), data).Worker(conc).Stream(func(ctx context.Context, k string, v int) (int, error) {
 					return v * 2, nil
 				}, 0)
@@ -798,8 +777,8 @@ func TestMap_Chain_Stream_MapChain(t *testing.T) {
 					}
 					count++
 				}
-				if count != tier.size {
-					t.Fatalf("Stream: expected %d results, got %d", tier.size, count)
+				if count != tier.Size {
+					t.Fatalf("Stream: expected %d results, got %d", tier.Size, count)
 				}
 			})
 		}
@@ -807,16 +786,16 @@ func TestMap_Chain_Stream_MapChain(t *testing.T) {
 }
 
 func TestMap_Chain_Stream_ParallelMap(t *testing.T) {
-	for _, tier := range mapAllTiers {
+	for _, tier := range testutil.AllTiers {
 		for _, conc := range mapConcurrencies {
-			name := fmt.Sprintf("%s_c%d", tier.name, conc)
+			name := fmt.Sprintf("%s_c%d", tier.Name, conc)
 			t.Run(name, func(t *testing.T) {
-				mapSkipIfTooLarge(t, tier.size)
+				testutil.SkipIfTooLarge1M(t, tier.Size)
 				if testing.Short() && conc > 32 {
 					t.Skip("short mode: skip high concurrency")
 				}
 				t.Parallel()
-				data := genIntMap(tier.size)
+				data := genIntMap(tier.Size)
 				ch := NewMapChain(mapFreshCtx(), data).Parallel().Worker(conc).Stream(func(ctx context.Context, k string, v int) (int, error) {
 					return v * 2, nil
 				}, 0)
@@ -827,8 +806,8 @@ func TestMap_Chain_Stream_ParallelMap(t *testing.T) {
 					}
 					count++
 				}
-				if count != tier.size {
-					t.Fatalf("Stream: expected %d results, got %d", tier.size, count)
+				if count != tier.Size {
+					t.Fatalf("Stream: expected %d results, got %d", tier.Size, count)
 				}
 			})
 		}
@@ -836,10 +815,10 @@ func TestMap_Chain_Stream_ParallelMap(t *testing.T) {
 }
 
 func TestMap_Chain_Stream_SerialMap(t *testing.T) {
-	for _, tier := range mapAllTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			mapSkipIfTooLarge(t, tier.size)
-			data := genIntMap(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genIntMap(tier.Size)
 			ch := NewMapChain(mapFreshCtx(), data).Serial().Stream(func(ctx context.Context, k string, v int) (int, error) {
 				return v * 2, nil
 			}, 0)
@@ -850,8 +829,8 @@ func TestMap_Chain_Stream_SerialMap(t *testing.T) {
 				}
 				count++
 			}
-			if count != tier.size {
-				t.Fatalf("Stream Serial: expected %d results, got %d", tier.size, count)
+			if count != tier.Size {
+				t.Fatalf("Stream Serial: expected %d results, got %d", tier.Size, count)
 			}
 		})
 	}
@@ -862,10 +841,10 @@ func TestMap_Chain_Stream_SerialMap(t *testing.T) {
 // ============================================================
 
 func TestMap_Chain_MapBatch_MapChain(t *testing.T) {
-	for _, tier := range mapAllTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			mapSkipIfTooLarge(t, tier.size)
-			data := genIntMap(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genIntMap(tier.Size)
 			r := NewMapChain(mapFreshCtx(), data).Chunk(100).MapBatch(func(ctx context.Context, chunk []MapEntry[string, int]) (int, error) {
 				sum := 0
 				for _, e := range chunk {
@@ -884,10 +863,10 @@ func TestMap_Chain_MapBatch_MapChain(t *testing.T) {
 }
 
 func TestMap_Chain_MapBatch_ParallelMap(t *testing.T) {
-	for _, tier := range mapAllTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			mapSkipIfTooLarge(t, tier.size)
-			data := genIntMap(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genIntMap(tier.Size)
 			r := NewMapChain(mapFreshCtx(), data).Parallel().Chunk(100).MapBatch(func(ctx context.Context, chunk []MapEntry[string, int]) (int, error) {
 				sum := 0
 				for _, e := range chunk {
@@ -906,10 +885,10 @@ func TestMap_Chain_MapBatch_ParallelMap(t *testing.T) {
 }
 
 func TestMap_Chain_MapBatch_Chained(t *testing.T) {
-	for _, tier := range mapAllTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			mapSkipIfTooLarge(t, tier.size)
-			data := genIntMap(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genIntMap(tier.Size)
 			r := NewMapChain(mapFreshCtx(), data).Chunk(100).MapBatch(func(ctx context.Context, chunk []MapEntry[string, int]) (int, error) {
 				sum := 0
 				for _, e := range chunk {
@@ -932,10 +911,10 @@ func TestMap_Chain_MapBatch_Chained(t *testing.T) {
 // ============================================================
 
 func TestMap_Chain_ForEachBatch_MapChain(t *testing.T) {
-	for _, tier := range mapAllTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			mapSkipIfTooLarge(t, tier.size)
-			data := genIntMap(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genIntMap(tier.Size)
 			var processed int64
 			r := NewMapChain(mapFreshCtx(), data).Chunk(100).ForEachBatch(func(ctx context.Context, chunk []MapEntry[string, int]) error {
 				atomic.AddInt64(&processed, int64(len(chunk)))
@@ -944,18 +923,18 @@ func TestMap_Chain_ForEachBatch_MapChain(t *testing.T) {
 			if r.Err() {
 				t.Fatalf("ForEachBatch error: %v", r.Error())
 			}
-			if processed != int64(tier.size) {
-				t.Fatalf("ForEachBatch: expected %d, got %d", tier.size, processed)
+			if processed != int64(tier.Size) {
+				t.Fatalf("ForEachBatch: expected %d, got %d", tier.Size, processed)
 			}
 		})
 	}
 }
 
 func TestMap_Chain_ForEachBatch_ParallelMap(t *testing.T) {
-	for _, tier := range mapAllTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			mapSkipIfTooLarge(t, tier.size)
-			data := genIntMap(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genIntMap(tier.Size)
 			var processed int64
 			r := NewMapChain(mapFreshCtx(), data).Parallel().Chunk(100).ForEachBatch(func(ctx context.Context, chunk []MapEntry[string, int]) error {
 				atomic.AddInt64(&processed, int64(len(chunk)))
@@ -964,18 +943,18 @@ func TestMap_Chain_ForEachBatch_ParallelMap(t *testing.T) {
 			if r.Err() {
 				t.Fatalf("ForEachBatch error: %v", r.Error())
 			}
-			if processed != int64(tier.size) {
-				t.Fatalf("ForEachBatch: expected %d, got %d", tier.size, processed)
+			if processed != int64(tier.Size) {
+				t.Fatalf("ForEachBatch: expected %d, got %d", tier.Size, processed)
 			}
 		})
 	}
 }
 
 func TestMap_Chain_ForEachBatch_Chained(t *testing.T) {
-	for _, tier := range mapAllTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			mapSkipIfTooLarge(t, tier.size)
-			data := genIntMap(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genIntMap(tier.Size)
 			var processed int64
 			r := NewMapChain(mapFreshCtx(), data).Chunk(100).ForEachBatch(func(ctx context.Context, chunk []MapEntry[string, int]) error {
 				atomic.AddInt64(&processed, int64(len(chunk)))
@@ -984,8 +963,8 @@ func TestMap_Chain_ForEachBatch_Chained(t *testing.T) {
 			if r.Err() {
 				t.Fatalf("ForEachBatch error: %v", r.Error())
 			}
-			if processed != int64(tier.size) {
-				t.Fatalf("ForEachBatch: expected %d, got %d", tier.size, processed)
+			if processed != int64(tier.Size) {
+				t.Fatalf("ForEachBatch: expected %d, got %d", tier.Size, processed)
 			}
 		})
 	}
@@ -1416,10 +1395,10 @@ func TestMap_Chain_DefaultLogger(t *testing.T) {
 // ============================================================
 
 func TestMap_Chain_CrossMode_Map(t *testing.T) {
-	for _, tier := range mapAllTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			mapSkipIfTooLarge(t, tier.size)
-			data := genIntMap(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genIntMap(tier.Size)
 			r1 := NewMapChain(mapFreshCtx(), data).Serial().Map(func(ctx context.Context, k string, v int) (int, error) {
 				return v + 1, nil
 			})
@@ -1432,18 +1411,18 @@ func TestMap_Chain_CrossMode_Map(t *testing.T) {
 			if r2.Err() {
 				t.Fatalf("Serial->Parallel Map error: %v", r2.Error())
 			}
-			if r2.Len() != tier.size {
-				t.Fatalf("Serial->Parallel Map: expected %d, got %d", tier.size, r2.Len())
+			if r2.Len() != tier.Size {
+				t.Fatalf("Serial->Parallel Map: expected %d, got %d", tier.Size, r2.Len())
 			}
 		})
 	}
 }
 
 func TestMap_Chain_CrossMode_ForEach(t *testing.T) {
-	for _, tier := range mapAllTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			mapSkipIfTooLarge(t, tier.size)
-			data := genIntMap(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genIntMap(tier.Size)
 			var counter1, counter2 int64
 			r1 := NewMapChain(mapFreshCtx(), data).Parallel().NoFailFast().ForEach(func(ctx context.Context, k string, v int) error {
 				atomic.AddInt64(&counter1, 1)
@@ -1452,8 +1431,8 @@ func TestMap_Chain_CrossMode_ForEach(t *testing.T) {
 			if r1.Err() {
 				t.Fatalf("Parallel ForEach error: %v", r1.Error())
 			}
-			if counter1 != int64(tier.size) {
-				t.Fatalf("Parallel ForEach: expected %d, got %d", tier.size, counter1)
+			if counter1 != int64(tier.Size) {
+				t.Fatalf("Parallel ForEach: expected %d, got %d", tier.Size, counter1)
 			}
 			r2 := NewMapChain(mapFreshCtx(), data).Parallel().ToSerial().ForEach(func(ctx context.Context, k string, v int) error {
 				atomic.AddInt64(&counter2, 1)
@@ -1462,8 +1441,8 @@ func TestMap_Chain_CrossMode_ForEach(t *testing.T) {
 			if r2.Err() {
 				t.Fatalf("Parallel->Serial ForEach error: %v", r2.Error())
 			}
-			if counter2 != int64(tier.size) {
-				t.Fatalf("Parallel->Serial ForEach: expected %d, got %d", tier.size, counter2)
+			if counter2 != int64(tier.Size) {
+				t.Fatalf("Parallel->Serial ForEach: expected %d, got %d", tier.Size, counter2)
 			}
 		})
 	}
@@ -1474,11 +1453,11 @@ func TestMap_Chain_CrossMode_ForEach(t *testing.T) {
 // ============================================================
 
 func TestMap_Chain_FailFast_Stress(t *testing.T) {
-	for _, tier := range mapAllTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			mapSkipIfTooLarge(t, tier.size)
-			data := genIntMap(tier.size)
-			mid := strconv.Itoa(tier.size / 2)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genIntMap(tier.Size)
+			mid := strconv.Itoa(tier.Size / 2)
 			var called int64
 			r := NewMapChain(mapFreshCtx(), data).Worker(64).FailFast().Map(func(ctx context.Context, k string, v int) (int, error) {
 				atomic.AddInt64(&called, 1)
@@ -1490,8 +1469,8 @@ func TestMap_Chain_FailFast_Stress(t *testing.T) {
 			if r.Error() == nil {
 				t.Fatal("FailFast: expected error but got nil")
 			}
-			if called >= int64(tier.size) && tier.size > 0 {
-				t.Logf("FailFast: early exit verified, called=%d/%d", called, tier.size)
+			if called >= int64(tier.Size) && tier.Size > 0 {
+				t.Logf("FailFast: early exit verified, called=%d/%d", called, tier.Size)
 			}
 		})
 	}
@@ -1506,18 +1485,18 @@ func TestMap_Chain_FailFast_Stress(t *testing.T) {
 
 func TestMap_Chain_HighConcurrency_Map(t *testing.T) {
 	if testing.Short() {
-		for _, tier := range mapAllTiers {
-			t.Run(fmt.Sprintf("%s_c8", tier.name), func(t *testing.T) {
+		for _, tier := range testutil.AllTiers {
+			t.Run(fmt.Sprintf("%s_c8", tier.Name), func(t *testing.T) {
 				t.Parallel()
-				data := genIntMap(tier.size)
+				data := genIntMap(tier.Size)
 				r := NewMapChain(mapFreshCtx(), data).Worker(8).Map(func(ctx context.Context, k string, v int) (int, error) {
 					return v + 1, nil
 				})
 				if r.Err() {
 					t.Fatalf("Map error: %v", r.Error())
 				}
-				if r.Len() != tier.size {
-					t.Fatalf("expected %d entries, got %d", tier.size, r.Len())
+				if r.Len() != tier.Size {
+					t.Fatalf("expected %d entries, got %d", tier.Size, r.Len())
 				}
 			})
 		}
@@ -1525,38 +1504,38 @@ func TestMap_Chain_HighConcurrency_Map(t *testing.T) {
 	}
 	basicConc := []int{64, 128}
 	extremeConc := []int{256, 512, 1024}
-	for _, tier := range mapAllTiers {
+	for _, tier := range testutil.AllTiers {
 		for _, conc := range basicConc {
-			name := fmt.Sprintf("%s_c%d", tier.name, conc)
+			name := fmt.Sprintf("%s_c%d", tier.Name, conc)
 			t.Run(name, func(t *testing.T) {
 				t.Parallel()
-				data := genIntMap(tier.size)
+				data := genIntMap(tier.Size)
 				r := NewMapChain(mapFreshCtx(), data).Worker(conc).Map(func(ctx context.Context, k string, v int) (int, error) {
 					return v + 1, nil
 				})
 				if r.Err() {
 					t.Fatalf("Map error: %v", r.Error())
 				}
-				if r.Len() != tier.size {
-					t.Fatalf("expected %d entries, got %d", tier.size, r.Len())
+				if r.Len() != tier.Size {
+					t.Fatalf("expected %d entries, got %d", tier.Size, r.Len())
 				}
 			})
 		}
 	}
-	for _, tier := range mapAllTiers {
+	for _, tier := range testutil.AllTiers {
 		for _, conc := range extremeConc {
-			name := fmt.Sprintf("%s_c%d", tier.name, conc)
+			name := fmt.Sprintf("%s_c%d", tier.Name, conc)
 			t.Run(name, func(t *testing.T) {
 				t.Parallel()
-				data := genIntMap(tier.size)
+				data := genIntMap(tier.Size)
 				r := NewMapChain(mapFreshCtx(), data).Worker(conc).Map(func(ctx context.Context, k string, v int) (int, error) {
 					return v + 1, nil
 				})
 				if r.Err() {
 					t.Fatalf("Map error: %v", r.Error())
 				}
-				if r.Len() != tier.size {
-					t.Fatalf("expected %d entries, got %d", tier.size, r.Len())
+				if r.Len() != tier.Size {
+					t.Fatalf("expected %d entries, got %d", tier.Size, r.Len())
 				}
 			})
 		}
@@ -1565,10 +1544,10 @@ func TestMap_Chain_HighConcurrency_Map(t *testing.T) {
 
 func TestMap_Chain_HighConcurrency_Pool_Map(t *testing.T) {
 	if testing.Short() {
-		for _, tier := range mapAllTiers {
-			t.Run(fmt.Sprintf("%s_c8", tier.name), func(t *testing.T) {
+		for _, tier := range testutil.AllTiers {
+			t.Run(fmt.Sprintf("%s_c8", tier.Name), func(t *testing.T) {
 				t.Parallel()
-				data := genIntMap(tier.size)
+				data := genIntMap(tier.Size)
 				p := pool.NewPool[int](8)
 				r := NewMapChain(mapFreshCtx(), data).PoolAuto(p).Worker(8).Map(func(ctx context.Context, k string, v int) (int, error) {
 					return v, nil
@@ -1576,8 +1555,8 @@ func TestMap_Chain_HighConcurrency_Pool_Map(t *testing.T) {
 				if r.Err() {
 					t.Fatalf("Pool Map error: %v", r.Error())
 				}
-				if r.Len() != tier.size {
-					t.Fatalf("expected %d entries, got %d", tier.size, r.Len())
+				if r.Len() != tier.Size {
+					t.Fatalf("expected %d entries, got %d", tier.Size, r.Len())
 				}
 			})
 		}
@@ -1585,12 +1564,12 @@ func TestMap_Chain_HighConcurrency_Pool_Map(t *testing.T) {
 	}
 	basicConc := []int{32, 64}
 	extremeConc := []int{128, 256}
-	for _, tier := range mapAllTiers {
+	for _, tier := range testutil.AllTiers {
 		for _, conc := range basicConc {
-			name := fmt.Sprintf("%s_c%d", tier.name, conc)
+			name := fmt.Sprintf("%s_c%d", tier.Name, conc)
 			t.Run(name, func(t *testing.T) {
 				t.Parallel()
-				data := genIntMap(tier.size)
+				data := genIntMap(tier.Size)
 				p := pool.NewPool[int](conc)
 				r := NewMapChain(mapFreshCtx(), data).PoolAuto(p).Worker(conc).Map(func(ctx context.Context, k string, v int) (int, error) {
 					return v, nil
@@ -1598,18 +1577,18 @@ func TestMap_Chain_HighConcurrency_Pool_Map(t *testing.T) {
 				if r.Err() {
 					t.Fatalf("Pool Map error: %v", r.Error())
 				}
-				if r.Len() != tier.size {
-					t.Fatalf("expected %d entries, got %d", tier.size, r.Len())
+				if r.Len() != tier.Size {
+					t.Fatalf("expected %d entries, got %d", tier.Size, r.Len())
 				}
 			})
 		}
 	}
-	for _, tier := range mapAllTiers {
+	for _, tier := range testutil.AllTiers {
 		for _, conc := range extremeConc {
-			name := fmt.Sprintf("%s_c%d", tier.name, conc)
+			name := fmt.Sprintf("%s_c%d", tier.Name, conc)
 			t.Run(name, func(t *testing.T) {
 				t.Parallel()
-				data := genIntMap(tier.size)
+				data := genIntMap(tier.Size)
 				p := pool.NewPool[int](conc)
 				r := NewMapChain(mapFreshCtx(), data).PoolAuto(p).Worker(conc).Map(func(ctx context.Context, k string, v int) (int, error) {
 					return v, nil
@@ -1617,8 +1596,8 @@ func TestMap_Chain_HighConcurrency_Pool_Map(t *testing.T) {
 				if r.Err() {
 					t.Fatalf("Pool Map error: %v", r.Error())
 				}
-				if r.Len() != tier.size {
-					t.Fatalf("expected %d entries, got %d", tier.size, r.Len())
+				if r.Len() != tier.Size {
+					t.Fatalf("expected %d entries, got %d", tier.Size, r.Len())
 				}
 			})
 		}
@@ -1627,18 +1606,18 @@ func TestMap_Chain_HighConcurrency_Pool_Map(t *testing.T) {
 
 func TestMap_Chain_HighConcurrency_Shards_Map(t *testing.T) {
 	if testing.Short() {
-		for _, tier := range mapAllTiers {
-			t.Run(fmt.Sprintf("%s_s8", tier.name), func(t *testing.T) {
+		for _, tier := range testutil.AllTiers {
+			t.Run(fmt.Sprintf("%s_s8", tier.Name), func(t *testing.T) {
 				t.Parallel()
-				data := genIntMap(tier.size)
+				data := genIntMap(tier.Size)
 				r := NewMapChain(mapFreshCtx(), data).Shards(8).Map(func(ctx context.Context, k string, v int) (int, error) {
 					return v * 2, nil
 				})
 				if r.Err() {
 					t.Fatalf("Shards Map error: %v", r.Error())
 				}
-				if r.Len() != tier.size {
-					t.Fatalf("expected %d entries, got %d", tier.size, r.Len())
+				if r.Len() != tier.Size {
+					t.Fatalf("expected %d entries, got %d", tier.Size, r.Len())
 				}
 			})
 		}
@@ -1646,38 +1625,38 @@ func TestMap_Chain_HighConcurrency_Shards_Map(t *testing.T) {
 	}
 	basicShards := []int{8, 16, 32}
 	extremeShards := []int{64, 128}
-	for _, tier := range mapAllTiers {
+	for _, tier := range testutil.AllTiers {
 		for _, shards := range basicShards {
-			name := fmt.Sprintf("%s_s%d", tier.name, shards)
+			name := fmt.Sprintf("%s_s%d", tier.Name, shards)
 			t.Run(name, func(t *testing.T) {
 				t.Parallel()
-				data := genIntMap(tier.size)
+				data := genIntMap(tier.Size)
 				r := NewMapChain(mapFreshCtx(), data).Shards(shards).Map(func(ctx context.Context, k string, v int) (int, error) {
 					return v * 2, nil
 				})
 				if r.Err() {
 					t.Fatalf("Shards Map error: %v", r.Error())
 				}
-				if r.Len() != tier.size {
-					t.Fatalf("expected %d entries, got %d", tier.size, r.Len())
+				if r.Len() != tier.Size {
+					t.Fatalf("expected %d entries, got %d", tier.Size, r.Len())
 				}
 			})
 		}
 	}
-	for _, tier := range mapAllTiers {
+	for _, tier := range testutil.AllTiers {
 		for _, shards := range extremeShards {
-			name := fmt.Sprintf("%s_s%d", tier.name, shards)
+			name := fmt.Sprintf("%s_s%d", tier.Name, shards)
 			t.Run(name, func(t *testing.T) {
 				t.Parallel()
-				data := genIntMap(tier.size)
+				data := genIntMap(tier.Size)
 				r := NewMapChain(mapFreshCtx(), data).Shards(shards).Map(func(ctx context.Context, k string, v int) (int, error) {
 					return v * 2, nil
 				})
 				if r.Err() {
 					t.Fatalf("Shards Map error: %v", r.Error())
 				}
-				if r.Len() != tier.size {
-					t.Fatalf("expected %d entries, got %d", tier.size, r.Len())
+				if r.Len() != tier.Size {
+					t.Fatalf("expected %d entries, got %d", tier.Size, r.Len())
 				}
 			})
 		}
@@ -1686,10 +1665,10 @@ func TestMap_Chain_HighConcurrency_Shards_Map(t *testing.T) {
 
 func TestMap_Chain_HighConcurrency_Stream(t *testing.T) {
 	if testing.Short() {
-		for _, tier := range mapAllTiers {
-			t.Run(fmt.Sprintf("%s_c8_b256", tier.name), func(t *testing.T) {
+		for _, tier := range testutil.AllTiers {
+			t.Run(fmt.Sprintf("%s_c8_b256", tier.Name), func(t *testing.T) {
 				t.Parallel()
-				data := genIntMap(tier.size)
+				data := genIntMap(tier.Size)
 				ch := NewMapChain(mapFreshCtx(), data).Worker(8).Buf(256).Stream(func(ctx context.Context, k string, v int) (int, error) {
 					return v, nil
 				}, 0)
@@ -1700,8 +1679,8 @@ func TestMap_Chain_HighConcurrency_Stream(t *testing.T) {
 					}
 					count++
 				}
-				if count != tier.size {
-					t.Fatalf("Stream: expected %d results, got %d", tier.size, count)
+				if count != tier.Size {
+					t.Fatalf("Stream: expected %d results, got %d", tier.Size, count)
 				}
 			})
 		}
@@ -1710,13 +1689,13 @@ func TestMap_Chain_HighConcurrency_Stream(t *testing.T) {
 	basicConc := []int{64, 128}
 	extremeConc := []int{256, 512, 1024}
 	bufSizes := []int{0, 1024, 8192}
-	for _, tier := range mapAllTiers {
+	for _, tier := range testutil.AllTiers {
 		for _, conc := range basicConc {
 			for _, buf := range bufSizes {
-				name := fmt.Sprintf("%s_c%d_b%d", tier.name, conc, buf)
+				name := fmt.Sprintf("%s_c%d_b%d", tier.Name, conc, buf)
 				t.Run(name, func(t *testing.T) {
 					t.Parallel()
-					data := genIntMap(tier.size)
+					data := genIntMap(tier.Size)
 					ch := NewMapChain(mapFreshCtx(), data).Worker(conc).Buf(buf).Stream(func(ctx context.Context, k string, v int) (int, error) {
 						return v, nil
 					}, 0)
@@ -1727,20 +1706,20 @@ func TestMap_Chain_HighConcurrency_Stream(t *testing.T) {
 						}
 						count++
 					}
-					if count != tier.size {
-						t.Fatalf("Stream: expected %d results, got %d", tier.size, count)
+					if count != tier.Size {
+						t.Fatalf("Stream: expected %d results, got %d", tier.Size, count)
 					}
 				})
 			}
 		}
 	}
-	for _, tier := range mapAllTiers {
+	for _, tier := range testutil.AllTiers {
 		for _, conc := range extremeConc {
 			for _, buf := range bufSizes {
-				name := fmt.Sprintf("%s_c%d_b%d", tier.name, conc, buf)
+				name := fmt.Sprintf("%s_c%d_b%d", tier.Name, conc, buf)
 				t.Run(name, func(t *testing.T) {
 					t.Parallel()
-					data := genIntMap(tier.size)
+					data := genIntMap(tier.Size)
 					ch := NewMapChain(mapFreshCtx(), data).Worker(conc).Buf(buf).Stream(func(ctx context.Context, k string, v int) (int, error) {
 						return v, nil
 					}, 0)
@@ -1751,8 +1730,8 @@ func TestMap_Chain_HighConcurrency_Stream(t *testing.T) {
 						}
 						count++
 					}
-					if count != tier.size {
-						t.Fatalf("Stream: expected %d results, got %d", tier.size, count)
+					if count != tier.Size {
+						t.Fatalf("Stream: expected %d results, got %d", tier.Size, count)
 					}
 				})
 			}
@@ -1762,10 +1741,10 @@ func TestMap_Chain_HighConcurrency_Stream(t *testing.T) {
 
 func TestMap_Chain_HighConcurrency_ForEach_Stress(t *testing.T) {
 	if testing.Short() {
-		for _, tier := range mapAllTiers {
-			t.Run(fmt.Sprintf("%s_c8", tier.name), func(t *testing.T) {
+		for _, tier := range testutil.AllTiers {
+			t.Run(fmt.Sprintf("%s_c8", tier.Name), func(t *testing.T) {
 				t.Parallel()
-				data := genIntMap(tier.size)
+				data := genIntMap(tier.Size)
 				var counter int64
 				r := NewMapChain(mapFreshCtx(), data).Worker(8).ForEach(func(ctx context.Context, k string, v int) error {
 					atomic.AddInt64(&counter, 1)
@@ -1774,11 +1753,11 @@ func TestMap_Chain_HighConcurrency_ForEach_Stress(t *testing.T) {
 				if r.Err() {
 					t.Fatalf("ForEach error: %v", r.Error())
 				}
-				if counter != int64(tier.size) {
-					t.Fatalf("ForEach: expected %d calls, got %d", tier.size, counter)
+				if counter != int64(tier.Size) {
+					t.Fatalf("ForEach: expected %d calls, got %d", tier.Size, counter)
 				}
-				if r.SuccessCount() != int64(tier.size) {
-					t.Fatalf("SuccessCount: expected %d, got %d", tier.size, r.SuccessCount())
+				if r.SuccessCount() != int64(tier.Size) {
+					t.Fatalf("SuccessCount: expected %d, got %d", tier.Size, r.SuccessCount())
 				}
 			})
 		}
@@ -1786,12 +1765,12 @@ func TestMap_Chain_HighConcurrency_ForEach_Stress(t *testing.T) {
 	}
 	basicConc := []int{64, 128}
 	extremeConc := []int{256, 512, 1024}
-	for _, tier := range mapAllTiers {
+	for _, tier := range testutil.AllTiers {
 		for _, conc := range basicConc {
-			name := fmt.Sprintf("%s_c%d", tier.name, conc)
+			name := fmt.Sprintf("%s_c%d", tier.Name, conc)
 			t.Run(name, func(t *testing.T) {
 				t.Parallel()
-				data := genIntMap(tier.size)
+				data := genIntMap(tier.Size)
 				var counter int64
 				r := NewMapChain(mapFreshCtx(), data).Worker(conc).ForEach(func(ctx context.Context, k string, v int) error {
 					atomic.AddInt64(&counter, 1)
@@ -1800,21 +1779,21 @@ func TestMap_Chain_HighConcurrency_ForEach_Stress(t *testing.T) {
 				if r.Err() {
 					t.Fatalf("ForEach error: %v", r.Error())
 				}
-				if counter != int64(tier.size) {
-					t.Fatalf("ForEach: expected %d calls, got %d", tier.size, counter)
+				if counter != int64(tier.Size) {
+					t.Fatalf("ForEach: expected %d calls, got %d", tier.Size, counter)
 				}
-				if r.SuccessCount() != int64(tier.size) {
-					t.Fatalf("SuccessCount: expected %d, got %d", tier.size, r.SuccessCount())
+				if r.SuccessCount() != int64(tier.Size) {
+					t.Fatalf("SuccessCount: expected %d, got %d", tier.Size, r.SuccessCount())
 				}
 			})
 		}
 	}
-	for _, tier := range mapAllTiers {
+	for _, tier := range testutil.AllTiers {
 		for _, conc := range extremeConc {
-			name := fmt.Sprintf("%s_c%d", tier.name, conc)
+			name := fmt.Sprintf("%s_c%d", tier.Name, conc)
 			t.Run(name, func(t *testing.T) {
 				t.Parallel()
-				data := genIntMap(tier.size)
+				data := genIntMap(tier.Size)
 				var counter int64
 				r := NewMapChain(mapFreshCtx(), data).Worker(conc).ForEach(func(ctx context.Context, k string, v int) error {
 					atomic.AddInt64(&counter, 1)
@@ -1823,11 +1802,11 @@ func TestMap_Chain_HighConcurrency_ForEach_Stress(t *testing.T) {
 				if r.Err() {
 					t.Fatalf("ForEach error: %v", r.Error())
 				}
-				if counter != int64(tier.size) {
-					t.Fatalf("ForEach: expected %d calls, got %d", tier.size, counter)
+				if counter != int64(tier.Size) {
+					t.Fatalf("ForEach: expected %d calls, got %d", tier.Size, counter)
 				}
-				if r.SuccessCount() != int64(tier.size) {
-					t.Fatalf("SuccessCount: expected %d, got %d", tier.size, r.SuccessCount())
+				if r.SuccessCount() != int64(tier.Size) {
+					t.Fatalf("SuccessCount: expected %d, got %d", tier.Size, r.SuccessCount())
 				}
 			})
 		}
@@ -1836,37 +1815,37 @@ func TestMap_Chain_HighConcurrency_ForEach_Stress(t *testing.T) {
 
 func TestMap_Chain_HighConcurrency_Map_Timeout(t *testing.T) {
 	if testing.Short() {
-		for _, tier := range mapAllTiers {
-			t.Run(fmt.Sprintf("%s_c8", tier.name), func(t *testing.T) {
+		for _, tier := range testutil.AllTiers {
+			t.Run(fmt.Sprintf("%s_c8", tier.Name), func(t *testing.T) {
 				t.Parallel()
-				data := genIntMap(tier.size)
+				data := genIntMap(tier.Size)
 				r := NewMapChain(mapFreshCtx(), data).Worker(8).Timeout(30 * time.Second).Map(func(ctx context.Context, k string, v int) (int, error) {
 					return v + 1, nil
 				})
 				if r.Err() {
 					t.Fatalf("Map+Timeout error: %v", r.Error())
 				}
-				if r.Len() != tier.size {
-					t.Fatalf("expected %d entries, got %d", tier.size, r.Len())
+				if r.Len() != tier.Size {
+					t.Fatalf("expected %d entries, got %d", tier.Size, r.Len())
 				}
 			})
 		}
 		return
 	}
-	for _, tier := range mapAllTiers {
+	for _, tier := range testutil.AllTiers {
 		for _, conc := range []int{64, 128, 256, 512} {
-			name := fmt.Sprintf("%s_c%d", tier.name, conc)
+			name := fmt.Sprintf("%s_c%d", tier.Name, conc)
 			t.Run(name, func(t *testing.T) {
 				t.Parallel()
-				data := genIntMap(tier.size)
+				data := genIntMap(tier.Size)
 				r := NewMapChain(mapFreshCtx(), data).Worker(conc).Timeout(30 * time.Second).Map(func(ctx context.Context, k string, v int) (int, error) {
 					return v + 1, nil
 				})
 				if r.Err() {
 					t.Fatalf("Map+Timeout error: %v", r.Error())
 				}
-				if r.Len() != tier.size {
-					t.Fatalf("expected %d entries, got %d", tier.size, r.Len())
+				if r.Len() != tier.Size {
+					t.Fatalf("expected %d entries, got %d", tier.Size, r.Len())
 				}
 			})
 		}
@@ -1875,37 +1854,37 @@ func TestMap_Chain_HighConcurrency_Map_Timeout(t *testing.T) {
 
 func TestMap_Chain_HighConcurrency_Map_FailFast(t *testing.T) {
 	if testing.Short() {
-		for _, tier := range mapAllTiers {
-			t.Run(fmt.Sprintf("%s_c8", tier.name), func(t *testing.T) {
+		for _, tier := range testutil.AllTiers {
+			t.Run(fmt.Sprintf("%s_c8", tier.Name), func(t *testing.T) {
 				t.Parallel()
-				data := genIntMap(tier.size)
+				data := genIntMap(tier.Size)
 				r := NewMapChain(mapFreshCtx(), data).Worker(8).FailFast().Map(func(ctx context.Context, k string, v int) (int, error) {
 					return v + 1, nil
 				})
 				if r.Err() {
 					t.Fatalf("Map+FailFast error: %v", r.Error())
 				}
-				if r.Len() != tier.size {
-					t.Fatalf("expected %d entries, got %d", tier.size, r.Len())
+				if r.Len() != tier.Size {
+					t.Fatalf("expected %d entries, got %d", tier.Size, r.Len())
 				}
 			})
 		}
 		return
 	}
-	for _, tier := range mapAllTiers {
+	for _, tier := range testutil.AllTiers {
 		for _, conc := range []int{64, 128, 256, 512, 1024} {
-			name := fmt.Sprintf("%s_c%d", tier.name, conc)
+			name := fmt.Sprintf("%s_c%d", tier.Name, conc)
 			t.Run(name, func(t *testing.T) {
 				t.Parallel()
-				data := genIntMap(tier.size)
+				data := genIntMap(tier.Size)
 				r := NewMapChain(mapFreshCtx(), data).Worker(conc).FailFast().Map(func(ctx context.Context, k string, v int) (int, error) {
 					return v + 1, nil
 				})
 				if r.Err() {
 					t.Fatalf("Map+FailFast error: %v", r.Error())
 				}
-				if r.Len() != tier.size {
-					t.Fatalf("expected %d entries, got %d", tier.size, r.Len())
+				if r.Len() != tier.Size {
+					t.Fatalf("expected %d entries, got %d", tier.Size, r.Len())
 				}
 			})
 		}
@@ -1914,37 +1893,37 @@ func TestMap_Chain_HighConcurrency_Map_FailFast(t *testing.T) {
 
 func TestMap_Chain_HighConcurrency_Map_TimeoutFailFast(t *testing.T) {
 	if testing.Short() {
-		for _, tier := range mapAllTiers {
-			t.Run(fmt.Sprintf("%s_c8", tier.name), func(t *testing.T) {
+		for _, tier := range testutil.AllTiers {
+			t.Run(fmt.Sprintf("%s_c8", tier.Name), func(t *testing.T) {
 				t.Parallel()
-				data := genIntMap(tier.size)
+				data := genIntMap(tier.Size)
 				r := NewMapChain(mapFreshCtx(), data).Worker(8).Timeout(30 * time.Second).FailFast().Map(func(ctx context.Context, k string, v int) (int, error) {
 					return v + 1, nil
 				})
 				if r.Err() {
 					t.Fatalf("Map+TO+FF error: %v", r.Error())
 				}
-				if r.Len() != tier.size {
-					t.Fatalf("expected %d entries, got %d", tier.size, r.Len())
+				if r.Len() != tier.Size {
+					t.Fatalf("expected %d entries, got %d", tier.Size, r.Len())
 				}
 			})
 		}
 		return
 	}
-	for _, tier := range mapAllTiers {
+	for _, tier := range testutil.AllTiers {
 		for _, conc := range []int{64, 128, 256, 512} {
-			name := fmt.Sprintf("%s_c%d", tier.name, conc)
+			name := fmt.Sprintf("%s_c%d", tier.Name, conc)
 			t.Run(name, func(t *testing.T) {
 				t.Parallel()
-				data := genIntMap(tier.size)
+				data := genIntMap(tier.Size)
 				r := NewMapChain(mapFreshCtx(), data).Worker(conc).Timeout(30 * time.Second).FailFast().Map(func(ctx context.Context, k string, v int) (int, error) {
 					return v + 1, nil
 				})
 				if r.Err() {
 					t.Fatalf("Map+TO+FF error: %v", r.Error())
 				}
-				if r.Len() != tier.size {
-					t.Fatalf("expected %d entries, got %d", tier.size, r.Len())
+				if r.Len() != tier.Size {
+					t.Fatalf("expected %d entries, got %d", tier.Size, r.Len())
 				}
 			})
 		}
@@ -1953,10 +1932,10 @@ func TestMap_Chain_HighConcurrency_Map_TimeoutFailFast(t *testing.T) {
 
 func TestMap_Chain_HighConcurrency_ForEach_Timeout(t *testing.T) {
 	if testing.Short() {
-		for _, tier := range mapAllTiers {
-			t.Run(fmt.Sprintf("%s_c8", tier.name), func(t *testing.T) {
+		for _, tier := range testutil.AllTiers {
+			t.Run(fmt.Sprintf("%s_c8", tier.Name), func(t *testing.T) {
 				t.Parallel()
-				data := genIntMap(tier.size)
+				data := genIntMap(tier.Size)
 				var counter int64
 				r := NewMapChain(mapFreshCtx(), data).Worker(8).Timeout(30 * time.Second).ForEach(func(ctx context.Context, k string, v int) error {
 					atomic.AddInt64(&counter, 1)
@@ -1965,19 +1944,19 @@ func TestMap_Chain_HighConcurrency_ForEach_Timeout(t *testing.T) {
 				if r.Err() {
 					t.Fatalf("ForEach+Timeout error: %v", r.Error())
 				}
-				if counter != int64(tier.size) {
-					t.Fatalf("expected %d calls, got %d", tier.size, counter)
+				if counter != int64(tier.Size) {
+					t.Fatalf("expected %d calls, got %d", tier.Size, counter)
 				}
 			})
 		}
 		return
 	}
-	for _, tier := range mapAllTiers {
+	for _, tier := range testutil.AllTiers {
 		for _, conc := range []int{64, 128, 256, 512} {
-			name := fmt.Sprintf("%s_c%d", tier.name, conc)
+			name := fmt.Sprintf("%s_c%d", tier.Name, conc)
 			t.Run(name, func(t *testing.T) {
 				t.Parallel()
-				data := genIntMap(tier.size)
+				data := genIntMap(tier.Size)
 				var counter int64
 				r := NewMapChain(mapFreshCtx(), data).Worker(conc).Timeout(30 * time.Second).ForEach(func(ctx context.Context, k string, v int) error {
 					atomic.AddInt64(&counter, 1)
@@ -1986,8 +1965,8 @@ func TestMap_Chain_HighConcurrency_ForEach_Timeout(t *testing.T) {
 				if r.Err() {
 					t.Fatalf("ForEach+Timeout error: %v", r.Error())
 				}
-				if counter != int64(tier.size) {
-					t.Fatalf("expected %d calls, got %d", tier.size, counter)
+				if counter != int64(tier.Size) {
+					t.Fatalf("expected %d calls, got %d", tier.Size, counter)
 				}
 			})
 		}
@@ -1996,10 +1975,10 @@ func TestMap_Chain_HighConcurrency_ForEach_Timeout(t *testing.T) {
 
 func TestMap_Chain_HighConcurrency_ForEach_FailFast(t *testing.T) {
 	if testing.Short() {
-		for _, tier := range mapAllTiers {
-			t.Run(fmt.Sprintf("%s_c8", tier.name), func(t *testing.T) {
+		for _, tier := range testutil.AllTiers {
+			t.Run(fmt.Sprintf("%s_c8", tier.Name), func(t *testing.T) {
 				t.Parallel()
-				data := genIntMap(tier.size)
+				data := genIntMap(tier.Size)
 				var counter int64
 				r := NewMapChain(mapFreshCtx(), data).Worker(8).FailFast().ForEach(func(ctx context.Context, k string, v int) error {
 					atomic.AddInt64(&counter, 1)
@@ -2008,19 +1987,19 @@ func TestMap_Chain_HighConcurrency_ForEach_FailFast(t *testing.T) {
 				if r.Err() {
 					t.Fatalf("ForEach+FailFast error: %v", r.Error())
 				}
-				if counter != int64(tier.size) {
-					t.Fatalf("expected %d calls, got %d", tier.size, counter)
+				if counter != int64(tier.Size) {
+					t.Fatalf("expected %d calls, got %d", tier.Size, counter)
 				}
 			})
 		}
 		return
 	}
-	for _, tier := range mapAllTiers {
+	for _, tier := range testutil.AllTiers {
 		for _, conc := range []int{64, 128, 256, 512, 1024} {
-			name := fmt.Sprintf("%s_c%d", tier.name, conc)
+			name := fmt.Sprintf("%s_c%d", tier.Name, conc)
 			t.Run(name, func(t *testing.T) {
 				t.Parallel()
-				data := genIntMap(tier.size)
+				data := genIntMap(tier.Size)
 				var counter int64
 				r := NewMapChain(mapFreshCtx(), data).Worker(conc).FailFast().ForEach(func(ctx context.Context, k string, v int) error {
 					atomic.AddInt64(&counter, 1)
@@ -2029,8 +2008,8 @@ func TestMap_Chain_HighConcurrency_ForEach_FailFast(t *testing.T) {
 				if r.Err() {
 					t.Fatalf("ForEach+FailFast error: %v", r.Error())
 				}
-				if counter != int64(tier.size) {
-					t.Fatalf("expected %d calls, got %d", tier.size, counter)
+				if counter != int64(tier.Size) {
+					t.Fatalf("expected %d calls, got %d", tier.Size, counter)
 				}
 			})
 		}
@@ -2371,10 +2350,10 @@ func TestMap_Chain_NilMap_Map(t *testing.T) {
 // ============================================================
 
 func TestMap_Chain_ConcurrentReads(t *testing.T) {
-	for _, tier := range mapAllTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			mapSkipIfTooLarge(t, tier.size)
-			data := genIntMap(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+			data := genIntMap(tier.Size)
 			sb := NewMapChain(mapFreshCtx(), data)
 			var wg sync.WaitGroup
 			workers := 32
@@ -2397,9 +2376,9 @@ func TestMap_Chain_ConcurrentReads(t *testing.T) {
 }
 
 func TestMap_Chain_ConcurrentMapCalls(t *testing.T) {
-	for _, tier := range mapAllTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			mapSkipIfTooLarge(t, tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
 			t.Parallel()
 			var wg sync.WaitGroup
 			workers := 16
@@ -2408,7 +2387,7 @@ func TestMap_Chain_ConcurrentMapCalls(t *testing.T) {
 				wg.Add(1)
 				go func() {
 					defer wg.Done()
-					chunk := tier.size / workers
+					chunk := tier.Size / workers
 					if chunk == 0 {
 						return
 					}
@@ -2444,9 +2423,9 @@ func TestMap_Chain_Race_Map(t *testing.T) {
 	if testing.Short() {
 		conc = 4
 	}
-	for _, tier := range mapAllTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			data := genIntMap(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			data := genIntMap(tier.Size)
 			var sum int64
 			r := NewMapChain(mapFreshCtx(), data).Worker(conc).Map(func(ctx context.Context, k string, v int) (int, error) {
 				atomic.AddInt64(&sum, int64(v))
@@ -2455,8 +2434,8 @@ func TestMap_Chain_Race_Map(t *testing.T) {
 			if r.Err() {
 				t.Fatalf("Race Map: %v", r.Error())
 			}
-			if r.Len() != tier.size {
-				t.Fatalf("Race Map: expected %d, got %d", tier.size, r.Len())
+			if r.Len() != tier.Size {
+				t.Fatalf("Race Map: expected %d, got %d", tier.Size, r.Len())
 			}
 		})
 	}
@@ -2467,9 +2446,9 @@ func TestMap_Chain_Race_ForEach(t *testing.T) {
 	if testing.Short() {
 		conc = 4
 	}
-	for _, tier := range mapAllTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			data := genIntMap(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			data := genIntMap(tier.Size)
 			var counter int64
 			var errCount int64
 			r := NewMapChain(mapFreshCtx(), data).Worker(conc).ForEach(func(ctx context.Context, k string, v int) error {
@@ -2480,11 +2459,11 @@ func TestMap_Chain_Race_ForEach(t *testing.T) {
 				return nil
 			})
 			_ = r.Error()
-			if r.Total() != int64(tier.size) {
-				t.Fatalf("Race ForEach Total: expected %d, got %d", tier.size, r.Total())
+			if r.Total() != int64(tier.Size) {
+				t.Fatalf("Race ForEach Total: expected %d, got %d", tier.Size, r.Total())
 			}
-			if counter != int64(tier.size) {
-				t.Fatalf("Race ForEach counter: expected %d, got %d", tier.size, counter)
+			if counter != int64(tier.Size) {
+				t.Fatalf("Race ForEach counter: expected %d, got %d", tier.Size, counter)
 			}
 		})
 	}
@@ -2495,9 +2474,9 @@ func TestMap_Chain_Race_FailFast(t *testing.T) {
 	if testing.Short() {
 		conc = 4
 	}
-	for _, tier := range mapAllTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			data := genIntMap(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			data := genIntMap(tier.Size)
 			var called int64
 			r := NewMapChain(mapFreshCtx(), data).Worker(conc).FailFast().Map(func(ctx context.Context, k string, v int) (int, error) {
 				idx := atomic.AddInt64(&called, 1)
@@ -2518,9 +2497,9 @@ func TestMap_Chain_Race_Stream(t *testing.T) {
 	if testing.Short() {
 		conc = 4
 	}
-	for _, tier := range mapAllTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			data := genIntMap(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			data := genIntMap(tier.Size)
 			ch := NewMapChain(mapFreshCtx(), data).Worker(conc).Buf(4096).Stream(func(ctx context.Context, k string, v int) (int, error) {
 				return v, nil
 			}, 0)
@@ -2531,8 +2510,8 @@ func TestMap_Chain_Race_Stream(t *testing.T) {
 				}
 				count++
 			}
-			if count != tier.size {
-				t.Fatalf("Race Stream: expected %d, got %d", tier.size, count)
+			if count != tier.Size {
+				t.Fatalf("Race Stream: expected %d, got %d", tier.Size, count)
 			}
 		})
 	}
@@ -2543,9 +2522,9 @@ func TestMap_Chain_Race_PoolShared(t *testing.T) {
 	if testing.Short() {
 		conc = 4
 	}
-	for _, tier := range mapAllTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			data := genIntMap(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			data := genIntMap(tier.Size)
 			p := pool.NewPool[int](16)
 			r := NewMapChain(mapFreshCtx(), data).PoolAuto(p).Worker(conc).Map(func(ctx context.Context, k string, v int) (int, error) {
 				return v, nil
@@ -2553,8 +2532,8 @@ func TestMap_Chain_Race_PoolShared(t *testing.T) {
 			if r.Err() {
 				t.Fatalf("Race PoolShared: %v", r.Error())
 			}
-			if r.Len() != tier.size {
-				t.Fatalf("Race PoolShared: expected %d, got %d", tier.size, r.Len())
+			if r.Len() != tier.Size {
+				t.Fatalf("Race PoolShared: expected %d, got %d", tier.Size, r.Len())
 			}
 		})
 	}
@@ -2565,17 +2544,17 @@ func TestMap_Chain_Race_Shards(t *testing.T) {
 	if testing.Short() {
 		conc = 4
 	}
-	for _, tier := range mapAllTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			data := genIntMap(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			data := genIntMap(tier.Size)
 			r := NewMapChain(mapFreshCtx(), data).Worker(conc).Shards(16).Map(func(ctx context.Context, k string, v int) (int, error) {
 				return v * 2, nil
 			})
 			if r.Err() {
 				t.Fatalf("Race Shards: %v", r.Error())
 			}
-			if r.Len() != tier.size {
-				t.Fatalf("Race Shards: expected %d, got %d", tier.size, r.Len())
+			if r.Len() != tier.Size {
+				t.Fatalf("Race Shards: expected %d, got %d", tier.Size, r.Len())
 			}
 		})
 	}
@@ -2586,9 +2565,9 @@ func TestMap_Chain_Race_MapBatch(t *testing.T) {
 	if testing.Short() {
 		conc = 4
 	}
-	for _, tier := range mapAllTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			data := genIntMap(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			data := genIntMap(tier.Size)
 			r := NewMapChain(mapFreshCtx(), data).Worker(conc).Chunk(100).MapBatch(func(ctx context.Context, batch []MapEntry[string, int]) (int, error) {
 				sum := 0
 				for _, e := range batch {
@@ -2599,7 +2578,7 @@ func TestMap_Chain_Race_MapBatch(t *testing.T) {
 			if r.Err() {
 				t.Fatalf("Race MapBatch: %v", r.Error())
 			}
-			if r.Len() == 0 && tier.size > 0 {
+			if r.Len() == 0 && tier.Size > 0 {
 				t.Fatal("Race MapBatch: should have results")
 			}
 		})
@@ -2611,9 +2590,9 @@ func TestMap_Chain_Race_ForEachBatch(t *testing.T) {
 	if testing.Short() {
 		conc = 4
 	}
-	for _, tier := range mapAllTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			data := genIntMap(tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			data := genIntMap(tier.Size)
 			var processed int64
 			r := NewMapChain(mapFreshCtx(), data).Worker(conc).Chunk(100).ForEachBatch(func(ctx context.Context, batch []MapEntry[string, int]) error {
 				atomic.AddInt64(&processed, int64(len(batch)))
@@ -2622,8 +2601,8 @@ func TestMap_Chain_Race_ForEachBatch(t *testing.T) {
 			if r.Err() {
 				t.Fatalf("Race ForEachBatch: %v", r.Error())
 			}
-			if processed != int64(tier.size) {
-				t.Fatalf("Race ForEachBatch: expected %d, got %d", tier.size, processed)
+			if processed != int64(tier.Size) {
+				t.Fatalf("Race ForEachBatch: expected %d, got %d", tier.Size, processed)
 			}
 		})
 	}

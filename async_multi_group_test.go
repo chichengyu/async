@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/chichengyu/async/internal/group"
+	"github.com/chichengyu/async/testutil"
 )
 
 // ============================================================
@@ -19,16 +20,16 @@ import (
 // ============================================================
 
 func TestMultiGroupBuilder_Chain_Basic(t *testing.T) {
-	for _, tier := range allTiers {
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
+	for _, tier := range testutil.AllTiers {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
 
 			var sum int64
 			err := GroupMulti[int]().Context(freshCtx()).
 				Shards(2).
 				Worker(16).
 				Run(func(ctx context.Context, mg *group.MultiGroup[int]) error {
-					for i := 0; i < tier.size; i++ {
+					for i := 0; i < tier.Size; i++ {
 						v := i
 						mg.Go(ctx, func(ctx context.Context) (int, error) {
 							return v * 2, nil
@@ -46,7 +47,7 @@ func TestMultiGroupBuilder_Chain_Basic(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			n := int64(tier.size)
+			n := int64(tier.Size)
 			expected := n * (n - 1)
 			if sum != expected {
 				t.Fatalf("sum mismatch: expected %d, got %d", expected, sum)
@@ -56,12 +57,12 @@ func TestMultiGroupBuilder_Chain_Basic(t *testing.T) {
 }
 
 func TestMultiGroupBuilder_Chain_FailFast(t *testing.T) {
-	for _, tier := range allTiers {
-		if tier.size > 100_000 {
+	for _, tier := range testutil.AllTiers {
+		if tier.Size > 100_000 {
 			t.Skip("skip large tier for failfast")
 		}
-		t.Run(tier.name, func(t *testing.T) {
-			skipIfTooLarge(t, tier.size)
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
 
 			var errCount int32
 			err := GroupMulti[int]().Context(freshCtx()).
@@ -70,7 +71,7 @@ func TestMultiGroupBuilder_Chain_FailFast(t *testing.T) {
 				FailFast().
 				Timeout(5 * time.Second).
 				Run(func(ctx context.Context, mg *group.MultiGroup[int]) error {
-					for i := 0; i < tier.size; i++ {
+					for i := 0; i < tier.Size; i++ {
 						v := i
 						mg.Go(ctx, func(ctx context.Context) (int, error) {
 							if v%10 == 0 {
@@ -93,7 +94,7 @@ func TestMultiGroupBuilder_Chain_FailFast(t *testing.T) {
 			if errCount == 0 {
 				t.Fatal("FailFast enabled but no errors detected")
 			}
-			t.Logf("errors: %d / %d", errCount, tier.size)
+			t.Logf("errors: %d / %d", errCount, tier.Size)
 		})
 	}
 }
