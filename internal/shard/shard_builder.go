@@ -119,6 +119,18 @@ func (b *ShardPoolBuilder[T]) MaxPending(n int) *ShardPoolBuilder[T] {
 	return b
 }
 
+// MaxResults 设置结果存储上限（0=无限）
+func (b *ShardPoolBuilder[T]) MaxResults(n int) *ShardPoolBuilder[T] {
+	b.cfg.PoolCfg.MaxResults = n
+	return b
+}
+
+// DefaultMaxResults 使用默认最大结果数（无限）
+func (b *ShardPoolBuilder[T]) DefaultMaxResults() *ShardPoolBuilder[T] {
+	b.cfg.PoolCfg.MaxResults = -1
+	return b
+}
+
 // Logger 注入自定义日志实现，全局生效。
 func (b *ShardPoolBuilder[T]) Logger(l core.Logger) *ShardPoolBuilder[T] { core.SetLogger(l); return b }
 

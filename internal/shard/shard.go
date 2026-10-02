@@ -85,7 +85,7 @@ func NewShardedPool[T any](cfg ShardPoolConfig[T]) *ShardedPool[T] {
 	}
 	pools := make([]*pool.Pool[T], cfg.Shards)
 	for i := 0; i < cfg.Shards; i++ {
-		pools[i] = pool.NewPool[T](cfg.SizePerShard)
+		pools[i] = pool.NewPool[T](cfg.SizePerShard).WithMaxResults(0)
 	}
 	return &ShardedPool[T]{
 		pools: pools,
@@ -374,6 +374,14 @@ func (sp *ShardedPool[T]) WithMaxPending(n int) *ShardedPool[T] {
 	return sp
 }
 
+// WithMaxResults 为所有分片设置结果存储上限。
+func (sp *ShardedPool[T]) WithMaxResults(n int) *ShardedPool[T] {
+	for _, p := range sp.pools {
+		p.WithMaxResults(n)
+	}
+	return sp
+}
+
 // WithOverflow 为所有分片设置溢出策略。
 func (sp *ShardedPool[T]) WithOverflow(strategy core.OverflowStrategy) *ShardedPool[T] {
 	for _, p := range sp.pools {
@@ -611,6 +619,9 @@ func WithShardCfg[T any](ctx context.Context, cfg ShardPoolConfig[T], fn func(sp
 	}
 	if pc.Streaming > 0 {
 		sp.WithStreaming(pc.Streaming)
+	}
+	if pc.MaxResults >= 0 {
+		sp.WithMaxResults(pc.MaxResults)
 	}
 	return fn(sp)
 }

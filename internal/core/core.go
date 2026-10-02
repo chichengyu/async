@@ -82,9 +82,9 @@ var (
 	globalSubmitTimer  int64 = int64(DefaultSubmitTimeout)
 	maxCleanupDuration int64 = int64(WaitContextCleanupError)
 
-	// defaultMaxResults 全局默认最大结果数（0=无限制，保持向后兼容）。
-	// 通过 SetDefaultMaxResults 设置，长期运行的 Pool 应设置此值防止 OOM。
-	defaultMaxResults int32
+	// defaultMaxResults 全局默认最大结果数（默认100_000，防止长期运行Pool的OOM风险）。
+	// 通过 SetDefaultMaxResults 设置，设为 0 可恢复无限制（向后兼容）。
+	defaultMaxResults int32 = 100_000
 	// defaultRingBufCap 全局默认环形缓冲区容量（0=不启用，保持向后兼容）。
 	defaultRingBufCap int32
 	// defaultOverflowStrategy 全局默认环形缓冲区溢出策略。
@@ -163,7 +163,7 @@ func GetSubmitTimeout() time.Duration {
 
 // SetDefaultMaxResults 设置全局默认最大结果数，影响后续创建的 Pool。
 // 当 Pool 未通过 WithMaxResults 单独设置时，使用此全局默认值。
-// 默认值为 0（无限制），保持向后兼容。
+// 默认值为 100_000，设为 0 可恢复无限制（向后兼容）。
 // 长期运行的 Pool 建议设置此值防止 results 切片无界增长导致 OOM。
 //
 // 参数：
@@ -180,7 +180,7 @@ func SetDefaultMaxResults(n int) {
 	}
 }
 
-// GetDefaultMaxResults 返回当前全局默认最大结果数，0 表示无限制。
+// GetDefaultMaxResults 返回当前全局默认最大结果数，默认 100_000，0 表示无限制。
 func GetDefaultMaxResults() int {
 	return int(atomic.LoadInt32(&defaultMaxResults))
 }

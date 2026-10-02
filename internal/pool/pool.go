@@ -193,8 +193,10 @@ type Config struct {
 }
 
 // DefaultConfig 返回使用默认 Size（core.IO()）的 Config。
+// MaxResults 默认值为 -1，表示不覆盖 Pool 的内置默认值（100_000）。
+// 调用链式方法 .MaxResults(n) 可显式覆盖（n=0 恢复无限，n>0 设置上限）。
 func DefaultConfig() Config {
-	return Config{Size: core.IO()}
+	return Config{Size: core.IO(), MaxResults: -1}
 }
 
 // WithSize 设置 worker 数量。

@@ -33,6 +33,7 @@ type pipelineBase[T any, S any] struct {
 	concurrency  int                   // Worker 覆盖并发度（0=使用 Stage 自带）
 	pool         *pool.Pool[T]         // 外部协程池
 	poolAuto     bool                  // PoolAutoClose：终端执行后自动 Close
+	maxResults   int                   // 内部 Pool 的结果上限（-1=使用默认值）
 	autoScaleCfg *core.AutoScaleConfig // 自动扩缩容配置
 
 	self S
@@ -41,9 +42,10 @@ type pipelineBase[T any, S any] struct {
 // newPipelineBase 创建管道基类实例。
 func newPipelineBase[T any, S any](ctx context.Context, items []T, self S) *pipelineBase[T, S] {
 	return &pipelineBase[T, S]{
-		ctx:   core.EnsureTraceID(ctx),
-		items: items,
-		self:  self,
+		ctx:        core.EnsureTraceID(ctx),
+		items:      items,
+		self:       self,
+		maxResults: -1,
 	}
 }
 
@@ -66,6 +68,7 @@ func (b *pipelineBase[T, S]) spawnSerial() *SerialChain[T] {
 		concurrency:  b.concurrency,
 		pool:         b.pool,
 		poolAuto:     b.poolAuto,
+		maxResults:   b.maxResults,
 		autoScaleCfg: b.autoScaleCfg,
 	}
 	sp.pipelineBase.self = sp
@@ -86,6 +89,7 @@ func (b *pipelineBase[T, S]) spawnParallel() *ParallelChain[T] {
 		concurrency:  b.concurrency,
 		pool:         b.pool,
 		poolAuto:     b.poolAuto,
+		maxResults:   b.maxResults,
 		autoScaleCfg: b.autoScaleCfg,
 	}
 	pp.pipelineBase.self = pp
@@ -156,6 +160,13 @@ func (b *pipelineBase[T, S]) OnResult(cb func(string, core.Result[T])) S {
 // DefaultOnResult 清除结果回调。
 func (b *pipelineBase[T, S]) DefaultOnResult() S {
 	b.resultCb = nil
+	return b.self
+}
+
+// MaxResults 设置内部协程池的结果存储上限（n=0 无限，n=-1 使用默认值 100_000）。
+// 仅对 Pipeline 内部创建的 Pool 生效；外部注入的 Pool 不受影响。
+func (b *pipelineBase[T, S]) MaxResults(n int) S {
+	b.maxResults = n
 	return b.self
 }
 
@@ -512,6 +523,9 @@ func (b *pipelineBase[T, S]) execParallelPooled(
 		ownPool := false
 		if b.poolAuto || usePool == nil {
 			usePool = pool.NewPool[T](concurrency)
+			if b.maxResults >= 0 {
+				usePool.WithMaxResults(b.maxResults)
+			}
 			ownPool = true
 		}
 

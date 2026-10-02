@@ -93,9 +93,9 @@ func (b *PoolBuilder[T]) DefaultRingBuf() *PoolBuilder[T] {
 	return b
 }
 
-// DefaultMaxResults 使用默认最大结果数（0=无限制）。
+// DefaultMaxResults 使用默认最大结果数（100_000）。
 func (b *PoolBuilder[T]) DefaultMaxResults() *PoolBuilder[T] {
-	b.cfg.MaxResults = 0
+	b.cfg.MaxResults = -1
 	return b
 }
 
