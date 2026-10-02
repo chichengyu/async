@@ -1400,3 +1400,141 @@ func TestProduction_GroupSubmitError_Consistency(t *testing.T) {
 	}
 	_ = submitErrCount
 }
+
+// ==================== GoAt Boundary Tests ====================
+
+func TestGoAt_LargeIndex(t *testing.T) {
+	g := NewGroup[int](4)
+	defer g.Close()
+	ctx := context.Background()
+
+	err := g.GoAt(1000, ctx, func(ctx context.Context) (int, error) {
+		return 1, nil
+	})
+	if err != nil {
+		t.Logf("GoAt(1000) error: %v", err)
+	}
+
+	results := g.Wait()
+	t.Logf("GoAt(1000) results: %d", len(results))
+}
+
+func TestGoAt_CancelledContext(t *testing.T) {
+	g := NewGroup[int](4)
+	defer g.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := g.GoAt(0, ctx, func(ctx context.Context) (int, error) {
+		return 1, nil
+	})
+	if err == nil {
+		t.Error("GoAt with cancelled context should return an error")
+	}
+	t.Logf("GoAt cancelled ctx error: %v", err)
+}
+
+func TestGoWithTimeout_Negative(t *testing.T) {
+	g := NewGroup[int](4)
+	defer g.Close()
+	ctx := context.Background()
+
+	err := g.GoWithTimeout(ctx, -1, func(ctx context.Context) (int, error) {
+		return 1, nil
+	})
+	t.Logf("GoWithTimeout(-1) error: %v", err)
+
+	results := g.Wait()
+	t.Logf("results count: %d", len(results))
+}
+
+func TestGoAtWithTimeout_LargeIndex(t *testing.T) {
+	g := NewGroup[int](4)
+	defer g.Close()
+	ctx := context.Background()
+
+	err := g.GoAtWithTimeout(1000, ctx, 100*time.Millisecond, func(ctx context.Context) (int, error) {
+		return 1, nil
+	})
+	if err != nil {
+		t.Logf("GoAtWithTimeout(1000) error: %v", err)
+	}
+
+	results := g.Wait()
+	t.Logf("GoAtWithTimeout(1000) results: %d", len(results))
+}
+
+// ==================== NoResult Boundary Tests ====================
+
+func TestNoResult_GoAt_LargeIndex(t *testing.T) {
+	nr := NewNoResult(4)
+	ctx := context.Background()
+
+	err := nr.GoAt(1000, ctx, func(ctx context.Context) error {
+		return nil
+	})
+	if err != nil {
+		t.Logf("NoResult.GoAt(1000) error: %v", err)
+	}
+	nr.Wait()
+}
+
+func TestNoResult_GoAt_CancelledContext(t *testing.T) {
+	nr := NewNoResult(4)
+	defer nr.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := nr.GoAt(0, ctx, func(ctx context.Context) error {
+		return nil
+	})
+	if err == nil {
+		t.Error("NoResult.GoAt with cancelled context should return an error")
+	}
+	t.Logf("NoResult.GoAt cancelled ctx error: %v", err)
+	nr.Wait()
+}
+
+func TestNoResult_GoWithTimeout_Negative(t *testing.T) {
+	nr := NewNoResult(4)
+	defer nr.Close()
+	ctx := context.Background()
+
+	err := nr.GoWithTimeout(ctx, -1, func(ctx context.Context) error {
+		return nil
+	})
+	t.Logf("NoResult.GoWithTimeout(-1) error: %v", err)
+
+	nr.Wait()
+	t.Log("NoResult negative timeout completed")
+}
+
+// ==================== Group WaitTimeout Boundary ====================
+
+func TestGroup_WaitTimeout_Negative(t *testing.T) {
+	g := NewGroup[int](4)
+	defer g.Close()
+	ctx := context.Background()
+
+	g.Go(ctx, func(ctx context.Context) (int, error) {
+		time.Sleep(50 * time.Millisecond)
+		return 1, nil
+	})
+
+	results, ok := g.WaitTimeout(-1)
+	t.Logf("Group WaitTimeout(-1): ok=%v, results=%d", ok, len(results))
+}
+
+func TestGroup_WaitTimeout_Zero(t *testing.T) {
+	g := NewGroup[int](4)
+	defer g.Close()
+	ctx := context.Background()
+
+	g.Go(ctx, func(ctx context.Context) (int, error) {
+		time.Sleep(100 * time.Millisecond)
+		return 1, nil
+	})
+
+	results, ok := g.WaitTimeout(0)
+	t.Logf("Group WaitTimeout(0): ok=%v, results=%d", ok, len(results))
+}

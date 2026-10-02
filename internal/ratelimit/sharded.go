@@ -360,19 +360,19 @@ func (sa *ShardedAdaptiveRateLimiter) Acquire(ctx context.Context) error {
 
 // Release round-robin 分发释放令牌。
 func (sa *ShardedAdaptiveRateLimiter) Release() {
-	idx := int(sa.nextIdx.Add(1)-1) % len(sa.limiters)
+	idx := int(sa.releaseIdx.Add(1)-1) % len(sa.limiters)
 	sa.limiters[idx].Release()
 }
 
 // RecordSuccess round-robin 分发记录成功。
 func (sa *ShardedAdaptiveRateLimiter) RecordSuccess() {
-	idx := int(sa.nextIdx.Add(1)-1) % len(sa.limiters)
+	idx := int(sa.recordIdx.Add(1)-1) % len(sa.limiters)
 	sa.limiters[idx].RecordSuccess()
 }
 
 // RecordFailure round-robin 分发记录失败。
 func (sa *ShardedAdaptiveRateLimiter) RecordFailure() {
-	idx := int(sa.nextIdx.Add(1)-1) % len(sa.limiters)
+	idx := int(sa.recordIdx.Add(1)-1) % len(sa.limiters)
 	sa.limiters[idx].RecordFailure()
 }
 

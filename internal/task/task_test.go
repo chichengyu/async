@@ -1793,3 +1793,37 @@ func TestRace_TaskBuilder_ConcurrentBuild(t *testing.T) {
 		}
 	}
 }
+
+// ==================== BoundedRunner Boundary Tests ====================
+
+func TestNewBoundedRunner_Negative(t *testing.T) {
+	r := NewBoundedRunner(-1)
+	if r.Max() <= 0 {
+		t.Fatal("NewBoundedRunner(-1) should fallback to default IO concurrency > 0")
+	}
+	t.Logf("NewBoundedRunner(-1) Max=%d", r.Max())
+}
+
+func TestNewBoundedRunner_Zero(t *testing.T) {
+	r := NewBoundedRunner(0)
+	if r.Max() <= 0 {
+		t.Fatal("NewBoundedRunner(0) should fallback to default IO concurrency > 0")
+	}
+	t.Logf("NewBoundedRunner(0) Max=%d", r.Max())
+}
+
+func TestBoundedRunnerBuilder_Negative(t *testing.T) {
+	r := NewBoundedRunnerBuilder().Max(-1).Build()
+	if r.Max() <= 0 {
+		t.Fatal("BoundedRunnerBuilder.Max(-1) should fallback to default")
+	}
+	t.Logf("BoundedRunnerBuilder.Max(-1) Max=%d", r.Max())
+}
+
+func TestBoundedRunnerBuilder_Zero(t *testing.T) {
+	r := NewBoundedRunnerBuilder().Max(0).Build()
+	if r.Max() <= 0 {
+		t.Fatal("BoundedRunnerBuilder.Max(0) should fallback to default")
+	}
+	t.Logf("BoundedRunnerBuilder.Max(0) Max=%d", r.Max())
+}

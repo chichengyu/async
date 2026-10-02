@@ -100,22 +100,17 @@ func TestShardPoolBuilder_Chain_FailFast(t *testing.T) {
 }
 
 func TestShardPoolBuilder_Chain_Timeout(t *testing.T) {
-	sizes := []struct {
-		name string
-		n    int
-	}{
-		{"10tasks", 10},
-		{"100tasks", 100},
-	}
-	for _, sz := range sizes {
-		t.Run(sz.name, func(t *testing.T) {
+	for _, tier := range testutil.UseTier {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+
 			var timeoutCount int32
 			err := PoolSharded[int]().Context(freshCtx()).
 				Shards(2).
-				Worker(2).
+				Worker(4).
 				Timeout(10 * time.Millisecond).
 				Run(func(ctx context.Context, sp *shard.ShardedPool[int]) error {
-					for i := 0; i < sz.n; i++ {
+					for i := 0; i < tier.Size; i++ {
 						v := i
 						sp.Submit(ctx, func(ctx context.Context) (int, error) {
 							select {
@@ -139,7 +134,7 @@ func TestShardPoolBuilder_Chain_Timeout(t *testing.T) {
 			if timeoutCount == 0 {
 				t.Fatal("Timeout=10ms but all context-aware tasks passed — timeout not enforced")
 			}
-			t.Logf("shard timeout count: %d / %d", timeoutCount, sz.n)
+			t.Logf("shard timeout count: %d / %d", timeoutCount, tier.Size)
 		})
 	}
 }
@@ -277,11 +272,7 @@ func TestShardPoolBuilder_Chain_KeyFn(t *testing.T) {
 }
 
 func TestShardPoolBuilder_Chain_MaxPending(t *testing.T) {
-	tiers := []testutil.Tier{
-		{Name: "万级_10K", Size: 10_000},
-		{Name: "十万级_100K", Size: 100_000},
-	}
-	for _, tier := range tiers {
+	for _, tier := range testutil.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
 			testutil.SkipIfTooLarge1M(t, tier.Size)
 

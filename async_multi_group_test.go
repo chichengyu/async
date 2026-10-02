@@ -100,22 +100,17 @@ func TestMultiGroupBuilder_Chain_FailFast(t *testing.T) {
 }
 
 func TestMultiGroupBuilder_Chain_Timeout(t *testing.T) {
-	sizes := []struct {
-		name string
-		n    int
-	}{
-		{"10tasks", 10},
-		{"100tasks", 100},
-	}
-	for _, sz := range sizes {
-		t.Run(sz.name, func(t *testing.T) {
+	for _, tier := range testutil.UseTier {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+
 			var timeoutCount int32
 			err := GroupMulti[int]().Context(freshCtx()).
 				Shards(2).
 				Worker(2).
 				Timeout(10 * time.Millisecond).
 				Run(func(ctx context.Context, mg *group.MultiGroup[int]) error {
-					for i := 0; i < sz.n; i++ {
+					for i := 0; i < tier.Size; i++ {
 						v := i
 						mg.Go(ctx, func(ctx context.Context) (int, error) {
 							select {

@@ -1447,3 +1447,41 @@ func TestRace_WithTimeout_Concurrent(t *testing.T) {
 		wg.Wait()
 	}
 }
+
+// ==================== WithTimeout Boundary Tests ====================
+
+func TestWithTimeout_Negative(t *testing.T) {
+	ctx := context.Background()
+	_, err := WithTimeout(ctx, -1, func(ctx context.Context) (int, error) {
+		return 1, nil
+	})
+	t.Logf("WithTimeout(-1) error: %v", err)
+}
+
+func TestWithTimeout_Zero(t *testing.T) {
+	ctx := context.Background()
+	_, err := WithTimeout(ctx, 0, func(ctx context.Context) (int, error) {
+		return 1, nil
+	})
+	t.Logf("WithTimeout(0) error: %v", err)
+}
+
+func TestRetry_WithTimeout_Negative(t *testing.T) {
+	ctx := context.Background()
+	_, err := New[int](ctx).Exponential().MaxRetries(2).Backoff(time.Millisecond, 10*time.Millisecond).
+		PerCallTimeout(-1).
+		Execute(func(ctx context.Context) (int, error) {
+			return 1, nil
+		})
+	t.Logf("Retry PerCallTimeout(-1) error: %v", err)
+}
+
+func TestRetry_WithTimeout_Zero(t *testing.T) {
+	ctx := context.Background()
+	_, err := New[int](ctx).Exponential().MaxRetries(2).Backoff(time.Millisecond, 10*time.Millisecond).
+		PerCallTimeout(0).
+		Execute(func(ctx context.Context) (int, error) {
+			return 1, nil
+		})
+	t.Logf("Retry PerCallTimeout(0) error: %v", err)
+}

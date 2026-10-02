@@ -103,21 +103,16 @@ func TestPoolBuilder_Chain_FailFast(t *testing.T) {
 }
 
 func TestPoolBuilder_Chain_Timeout(t *testing.T) {
-	sizes := []struct {
-		name string
-		n    int
-	}{
-		{"10tasks", 10},
-		{"100tasks", 100},
-	}
-	for _, sz := range sizes {
-		t.Run(sz.name, func(t *testing.T) {
+	for _, tier := range testutil.UseTier {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+
 			var timeoutCount int32
 			err := Pool[int]().Context(freshCtx()).
-				Worker(2).
+				Worker(8).
 				Timeout(10 * time.Millisecond).
 				Run(func(ctx context.Context, p *pool.Pool[int]) error {
-					for i := 0; i < sz.n; i++ {
+					for i := 0; i < tier.Size; i++ {
 						v := i
 						p.Submit(ctx, func(ctx context.Context) (int, error) {
 							select {
@@ -141,18 +136,13 @@ func TestPoolBuilder_Chain_Timeout(t *testing.T) {
 			if timeoutCount == 0 {
 				t.Fatal("Timeout=10ms but all context-aware tasks passed — timeout not enforced")
 			}
-			t.Logf("timeout count: %d / %d", timeoutCount, sz.n)
+			t.Logf("timeout count: %d / %d", timeoutCount, tier.Size)
 		})
 	}
 }
 
 func TestPoolBuilder_Chain_MaxResults(t *testing.T) {
-	tiers := []testutil.Tier{
-		{Name: "万级_10K", Size: 10_000},
-		{Name: "十万级_100K", Size: 100_000},
-		{Name: "百万级_1M", Size: 1_000_000},
-	}
-	for _, tier := range tiers {
+	for _, tier := range testutil.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
 			testutil.SkipIfTooLarge1M(t, tier.Size)
 
@@ -320,11 +310,7 @@ func TestPoolBuilder_Chain_Streaming(t *testing.T) {
 }
 
 func TestPoolBuilder_Chain_OverflowDrop(t *testing.T) {
-	tiers := []testutil.Tier{
-		{Name: "万级_10K", Size: 10_000},
-		{Name: "十万级_100K", Size: 100_000},
-	}
-	for _, tier := range tiers {
+	for _, tier := range testutil.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
 			testutil.SkipIfTooLarge1M(t, tier.Size)
 
@@ -409,5 +395,163 @@ func TestPoolBuilder_Chain_EmptyRun(t *testing.T) {
 		})
 	if err != nil {
 		t.Fatalf("empty Run should succeed, got: %v", err)
+	}
+}
+
+// ==================== Must ====================
+
+func TestMust_Success(t *testing.T) {
+	val := Must(42, nil)
+	if val != 42 {
+		t.Fatalf("Must(42, nil) = %d, want 42", val)
+	}
+}
+
+func TestMust_Panic(t *testing.T) {
+	sentinel := errors.New("must_panic_error")
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("Must should panic on error")
+		}
+		if r != sentinel {
+			t.Fatalf("Must panic = %v, want %v", r, sentinel)
+		}
+	}()
+	Must(0, sentinel)
+}
+
+func TestMust_ZeroValue(t *testing.T) {
+	val := Must(0, nil)
+	if val != 0 {
+		t.Fatalf("Must(0, nil) = %d, want 0", val)
+	}
+}
+
+func TestMust_StringType(t *testing.T) {
+	val := Must("hello", nil)
+	if val != "hello" {
+		t.Fatalf("Must('hello', nil) = %s, want hello", val)
+	}
+}
+
+func TestMust_StructType(t *testing.T) {
+	type S struct{ X int }
+	val := Must(S{X: 10}, nil)
+	if val.X != 10 {
+		t.Fatalf("Must(S{10}, nil).X = %d, want 10", val.X)
+	}
+}
+
+func TestMust_NilErrorPanics(t *testing.T) {
+	err := errors.New("boom")
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic")
+		}
+		if !errors.Is(r.(error), err) {
+			t.Fatalf("panic = %v, want %v", r, err)
+		}
+	}()
+	Must(1, err)
+}
+
+// ==================== ForEachPool (top-level) ====================
+
+func TestForEachPool_Basic(t *testing.T) {
+	var sum atomic.Int64
+	items := []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}
+	p, err := ForEachPool(freshCtx(), items, func(ctx context.Context, item int) error {
+		sum.Add(int64(item))
+		return nil
+	}, 4)
+	if err != nil {
+		t.Fatalf("ForEachPool err = %v, want nil", err)
+	}
+	if p == nil {
+		t.Fatal("ForEachPool returned nil pool")
+	}
+	if sum.Load() != 55 {
+		t.Fatalf("sum = %d, want 55", sum.Load())
+	}
+}
+
+func TestForEachPool_Empty(t *testing.T) {
+	p, err := ForEachPool(freshCtx(), []int{}, func(ctx context.Context, item int) error {
+		return nil
+	}, 4)
+	if err != nil {
+		t.Fatalf("ForEachPool empty err = %v, want nil", err)
+	}
+	if p == nil {
+		t.Fatal("ForEachPool empty returned nil pool")
+	}
+}
+
+func TestForEachPool_ErrorPropagation(t *testing.T) {
+	sentinel := errors.New("foreach_failed")
+	items := []int{1, 2, 3}
+	p, err := ForEachPool(freshCtx(), items, func(ctx context.Context, item int) error {
+		if item == 2 {
+			return sentinel
+		}
+		return nil
+	}, 2)
+	if p == nil {
+		t.Fatal("ForEachPool returned nil pool")
+	}
+	if err == nil {
+		t.Fatal("ForEachPool should propagate error")
+	}
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("error = %v, want %v", err, sentinel)
+	}
+}
+
+func TestForEachPool_ConcurrencyZero(t *testing.T) {
+	var counter atomic.Int64
+	items := make([]int, 20)
+	p, err := ForEachPool(freshCtx(), items, func(ctx context.Context, item int) error {
+		counter.Add(1)
+		return nil
+	}, 0)
+	if err != nil {
+		t.Fatalf("ForEachPool concurrency=0 err = %v", err)
+	}
+	_ = p
+	if counter.Load() != 20 {
+		t.Fatalf("counter = %d, want 20", counter.Load())
+	}
+}
+
+func TestForEachPool_ConcurrencyExceedsLen(t *testing.T) {
+	var counter atomic.Int64
+	items := make([]int, 5)
+	p, err := ForEachPool(freshCtx(), items, func(ctx context.Context, item int) error {
+		counter.Add(1)
+		return nil
+	}, 100)
+	if err != nil {
+		t.Fatalf("ForEachPool concurrency>len err = %v", err)
+	}
+	_ = p
+	if counter.Load() != 5 {
+		t.Fatalf("counter = %d, want 5", counter.Load())
+	}
+}
+
+func TestForEachPool_WorksWithPoolStruct(t *testing.T) {
+	var executed atomic.Int64
+	p, err := ForEachPool(freshCtx(), []int{1}, func(ctx context.Context, item int) error {
+		executed.Store(1)
+		return nil
+	}, 1)
+	if err != nil {
+		t.Fatalf("ForEachPool err = %v", err)
+	}
+	_ = p
+	if executed.Load() != 1 {
+		t.Fatal("ForEachPool function was not executed")
 	}
 }

@@ -3,7 +3,6 @@ package async
 import (
 	"context"
 	"errors"
-	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -149,11 +148,12 @@ func TestTask_Chain_GoResultAct(t *testing.T) {
 }
 
 func TestTask_Chain_Bounded(t *testing.T) {
-	sizes := []int{100, 1000}
-	for _, n := range sizes {
-		t.Run(fmt.Sprintf("n=%d", n), func(t *testing.T) {
+	for _, tier := range testutil.UseTier {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+
 			var done atomic.Int64
-			for i := 0; i < n; i++ {
+			for i := 0; i < tier.Size; i++ {
 				v := i
 				ar := Task[int]().Context(freshCtx()).
 					Bounded(10).
@@ -169,8 +169,8 @@ func TestTask_Chain_Bounded(t *testing.T) {
 				}
 				done.Add(1)
 			}
-			if done.Load() != int64(n) {
-				t.Fatalf("expected %d, got %d", n, done.Load())
+			if done.Load() != int64(tier.Size) {
+				t.Fatalf("expected %d, got %d", tier.Size, done.Load())
 			}
 		})
 	}

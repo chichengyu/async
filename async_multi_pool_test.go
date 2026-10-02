@@ -102,22 +102,17 @@ func TestMultiPoolBuilder_Chain_FailFast(t *testing.T) {
 }
 
 func TestMultiPoolBuilder_Chain_Timeout(t *testing.T) {
-	sizes := []struct {
-		name string
-		n    int
-	}{
-		{"10tasks", 10},
-		{"100tasks", 100},
-	}
-	for _, sz := range sizes {
-		t.Run(sz.name, func(t *testing.T) {
+	for _, tier := range testutil.UseTier {
+		t.Run(tier.Name, func(t *testing.T) {
+			testutil.SkipIfTooLarge1M(t, tier.Size)
+
 			var timeoutCount int32
 			err := PoolMulti[int]().Context(freshCtx()).
 				Shards(2).
 				Worker(2).
 				Timeout(10 * time.Millisecond).
 				Run(func(ctx context.Context, mp *pool.MultiPool[int]) error {
-					for i := 0; i < sz.n; i++ {
+					for i := 0; i < tier.Size; i++ {
 						v := i
 						mp.Submit(ctx, func(ctx context.Context) (int, error) {
 							select {
@@ -473,11 +468,7 @@ func TestMultiPoolBuilder_Chain_MaxResults(t *testing.T) {
 }
 
 func TestMultiPoolBuilder_Chain_OverflowDrop(t *testing.T) {
-	tiers := []testutil.Tier{
-		{Name: "万级_10K", Size: 10_000},
-		{Name: "十万级_100K", Size: 100_000},
-	}
-	for _, tier := range tiers {
+	for _, tier := range testutil.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
 			testutil.SkipIfTooLarge1M(t, tier.Size)
 
