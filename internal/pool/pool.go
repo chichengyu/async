@@ -714,6 +714,21 @@ func (p *Pool[T]) drainStreaming() {
 	})
 }
 
+// tryQuit 原子尝试获取一个退出名额。返回 true 表示本 worker 应退出。
+// 所有 worker 退出路径统一使用此方法，消除 Quit task 的 Add(-1) 与 quitCh 的 CAS
+// 之间因非原子 load-then-decrement 导致的 TOCTOU 竞态（quitting 计数器会越过零点变负）。
+func (p *Pool[T]) tryQuit() bool {
+	for {
+		v := p.quitting.Load()
+		if v <= 0 {
+			return false
+		}
+		if p.quitting.CompareAndSwap(v, v-1) {
+			return true
+		}
+	}
+}
+
 func (p *Pool[T]) worker() {
 	defer p.workerWg.Done()
 	p.quitMu.RLock()
@@ -726,37 +741,20 @@ func (p *Pool[T]) worker() {
 				return
 			}
 			if task.Quit {
-				if p.quitting.Load() <= 0 {
-					continue
+				if p.tryQuit() {
+					return
 				}
-				p.quitting.Add(-1)
-				return
+				continue
 			}
 			p.active.Add(1)
 			p.processTask(task)
 			p.active.Add(-1)
-			if p.quitting.Load() > 0 {
-				for {
-					v := p.quitting.Load()
-					if v <= 0 {
-						break
-					}
-					if p.quitting.CompareAndSwap(v, v-1) {
-						return
-					}
-				}
+			if p.tryQuit() {
+				return
 			}
 		case <-quitCh:
-			if p.quitting.Load() > 0 {
-				for {
-					v := p.quitting.Load()
-					if v <= 0 {
-						break
-					}
-					if p.quitting.CompareAndSwap(v, v-1) {
-						return
-					}
-				}
+			if p.tryQuit() {
+				return
 			}
 			p.quitMu.RLock()
 			quitCh = p.quitCh
@@ -769,9 +767,7 @@ func (p *Pool[T]) worker() {
 						return
 					}
 					if task.Quit {
-						if p.quitting.Load() > 0 {
-							p.quitting.Add(-1)
-						}
+						p.tryQuit()
 						continue
 					}
 					p.active.Add(1)
