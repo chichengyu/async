@@ -109,7 +109,7 @@ func TestMultiPoolBuilder_Chain_Timeout(t *testing.T) {
 			var timeoutCount int32
 			err := PoolMulti[int]().Context(freshCtx()).
 				Shards(2).
-				Worker(2).
+				Worker(8).
 				Timeout(10 * time.Millisecond).
 				Run(func(ctx context.Context, mp *pool.MultiPool[int]) error {
 					for i := 0; i < tier.Size; i++ {
