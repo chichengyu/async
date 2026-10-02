@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/chichengyu/async/internal/core"
-	"github.com/chichengyu/async/testutil"
+	"github.com/chichengyu/async/test"
 )
 
 var errRetry = errors.New("retry test error")
@@ -1093,9 +1093,9 @@ func TestRetryChain_Logger(t *testing.T) {
 // ==================== Concurrent Tests ====================
 
 func TestRetry_Backoff_Concurrent(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge(t, tier.Size)
+			test.SkipIfTooLarge(t, tier.Size)
 
 			var wg sync.WaitGroup
 			var success, fail atomic.Int64
@@ -1127,9 +1127,9 @@ func TestRetry_Backoff_Concurrent(t *testing.T) {
 }
 
 func TestRetry_LinearBackoff_Concurrent(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge(t, tier.Size)
+			test.SkipIfTooLarge(t, tier.Size)
 
 			var wg sync.WaitGroup
 			var total atomic.Int64
@@ -1153,9 +1153,9 @@ func TestRetry_LinearBackoff_Concurrent(t *testing.T) {
 }
 
 func TestRetryFn_Concurrent(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge(t, tier.Size)
+			test.SkipIfTooLarge(t, tier.Size)
 
 			var wg sync.WaitGroup
 			wg.Add(tier.Size)
@@ -1171,9 +1171,9 @@ func TestRetryFn_Concurrent(t *testing.T) {
 }
 
 func TestRetry_TimedCancellation_Concurrent(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge(t, tier.Size)
+			test.SkipIfTooLarge(t, tier.Size)
 
 			var wg sync.WaitGroup
 			wg.Add(tier.Size)
@@ -1193,9 +1193,9 @@ func TestRetry_TimedCancellation_Concurrent(t *testing.T) {
 }
 
 func TestRetry_WithConfig_Concurrent(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge(t, tier.Size)
+			test.SkipIfTooLarge(t, tier.Size)
 
 			var wg sync.WaitGroup
 			wg.Add(tier.Size)
@@ -1214,9 +1214,9 @@ func TestRetry_WithConfig_Concurrent(t *testing.T) {
 }
 
 func TestRetry_WithTimeout_Concurrent(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge(t, tier.Size)
+			test.SkipIfTooLarge(t, tier.Size)
 
 			var wg sync.WaitGroup
 			wg.Add(tier.Size)

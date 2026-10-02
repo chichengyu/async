@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/chichengyu/async/internal/group"
-	"github.com/chichengyu/async/testutil"
+	"github.com/chichengyu/async/test"
 )
 
 // ============================================================
@@ -20,9 +20,9 @@ import (
 // ============================================================
 
 func TestMultiGroupBuilder_Chain_Basic(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge1M(t, tier.Size)
+			test.SkipIfTooLarge1M(t, tier.Size)
 
 			var sum int64
 			err := GroupMulti[int]().Context(freshCtx()).
@@ -57,12 +57,12 @@ func TestMultiGroupBuilder_Chain_Basic(t *testing.T) {
 }
 
 func TestMultiGroupBuilder_Chain_FailFast(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		if tier.Size > 100_000 {
 			t.Skip("skip large tier for failfast")
 		}
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge1M(t, tier.Size)
+			test.SkipIfTooLarge1M(t, tier.Size)
 
 			var errCount int32
 			err := GroupMulti[int]().Context(freshCtx()).
@@ -100,9 +100,9 @@ func TestMultiGroupBuilder_Chain_FailFast(t *testing.T) {
 }
 
 func TestMultiGroupBuilder_Chain_Timeout(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge1M(t, tier.Size)
+			test.SkipIfTooLarge1M(t, tier.Size)
 
 			var timeoutCount int32
 			err := GroupMulti[int]().Context(freshCtx()).

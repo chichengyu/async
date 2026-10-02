@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/chichengyu/async/internal/shard"
-	"github.com/chichengyu/async/testutil"
+	"github.com/chichengyu/async/test"
 )
 
 // ============================================================
@@ -23,9 +23,9 @@ import (
 // ============================================================
 
 func TestShardPoolBuilder_Chain_Basic(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge1M(t, tier.Size)
+			test.SkipIfTooLarge1M(t, tier.Size)
 
 			var sum int64
 			err := PoolSharded[int]().Context(freshCtx()).
@@ -60,9 +60,9 @@ func TestShardPoolBuilder_Chain_Basic(t *testing.T) {
 }
 
 func TestShardPoolBuilder_Chain_FailFast(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge1M(t, tier.Size)
+			test.SkipIfTooLarge1M(t, tier.Size)
 
 			sentinel := errors.New("shard_fail_boom")
 			var errorCount int32
@@ -100,9 +100,9 @@ func TestShardPoolBuilder_Chain_FailFast(t *testing.T) {
 }
 
 func TestShardPoolBuilder_Chain_Timeout(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge1M(t, tier.Size)
+			test.SkipIfTooLarge1M(t, tier.Size)
 
 			var timeoutCount int32
 			err := PoolSharded[int]().Context(freshCtx()).
@@ -140,9 +140,9 @@ func TestShardPoolBuilder_Chain_Timeout(t *testing.T) {
 }
 
 func TestShardPoolBuilder_Chain_ConfigFunc(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge1M(t, tier.Size)
+			test.SkipIfTooLarge1M(t, tier.Size)
 
 			var sum int64
 			err := PoolSharded[int]().Context(freshCtx()).
@@ -181,9 +181,9 @@ func TestShardPoolBuilder_Chain_ConfigFunc(t *testing.T) {
 }
 
 func TestShardPoolBuilder_Chain_DefaultReset(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge1M(t, tier.Size)
+			test.SkipIfTooLarge1M(t, tier.Size)
 
 			var count int32
 			err := PoolSharded[int]().Context(freshCtx()).
@@ -212,9 +212,9 @@ func TestShardPoolBuilder_Chain_DefaultReset(t *testing.T) {
 }
 
 func TestShardPoolBuilder_Chain_Distribution(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge1M(t, tier.Size)
+			test.SkipIfTooLarge1M(t, tier.Size)
 
 			var count int32
 			err := PoolSharded[int]().Context(freshCtx()).
@@ -241,9 +241,9 @@ func TestShardPoolBuilder_Chain_Distribution(t *testing.T) {
 }
 
 func TestShardPoolBuilder_Chain_KeyFn(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge1M(t, tier.Size)
+			test.SkipIfTooLarge1M(t, tier.Size)
 
 			var count int32
 			err := PoolSharded[int]().Context(freshCtx()).
@@ -272,9 +272,9 @@ func TestShardPoolBuilder_Chain_KeyFn(t *testing.T) {
 }
 
 func TestShardPoolBuilder_Chain_MaxPending(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge1M(t, tier.Size)
+			test.SkipIfTooLarge1M(t, tier.Size)
 
 			var total int32
 			err := PoolSharded[int]().Context(freshCtx()).
@@ -332,9 +332,9 @@ func TestShardPoolBuilder_Chain_EmptyRun(t *testing.T) {
 }
 
 func TestShardPoolBuilder_Chain_MinimalConfig(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge1M(t, tier.Size)
+			test.SkipIfTooLarge1M(t, tier.Size)
 
 			var count int32
 			err := PoolSharded[int]().Context(freshCtx()).

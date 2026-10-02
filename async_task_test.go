@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chichengyu/async/testutil"
+	"github.com/chichengyu/async/test"
 )
 
 // ============================================================
@@ -16,9 +16,9 @@ import (
 // ============================================================
 
 func TestTask_Chain_Basic(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge1M(t, tier.Size)
+			test.SkipIfTooLarge1M(t, tier.Size)
 
 			var done atomic.Int64
 			for i := 0; i < tier.Size; i++ {
@@ -148,9 +148,9 @@ func TestTask_Chain_GoResultAct(t *testing.T) {
 }
 
 func TestTask_Chain_Bounded(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge1M(t, tier.Size)
+			test.SkipIfTooLarge1M(t, tier.Size)
 
 			var done atomic.Int64
 			for i := 0; i < tier.Size; i++ {
@@ -252,7 +252,7 @@ func TestTask_Chain_NoContext(t *testing.T) {
 }
 
 func TestTask_Chain_Concurrent_10K(t *testing.T) {
-	testutil.SkipIfTooLarge1M(t, 10000)
+	test.SkipIfTooLarge1M(t, 10000)
 
 	var wg sync.WaitGroup
 	n := 10000

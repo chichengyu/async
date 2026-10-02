@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/chichengyu/async/internal/core"
-	"github.com/chichengyu/async/testutil"
+	"github.com/chichengyu/async/test"
 )
 
 var errShardTest = core.ErrTimeout
@@ -619,9 +619,9 @@ func TestShardedGroup_Reset(t *testing.T) {
 // 十二、四档并发压力测试（�?十万/百万/千万�?// ============================================================
 
 func TestShardedPool_Submit_Concurrent(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge(t, tier.Size)
+			test.SkipIfTooLarge(t, tier.Size)
 			sp := NewShardedPool(ShardPoolConfig[int]{Shards: 8, SizePerShard: 16})
 			defer sp.Close()
 
@@ -663,9 +663,9 @@ func TestShardedPool_Submit_Concurrent(t *testing.T) {
 }
 
 func TestShardedPool_SubmitKeyed_Concurrent(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge(t, tier.Size)
+			test.SkipIfTooLarge(t, tier.Size)
 			sp := NewShardedPool(ShardPoolConfig[int]{Shards: 8, SizePerShard: 16})
 			defer sp.Close()
 
@@ -698,9 +698,9 @@ func TestShardedPool_SubmitKeyed_Concurrent(t *testing.T) {
 }
 
 func TestShardedGroup_Go_Concurrent(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge(t, tier.Size)
+			test.SkipIfTooLarge(t, tier.Size)
 			sg := NewShardedGroup(ShardGroupConfig[int]{Shards: 8, ConcurrencyPerShard: 16})
 			ctx := context.Background()
 

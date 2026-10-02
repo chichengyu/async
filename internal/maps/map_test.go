@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chichengyu/async/testutil"
+	"github.com/chichengyu/async/test"
 )
 
 // ============================================================
@@ -1288,9 +1288,9 @@ func TestMaps_Concurrent_MapVsMapChain(t *testing.T) {
 // ============================================================
 
 func TestMapChain_Map_Concurrent_Tiers(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge(t, tier.Size)
+			test.SkipIfTooLarge(t, tier.Size)
 			ctx := context.Background()
 			data := make(map[int]int, tier.Size)
 			for i := 0; i < tier.Size; i++ {
@@ -1317,9 +1317,9 @@ func TestMapChain_Map_Concurrent_Tiers(t *testing.T) {
 }
 
 func TestMapChain_ForEach_Concurrent_Tiers(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge(t, tier.Size)
+			test.SkipIfTooLarge(t, tier.Size)
 			ctx := context.Background()
 			data := make(map[int]int, tier.Size)
 			for i := 0; i < tier.Size; i++ {
@@ -1349,9 +1349,9 @@ func TestMapChain_ForEach_Concurrent_Tiers(t *testing.T) {
 }
 
 func TestMapChain_Stream_Concurrent_Tiers(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge(t, tier.Size)
+			test.SkipIfTooLarge(t, tier.Size)
 			ctx := context.Background()
 			data := make(map[int]int, tier.Size)
 			for i := 0; i < tier.Size; i++ {

@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/chichengyu/async/internal/pool"
-	"github.com/chichengyu/async/testutil"
+	"github.com/chichengyu/async/test"
 )
 
 // ============================================================
@@ -20,9 +20,9 @@ import (
 // ============================================================
 
 func TestMultiPoolBuilder_Chain_Basic(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge1M(t, tier.Size)
+			test.SkipIfTooLarge1M(t, tier.Size)
 
 			var sum int64
 			err := PoolMulti[int]().Context(freshCtx()).
@@ -57,12 +57,12 @@ func TestMultiPoolBuilder_Chain_Basic(t *testing.T) {
 }
 
 func TestMultiPoolBuilder_Chain_FailFast(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		if tier.Size > 100_000 {
 			t.Skip("skip large tier for failfast")
 		}
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge1M(t, tier.Size)
+			test.SkipIfTooLarge1M(t, tier.Size)
 
 			var errCount int32
 			var okCount int32
@@ -102,9 +102,9 @@ func TestMultiPoolBuilder_Chain_FailFast(t *testing.T) {
 }
 
 func TestMultiPoolBuilder_Chain_Timeout(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge1M(t, tier.Size)
+			test.SkipIfTooLarge1M(t, tier.Size)
 
 			var timeoutCount int32
 			err := PoolMulti[int]().Context(freshCtx()).
@@ -141,9 +141,9 @@ func TestMultiPoolBuilder_Chain_Timeout(t *testing.T) {
 }
 
 func TestMultiPoolBuilder_Chain_ConfigFunc(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge1M(t, tier.Size)
+			test.SkipIfTooLarge1M(t, tier.Size)
 
 			var sum int64
 			err := PoolMulti[int]().Context(freshCtx()).
@@ -180,9 +180,9 @@ func TestMultiPoolBuilder_Chain_ConfigFunc(t *testing.T) {
 }
 
 func TestMultiPoolBuilder_Chain_DefaultReset(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge1M(t, tier.Size)
+			test.SkipIfTooLarge1M(t, tier.Size)
 
 			var count int32
 			err := PoolMulti[int]().Context(freshCtx()).
@@ -278,9 +278,9 @@ func TestMultiPoolBuilder_Chain_SubmitTimeout(t *testing.T) {
 }
 
 func TestMultiPoolBuilder_Chain_Streaming(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge1M(t, tier.Size)
+			test.SkipIfTooLarge1M(t, tier.Size)
 
 			var count int32
 			err := PoolMulti[int]().Context(freshCtx()).
@@ -307,9 +307,9 @@ func TestMultiPoolBuilder_Chain_Streaming(t *testing.T) {
 }
 
 func TestMultiPoolBuilder_Chain_RingBuf(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge1M(t, tier.Size)
+			test.SkipIfTooLarge1M(t, tier.Size)
 
 			var count int32
 			bufSize := 1024
@@ -439,9 +439,9 @@ func TestMultiPoolBuilder_Chain_ContextSwitch(t *testing.T) {
 }
 
 func TestMultiPoolBuilder_Chain_MaxResults(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge1M(t, tier.Size)
+			test.SkipIfTooLarge1M(t, tier.Size)
 
 			var count int32
 			err := PoolMulti[int]().Context(freshCtx()).
@@ -468,9 +468,9 @@ func TestMultiPoolBuilder_Chain_MaxResults(t *testing.T) {
 }
 
 func TestMultiPoolBuilder_Chain_OverflowDrop(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge1M(t, tier.Size)
+			test.SkipIfTooLarge1M(t, tier.Size)
 
 			var totalSubmit int32
 			var totalResults int32

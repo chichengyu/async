@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/chichengyu/async/internal/shard"
-	"github.com/chichengyu/async/testutil"
+	"github.com/chichengyu/async/test"
 )
 
 // ============================================================
@@ -20,9 +20,9 @@ import (
 // ============================================================
 
 func TestShardedGroupBuilder_Chain_Basic(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge1M(t, tier.Size)
+			test.SkipIfTooLarge1M(t, tier.Size)
 
 			var sum int64
 			err := GroupSharded[int]().Context(freshCtx()).
@@ -91,9 +91,9 @@ func TestShardedGroupBuilder_Chain_Distribution(t *testing.T) {
 }
 
 func TestShardedGroupBuilder_Chain_ConfigFunc(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge1M(t, tier.Size)
+			test.SkipIfTooLarge1M(t, tier.Size)
 
 			var sum int64
 			err := GroupSharded[int]().Context(freshCtx()).
@@ -130,9 +130,9 @@ func TestShardedGroupBuilder_Chain_ConfigFunc(t *testing.T) {
 }
 
 func TestShardedGroupBuilder_Chain_DefaultReset(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge1M(t, tier.Size)
+			test.SkipIfTooLarge1M(t, tier.Size)
 
 			var count int32
 			err := GroupSharded[int]().Context(freshCtx()).
@@ -286,9 +286,9 @@ func TestShardedGroupBuilder_Chain_ContextSwitch(t *testing.T) {
 }
 
 func TestShardedGroupBuilder_Chain_WaitContext(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge1M(t, tier.Size)
+			test.SkipIfTooLarge1M(t, tier.Size)
 
 			var count int32
 			err := GroupSharded[int]().Context(freshCtx()).
@@ -318,9 +318,9 @@ func TestShardedGroupBuilder_Chain_WaitContext(t *testing.T) {
 }
 
 func TestShardedGroupBuilder_Chain_WaitTimeout(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge1M(t, tier.Size)
+			test.SkipIfTooLarge1M(t, tier.Size)
 
 			err := GroupSharded[int]().Context(freshCtx()).
 				Shards(2).
@@ -345,12 +345,12 @@ func TestShardedGroupBuilder_Chain_WaitTimeout(t *testing.T) {
 }
 
 func TestShardedGroupBuilder_Chain_FailFast(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		if tier.Size > 100_000 {
 			t.Skip("skip large tier for failfast")
 		}
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge1M(t, tier.Size)
+			test.SkipIfTooLarge1M(t, tier.Size)
 
 			var errCount int32
 			err := GroupSharded[int]().Context(freshCtx()).

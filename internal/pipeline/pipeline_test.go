@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/chichengyu/async/internal/core"
-	"github.com/chichengyu/async/testutil"
+	"github.com/chichengyu/async/test"
 )
 
 func genItems(n int) []int {
@@ -494,9 +494,9 @@ func TestPipelineBuilder_MultiStage(t *testing.T) {
 // 六、四档并发压力测试（�?十万/百万/千万�?// ============================================================
 
 func TestExecute_Concurrent(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge(t, tier.Size)
+			test.SkipIfTooLarge(t, tier.Size)
 			ctx := context.Background()
 			items := genItems(tier.Size)
 			stages := []Stage[int]{
@@ -516,9 +516,9 @@ func TestExecute_Concurrent(t *testing.T) {
 }
 
 func TestExecute_MultiStage_Concurrent(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge(t, tier.Size)
+			test.SkipIfTooLarge(t, tier.Size)
 			ctx := context.Background()
 			items := genItems(tier.Size)
 			stages := []Stage[int]{
@@ -540,9 +540,9 @@ func TestExecute_MultiStage_Concurrent(t *testing.T) {
 }
 
 func TestExecuteWithGroup_Concurrent(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge(t, tier.Size)
+			test.SkipIfTooLarge(t, tier.Size)
 			ctx := context.Background()
 			items := genItems(tier.Size)
 			results, err := ExecuteWithGroup(ctx, items, func(ctx context.Context, item int) (int, error) {
@@ -559,9 +559,9 @@ func TestExecuteWithGroup_Concurrent(t *testing.T) {
 }
 
 func TestExecuteWithMeta_Concurrent(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge(t, tier.Size)
+			test.SkipIfTooLarge(t, tier.Size)
 			ctx := context.Background()
 			items := genItems(tier.Size)
 			stages := []Stage[int]{
@@ -583,9 +583,9 @@ func TestExecuteWithMeta_Concurrent(t *testing.T) {
 }
 
 func TestExecuteStream_Concurrent(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge(t, tier.Size)
+			test.SkipIfTooLarge(t, tier.Size)
 			ctx := context.Background()
 			items := genItems(tier.Size)
 			stages := []Stage[int]{

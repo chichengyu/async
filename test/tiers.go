@@ -1,5 +1,5 @@
-// Package testutil 提供所有测试共用的数据档位与辅助函数。
-package testutil
+// Package test 提供所有测试共用的数据档位与辅助函数。
+package test
 
 import "testing"
 
@@ -24,6 +24,7 @@ var SmallAllTiers = []Tier{
 	{Name: "千级_1K", Size: 1_000, Burst: 1_000},
 	{Name: "万级_10K", Size: 10_000, Burst: 10_000},
 	{Name: "十万级_100K", Size: 100_000, Burst: 100_000},
+	{Name: "百万级_1M", Size: 1_000_000, Burst: 1_000_000},
 }
 
 // SkipIfTooLarge 在 -short 模式下跳过 >=100K 的档位。

@@ -11,7 +11,7 @@ import (
 
 	"github.com/chichengyu/async/internal/core"
 	"github.com/chichengyu/async/internal/group"
-	"github.com/chichengyu/async/testutil"
+	"github.com/chichengyu/async/test"
 )
 
 func groupFreshCtx() context.Context {
@@ -50,9 +50,9 @@ func groupSleepFn(d time.Duration) func(context.Context) (int, error) {
 // ============================================================
 
 func TestGroupBuilder_Chain_Worker(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge(t, tier.Size)
+			test.SkipIfTooLarge(t, tier.Size)
 
 			g := Group[int]().Context(groupFreshCtx()).Worker(8).Build()
 			defer g.Close()
@@ -65,9 +65,9 @@ func TestGroupBuilder_Chain_Worker(t *testing.T) {
 }
 
 func TestGroupBuilder_Chain_DefaultWorker(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge(t, tier.Size)
+			test.SkipIfTooLarge(t, tier.Size)
 
 			g := Group[int]().Context(groupFreshCtx()).DefaultWorker().Build()
 			defer g.Close()
@@ -80,9 +80,9 @@ func TestGroupBuilder_Chain_DefaultWorker(t *testing.T) {
 }
 
 func TestGroupBuilder_Chain_Timeout(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge(t, tier.Size)
+			test.SkipIfTooLarge(t, tier.Size)
 
 			g := Group[int]().Context(groupFreshCtx()).
 				Worker(4).
@@ -110,9 +110,9 @@ func TestGroupBuilder_Chain_Timeout(t *testing.T) {
 }
 
 func TestGroupBuilder_Chain_SubmitTimeout(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge(t, tier.Size)
+			test.SkipIfTooLarge(t, tier.Size)
 
 			g := Group[int]().Context(groupFreshCtx()).
 				Worker(1).
@@ -133,9 +133,9 @@ func TestGroupBuilder_Chain_SubmitTimeout(t *testing.T) {
 }
 
 func TestGroupBuilder_Chain_DefaultSubmitTimeout(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge(t, tier.Size)
+			test.SkipIfTooLarge(t, tier.Size)
 
 			g := Group[int]().Context(groupFreshCtx()).
 				Worker(4).
@@ -163,9 +163,9 @@ func TestGroupBuilder_Chain_DefaultSubmitTimeout(t *testing.T) {
 // ============================================================
 
 func TestGroupBuilder_Chain_FailFast(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge(t, tier.Size)
+			test.SkipIfTooLarge(t, tier.Size)
 			if tier.Size < 10 {
 				return
 			}
@@ -202,9 +202,9 @@ func TestGroupBuilder_Chain_FailFast(t *testing.T) {
 }
 
 func TestGroupBuilder_Chain_Streaming(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge(t, tier.Size)
+			test.SkipIfTooLarge(t, tier.Size)
 
 			var streamCount int32
 			g := Group[int]().Context(groupFreshCtx()).
@@ -229,9 +229,9 @@ func TestGroupBuilder_Chain_Streaming(t *testing.T) {
 }
 
 func TestGroupBuilder_Chain_DefaultStreaming(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge(t, tier.Size)
+			test.SkipIfTooLarge(t, tier.Size)
 
 			g := Group[int]().Context(groupFreshCtx()).
 				Worker(4).
@@ -251,9 +251,9 @@ func TestGroupBuilder_Chain_DefaultStreaming(t *testing.T) {
 }
 
 func TestGroupBuilder_Chain_ResultCallback(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge(t, tier.Size)
+			test.SkipIfTooLarge(t, tier.Size)
 
 			var cbCount int32
 			g := Group[int]().Context(groupFreshCtx()).
@@ -277,9 +277,9 @@ func TestGroupBuilder_Chain_ResultCallback(t *testing.T) {
 }
 
 func TestGroupBuilder_Chain_DefaultResultCallback(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge(t, tier.Size)
+			test.SkipIfTooLarge(t, tier.Size)
 
 			g := Group[int]().Context(groupFreshCtx()).
 				Worker(4).
@@ -299,9 +299,9 @@ func TestGroupBuilder_Chain_DefaultResultCallback(t *testing.T) {
 }
 
 func TestGroupBuilder_Chain_AutoScale(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge(t, tier.Size)
+			test.SkipIfTooLarge(t, tier.Size)
 
 			cfg := &AutoScaleConfig{
 				MinWorkers:      2,
@@ -335,9 +335,9 @@ func TestGroupBuilder_Chain_AutoScale(t *testing.T) {
 }
 
 func TestGroupBuilder_Chain_DefaultAutoScale(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge(t, tier.Size)
+			test.SkipIfTooLarge(t, tier.Size)
 
 			g := Group[int]().Context(groupFreshCtx()).
 				Worker(4).
@@ -367,9 +367,9 @@ func TestGroupBuilder_Chain_DefaultAutoScale(t *testing.T) {
 // ============================================================
 
 func TestGroupBuilder_Build_Basic(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge(t, tier.Size)
+			test.SkipIfTooLarge(t, tier.Size)
 
 			g := Group[int]().Context(groupFreshCtx()).Worker(8).Build()
 			defer g.Close()
@@ -401,9 +401,9 @@ func TestGroupBuilder_Build_Basic(t *testing.T) {
 }
 
 func TestGroupBuilder_Build_MultipleGo(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge(t, tier.Size)
+			test.SkipIfTooLarge(t, tier.Size)
 
 			g := Group[int]().Context(groupFreshCtx()).Worker(16).Build()
 			defer g.Close()
@@ -440,9 +440,9 @@ func TestGroupBuilder_Build_MultipleGo(t *testing.T) {
 // ============================================================
 
 func TestGroupBuilder_Run_Basic(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge(t, tier.Size)
+			test.SkipIfTooLarge(t, tier.Size)
 
 			err := Group[int]().Context(groupFreshCtx()).
 				Worker(8).
@@ -464,9 +464,9 @@ func TestGroupBuilder_Run_Basic(t *testing.T) {
 }
 
 func TestGroupBuilder_Run_FnErrorPropagation(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge(t, tier.Size)
+			test.SkipIfTooLarge(t, tier.Size)
 
 			err := Group[int]().Context(groupFreshCtx()).
 				Worker(4).
@@ -489,9 +489,9 @@ func TestGroupBuilder_Run_FnErrorPropagation(t *testing.T) {
 // ============================================================
 
 func TestGroupNoResultBuilder_Chain_Worker(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge(t, tier.Size)
+			test.SkipIfTooLarge(t, tier.Size)
 
 			nr := GroupVoid().Context(groupFreshCtx()).Worker(8).Build()
 			defer nr.Close()
@@ -504,9 +504,9 @@ func TestGroupNoResultBuilder_Chain_Worker(t *testing.T) {
 }
 
 func TestGroupNoResultBuilder_Chain_DefaultWorker(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge(t, tier.Size)
+			test.SkipIfTooLarge(t, tier.Size)
 
 			nr := GroupVoid().Context(groupFreshCtx()).DefaultWorker().Build()
 			defer nr.Close()
@@ -519,9 +519,9 @@ func TestGroupNoResultBuilder_Chain_DefaultWorker(t *testing.T) {
 }
 
 func TestGroupNoResultBuilder_Chain_Timeout(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge(t, tier.Size)
+			test.SkipIfTooLarge(t, tier.Size)
 
 			nr := GroupVoid().Context(groupFreshCtx()).
 				Worker(4).
@@ -550,9 +550,9 @@ func TestGroupNoResultBuilder_Chain_Timeout(t *testing.T) {
 }
 
 func TestGroupNoResultBuilder_Chain_SubmitTimeout(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge(t, tier.Size)
+			test.SkipIfTooLarge(t, tier.Size)
 
 			nr := GroupVoid().Context(groupFreshCtx()).
 				Worker(1).
@@ -584,9 +584,9 @@ func TestGroupNoResultBuilder_Chain_SubmitTimeout(t *testing.T) {
 // ============================================================
 
 func TestGroupNoResultBuilder_Chain_FailFast(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge(t, tier.Size)
+			test.SkipIfTooLarge(t, tier.Size)
 
 			nr := GroupVoid().Context(groupFreshCtx()).
 				Worker(4).
@@ -614,9 +614,9 @@ func TestGroupNoResultBuilder_Chain_FailFast(t *testing.T) {
 }
 
 func TestGroupNoResultBuilder_Chain_Streaming(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge(t, tier.Size)
+			test.SkipIfTooLarge(t, tier.Size)
 
 			err := GroupVoid().Context(groupFreshCtx()).
 				Worker(4).
@@ -638,9 +638,9 @@ func TestGroupNoResultBuilder_Chain_Streaming(t *testing.T) {
 }
 
 func TestGroupNoResultBuilder_Chain_DefaultStreaming(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge(t, tier.Size)
+			test.SkipIfTooLarge(t, tier.Size)
 
 			err := GroupVoid().Context(groupFreshCtx()).
 				Worker(4).
@@ -662,9 +662,9 @@ func TestGroupNoResultBuilder_Chain_DefaultStreaming(t *testing.T) {
 }
 
 func TestGroupNoResultBuilder_Chain_AutoScale(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge(t, tier.Size)
+			test.SkipIfTooLarge(t, tier.Size)
 
 			cfg := &AutoScaleConfig{
 				MinWorkers:      2,
@@ -693,9 +693,9 @@ func TestGroupNoResultBuilder_Chain_AutoScale(t *testing.T) {
 }
 
 func TestGroupNoResultBuilder_Chain_DefaultAutoScale(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge(t, tier.Size)
+			test.SkipIfTooLarge(t, tier.Size)
 
 			nr := GroupVoid().Context(groupFreshCtx()).
 				Worker(4).
@@ -720,9 +720,9 @@ func TestGroupNoResultBuilder_Chain_DefaultAutoScale(t *testing.T) {
 // ============================================================
 
 func TestGroupNoResultBuilder_Build_Basic(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge(t, tier.Size)
+			test.SkipIfTooLarge(t, tier.Size)
 
 			nr := GroupVoid().Context(groupFreshCtx()).Worker(8).Build()
 			defer nr.Close()
@@ -740,9 +740,9 @@ func TestGroupNoResultBuilder_Build_Basic(t *testing.T) {
 }
 
 func TestGroupNoResultBuilder_Build_ErrorAggregation(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge(t, tier.Size)
+			test.SkipIfTooLarge(t, tier.Size)
 
 			nr := GroupVoid().Context(groupFreshCtx()).Worker(4).Build()
 			defer nr.Close()
@@ -772,9 +772,9 @@ func TestGroupNoResultBuilder_Build_ErrorAggregation(t *testing.T) {
 // ============================================================
 
 func TestGroupNoResultBuilder_Run_Basic(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge(t, tier.Size)
+			test.SkipIfTooLarge(t, tier.Size)
 
 			err := GroupVoid().Context(groupFreshCtx()).
 				Worker(8).
@@ -795,9 +795,9 @@ func TestGroupNoResultBuilder_Run_Basic(t *testing.T) {
 }
 
 func TestGroupNoResultBuilder_Run_FnErrorPropagation(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge(t, tier.Size)
+			test.SkipIfTooLarge(t, tier.Size)
 
 			err := GroupVoid().Context(groupFreshCtx()).
 				Worker(4).
@@ -822,9 +822,9 @@ func TestGroupNoResultBuilder_Run_FnErrorPropagation(t *testing.T) {
 // ============================================================
 
 func TestGroupBuilder_Cross_ConcurrencyTimeout(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge(t, tier.Size)
+			test.SkipIfTooLarge(t, tier.Size)
 
 			g := Group[int]().Context(groupFreshCtx()).
 				Worker(16).
@@ -859,9 +859,9 @@ func TestGroupBuilder_Cross_ConcurrencyTimeout(t *testing.T) {
 }
 
 func TestGroupBuilder_Cross_FailFastCallback(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge(t, tier.Size)
+			test.SkipIfTooLarge(t, tier.Size)
 
 			var cbCount int32
 			g := Group[int]().Context(groupFreshCtx()).
@@ -892,11 +892,11 @@ func TestGroupBuilder_Cross_FailFastCallback(t *testing.T) {
 }
 
 func TestGroupBuilder_Cross_StreamingWorker(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		for _, conc := range []int{1, 4, 16} {
 			name := fmt.Sprintf("%s_c%d", tier.Name, conc)
 			t.Run(name, func(t *testing.T) {
-				testutil.SkipIfTooLarge(t, tier.Size)
+				test.SkipIfTooLarge(t, tier.Size)
 
 				var streamCount int32
 				g := Group[int]().Context(groupFreshCtx()).
@@ -922,9 +922,9 @@ func TestGroupBuilder_Cross_StreamingWorker(t *testing.T) {
 }
 
 func TestGroupBuilder_Cross_AutoScaleRun(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge(t, tier.Size)
+			test.SkipIfTooLarge(t, tier.Size)
 
 			cfg := &AutoScaleConfig{
 				MinWorkers:      2,
@@ -956,9 +956,9 @@ func TestGroupBuilder_Cross_AutoScaleRun(t *testing.T) {
 }
 
 func TestGroupBuilder_Cross_NoResultTimeout(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge(t, tier.Size)
+			test.SkipIfTooLarge(t, tier.Size)
 
 			err := GroupVoid().Context(groupFreshCtx()).
 				Worker(8).
@@ -988,9 +988,9 @@ func TestGroupBuilder_Cross_NoResultTimeout(t *testing.T) {
 // ============================================================
 
 func TestGroupBuilder_Edge_CanceledContext(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge(t, tier.Size)
+			test.SkipIfTooLarge(t, tier.Size)
 
 			ctx, cancel := context.WithCancel(groupFreshCtx())
 			cancel()
@@ -1017,9 +1017,9 @@ func TestGroupBuilder_Edge_CanceledContext(t *testing.T) {
 }
 
 func TestGroupBuilder_Edge_ZeroWorker(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge(t, tier.Size)
+			test.SkipIfTooLarge(t, tier.Size)
 
 			g := Group[int]().Context(groupFreshCtx()).Worker(0).Build()
 			defer g.Close()
@@ -1037,9 +1037,9 @@ func TestGroupBuilder_Edge_ZeroWorker(t *testing.T) {
 }
 
 func TestGroupBuilder_Edge_NoContext(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge(t, tier.Size)
+			test.SkipIfTooLarge(t, tier.Size)
 
 			err := Group[int]().
 				Worker(8).
@@ -1061,9 +1061,9 @@ func TestGroupBuilder_Edge_NoContext(t *testing.T) {
 }
 
 func TestGroupNoResultBuilder_Edge_NoContext(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge(t, tier.Size)
+			test.SkipIfTooLarge(t, tier.Size)
 
 			err := GroupVoid().
 				Worker(8).
@@ -1089,9 +1089,9 @@ func TestGroupNoResultBuilder_Edge_NoContext(t *testing.T) {
 // ============================================================
 
 func TestGroupBuilder_FullChain_Build(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge(t, tier.Size)
+			test.SkipIfTooLarge(t, tier.Size)
 
 			cfg := &AutoScaleConfig{
 				MinWorkers:      2,
@@ -1134,9 +1134,9 @@ func TestGroupBuilder_FullChain_Build(t *testing.T) {
 }
 
 func TestGroupBuilder_FullChain_Run(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge(t, tier.Size)
+			test.SkipIfTooLarge(t, tier.Size)
 
 			err := Group[int]().Context(groupFreshCtx()).
 				Worker(8).
@@ -1162,9 +1162,9 @@ func TestGroupBuilder_FullChain_Run(t *testing.T) {
 }
 
 func TestGroupNoResultBuilder_FullChain_Build(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge(t, tier.Size)
+			test.SkipIfTooLarge(t, tier.Size)
 
 			cfg := &AutoScaleConfig{
 				MinWorkers:      2,
@@ -1204,9 +1204,9 @@ func TestGroupNoResultBuilder_FullChain_Build(t *testing.T) {
 }
 
 func TestGroupNoResultBuilder_FullChain_Run(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge(t, tier.Size)
+			test.SkipIfTooLarge(t, tier.Size)
 
 			err := GroupVoid().Context(groupFreshCtx()).
 				Worker(8).
@@ -1237,9 +1237,9 @@ func TestGroupNoResultBuilder_FullChain_Run(t *testing.T) {
 // ============================================================
 
 func TestGroupBuilder_Correctness_ResultIntegrity(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge(t, tier.Size)
+			test.SkipIfTooLarge(t, tier.Size)
 
 			g := Group[int]().Context(groupFreshCtx()).Worker(32).Build()
 			defer g.Close()
@@ -1271,9 +1271,9 @@ func TestGroupBuilder_Correctness_ResultIntegrity(t *testing.T) {
 }
 
 func TestGroupBuilder_Correctness_ErrorAggregation(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge(t, tier.Size)
+			test.SkipIfTooLarge(t, tier.Size)
 
 			errCount := tier.Size / 4
 			if errCount < 1 {

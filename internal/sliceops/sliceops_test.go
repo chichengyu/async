@@ -14,7 +14,7 @@ import (
 
 	"github.com/chichengyu/async/internal/core"
 	"github.com/chichengyu/async/internal/pool"
-	"github.com/chichengyu/async/testutil"
+	"github.com/chichengyu/async/test"
 )
 
 // ──────────────────────────── helpers ────────────────────────────
@@ -2674,9 +2674,9 @@ func TestSlice_ForEachChunkedWithFailFast(t *testing.T) {
 // ============================================================
 
 func TestSlice_Do_Concurrent(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge(t, tier.Size)
+			test.SkipIfTooLarge(t, tier.Size)
 			ctx := context.Background()
 			s := NewWithResult[int, int](genIntItems(tier.Size))
 			results, err := s.Do(ctx, func(ctx context.Context, n int) (int, error) {
@@ -2693,9 +2693,9 @@ func TestSlice_Do_Concurrent(t *testing.T) {
 }
 
 func TestSlice_Each_Concurrent(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge(t, tier.Size)
+			test.SkipIfTooLarge(t, tier.Size)
 			ctx := context.Background()
 			s := NewWithResult[int, int](genIntItems(tier.Size))
 			total, failCnt, firstErr := s.Each(ctx, func(ctx context.Context, n int) error {
@@ -2709,9 +2709,9 @@ func TestSlice_Each_Concurrent(t *testing.T) {
 }
 
 func TestSlice_Stream_Concurrent(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge(t, tier.Size)
+			test.SkipIfTooLarge(t, tier.Size)
 			ctx := context.Background()
 			s := NewWithResult[int, int](genIntItems(tier.Size))
 			ch := s.Stream(ctx, func(ctx context.Context, n int) (int, error) {
@@ -2730,9 +2730,9 @@ func TestSlice_Stream_Concurrent(t *testing.T) {
 }
 
 func TestSlice_Reduce_Concurrent(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge(t, tier.Size)
+			test.SkipIfTooLarge(t, tier.Size)
 			ctx := context.Background()
 			s := NewWithResult[int, int](genIntItems(tier.Size))
 			result, err := s.Reduce(ctx, 0, func(ctx context.Context, acc int, item int) (int, error) {
@@ -2746,9 +2746,9 @@ func TestSlice_Reduce_Concurrent(t *testing.T) {
 }
 
 func TestSlice_EachStream_Concurrent(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge(t, tier.Size)
+			test.SkipIfTooLarge(t, tier.Size)
 			ctx := context.Background()
 			s := NewWithResult[int, int](genIntItems(tier.Size))
 			ch := s.EachStream(ctx, func(ctx context.Context, n int) error {

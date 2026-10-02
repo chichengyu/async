@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chichengyu/async/testutil"
+	"github.com/chichengyu/async/test"
 )
 
 var errTask = errors.New("task error")
@@ -1154,9 +1154,9 @@ func TestTaskBuilder_GoResultAct_Error(t *testing.T) {
 // ============================================================
 
 func TestGo_Concurrent(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge(t, tier.Size)
+			test.SkipIfTooLarge(t, tier.Size)
 
 			var wg sync.WaitGroup
 			var success, fail atomic.Int64
@@ -1184,9 +1184,9 @@ func TestGo_Concurrent(t *testing.T) {
 }
 
 func TestGo_WaitTimeout_Concurrent(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge(t, tier.Size)
+			test.SkipIfTooLarge(t, tier.Size)
 
 			var wg sync.WaitGroup
 			var success, timeout atomic.Int64
@@ -1214,9 +1214,9 @@ func TestGo_WaitTimeout_Concurrent(t *testing.T) {
 }
 
 func TestGo_WaitCh_Concurrent(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge(t, tier.Size)
+			test.SkipIfTooLarge(t, tier.Size)
 
 			var wg sync.WaitGroup
 			var success atomic.Int64
@@ -1245,9 +1245,9 @@ func TestGo_WaitCh_Concurrent(t *testing.T) {
 }
 
 func TestGo_MultipleWait_Concurrent(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge(t, tier.Size)
+			test.SkipIfTooLarge(t, tier.Size)
 			n := 100
 
 			var wg sync.WaitGroup
@@ -1278,9 +1278,9 @@ func TestGo_MultipleWait_Concurrent(t *testing.T) {
 }
 
 func TestGoResult_Concurrent(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge(t, tier.Size)
+			test.SkipIfTooLarge(t, tier.Size)
 
 			var wg sync.WaitGroup
 			var success atomic.Int64
@@ -1306,9 +1306,9 @@ func TestGoResult_Concurrent(t *testing.T) {
 }
 
 func TestGoAct_Concurrent(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge(t, tier.Size)
+			test.SkipIfTooLarge(t, tier.Size)
 
 			var wg sync.WaitGroup
 			var success atomic.Int64
@@ -1334,9 +1334,9 @@ func TestGoAct_Concurrent(t *testing.T) {
 }
 
 func TestGoResultAct_Concurrent(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge(t, tier.Size)
+			test.SkipIfTooLarge(t, tier.Size)
 
 			var wg sync.WaitGroup
 			var success atomic.Int64
@@ -1362,9 +1362,9 @@ func TestGoResultAct_Concurrent(t *testing.T) {
 }
 
 func TestGo_PanicRecovery_Concurrent(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge(t, tier.Size)
+			test.SkipIfTooLarge(t, tier.Size)
 
 			var wg sync.WaitGroup
 			var panics, nonpanics atomic.Int64
@@ -1392,9 +1392,9 @@ func TestGo_PanicRecovery_Concurrent(t *testing.T) {
 }
 
 func TestMu_ConcurrentAppend(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge(t, tier.Size)
+			test.SkipIfTooLarge(t, tier.Size)
 
 			mu := &Mu[int]{}
 			var wg sync.WaitGroup
@@ -1415,9 +1415,9 @@ func TestMu_ConcurrentAppend(t *testing.T) {
 }
 
 func TestBoundedGo_Concurrent(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge(t, tier.Size)
+			test.SkipIfTooLarge(t, tier.Size)
 			r := NewBoundedRunner(100)
 
 			var wg sync.WaitGroup
@@ -1444,9 +1444,9 @@ func TestBoundedGo_Concurrent(t *testing.T) {
 }
 
 func TestBoundedGoAct_Concurrent(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge(t, tier.Size)
+			test.SkipIfTooLarge(t, tier.Size)
 			r := NewBoundedRunner(100)
 
 			var wg sync.WaitGroup
@@ -1473,9 +1473,9 @@ func TestBoundedGoAct_Concurrent(t *testing.T) {
 }
 
 func TestBoundedGoResult_Concurrent(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge(t, tier.Size)
+			test.SkipIfTooLarge(t, tier.Size)
 			r := NewBoundedRunner(100)
 
 			var wg sync.WaitGroup
@@ -1502,9 +1502,9 @@ func TestBoundedGoResult_Concurrent(t *testing.T) {
 }
 
 func TestBoundedRunner_SlotReuse_Concurrent(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge(t, tier.Size)
+			test.SkipIfTooLarge(t, tier.Size)
 			r := NewBoundedRunner(50)
 
 			var wg sync.WaitGroup
@@ -1541,9 +1541,9 @@ func TestBoundedRunner_SlotReuse_Concurrent(t *testing.T) {
 }
 
 func TestTaskBuilder_Concurrent(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge(t, tier.Size)
+			test.SkipIfTooLarge(t, tier.Size)
 
 			var wg sync.WaitGroup
 			var success atomic.Int64
@@ -1570,9 +1570,9 @@ func TestTaskBuilder_Concurrent(t *testing.T) {
 }
 
 func TestTaskBuilder_Bounded_Concurrent(t *testing.T) {
-	for _, tier := range testutil.UseTier {
+	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
-			testutil.SkipIfTooLarge(t, tier.Size)
+			test.SkipIfTooLarge(t, tier.Size)
 			b := NewTaskBuilder[int]().Context(context.Background()).Bounded(50)
 
 			var wg sync.WaitGroup
