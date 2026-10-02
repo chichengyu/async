@@ -29,14 +29,14 @@ func (s *SerialChain[T]) ExecuteWithMeta(fn func(context.Context, string, T) (T,
 	return s.execSerialWithMeta(fn)
 }
 
-// ExecuteStream 串行执行管道，通过 channel 流式返回最终阶段结果。
-func (s *SerialChain[T]) ExecuteStream(fn func(context.Context, string, T) (T, error), bufSize int) <-chan core.Result[T] {
-	return s.execSerialStream(fn, bufSize)
+// ExecutePipe 串行执行管道，通过 channel 返回最终阶段结果。
+func (s *SerialChain[T]) ExecutePipe(fn func(context.Context, string, T) (T, error), bufSize int) <-chan core.Result[T] {
+	return s.execSerialPipe(fn, bufSize)
 }
 
-// Stream 切换为流式管道模式（串行版）。
-func (s *SerialChain[T]) Stream() *PipelineStreamBuilder[T] {
-	return &PipelineStreamBuilder[T]{
+// Pipe 切换为管道输出模式（串行版）。
+func (s *SerialChain[T]) Pipe() *PipelinePipeBuilder[T] {
+	return &PipelinePipeBuilder[T]{
 		ctx:    s.ctx,
 		items:  s.items,
 		stages: s.stages,

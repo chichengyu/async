@@ -311,16 +311,22 @@ func (rl *RateLimiter) Acquire(ctx context.Context) error {
 	strat, _ := rl.strat.Load().(Strategy)
 	switch strat {
 	case Reject:
-		rl.resizeMu.RLock()
-		defer rl.resizeMu.RUnlock()
-		select {
-		case _, ok := <-rl.tokens:
-			if !ok {
-				return rl.Acquire(ctx)
+		for {
+			if rl.closed.Load() {
+				return core.ErrRateLimiterStopped
 			}
-			return nil
-		default:
-			return core.ErrRateLimitExceeded
+			rl.resizeMu.RLock()
+			select {
+			case _, ok := <-rl.tokens:
+				rl.resizeMu.RUnlock()
+				if ok {
+					return nil
+				}
+				continue
+			default:
+				rl.resizeMu.RUnlock()
+				return core.ErrRateLimitExceeded
+			}
 		}
 	case BlockForce:
 		rl.mu.Lock()
@@ -342,7 +348,11 @@ func (rl *RateLimiter) Acquire(ctx context.Context) error {
 	default:
 		rl.mu.Lock()
 		defer rl.mu.Unlock()
-		stop := context.AfterFunc(ctx, func() { rl.cond.Broadcast() })
+		stop := context.AfterFunc(ctx, func() {
+			rl.mu.Lock()
+			rl.cond.Broadcast()
+			rl.mu.Unlock()
+		})
 		defer stop()
 		for {
 			select {

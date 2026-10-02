@@ -128,12 +128,12 @@ func TestPipeline_Chain_ErrorPropagation(t *testing.T) {
 	}
 }
 
-func TestPipeline_Chain_ExecuteStream(t *testing.T) {
+func TestPipeline_Chain_ExecutePipe(t *testing.T) {
 	ctx := freshCtx()
 	items := []int{1, 2, 3, 4, 5}
 	ch := Pipeline[int](items).Context(ctx).
 		Stage("double", 4).
-		ExecuteStream(func(ctx context.Context, stage string, item int) (int, error) {
+		ExecutePipe(func(ctx context.Context, stage string, item int) (int, error) {
 			return item * 2, nil
 		}, 0)
 

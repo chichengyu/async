@@ -263,7 +263,7 @@ func ExecuteWithGroup[T any](
 	return results, nil
 }
 
-// ExecuteStream 执行多阶段管道，通过 channel 流式返回最终阶段的结果，实现边执行边消费。
+// ExecutePipe 执行多阶段管道，通过 channel 返回最终阶段的结果。
 // 非最终阶段的处理方式与 Execute() 一致（分批并发、保序），最终阶段使用 Group 流式消费，
 // 结果逐条发送到 channel，消费者可实时处理。
 //
@@ -282,7 +282,7 @@ func ExecuteWithGroup[T any](
 //	    {Name: "parse", Concurrency: 4},
 //	    {Name: "validate", Concurrency: 2},
 //	}
-//	ch := pipeline.ExecuteStream(ctx, stages, records, func(ctx context.Context, stage string, r Record) (Record, error) {
+//	ch := pipeline.ExecutePipe(ctx, stages, records, func(ctx context.Context, stage string, r Record) (Record, error) {
 //	    switch stage {
 //	    case "parse":
 //	        return parseRecord(ctx, r)
@@ -296,7 +296,7 @@ func ExecuteWithGroup[T any](
 //	        saveRecord(r.Value)
 //	    }
 //	}
-func ExecuteStream[T any](
+func ExecutePipe[T any](
 	ctx context.Context,
 	stages []Stage[T],
 	initialItems []T,
@@ -692,7 +692,7 @@ func (p *Pipeline[T]) executeWithMetaSharded(
 	return results
 }
 
-// ExecuteStream 使用流式 channel 执行管道，最终阶段的结果逐条实时发送到 channel。
+// ExecutePipe 使用 channel 执行管道，最终阶段的结果逐条实时发送到 channel。
 // 非最终阶段的处理方式与 Execute() 一致；最终阶段使用 Group 流式消费。
 //
 // 参数：
@@ -702,11 +702,11 @@ func (p *Pipeline[T]) executeWithMetaSharded(
 //   - bufSize：channel 缓冲区大小，<=0 时自动计算
 //
 // 返回的 channel 在最终阶段所有任务完成后自动关闭。
-func (p *Pipeline[T]) ExecuteStream(
+func (p *Pipeline[T]) ExecutePipe(
 	ctx context.Context,
 	items []T,
 	fn func(ctx context.Context, stage string, item T) (T, error),
 	bufSize int,
 ) <-chan core.Result[T] {
-	return ExecuteStream(ctx, p.stages, items, fn, bufSize)
+	return ExecutePipe(ctx, p.stages, items, fn, bufSize)
 }

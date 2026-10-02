@@ -51,7 +51,13 @@ func (sw *SlidingWindowRateLimiter) Allow() bool {
 	cutoffIdx := sort.Search(len(sw.timestamps), func(i int) bool {
 		return sw.timestamps[i].After(cutoff)
 	})
-	sw.timestamps = sw.timestamps[cutoffIdx:]
+	trimmed := sw.timestamps[cutoffIdx:]
+	if len(trimmed) == 0 {
+		sw.timestamps = nil
+	} else {
+		sw.timestamps = make([]time.Time, len(trimmed))
+		copy(sw.timestamps, trimmed)
+	}
 	if len(sw.timestamps) < sw.limit {
 		sw.timestamps = append(sw.timestamps, now)
 		return true
@@ -72,7 +78,13 @@ func (sw *SlidingWindowRateLimiter) AllowN(n int) bool {
 	cutoffIdx := sort.Search(len(sw.timestamps), func(i int) bool {
 		return sw.timestamps[i].After(cutoff)
 	})
-	sw.timestamps = sw.timestamps[cutoffIdx:]
+	trimmed := sw.timestamps[cutoffIdx:]
+	if len(trimmed) == 0 {
+		sw.timestamps = nil
+	} else {
+		sw.timestamps = make([]time.Time, len(trimmed))
+		copy(sw.timestamps, trimmed)
+	}
 	if len(sw.timestamps)+n <= sw.limit {
 		for j := 0; j < n; j++ {
 			sw.timestamps = append(sw.timestamps, now)

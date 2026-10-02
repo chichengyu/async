@@ -33,11 +33,12 @@ const (
 // ShardedPool 将任务分发到 N 个 Pool 实例，实现水平扩展。
 // 每个分片独立运行，互不影响，适合无需全局顺序的场景。
 type ShardedPool[T any] struct {
-	pools    []*pool.Pool[T]
-	dist     Distribution
-	nextIdx  atomic.Uint64
-	keyFn    func(T) uint64
-	ffCancel context.CancelFunc
+	pools       []*pool.Pool[T]
+	dist        Distribution
+	nextIdx     atomic.Uint64
+	keyFn       func(T) uint64
+	ffCancel    context.CancelFunc
+	waitInvoked atomic.Bool
 }
 
 // ShardPoolConfig 分片池配置。
@@ -85,13 +86,47 @@ func NewShardedPool[T any](cfg ShardPoolConfig[T]) *ShardedPool[T] {
 	}
 	pools := make([]*pool.Pool[T], cfg.Shards)
 	for i := 0; i < cfg.Shards; i++ {
-		pools[i] = pool.NewPool[T](cfg.SizePerShard).WithMaxResults(0)
+		p := pool.NewPool[T](cfg.SizePerShard)
+		if cfg.PoolCfg.Timeout > 0 {
+			p.WithTimeout(cfg.PoolCfg.Timeout)
+		}
+		if cfg.PoolCfg.SubmitTimeout > 0 {
+			p.WithSubmitTimeout(cfg.PoolCfg.SubmitTimeout)
+		}
+		if cfg.PoolCfg.MaxPending > 0 {
+			p.WithMaxPending(cfg.PoolCfg.MaxPending)
+		}
+		if cfg.PoolCfg.Overflow > 0 {
+			p.WithOverflow(cfg.PoolCfg.Overflow)
+		}
+		if cfg.PoolCfg.RingBufCap > 0 {
+			overflow := cfg.PoolCfg.Overflow
+			p.WithRingBuffer(cfg.PoolCfg.RingBufCap, overflow)
+		}
+		if cfg.PoolCfg.MaxResults > 0 {
+			p.WithMaxResults(cfg.PoolCfg.MaxResults)
+		} else {
+			p.WithMaxResults(0)
+		}
+		if cfg.PoolCfg.Streaming > 0 {
+			p.WithStreaming(cfg.PoolCfg.Streaming)
+		}
+		pools[i] = p
 	}
-	return &ShardedPool[T]{
+	sp := &ShardedPool[T]{
 		pools: pools,
 		dist:  cfg.Distribution,
 		keyFn: cfg.KeyFn,
 	}
+	if cfg.PoolCfg.FailFast {
+		ffCtx, ffCancel := context.WithCancel(context.Background())
+		sp.ffCancel = ffCancel
+		for _, p := range sp.pools {
+			p.WithFailFast(ffCtx)
+			p.MergeFailFastCancel(ffCancel)
+		}
+	}
+	return sp
 }
 
 // ──────────────────────────── Config 链式设置 ────────────────────────────
@@ -241,7 +276,11 @@ func (sp *ShardedPool[T]) TrySubmitBatch(ctx context.Context, items []T, fn func
 }
 
 // Wait 等待所有分片完成，合并结果。
+// 多次调用返回 nil（与 Pool.Wait 行为一致）。
 func (sp *ShardedPool[T]) Wait() []core.Result[T] {
+	if !sp.waitInvoked.CompareAndSwap(false, true) {
+		return nil
+	}
 	var all []core.Result[T]
 	for _, p := range sp.pools {
 		all = append(all, p.Wait()...)
@@ -274,6 +313,7 @@ func (sp *ShardedPool[T]) Reset() error {
 		}
 		_ = i
 	}
+	sp.waitInvoked.Store(false)
 	return nil
 }
 

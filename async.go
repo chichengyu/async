@@ -710,7 +710,7 @@ type ResultWithMeta[T any] = pipeline.ResultWithMeta[T]
 // ──────────────────────────── Pipeline 链式 API ────────────────────────────
 
 // PipelineBuilder 多阶段管道链式构建器，统一入口为 async.Pipeline[T](items)。
-// 支持链式追加 Stage，终端方法 Execute/ExecuteWithMeta/ExecuteStream 执行管道。
+// 支持链式追加 Stage，终端方法 Execute/ExecuteWithMeta/ExecutePipe 执行管道。
 //
 // 使用示例：
 //
@@ -735,19 +735,23 @@ type ResultWithMeta[T any] = pipeline.ResultWithMeta[T]
 //	ch := async.Pipeline[Data](items).Context(ctx).
 //	    Stage("parse", 4).
 //	    Stage("validate", 2).
-//	    ExecuteStream(fn, 1024)
+//	    ExecutePipe(fn, 1024)
 //	for r := range ch {
 //	    if r.Ok() {
 //	        saveToDB(r.Value)
 //	    }
 //	}
-type PipelineBuilder[T any] = pipeline.PipelineBuilder[T]
+type PipelineBuilder[T any] struct {
+	*pipeline.PipelineBuilder[T]
+}
 
 // Pipeline 创建管道链式构建器，统一入口。
 // 通过 .Context(ctx) 设置上下文，.Run(fn) / .Execute(fn) 执行管道。
 // 通过 .Serial() / .Parallel() 切换串行/并行模式。
 func Pipeline[T any](items []T) *PipelineBuilder[T] {
-	return pipeline.NewPipelineBuilder[T](items)
+	return &PipelineBuilder[T]{
+		PipelineBuilder: pipeline.NewPipelineBuilder[T](items),
+	}
 }
 
 // SerialChain 串行管道构建器，由 PipelineBuilder.Serial() 创建。
@@ -757,6 +761,15 @@ type SerialChain[T any] = pipeline.SerialChain[T]
 // ParallelChain 并行管道构建器，由 PipelineBuilder.Parallel() 创建。
 // 在公共方法基础上额外暴露 Pool/Shard/AutoScale/Worker 等并行专属配置。
 type ParallelChain[T any] = pipeline.ParallelChain[T]
+
+// StreamChain 一次性流水线构建器，由 PipelineBuilder.Stream() 创建。
+// 所有阶段同时运转，元素流经阶段间 channel（无阶段 barrier）。
+// 只暴露公共方法和终端方法，不暴露 Pool/Shard/AutoScale/Worker。
+type StreamChain[T any] = pipeline.StreamChain[T]
+
+// FlowBuilder Flow 构建器，由 PipelineBuilder.Flow() 创建。
+// 不需要 items，Build() 返回 *Flow。不暴露一次性执行和并行专属配置。
+type FlowBuilder[T any] = pipeline.FlowBuilder[T]
 
 // ── ParallelPipeline 类型 ──
 
@@ -776,6 +789,65 @@ type ParallelChain[T any] = pipeline.ParallelChain[T]
 //	    Shard(8).
 //	    Run(ctx, items, fn)
 type ParallelPipeline[T any] = pipeline.Pipeline[T]
+
+// ── Flow：常驻管道 ──
+
+// Flow 常驻的多阶段数据处理管道。
+// 与一次性 Pipeline 不同，Flow 预创建常驻 worker goroutine，
+// 通过 Submit() 持续接收数据，Results() channel 持续输出，Close() 优雅关闭。
+//
+// 使用示例：
+//
+//	fl := async.NewFlow(ctx, async.FlowConfig[string]{
+//	    Stages: []async.Stage[string]{
+//	        {Name: "parse", Concurrency: 4},
+//	        {Name: "validate", Concurrency: 2},
+//	    },
+//	}, func(ctx context.Context, stage string, item string) (string, error) {
+//	    return processItem(ctx, stage, item)
+//	})
+//	defer fl.Close()
+//	go func() { for msg := range msgs { fl.Submit(ctx, msg) } }()
+//	for r := range fl.Results() { handle(r) }
+type Flow[T any] = pipeline.Flow[T]
+
+// FlowConfig Flow 的配置。
+type FlowConfig[T any] = pipeline.FlowConfig[T]
+
+// NewFlow 创建 Flow。
+func NewFlow[T any](
+	ctx context.Context,
+	cfg FlowConfig[T],
+	fn func(ctx context.Context, stage string, item T) (T, error),
+) *Flow[T] {
+	return pipeline.NewFlow(ctx, cfg, fn)
+}
+
+// ── ExecuteStream：一次性流水线 ──
+
+// ExecuteStream 一次性流水线执行：所有阶段同时运转，元素流经阶段间 channel。
+// 与 Execute() 不同：Stage 1 处理 item1 时 Stage 0 已在处理 item2（无阶段间 barrier）。
+// 与 Flow 不同：goroutine 是一次性的，调用结束即销毁。
+//
+// 使用示例：
+//
+//	results, err := async.ExecuteStream(ctx, stages, items, func(ctx context.Context, stage string, item Data) (Data, error) {
+//	    switch stage {
+//	    case "parse":
+//	        return parse(ctx, item)
+//	    case "enrich":
+//	        return enrich(ctx, item)
+//	    }
+//	    return item, nil
+//	})
+func ExecuteStream[T any](
+	ctx context.Context,
+	stages []Stage[T],
+	items []T,
+	fn func(ctx context.Context, stage string, item T) (T, error),
+) ([]core.Result[T], error) {
+	return pipeline.ExecuteStream(ctx, stages, items, fn)
+}
 
 // ── BoundedRunner：Task goroutine 限流 ──
 

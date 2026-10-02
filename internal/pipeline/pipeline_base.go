@@ -75,6 +75,27 @@ func (b *pipelineBase[T, S]) spawnSerial() *SerialChain[T] {
 	return sp
 }
 
+// spawnStream 从当前基类创建 StreamChain。
+func (b *pipelineBase[T, S]) spawnStream() *StreamChain[T] {
+	wc := &StreamChain[T]{}
+	wc.pipelineBase = &pipelineBase[T, *StreamChain[T]]{
+		ctx:          b.ctx,
+		items:        b.items,
+		stages:       append([]Stage[T]{}, b.stages...),
+		timeout:      b.timeout,
+		failFast:     b.failFast,
+		resultCb:     b.resultCb,
+		shards:       b.shards,
+		concurrency:  b.concurrency,
+		pool:         b.pool,
+		poolAuto:     b.poolAuto,
+		maxResults:   b.maxResults,
+		autoScaleCfg: b.autoScaleCfg,
+	}
+	wc.pipelineBase.self = wc
+	return wc
+}
+
 // spawnParallel 从当前基类创建 ParallelChain。
 func (b *pipelineBase[T, S]) spawnParallel() *ParallelChain[T] {
 	pp := &ParallelChain[T]{}
@@ -259,7 +280,7 @@ func (b *pipelineBase[T, S]) execSerial(
 	return resultsList, nil
 }
 
-func (b *pipelineBase[T, S]) execSerialStream(
+func (b *pipelineBase[T, S]) execSerialPipe(
 	fn func(context.Context, string, T) (T, error),
 	bufSize int,
 ) <-chan core.Result[T] {
@@ -609,8 +630,8 @@ func (b *pipelineBase[T, S]) execParallelAutoScale(
 	return resultsList, nil
 }
 
-// execParallelStream 并行流式执行。
-func (b *pipelineBase[T, S]) execParallelStream(
+// execParallelPipe 并行管道输出执行。
+func (b *pipelineBase[T, S]) execParallelPipe(
 	fn func(context.Context, string, T) (T, error),
 	bufSize int,
 ) <-chan core.Result[T] {

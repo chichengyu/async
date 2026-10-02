@@ -90,14 +90,14 @@ func (b *ParallelChain[T]) ExecuteWithMeta(fn func(context.Context, string, T) (
 	return b.execParallelWithMeta(fn)
 }
 
-// ExecuteStream 并行执行管道，通过 channel 流式返回最终阶段结果。
-func (b *ParallelChain[T]) ExecuteStream(fn func(context.Context, string, T) (T, error), bufSize int) <-chan core.Result[T] {
-	return b.execParallelStream(fn, bufSize)
+// ExecutePipe 并行执行管道，通过 channel 返回最终阶段结果。
+func (b *ParallelChain[T]) ExecutePipe(fn func(context.Context, string, T) (T, error), bufSize int) <-chan core.Result[T] {
+	return b.execParallelPipe(fn, bufSize)
 }
 
-// Stream 切换为流式管道模式。
-func (b *ParallelChain[T]) Stream() *PipelineStreamBuilder[T] {
-	return &PipelineStreamBuilder[T]{
+// Pipe 切换为管道输出模式。
+func (b *ParallelChain[T]) Pipe() *PipelinePipeBuilder[T] {
+	return &PipelinePipeBuilder[T]{
 		ctx:    b.ctx,
 		items:  b.items,
 		stages: b.stages,
