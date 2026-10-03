@@ -28,9 +28,30 @@ type ShardedRateLimiter struct {
 	total      int32
 }
 
+// distributeTotal 将总数余数优先分配到各分片，保证各分片之和精确等于 total（total>=shards时）。
+// total < shards 时每个分片至少 1，与旧行为保持兼容。
+func distributeTotal(total, shards int) []int {
+	perShard := total / shards
+	if perShard < 1 {
+		perShard = 1
+	}
+	remainder := total % shards
+	if total < shards {
+		remainder = 0
+	}
+	result := make([]int, shards)
+	for i := 0; i < shards; i++ {
+		result[i] = perShard
+		if i < remainder {
+			result[i]++
+		}
+	}
+	return result
+}
+
 // NewShardedRateLimiter 创建分片限流器。
 // shards<=0 时默认使用 runtime.GOMAXPROCS(0)，最少 2 片。
-// 总速率 = rate，每片速率 = rate/shards。
+// 总速率 = rate，余数优先分配到前几个分片。
 //
 // 参数：
 //   - shards：分片数
@@ -43,22 +64,19 @@ func NewShardedRateLimiter(shards int, rate int, perDuration time.Duration) *Sha
 			shards = 2
 		}
 	}
-	perShard := rate / shards
-	if perShard < 1 {
-		perShard = 1
-	}
+	rates := distributeTotal(rate, shards)
 	limiters := make([]*RateLimiter, shards)
 	for i := 0; i < shards; i++ {
-		limiters[i] = NewRateLimiter(perShard, perDuration)
+		limiters[i] = NewRateLimiter(rates[i], perDuration)
 	}
 	return &ShardedRateLimiter{
 		limiters: limiters,
-		total:    int32(shards * perShard),
+		total:    int32(rate),
 	}
 }
 
 // NewShardedRateLimiterWithBurst 创建支持突发容量的分片限流器。
-// burst 会被均匀分配到各分片。
+// rate 和 burst 各自按余数优先分配，保证每个分片 burst >= rate。
 func NewShardedRateLimiterWithBurst(shards int, rate int, perDuration time.Duration, burst int) *ShardedRateLimiter {
 	if shards <= 0 {
 		shards = core.IO()
@@ -66,21 +84,19 @@ func NewShardedRateLimiterWithBurst(shards int, rate int, perDuration time.Durat
 			shards = 2
 		}
 	}
-	perShardRate := rate / shards
-	if perShardRate < 1 {
-		perShardRate = 1
-	}
-	perShardBurst := burst / shards
-	if perShardBurst < perShardRate {
-		perShardBurst = perShardRate
-	}
+	rates := distributeTotal(rate, shards)
+	bursts := distributeTotal(burst, shards)
 	limiters := make([]*RateLimiter, shards)
 	for i := 0; i < shards; i++ {
-		limiters[i] = NewRateLimiterWithBurst(perShardRate, perDuration, perShardBurst)
+		shardBurst := bursts[i]
+		if shardBurst < rates[i] {
+			shardBurst = rates[i]
+		}
+		limiters[i] = NewRateLimiterWithBurst(rates[i], perDuration, shardBurst)
 	}
 	return &ShardedRateLimiter{
 		limiters: limiters,
-		total:    int32(shards * perShardRate),
+		total:    int32(rate),
 	}
 }
 
@@ -89,7 +105,7 @@ func (sl *ShardedRateLimiter) ShardCount() int {
 	return len(sl.limiters)
 }
 
-// TotalRate 返回所有分片的总速率（可能略小于创建时的 rate，由整数除法导致）。
+// TotalRate 返回所有分片的总速率（精确等于创建时的 rate）。
 func (sl *ShardedRateLimiter) TotalRate() int {
 	return int(atomic.LoadInt32(&sl.total))
 }
@@ -153,18 +169,15 @@ func (sl *ShardedRateLimiter) WithStrategy(s Strategy) *ShardedRateLimiter {
 	return sl
 }
 
-// Resize 调整总速率，平均分配到各分片。
+// Resize 调整总速率，余数优先分配到各分片。
 // 注意：应在无活跃 Acquire/Release 时调用，否则可能短暂超发或欠发。
 func (sl *ShardedRateLimiter) Resize(newTotalRate int) {
 	shards := len(sl.limiters)
-	perShard := newTotalRate / shards
-	if perShard < 1 {
-		perShard = 1
+	rates := distributeTotal(newTotalRate, shards)
+	for i, l := range sl.limiters {
+		l.Resize(rates[i])
 	}
-	for _, l := range sl.limiters {
-		l.Resize(perShard)
-	}
-	atomic.StoreInt32(&sl.total, int32(shards*perShard))
+	atomic.StoreInt32(&sl.total, int32(newTotalRate))
 }
 
 // Token 获取一个带 Release 的令牌句柄，round-robin 分发。
@@ -254,6 +267,7 @@ type ShardedSlidingWindowRateLimiter struct {
 
 // NewShardedSlidingWindowRateLimiter 创建分片滑动窗口限流器。
 // shards<=0 时默认 runtime.GOMAXPROCS(0)，最少 2 片。
+// limit 按余数优先分配，总 limit 精确等于传入值（limit>=shards时）。
 func NewShardedSlidingWindowRateLimiter(shards int, limit int, window time.Duration) *ShardedSlidingWindowRateLimiter {
 	if shards <= 0 {
 		shards = core.IO()
@@ -261,17 +275,14 @@ func NewShardedSlidingWindowRateLimiter(shards int, limit int, window time.Durat
 			shards = 2
 		}
 	}
-	perShard := limit / shards
-	if perShard < 1 {
-		perShard = 1
-	}
+	limits := distributeTotal(limit, shards)
 	limiters := make([]*SlidingWindowRateLimiter, shards)
 	for i := 0; i < shards; i++ {
-		limiters[i] = NewSlidingWindowRateLimiter(perShard, window)
+		limiters[i] = NewSlidingWindowRateLimiter(limits[i], window)
 	}
 	return &ShardedSlidingWindowRateLimiter{
 		limiters: limiters,
-		total:    shards * perShard,
+		total:    limit,
 	}
 }
 
@@ -292,7 +303,7 @@ func (sw *ShardedSlidingWindowRateLimiter) ShardCount() int {
 	return len(sw.limiters)
 }
 
-// TotalLimit 返回所有分片总 limit（可能略小于创建值，由整数除法导致）。
+// TotalLimit 返回所有分片总 limit（精确等于创建时传入的 limit）。
 func (sw *ShardedSlidingWindowRateLimiter) TotalLimit() int {
 	return sw.total
 }
@@ -330,6 +341,7 @@ type ShardedAdaptiveRateLimiter struct {
 
 // NewShardedAdaptiveRateLimiter 创建分片自适应限流器。
 // shards<=0 时默认 runtime.GOMAXPROCS(0)，最少 2 片。
+// minRate 和 maxRate 各自按余数优先分配，保证每个分片 max >= min。
 func NewShardedAdaptiveRateLimiter(shards int, minRate int, maxRate int) *ShardedAdaptiveRateLimiter {
 	if shards <= 0 {
 		shards = core.IO()
@@ -337,17 +349,15 @@ func NewShardedAdaptiveRateLimiter(shards int, minRate int, maxRate int) *Sharde
 			shards = 2
 		}
 	}
-	perMin := minRate / shards
-	if perMin < 1 {
-		perMin = 1
-	}
-	perMax := maxRate / shards
-	if perMax < perMin {
-		perMax = perMin
-	}
+	mins := distributeTotal(minRate, shards)
+	maxs := distributeTotal(maxRate, shards)
 	limiters := make([]*AdaptiveRateLimiter, shards)
 	for i := 0; i < shards; i++ {
-		limiters[i] = NewAdaptiveRateLimiter(perMin, perMax)
+		shardMax := maxs[i]
+		if shardMax < mins[i] {
+			shardMax = mins[i]
+		}
+		limiters[i] = NewAdaptiveRateLimiter(mins[i], shardMax)
 	}
 	return &ShardedAdaptiveRateLimiter{limiters: limiters}
 }

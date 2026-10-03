@@ -49,6 +49,7 @@ import (
 type Stage[T any] struct {
 	Name        string // 阶段名称（可用于日志和 ExecuteWithMeta 中的标识）
 	Concurrency int    // 该阶段的并发度（<=0 时使用默认 IO 并发度）
+	SkipOnError bool   // true 时跳过上一阶段失败的元素，其 Error 直接透传到后续阶段结果
 }
 
 // ResultWithMeta 带阶段信息的 Result，用于 ExecuteWithMeta。
@@ -133,10 +134,12 @@ func Execute[T any](
 					}
 				}()
 				for j := start; j < end; j++ {
+					if stage.SkipOnError && resultsList[j].Err != nil {
+						nextResults[j] = resultsList[j]
+						continue
+					}
 					val, err := fn(ctx, stage.Name, resultsList[j].Value)
-
 					nextResults[j] = core.Result[T]{Value: val, Err: err}
-
 				}
 			}(start, end)
 		}
@@ -171,6 +174,7 @@ func ExecuteWithMeta[T any](
 	items := make([]T, len(initialItems))
 	copy(items, initialItems)
 	results := make([]ResultWithMeta[T], 0)
+	itemErrs := make([]error, len(initialItems))
 
 	for _, stage := range stages {
 		concurrency := stage.Concurrency
@@ -209,17 +213,23 @@ func ExecuteWithMeta[T any](
 					}
 				}()
 				for j := start; j < end; j++ {
+					if stage.SkipOnError && itemErrs[j] != nil {
+						var zero T
+						stageResults[j] = core.Result[T]{Value: zero, Err: itemErrs[j]}
+						continue
+					}
 					val, err := fn(ctx, stage.Name, items[j])
-
 					stageResults[j] = core.Result[T]{Value: val, Err: err}
-
 				}
 			}(start, end)
 		}
 		wg.Wait()
 		nextItems := make([]T, 0, len(stageResults))
-		for _, r := range stageResults {
+		for i, r := range stageResults {
 			results = append(results, ResultWithMeta[T]{Result: r, Stage: stage.Name})
+			if r.Err != nil && itemErrs[i] == nil {
+				itemErrs[i] = r.Err
+			}
 			nextItems = append(nextItems, r.Value)
 		}
 		items = nextItems
@@ -353,10 +363,12 @@ func ExecutePipe[T any](
 					}
 				}()
 				for j := start; j < end; j++ {
+					if stage.SkipOnError && resultsList[j].Err != nil {
+						nextResults[j] = resultsList[j]
+						continue
+					}
 					val, err := fn(ctx, stage.Name, resultsList[j].Value)
-
 					nextResults[j] = core.Result[T]{Value: val, Err: err}
-
 				}
 			}(start, end)
 		}
@@ -393,6 +405,13 @@ func ExecutePipe[T any](
 
 	go func() {
 		for _, r := range resultsList {
+			if finalStage.SkipOnError && r.Err != nil {
+				g.Go(ctx, func(ctx context.Context) (T, error) {
+					var zero T
+					return zero, r.Err
+				})
+				continue
+			}
 			item := r.Value
 			stageName := finalStage.Name
 			g.Go(ctx, func(ctx context.Context) (T, error) {
@@ -526,10 +545,12 @@ func (p *Pipeline[T]) executeNative(
 					}
 				}()
 				for j := start; j < end; j++ {
+					if stage.SkipOnError && resultsList[j].Err != nil {
+						nextResults[j] = resultsList[j]
+						continue
+					}
 					val, err := fn(ctx, stage.Name, resultsList[j].Value)
-
 					nextResults[j] = core.Result[T]{Value: val, Err: err}
-
 				}
 			}(start, end)
 		}
@@ -561,6 +582,13 @@ func (p *Pipeline[T]) executeSharded(
 		mg := g.Shard(p.shards)
 
 		for _, r := range resultsList {
+			if stage.SkipOnError && r.Err != nil {
+				mg.Go(ctx, func(ctx context.Context) (T, error) {
+					var zero T
+					return zero, r.Err
+				})
+				continue
+			}
 			item := r.Value
 			stageName := stage.Name
 			mg.Go(ctx, func(ctx context.Context) (T, error) {
@@ -595,6 +623,7 @@ func (p *Pipeline[T]) executeWithMetaNative(
 	elems := make([]T, len(items))
 	copy(elems, items)
 	results := make([]ResultWithMeta[T], 0)
+	elemErrs := make([]error, len(items))
 
 	for _, stage := range p.stages {
 		concurrency := stage.Concurrency
@@ -633,17 +662,23 @@ func (p *Pipeline[T]) executeWithMetaNative(
 					}
 				}()
 				for j := start; j < end; j++ {
+					if stage.SkipOnError && elemErrs[j] != nil {
+						var zero T
+						stageResults[j] = core.Result[T]{Value: zero, Err: elemErrs[j]}
+						continue
+					}
 					val, err := fn(ctx, stage.Name, elems[j])
-
 					stageResults[j] = core.Result[T]{Value: val, Err: err}
-
 				}
 			}(start, end)
 		}
 		wg.Wait()
 		nextItems := make([]T, 0, len(stageResults))
-		for _, r := range stageResults {
+		for i, r := range stageResults {
 			results = append(results, ResultWithMeta[T]{Result: r, Stage: stage.Name})
+			if r.Err != nil && elemErrs[i] == nil {
+				elemErrs[i] = r.Err
+			}
 			nextItems = append(nextItems, r.Value)
 		}
 		elems = nextItems
@@ -657,8 +692,10 @@ func (p *Pipeline[T]) executeWithMetaSharded(
 	items []T,
 	fn func(ctx context.Context, stage string, item T) (T, error),
 ) []ResultWithMeta[T] {
-	elems := make([]T, len(items))
-	copy(elems, items)
+	resultsList := make([]core.Result[T], len(items))
+	for i, item := range items {
+		resultsList[i] = core.Result[T]{Value: item}
+	}
 	results := make([]ResultWithMeta[T], 0)
 
 	for _, stage := range p.stages {
@@ -670,8 +707,15 @@ func (p *Pipeline[T]) executeWithMetaSharded(
 		g := group.NewGroup[T](concurrency)
 		mg := g.Shard(p.shards)
 
-		for _, elem := range elems {
-			item := elem
+		for _, r := range resultsList {
+			if stage.SkipOnError && r.Err != nil {
+				mg.Go(ctx, func(ctx context.Context) (T, error) {
+					var zero T
+					return zero, r.Err
+				})
+				continue
+			}
+			item := r.Value
 			stageName := stage.Name
 			mg.Go(ctx, func(ctx context.Context) (T, error) {
 				return fn(ctx, stageName, item)
@@ -681,12 +725,10 @@ func (p *Pipeline[T]) executeWithMetaSharded(
 		stageResults := mg.Wait()
 		mg.Close()
 
-		nextItems := make([]T, 0, len(stageResults))
 		for _, r := range stageResults {
 			results = append(results, ResultWithMeta[T]{Result: r, Stage: stage.Name})
-			nextItems = append(nextItems, r.Value)
 		}
-		elems = nextItems
+		resultsList = stageResults
 	}
 
 	return results

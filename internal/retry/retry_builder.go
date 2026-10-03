@@ -681,13 +681,21 @@ func (c *RetryChain[T]) executeCore(
 	for attempt := 0; attempt <= c.maxRetries; attempt++ {
 		// ── 获取限流许可 ──
 		acquired, err := c.acquire(attempt, initialBackoff, maxBackoff, rl, srl, tb, sw, al, stb, ssw, sal)
-		if err != nil {
+		if err != nil || !acquired {
 			if attempt == c.maxRetries {
-				return zero, fmt.Errorf("retry exhausted after %d attempts: %w", c.maxRetries+1, err)
+				if err != nil {
+					return zero, fmt.Errorf("retry exhausted after %d attempts: %w", c.maxRetries+1, err)
+				}
+				return zero, fmt.Errorf("retry exhausted after %d attempts: rate limit exceeded", c.maxRetries+1)
 			}
-			continue
-		}
-		if !acquired {
+			backoff := computeBackoff(attempt, initialBackoff, maxBackoff)
+			if backoff > 0 {
+				select {
+				case <-c.ctx.Done():
+					return zero, c.ctx.Err()
+				case <-time.After(backoff):
+				}
+			}
 			continue
 		}
 
@@ -737,7 +745,7 @@ func (c *RetryChain[T]) executeCore(
 			}
 		}
 	}
-	panic("unreachable")
+	return zero, fmt.Errorf("retry exhausted after %d attempts", c.maxRetries+1)
 }
 
 // acquire 尝试获取限流许可，返回 (是否获取成功, 错误)。

@@ -1249,10 +1249,11 @@ func (g *Group[T]) WaitContext(ctx context.Context) ([]core.Result[T], bool) {
 // 与 Pool 的自动扩缩容行为一致，带滞后保护防止抖动。
 
 // EnableAutoScale 启用自动扩缩容。基于 busy/concurrency 比率周期性检测负载：
-// - busy/concurrency > ScaleUpThreshold 持续 ScaleUpChecks 次 → 扩容（翻倍，上限 MaxWorkers）
-// - busy/concurrency < ScaleDownThreshold 持续 ScaleDownChecks 次 → 缩容（减半，下限 MinWorkers）
+// - busy/concurrency > ScaleUpThreshold 持续 ScaleUpChecks 次 → 扩容（乘以 ScaleUpFactor，上限 MaxWorkers）
+// - busy/concurrency < ScaleDownThreshold 持续 ScaleDownChecks 次 → 缩容（乘以 ScaleDownFactor，下限 MinWorkers）
 //
 // config 为 nil 时使用 DefaultAutoScaleConfig()（CPU*2 ~ CPU*100，每 5s 检测）。
+// 默认扩容因子 1.5（增加 50%），缩容因子 0.75（保留 75%），比翻倍/减半更加平滑。
 //
 // 重复调用是安全的（幂等）。调用后启动后台 goroutine 进行负载检测。
 //

@@ -96,10 +96,15 @@ func (a *AdaptiveRateLimiter) RecordFailure() {
 }
 
 func (a *AdaptiveRateLimiter) maybeAdjust() {
-	s := atomic.LoadInt64(&a.success)
-	f := atomic.LoadInt64(&a.failure)
+	s := atomic.SwapInt64(&a.success, 0)
+	f := atomic.SwapInt64(&a.failure, 0)
+	if s == 0 && f == 0 {
+		return
+	}
 	total := s + f
 	if total < 10 {
+		atomic.AddInt64(&a.success, s)
+		atomic.AddInt64(&a.failure, f)
 		return
 	}
 
@@ -116,8 +121,6 @@ func (a *AdaptiveRateLimiter) maybeAdjust() {
 		}
 		a.base.Resize(newRate)
 		atomic.StoreInt32(&a.current, int32(newRate))
-		atomic.StoreInt64(&a.success, 0)
-		atomic.StoreInt64(&a.failure, 0)
 	} else if failRate < a.adjustUp/2 && current < a.maxRate {
 		newRate := current + int(float64(a.maxRate-current)*a.adjustUp)
 		if newRate > a.maxRate {
@@ -125,7 +128,5 @@ func (a *AdaptiveRateLimiter) maybeAdjust() {
 		}
 		a.base.Resize(newRate)
 		atomic.StoreInt32(&a.current, int32(newRate))
-		atomic.StoreInt64(&a.success, 0)
-		atomic.StoreInt64(&a.failure, 0)
 	}
 }

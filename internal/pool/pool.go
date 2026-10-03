@@ -920,6 +920,7 @@ func (p *Pool[T]) resultsAppend(taskCancel context.CancelFunc) int64 {
 }
 
 // resultsSet 向分片存储写入指定索引的结果。
+// 若分片槽位不足则自动扩展（兼容 submitIndexed/SubmitAt 失败路径中跳过 resultsAppend 的场景）。
 func (p *Pool[T]) resultsSet(idx int64, r core.Result[T]) {
 	maxR := int(p.maxResults.Load())
 	if maxR > 0 && idx >= int64(maxR) {
@@ -930,19 +931,12 @@ func (p *Pool[T]) resultsSet(idx int64, r core.Result[T]) {
 	localIdx := int(idx / poolShardCount)
 	s := &p.shards[shardIdx]
 	s.mu.Lock()
-	if localIdx < len(s.results) {
-		s.results[localIdx] = r
+	for localIdx >= len(s.results) {
+		s.results = append(s.results, core.Result[T]{})
+		s.cancels = append(s.cancels, nil)
 	}
+	s.results[localIdx] = r
 	s.mu.Unlock()
-}
-
-// resultsPrecheckSet 在 precheck 失败时写入错误结果（如果需要）。
-func (p *Pool[T]) resultsPrecheckSet(idx int64, r core.Result[T]) {
-	if idx < 0 {
-		// append 模式
-		idx = p.submitIdx.Add(1) - 1
-	}
-	p.resultsSet(idx, r)
 }
 
 // resultsCollect 收集所有分片的结果，按提交顺序合并。
@@ -983,7 +977,9 @@ func (p *Pool[T]) cancelAllShards() {
 		s.cancels = nil
 		s.mu.Unlock()
 		for _, c := range cancels {
-			c()
+			if c != nil {
+				c()
+			}
 		}
 	}
 }
@@ -1692,6 +1688,7 @@ func (p *Pool[T]) CloseAndWaitTimeout(timeout time.Duration) (ok bool, workerDon
 				}
 				p.discardTask(task.Record, task.Index, task.Cancel, core.ErrPoolClosed)
 			}
+			p.drainStreaming()
 		}()
 		return false, done
 	}
@@ -1887,9 +1884,7 @@ func (p *Pool[T]) WaitTimeout(d time.Duration) ([]core.Result[T], bool) {
 	}, func() []core.Result[T] {
 		return p.resultsCollect()
 	}, p.ctx)
-	if ok {
-		p.drainStreaming()
-	}
+	p.drainStreaming()
 	if p.ringBufFlag.Load() && p.ringBuf != nil && p.maxResults.Load() > 0 {
 		overflow := p.ringBuf.Flush()
 		results = append(results, overflow...)
@@ -1919,9 +1914,7 @@ func (p *Pool[T]) WaitContext(ctx context.Context) ([]core.Result[T], bool) {
 	}, func() []core.Result[T] {
 		return p.resultsCollect()
 	}, p.ctx, "Pool")
-	if ok {
-		p.drainStreaming()
-	}
+	p.drainStreaming()
 	if p.ringBufFlag.Load() && p.ringBuf != nil && p.maxResults.Load() > 0 {
 		overflow := p.ringBuf.Flush()
 		results = append(results, overflow...)

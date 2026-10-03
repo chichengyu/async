@@ -69,14 +69,7 @@ func (mg *MultiGroup[T]) Wait() []core.Result[T] {
 // Close 关闭所有分片，释放资源。
 func (mg *MultiGroup[T]) Close() {
 	for _, g := range mg.groups {
-		if g.shuttingDown.CompareAndSwap(false, true) {
-			close(g.shutdownCh)
-		}
-		g.cancelAll()
-		g.closeTaskCh()
-		g.workerWg.Wait()
-		g.signalDone()
-		g.drainStreaming()
+		g.Close()
 	}
 }
 
