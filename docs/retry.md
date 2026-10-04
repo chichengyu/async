@@ -2,840 +2,480 @@
 
 ## 概述
 
-Retry 模块提供灵活的重试机制，支持多种退避策略、超时控制和错误过滤。
+`RetryChain[T]` 是泛型重试链式构建器，提供声明式重试 API。支持指数/线性退避，以及 4 种限流模式（RateLimiter / TokenBucket / SlidingWindow / Adaptive）。
 
-**核心特性**:
-- 指数退避（Exponential Backoff）
-- 线性退避（Linear Backoff）
-- 每次调用超时控制
-- 截止时间（Deadline）控制
-- 错误过滤
-- Panic 自动恢复
-- Worker 池提交重试
+**两种入口**：
 
-> **⚠️ 无退避慎用**
+| 入口 | 说明 | 终端方法 |
+|------|------|----------|
+| `async.Retry[T](ctx)` | 带返回值重试 | `.Execute(fn) / .Run(fn)` |
+| `async.RetryVoid(ctx)` | 无返回值重试 | `.ExecuteVoid(fn) / .RunVoid(fn) / .Run(fn)` |
+
+> **⚠️ 默认配置**
 >
-> `Retry` / `RetryVoid` 无等待间隔立即重试，高频失败会瞬间打爆后端。生产环境强烈推荐 `RetryWithBackoff`。
+> 默认值：指数退避，最多重试 3 次（总共 4 次尝试），退避 100ms~30s，无限流。
 >
-> **⚠️ MaxRetries=0 不重试**
+> **⚠️ 重试次数含义**
 >
-> 设置 `MaxRetries=0` 表示不重试，直接返回首次调用的结果（成功或失败都返回）。
+> `MaxRetries(n)` 中的 n 是重试次数，总执行次数 = n + 1（一次初试 + n 次重试）。
 >
-> **⚠️ Context 取消会中止**
+> **⚠️ 4 种限流模式互斥**
 >
-> 重试过程中如果 ctx 被取消（超时或手动取消），会立即返回 `ctx.Err()`，不会继续重试。
+> `.RateLimiter()` / `.TokenBucket()` / `.SlidingWindow()` / `.Adaptive()` 四种模式只能选择一种，后调用的会覆盖前者。不调用任何限流模式则无限流（纯退避重试）。
 >
-> **⚠️ Panic 恢复**
+> **⚠️ 限流在重试之间生效**
 >
-> 所有重试函数内置 panic 恢复，panic 不会导致重试中断。panic 次数达到 MaxRetries + 1 次后返回 `*PanicError`。
+> 限流是在每次重试前检查的（不是限制用户调用 API 的频率）。例如 `RateLimiter().Rate(10).Per(time.Second)` 表示两次重试尝试之间至少间隔 1/10 秒。
 
 ---
 
 ## 目录
 
-- [函数速查表](#函数速查表)
-- [简便重试（无退避）](#简便重试无退避)
-  - [Retry / RetryBackoff / RetryLinear](#retry)
-- [指数退避重试](#指数退避重试)
-  - [RetryWithBackoff / RetryWithBackoffVoid / RetryWithBackoffResult](#retrywithbackoff)
-- [线性退避重试](#线性退避重试)
-  - [RetryWithLinearBackoff / RetryWithLinearBackoffVoid / RetryWithLinearBackoffResult](#retrywithlinearbackoff)
-- [每次调用超时重试](#每次调用超时重试)
-  - [RetryWithConfig / RetryWithConfigVoid / TimeoutOpt](#retrywithconfig)
-- [超时/截止时间包装器](#超时截止时间包装器)
-  - [WithTimeout / WithTimeoutVoid / WithDeadline / WithDeadlineVoid](#withtimeout)
-- [RetryFn（函数式重试）](#retryfn函数式重试)
-  - [RetryFn / WithRetry](#retryfn)
-- [BindRetryToWorker（Worker 池提交重试）](#bindretrytoworker)
-  - [BindRetryToWorker / WorkerPoolBackend 接口](#bindretrytoworker)
-- [退避算法](#退避算法)
-- [上下文取消传播 / Panic 自动恢复](#context-取消传播)
-- [最佳实践](#最佳实践)
-- [高级示例](#高级示例)
-- [性能基准](#性能基准)
-
-## 函数速查表
-
-| 函数 | 重试次数 | 退避方式 | 每次调用超时 | 返回值 |
-|------|----------|----------|-------------|--------|
-| `Retry` | maxRetries | 无 | ❌ | `error` |
-| `RetryWithBackoff` | maxRetries | 指数 | ❌ | `error` |
-| `RetryWithLinearBackoff` | maxRetries | 线性 | ❌ | `error` |
-| `RetryWithBackoff[T]` | maxRetries | 指数 | ❌ | `(T, error)` |
-| `RetryWithBackoffVoid` | maxRetries | 指数 | ❌ | `error` |
-| `RetryWithBackoffResult[T]` | maxRetries | 指数 | ❌ | `Result[T]` |
-| `RetryWithLinearBackoff[T]` | maxRetries | 线性 | ❌ | `(T, error)` |
-| `RetryWithLinearBackoffVoid` | maxRetries | 线性 | ❌ | `error` |
-| `RetryWithLinearBackoffResult[T]` | maxRetries | 线性 | ❌ | `Result[T]` |
-| `RetryWithConfig[T]` | maxRetries | 指数 | ✅ | `(T, error)` |
-| `RetryWithConfigVoid` | maxRetries | 指数 | ✅ | `error` |
-| `WithTimeout[T]` | - | - | ✅ | `(T, error)` |
-| `WithTimeoutVoid` | - | - | ✅ | `error` |
-| `WithDeadline[T]` | - | - | ✅ | `(T, error)` |
-| `WithDeadlineVoid` | - | - | ✅ | `error` |
-| `RetryFn.WithRetry` | maxRetries | 无 | ❌ | `error` |
-| `BindRetryToWorker` | maxRetries | 指数 | ❌ | `error` |
+- [RetryChain 链式方法速查表](#retrychain-链式方法速查表)
+- [终端方法速查](#终端方法速查)
+- [基础退避重试](#基础退避重试)
+- [模式一：RateLimiter（令牌补充限流）](#模式一ratelimiter令牌补充限流)
+- [模式二：TokenBucket（经典令牌桶）](#模式二tokenbucket经典令牌桶)
+- [模式三：SlidingWindow（滑动窗口）](#模式三slidingwindow滑动窗口)
+- [模式四：Adaptive（自适应并发限流）](#模式四adaptive自适应并发限流)
+- [无返回值重试（RetryVoid）](#无返回值重试retryvoid)
+- [每次调用超时](#每次调用超时)
+- [Run / RunVoid 简化终端](#run--runvoid-简化终端)
+- [默认值体系](#默认值体系)
+- [生产环境使用建议](#生产环境使用建议)
+- [自定义日志](#自定义日志)
 
 ---
 
-## 简便重试（无退避）
+## RetryChain 链式方法速查表
 
-以下为 `async` 包根级别的简便重试函数，签名更简洁，适合快速使用。
+### 入口
 
-### Retry
+| 方法 | 说明 |
+|------|------|
+| `async.Retry[T](ctx)` | 创建带返回值重试链式构建器 |
+| `async.RetryVoid(ctx)` | 创建无返回值重试链式构建器 |
 
-简单重试，每次重试无等待间隔。适合瞬时故障场景。
+### 策略配置方法
 
-```go
-// 语法
-func Retry(ctx context.Context, maxRetries int, fn func(ctx context.Context) error) error
-```
+| 方法 | 说明 | 默认值 |
+|------|------|--------|
+| `.Exponential()` | 指数退避（backoff × 2^attempt） | 默认 |
+| `.Linear()` | 线性退避（固定间隔） | — |
+| `.MaxRetries(n)` | 最大重试次数（n < 0 时设为 0） | 3 |
+| `.Backoff(initial, max)` | 退避时间（指数：首间隔+上限；线性：固定间隔，max 忽略） | 100ms, 30s |
+| `.PerCallTimeout(d)` | 每次 fn 调用的超时（0=不限时，超时后继续重试） | 0 |
+| `.Context(ctx)` | 链式设置上下文（自动注入 TraceID） | — |
+| `.DefaultConfig()` | 重置所有配置为默认值 | — |
+| `.DefaultMaxRetries()` | 恢复默认重试次数（3） | — |
+| `.DefaultBackoff()` | 恢复默认退避（100ms~30s） | — |
+| `.DefaultPerCallTimeout()` | 恢复默认超时（不限时） | — |
+| `.DefaultRate()` | 恢复默认速率（10/s） | — |
+| `.DefaultPer()` | 恢复默认时间窗口（1s） | — |
+| `.DefaultBurst()` | 恢复默认突发容量（0=关闭） | — |
+| `.DefaultCapacity()` | 恢复默认令牌桶容量（速率×2） | — |
+| `.DefaultLimit()` | 恢复默认滑动窗口限制（100） | — |
+| `.DefaultWindow()` | 恢复默认滑动窗口（1s） | — |
+| `.DefaultMinWorker()` | 恢复默认最小并发度（1） | — |
+| `.DefaultMaxWorker()` | 恢复默认最大并发度（Min×10） | — |
+| `.DefaultShards()` | 恢复默认分片（不启用分片） | — |
 
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `ctx` | `context.Context` | 上下文 |
-| `maxRetries` | `int` | 最大重试次数（共 maxRetries+1 次尝试） |
-| `fn` | `func(context.Context) error` | 要重试的函数 |
+### 限流模式选择（四选一，互斥）
 
-| 返回值 | 类型 | 说明 |
-|--------|------|------|
-| `error` | `error` | 所有重试失败后的最终错误 |
+| 方法 | 说明 |
+|------|------|
+| `.RateLimiter()` | 令牌补充限流器，阻塞等待令牌 |
+| `.TokenBucket()` | 经典令牌桶，非阻塞检查 |
+| `.SlidingWindow()` | 滑动窗口精确计数 |
+| `.Adaptive()` | 自适应并发限流，根据成功率动态调整 |
 
-```go
-err := async.Retry(ctx, 3, func(ctx context.Context) error {
-    return redis.Ping(ctx)
-})
-// 共 4 次尝试（1 次原始 + 3 次重试），无等待间隔
-```
+### RateLimiter 模式配置
 
-> **注意**：无退避间隔，高频重试可能加重后端压力。生产环境推荐使用 `RetryWithBackoff`/`RetryBackoff`。
+| 方法 | 说明 |
+|------|------|
+| `.Rate(n int)` | 每 Per 时间窗口内的操作次数 |
+| `.Per(d time.Duration)` | 时间窗口大小 |
+| `.Burst(n int)` | 突发容量 |
+| `.Shards(n int)` | 水平分片数（n≤0 时自动使用默认值） |
 
-### RetryBackoff
+### TokenBucket 模式配置
 
-指数退避重试的 Void 版本，只返回 error。调用 `retry.RetryWithBackoffVoid`。
+| 方法 | 说明 |
+|------|------|
+| `.Rate(n float64)` | 每秒令牌生成速率（float64 版） |
+| `.Capacity(n float64)` | 最大令牌容量 |
+| `.Shards(n int)` | 水平分片数 |
 
-```go
-// 语法
-func RetryBackoff(ctx context.Context, fn func(context.Context) error, maxRetries int, initialBackoff time.Duration, maxBackoff time.Duration) error
-```
+### SlidingWindow 模式配置
 
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `ctx` | `context.Context` | 上下文 |
-| `fn` | `func(context.Context) error` | 要重试的函数 |
-| `maxRetries` | `int` | 最大重试次数 |
-| `initialBackoff` | `time.Duration` | 初始退避时间 |
-| `maxBackoff` | `time.Duration` | 最大退避上限 |
+| 方法 | 说明 |
+|------|------|
+| `.Limit(n int)` | 窗口内最大请求数 |
+| `.Window(d time.Duration)` | 时间窗口大小 |
+| `.Shards(n int)` | 水平分片数 |
 
-| 返回值 | 类型 | 说明 |
-|--------|------|------|
-| `error` | `error` | 所有重试失败后的最终错误 |
+### Adaptive 模式配置
 
-```go
-err := async.RetryBackoff(ctx, func(ctx context.Context) error {
-    return sendMessage(ctx, msg)
-}, 3, 10*time.Millisecond, 1*time.Second)
-// 退避序列: 10ms → 20ms → 40ms（上限 1s）
-```
+| 方法 | 说明 |
+|------|------|
+| `.MinWorker(n int)` | 最小并发度 |
+| `.MaxWorker(n int)` | 最大并发度 |
+| `.Shards(n int)` | 水平分片数 |
 
-### RetryLinear
+### 通用方法
 
-线性退避重试的 Void 版本，每次等待固定间隔。调用 `retry.RetryWithLinearBackoffVoid`。
-
-```go
-// 语法
-func RetryLinear(ctx context.Context, fn func(context.Context) error, maxRetries int, backoff time.Duration) error
-```
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `ctx` | `context.Context` | 上下文 |
-| `fn` | `func(context.Context) error` | 要重试的函数 |
-| `maxRetries` | `int` | 最大重试次数 |
-| `backoff` | `time.Duration` | 每次重试的固定等待时间 |
-
-| 返回值 | 类型 | 说明 |
-|--------|------|------|
-| `error` | `error` | 所有重试失败后的最终错误 |
-
-```go
-err := async.RetryLinear(ctx, func(ctx context.Context) error {
-    return writeDB(ctx, record)
-}, 5, 100*time.Millisecond)
-// 每次失败等 100ms，最多重试 5 次
-```
+| 方法 | 说明 |
+|------|------|
+| `.Logger(l)` | 注入自定义日志（全局生效） |
+| `.DefaultLogger()` | 恢复默认日志 |
 
 ---
 
-## 指数退避重试
+## 终端方法速查
 
-### RetryWithBackoff
+| 方法 | 签名 | 返回值 | 说明 |
+|------|------|--------|------|
+| `.Execute(fn)` | `fn func(context.Context) (T, error)` | `(T, error)` | 带返回值执行重试 |
+| `.ExecuteVoid(fn)` | `fn func(context.Context) error` | `error` | 无返回值执行重试 |
+| `.Run(fn)` | `fn func() error` | `error` | 简化版（fn 无 context 参数） |
+| `.RunVoid(fn)` | `fn func(context.Context) error` | `error` | 等同于 ExecuteVoid |
+
+> **⚠️ `.Execute(fn)` vs `.Run(fn)`**
+>
+> - `.Execute(fn)`：fn 有 `func(context.Context) (T, error)` 签名，可获得 ctx（带 trace_id 的 ctx）
+> - `.Run(fn)`：fn 是 `func() error`，更简洁，ctx 由链内部保持。无需 context 时推荐使用
+
+---
+
+## 基础退避重试
+
+### 指数退避（默认）
 
 ```go
-// 语法
-func RetryWithBackoff[T any](
-    ctx context.Context,
-    fn func(ctx context.Context) (T, error),
-    maxRetries int,
-    initialBackoff time.Duration,
-    maxBackoff time.Duration,
-) (T, error)
+val, err := async.Retry[string](ctx).
+    Exponential().
+    MaxRetries(3).                           // 最多 3 次重试 = 共 4 次尝试
+    Backoff(100*time.Millisecond, 5*time.Second).  // 100ms → 200ms → 400ms → 800ms (上限 5s)
+    Execute(func(ctx context.Context) (string, error) {
+        return httpGet(ctx, url)
+    })
 ```
 
-使用指数退避策略执行 fn，最多执行 `maxRetries+1` 次（首次 + maxRetries 次重试）。
-
-退避时间计算公式：`backoff = min(initialBackoff × 2^attempt, maxBackoff)`
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `ctx` | `context.Context` | 上下文，取消后终止重试 |
-| `fn` | `func(context.Context) (T, error)` | 要执行的函数，每次尝试会派生新的 context |
-| `maxRetries` | `int` | 最大重试次数（**不含首次尝试**，总执行次数 = maxRetries + 1） |
-| `initialBackoff` | `time.Duration` | 初始退避时间，设为 0 则不等待直接重试 |
-| `maxBackoff` | `time.Duration` | 最大退避时间上限，防止退避无限增长 |
-| 返回 | `(T, error)` | 成功时返回值和 nil；重试耗尽时返回零值和 "retry exhausted" 错误 |
-
-**重试耗尽时会返回包裹原始错误的 error**。
+### 线性退避
 
 ```go
-// 调用 RPC，最多重试3次（共4次尝试），退避从100ms开始指数增长到最多5s
-result, err := retry.RetryWithBackoff(ctx, func(ctx context.Context) (*Response, error) {
-    return rpcClient.Call(ctx, request)
-}, 3, 100*time.Millisecond, 5*time.Second)
+err := async.RetryVoid(ctx).
+    Linear().
+    MaxRetries(5).
+    Backoff(1*time.Second, 0).   // 每次重试固定等 1s（max 被忽略）
+    ExecuteVoid(func(ctx context.Context) error {
+        return sendEmail(ctx, to, body)
+    })
+```
 
-if err != nil {
-    log.Printf("RPC 调用失败: %v", err)
-}
+### 默认配置微调
+
+```go
+val, err := async.Retry[int](ctx).
+    DefaultConfig().       // 重置到默认：指数、3次重试、100ms~30s
+    MaxRetries(10).        // 覆盖：改为最多 10 次重试
+    Execute(fn)
 ```
 
 ---
 
-### RetryWithBackoffVoid
+## 模式一：RateLimiter（令牌补充限流）
+
+阻塞式限流：每次重试前阻塞等待令牌，被限流时阻塞而非跳过。
 
 ```go
-// 语法
-func RetryWithBackoffVoid(
-    ctx context.Context,
-    fn func(ctx context.Context) error,
-    maxRetries int,
-    initialBackoff time.Duration,
-    maxBackoff time.Duration,
-) error
+val, err := async.Retry[string](ctx).
+    Exponential().MaxRetries(5).
+    Backoff(100*time.Millisecond, 10*time.Second).
+    RateLimiter().          // 启用 RateLimiter
+    Rate(10).               // 每秒 10 次
+    Per(time.Second).
+    Burst(50).              // 突发容量（允许瞬时 50 次）
+    Shards(8).              // 水平分片降低锁竞争
+    Execute(func(ctx context.Context) (string, error) {
+        return callAPI(ctx)
+    })
 ```
 
-与 `RetryWithBackoff` 相同，但 fn 只返回 error，适合发送消息、写日志等无返回值的操作。
+> **⚠️ RateLimiter 阻塞等待**
+>
+> `RateLimiter` 被限流时会阻塞等待令牌，不会跳过重试。适合需要保证每次请求都发出、但需要限速的场景。
 
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `ctx` | `context.Context` | 上下文，取消后终止重试 |
-| `fn` | `func(context.Context) error` | 要执行的函数，只返回 error |
-| `maxRetries` | `int` | 最大重试次数（不含首次尝试） |
-| `initialBackoff` | `time.Duration` | 初始退避时间 |
-| `maxBackoff` | `time.Duration` | 最大退避时间上限 |
-| 返回 | `error` | nil 表示成功，否则为重试耗尽的包裹错误 |
+---
+
+## 模式二：TokenBucket（经典令牌桶）
+
+非阻塞式限流：每次重试前检查令牌，拿不到时跳过本次重试等待退避后重试。
 
 ```go
-// 重试发送消息
-err := retry.RetryWithBackoffVoid(ctx, func(ctx context.Context) error {
-    return kafkaProducer.Send(ctx, msg)
-}, 3, 100*time.Millisecond, 5*time.Second)
+err := async.RetryVoid(ctx).
+    Exponential().MaxRetries(10).
+    Backoff(100*time.Millisecond, 5*time.Second).
+    TokenBucket().          // 启用 TokenBucket
+    Rate(5).                // 每秒 5 个令牌（float64）
+    Capacity(20).           // 最多积压 20 个令牌
+    Shards(4).              // 水平分片
+    ExecuteVoid(func(ctx context.Context) error {
+        return sendMessage(ctx, msg)
+    })
+```
+
+> **⚠️ TokenBucket 非阻塞**
+>
+> 令牌不足时不会阻塞等待，而是返回错误并进入退避重试循环。适合不想阻塞等待令牌的场景。
+>
+> **⚠️ `.Rate()` vs `.Rate()`**
+>
+> `.Rate(n int)` 用于 RateLimiter 和 SlidingWindow 模式。`.Rate(n float64)` 的 float64 签名用于 TokenBucket 模式（因为 TokenBucket 支持小数速率如 Rate(0.5) = 每 2 秒 1 个令牌）。方法名相同但参数类型不同决定了用于哪个模式。
+
+---
+
+## 模式三：SlidingWindow（滑动窗口）
+
+精确计数式限流：在滑动时间窗口内精确限制请求数。比固定窗口更平滑，无边界突刺问题。
+
+```go
+val, err := async.Retry[string](ctx).
+    Linear().MaxRetries(5).
+    Backoff(200*time.Millisecond, 0).
+    SlidingWindow().        // 启用滑动窗口
+    Limit(100).             // 每窗口最多 100 次
+    Window(10*time.Second). // 10 秒滑动窗口
+    Shards(8).              // 水平分片
+    Execute(func(ctx context.Context) (string, error) {
+        return fetchData(ctx, id)
+    })
+```
+
+> **⚠️ SlidingWindow vs RateLimiter**
+>
+> - RateLimiter：阻塞等待令牌，保证请求均匀分布
+> - SlidingWindow：非阻塞精确计数，超限时进入退避重试
+
+---
+
+## 模式四：Adaptive（自适应并发限流）
+
+根据成功率动态调整并发度。成功率高时自动扩容（增加并发），失败率高时自动缩容（减少并发）。
+
+```go
+err := async.RetryVoid(ctx).
+    Exponential().MaxRetries(10).
+    Backoff(50*time.Millisecond, 5*time.Second).
+    Adaptive().             // 启用自适应限流
+    MinWorker(5).           // 最小并发度 5
+    MaxWorker(100).         // 最大并发度 100
+    Shards(16).             // 水平分片
+    ExecuteVoid(func(ctx context.Context) error {
+        return callUnstableService(ctx)
+    })
+```
+
+> **⚠️ Adaptive 动态并发**
+>
+> 每次重试前 `Acquire` 并发槽位，执行后 `Release`。并发度在 MinWorker~MaxWorker 之间根据成功率自适应变化。适合下游服务容量不稳定的场景。
+
+---
+
+## 无返回值重试（RetryVoid）
+
+`RetryVoid(ctx)` 等价于 `Retry[struct{}](ctx)`，提供更简洁的无返回值重试语义：
+
+```go
+err := async.RetryVoid(ctx).
+    Exponential().MaxRetries(3).
+    Backoff(100*time.Millisecond, 5*time.Second).
+    ExecuteVoid(func(ctx context.Context) error {
+        return db.Write(ctx, record)
+    })
+```
+
+对比带返回值版：
+
+```go
+val, err := async.Retry[int](ctx).
+    Exponential().MaxRetries(3).
+    Backoff(100*time.Millisecond, 5*time.Second).
+    Execute(func(ctx context.Context) (int, error) {
+        return compute(ctx)
+    })
 ```
 
 ---
 
-### RetryWithBackoffResult
+## 每次调用超时
+
+`PerCallTimeout(d)` 设置每次 fn 调用的超时。超时后不会终止重试循环，而是进入退避后下一次重试：
 
 ```go
-// 语法
-func RetryWithBackoffResult[T any](
-    ctx context.Context,
-    fn func(ctx context.Context) (T, error),
-    maxRetries int,
-    initialBackoff time.Duration,
-    maxBackoff time.Duration,
-) core.Result[T]
+val, err := async.Retry[string](ctx).
+    Exponential().MaxRetries(3).
+    Backoff(100*time.Millisecond, 5*time.Second).
+    PerCallTimeout(2 * time.Second).   // 每次调用最多 2 秒
+    Execute(func(ctx context.Context) (string, error) {
+        return slowRPC(ctx, req)       // 超过 2s 自动取消本次调用，进入重试
+    })
 ```
 
-与 `RetryWithBackoff` 相同，但返回 `Result[T]` 而非两个返回值，便于链式处理。
+> **⚠️ PerCallTimeout 超时 ≠ 取消**
+>
+> `PerCallTimeout` 超时不会终止整个重试循环，只是单次调用超时。超时后仍会按退避策略进入下一次重试。要完全终止可使用 `context.WithTimeout` 包装外部 ctx。
 
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `ctx` | `context.Context` | 上下文 |
-| `fn` | `func(context.Context) (T, error)` | 要执行的函数 |
-| `maxRetries` | `int` | 最大重试次数 |
-| `initialBackoff` | `time.Duration` | 初始退避时间 |
-| `maxBackoff` | `time.Duration` | 最大退避时间上限 |
-| 返回 | `core.Result[T]` | 结果容器，通过 `Ok()` 判断成功，`Value` / `Err` 获取值/错误 |
+---
+
+## Run / RunVoid 简化终端
+
+`Run(fn)` 是简化版终端，fn 不需要接收 context 参数：
 
 ```go
-r := retry.RetryWithBackoffResult(ctx, fn, 3, 100*time.Millisecond, 5*time.Second)
-if !r.Ok() {
-    log.Printf("重试失败: %v", r.Err)
-    return
-}
-process(r.Value)
+// Execute：需要 context 参数
+err := async.RetryVoid(ctx).
+    Exponential().MaxRetries(3).
+    Backoff(100*time.Millisecond, 5*time.Second).
+    ExecuteVoid(func(ctx context.Context) error {
+        return doSomething(ctx)   // fn 有 ctx 参数
+    })
+
+// Run：不需要 context 参数，更简洁
+err := async.RetryVoid(ctx).
+    Exponential().MaxRetries(3).
+    Backoff(100*time.Millisecond, 5*time.Second).
+    Run(func() error {
+        return doSomething()      // fn 无 ctx 参数
+    })
+
+// RunVoid：等价于 ExecuteVoid，fn 有 ctx 参数
+err := async.RetryVoid(ctx).
+    Exponential().MaxRetries(3).
+    Backoff(100*time.Millisecond, 5*time.Second).
+    RunVoid(func(ctx context.Context) error {
+        return doSomething(ctx)
+    })
+```
+
+> **⚠️ Execute / ExecuteVoid / Run / RunVoid 区别**
+>
+> | 方法 | fn 签名 | 返回值 | 说明 |
+> |------|------|--------|------|
+> | `Execute(fn)` | `func(context.Context) (T, error)` | `(T, error)` | 带返回值 |
+> | `ExecuteVoid(fn)` | `func(context.Context) error` | `error` | 无返回值 |
+> | `Run(fn)` | `func() error` | `error` | 简化无 ctx 无返回值 |
+> | `RunVoid(fn)` | `func(context.Context) error` | `error` | 同 ExecuteVoid |
+>
+> `.Execute(fn)` 只能用于 `Retry[T](ctx)`（T ≠ struct{}）。`.ExecuteVoid(fn)` / `.Run(fn)` / `.RunVoid(fn)` 只能用于 `RetryVoid(ctx)`（或 `Retry[struct{}](ctx)`）。
+
+---
+
+## 默认值体系
+
+### 重试策略默认值
+
+| 默认值 | 获取/恢复方法 | 默认值 | 说明 |
+|--------|-------------|--------|------|
+| 默认退避策略 | `.Exponential()` | **指数退避** | 首次创建时就是指数退避 |
+| 默认重试次数 | `.DefaultMaxRetries()` | **3 次** | 总执行次数 = 4（1 次初试 + 3 次重试） |
+| 默认退避时间 | `.DefaultBackoff()` | **100ms ~ 30s** | 指数模式：首间隔+上限；线性模式：固定间隔 |
+| 默认单次超时 | `.DefaultPerCallTimeout()` | **不限时**（0） | 超时后继续重试 |
+| 默认完整配置 | `.DefaultConfig()` | — | 重置所有配置为默认值 |
+
+### 限流默认值（四选一模式）
+
+| 模式 | `Default*` 方法 | 默认值 | 说明 |
+|------|----------------|--------|------|
+| RateLimiter | `.DefaultRate()` | **10/秒** | 每 Per 内操作数 |
+| RateLimiter | `.DefaultPer()` | **1 秒** | 时间窗口 |
+| RateLimiter | `.DefaultBurst()` | **0**（不开启突发） | 突发容量 |
+| TokenBucket | `.DefaultRate()` | **10/秒** | float64 签名 |
+| TokenBucket | `.DefaultCapacity()` | **速率×2** | 令牌桶容量 |
+| SlidingWindow | `.DefaultLimit()` | **100** | 每窗口请求数 |
+| SlidingWindow | `.DefaultWindow()` | **1 秒** | 窗口大小 |
+| Adaptive | `.DefaultMinWorker()` | **1** | 最小并发度 |
+| Adaptive | `.DefaultMaxWorker()` | **Min×10** | 最大并发度 |
+| 所有限流模式 | `.DefaultShards()` | **不启用分片** | 分片数=0 |
+
+### 默认值覆盖优先级
+
+```
+Default* 方法（设置标准默认值）
+    ↓ 被覆盖
+显式设置（.MaxRetries(n), .Backoff(...), .Rate(n) 等）
+    ↓ 构建
+Execute / ExecuteVoid / Run / RunVoid 执行
 ```
 
 ---
 
-## 线性退避重试
+## 生产环境使用建议
 
-### RetryWithLinearBackoff
+### 重试策略选型
+
+| 场景 | 推荐策略 | 理由 |
+|------|---------|------|
+| 依赖服务偶发不可用（502/503） | 指数退避 | 减少对下游的压力 |
+| 定时轮询间隔固定 | 线性退避 | 间隔均匀 |
+| 限流器 429 响应 | RateLimiter + 指数退避 | 限流后等待更久再试 |
+| 调用下游有 QPS 配额 | TokenBucket | 精确控制频率 |
+| 下游容量不稳定 | Adaptive | 根据成功率自动调整 |
+
+### 退避时间建议
+
+| 下游恢复时间 | 推荐 Backoff(min, max) | 理由 |
+|-------------|----------------------|------|
+| 快速恢复（<1s） | `(100ms, 3s)` | 短间隔快速重试 |
+| 中等恢复（1~10s） | `(500ms, 15s)` | 给下游留足恢复时间 |
+| 慢速恢复（>10s） | `(1s, 60s)` | 长间隔避免雪崩 |
+
+### 重试次数建议
+
+| 场景 | 推荐 MaxRetries | 理由 |
+|------|----------------|------|
+| 关键数据写入 | **5~10** | 宁可多试几次 |
+| API 查询（幂等） | **2~3** | 幂等操作可放心重试 |
+| 非关键通知 | **1~2** | 失败可丢弃 |
+| 限流场景 | **10+** | 配合限流器等待令牌 |
+
+### 限流 + 重试组合推荐
 
 ```go
-// 语法
-func RetryWithLinearBackoff[T any](
-    ctx context.Context,
-    fn func(ctx context.Context) (T, error),
-    maxRetries int,
-    backoff time.Duration,
-) (T, error)
+// 推荐配置：指数退避 + RateLimiter 限流
+val, err := async.Retry[string](ctx).
+    Exponential().MaxRetries(5).
+    Backoff(200*time.Millisecond, 10*time.Second).
+    PerCallTimeout(3 * time.Second).    // 单次调用超时防止卡死
+    RateLimiter().
+    Rate(10).Per(time.Second).          // 每秒最多 10 次重试
+    Burst(20).                          // 允许短暂突发 20 次
+    Execute(func(ctx context.Context) (string, error) {
+        return callExternalAPI(ctx)
+    })
 ```
 
-使用固定退避时间执行 fn，每次重试等待相同的 `backoff` 时间。
+### 常见错误
 
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `ctx` | `context.Context` | 上下文，取消后终止重试 |
-| `fn` | `func(context.Context) (T, error)` | 要执行的函数 |
-| `maxRetries` | `int` | 最大重试次数（不含首次尝试） |
-| `backoff` | `time.Duration` | 固定退避时间 |
-| 返回 | `(T, error)` | 成功时返回值和 nil；重试耗尽时返回错误 |
-
-```go
-// 每次重试等1秒，最多重试5次
-val, err := retry.RetryWithLinearBackoff(ctx, fn, 5, 1*time.Second)
-```
+- **❌ 不设 PerCallTimeout**：下游 hang 住时重试循环卡死，建议总超时 = `(BackoffMax + PerCallTimeout) × (MaxRetries + 1)`
+- **❌ 重试非幂等操作**：Write/Delete 类操作重试前确认下游支持幂等
+- **❌ 指数退避上限过小**：如果 max 小于 `initial × 2^retries`，后续间隔时间相同，退避效果不明显
+- **❌ RateLimiter 和 TokenBucket 混淆**：前者阻塞等令牌，后者非阻塞跳过，根据场景选择
+- **❌ 忘记使用 DefaultConfig() 清理**：链式构建器可能继承之前调用的残留状态，使用前先 `.DefaultConfig()`
 
 ---
 
-### RetryWithLinearBackoffVoid
+## 自定义日志
 
 ```go
-// 语法
-func RetryWithLinearBackoffVoid(
-    ctx context.Context,
-    fn func(ctx context.Context) error,
-    maxRetries int,
-    backoff time.Duration,
-) error
+val, err := async.Retry[string](ctx).
+    Logger(myLogger).     // 全局生效
+    Exponential().MaxRetries(3).
+    Backoff(100*time.Millisecond, 5*time.Second).
+    Execute(fn)
+
+err := async.RetryVoid(ctx).
+    Logger(myLogger).
+    DefaultLogger().      // 全局恢复默认
+    Run(func() error { return doSomething() })
 ```
-
-与 `RetryWithLinearBackoff` 相同，但 fn 只返回 error。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `ctx` | `context.Context` | 上下文 |
-| `fn` | `func(context.Context) error` | 要执行的函数，只返回 error |
-| `maxRetries` | `int` | 最大重试次数 |
-| `backoff` | `time.Duration` | 固定退避时间 |
-| 返回 | `error` | nil 表示成功 |
-
-```go
-// 每次重试等500ms，最多重试3次
-err := retry.RetryWithLinearBackoffVoid(ctx, func(ctx context.Context) error {
-    return sendEmail(ctx, to, body)
-}, 3, 500*time.Millisecond)
-```
-
----
-
-### RetryWithLinearBackoffResult
-
-```go
-// 语法
-func RetryWithLinearBackoffResult[T any](
-    ctx context.Context,
-    fn func(ctx context.Context) (T, error),
-    maxRetries int,
-    backoff time.Duration,
-) core.Result[T]
-```
-
-与 `RetryWithLinearBackoff` 相同，但返回 `Result[T]`。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `ctx` | `context.Context` | 上下文 |
-| `fn` | `func(context.Context) (T, error)` | 要执行的函数 |
-| `maxRetries` | `int` | 最大重试次数 |
-| `backoff` | `time.Duration` | 固定退避时间 |
-| 返回 | `core.Result[T]` | 结果容器 |
-
-```go
-r := retry.RetryWithLinearBackoffResult(ctx, fn, 5, 1*time.Second)
-if r.Ok() {
-    process(r.Value)
-}
-```
-
----
-
-## 每次调用超时重试
-
-### RetryWithConfig
-
-```go
-// 语法
-func RetryWithConfig[T any](
-    ctx context.Context,
-    fn func(ctx context.Context) (T, error),
-    maxRetries int,
-    initialBackoff time.Duration,
-    maxBackoff time.Duration,
-    opts ...TimeoutOpt,
-) (T, error)
-```
-
-指数退避重试，**额外支持每次 fn 调用的超时控制**。
-
-与 `RetryWithBackoff` 的区别：
-- 每次调用 fn 都会包裹在一个 `context.WithTimeout` 中
-- 会区分 `DeadlineExceeded` 和 `Canceled` 错误，这两种错误不重试直接返回
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `ctx` | `context.Context` | 上下文，取消后终止重试 |
-| `fn` | `func(context.Context) (T, error)` | 要执行的函数 |
-| `maxRetries` | `int` | 最大重试次数（不含首次） |
-| `initialBackoff` | `time.Duration` | 初始退避时间 |
-| `maxBackoff` | `time.Duration` | 最大退避时间上限 |
-| `opts` | `...TimeoutOpt` | 可选配置 `TimeoutOpt{PerCallTimeout}` |
-| 返回 | `(T, error)` | 成功时返回值；重试耗尽或超时取消时返回错误 |
-
-```go
-// 每次调用最多2秒，最多重试3次，退避100ms到5s
-result, err := retry.RetryWithConfig(ctx, func(ctx context.Context) (*Data, error) {
-    return fetchData(ctx, id)
-}, 3, 100*time.Millisecond, 5*time.Second,
-    retry.TimeoutOpt{PerCallTimeout: 2 * time.Second})
-
-if err != nil {
-    if errors.Is(err, context.DeadlineExceeded) {
-        log.Println("调用超时")
-    }
-}
-```
-
----
-
-### RetryWithConfigVoid
-
-```go
-// 语法
-func RetryWithConfigVoid(
-    ctx context.Context,
-    fn func(ctx context.Context) error,
-    maxRetries int,
-    initialBackoff time.Duration,
-    maxBackoff time.Duration,
-    opts ...TimeoutOpt,
-) error
-```
-
-与 `RetryWithConfig` 相同，但 fn 只返回 error。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `ctx` | `context.Context` | 上下文 |
-| `fn` | `func(context.Context) error` | 要执行的函数，只返回 error |
-| `maxRetries` | `int` | 最大重试次数 |
-| `initialBackoff` | `time.Duration` | 初始退避时间 |
-| `maxBackoff` | `time.Duration` | 最大退避时间上限 |
-| `opts` | `...TimeoutOpt` | 可选 `TimeoutOpt{PerCallTimeout}` |
-| 返回 | `error` | nil 或包裹的错误 |
-
-```go
-err := retry.RetryWithConfigVoid(ctx, func(ctx context.Context) error {
-    return callExternalAPI(ctx, req)
-}, 3, 100*time.Millisecond, 5*time.Second,
-    retry.TimeoutOpt{PerCallTimeout: 2 * time.Second})
-```
-
----
-
-### TimeoutOpt
-
-```go
-type TimeoutOpt struct {
-    PerCallTimeout time.Duration
-}
-```
-
-用于 `RetryWithConfig` / `RetryWithConfigVoid` 的每次调用超时配置。
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `PerCallTimeout` | `time.Duration` | 每次调用（含重试中的每次尝试）的超时时间 |
-
----
-
-## 超时/截止时间包装器
-
-### WithTimeout
-
-```go
-// 语法
-func WithTimeout[T any](
-    ctx context.Context,
-    timeout time.Duration,
-    fn func(ctx context.Context) (T, error),
-) (T, error)
-```
-
-包装 fn，使其在指定超时后自动取消。不涉及重试逻辑。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `ctx` | `context.Context` | 父上下文 |
-| `timeout` | `time.Duration` | 超时时间 |
-| `fn` | `func(context.Context) (T, error)` | 要执行的函数 |
-| 返回 | `(T, error)` | 成功时返回值；超时时 `context.DeadlineExceeded` |
-
-```go
-// 单个调用最多3秒
-val, err := retry.WithTimeout(ctx, 3*time.Second, func(ctx context.Context) (string, error) {
-    return httpGet(ctx, url)
-})
-```
-
----
-
-### WithTimeoutVoid
-
-```go
-// 语法
-func WithTimeoutVoid(
-    ctx context.Context,
-    timeout time.Duration,
-    fn func(ctx context.Context) error,
-) error
-```
-
-与 `WithTimeout` 相同，但 fn 只返回 error。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `ctx` | `context.Context` | 父上下文 |
-| `timeout` | `time.Duration` | 超时时间 |
-| `fn` | `func(context.Context) error` | 要执行的函数，只返回 error |
-| 返回 | `error` | nil 表示成功；超时或执行出错时返回 error |
-
-```go
-err := retry.WithTimeoutVoid(ctx, 5*time.Second, func(ctx context.Context) error {
-    return kafkaProducer.Send(ctx, msg)
-})
-```
-
----
-
-### WithDeadline
-
-```go
-// 语法
-func WithDeadline[T any](
-    ctx context.Context,
-    deadline time.Time,
-    fn func(ctx context.Context) (T, error),
-) (T, error)
-```
-
-包装 fn，使其在指定截止时间后自动取消。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `ctx` | `context.Context` | 父上下文 |
-| `deadline` | `time.Time` | 截止时间 |
-| `fn` | `func(context.Context) (T, error)` | 要执行的函数 |
-| 返回 | `(T, error)` | 成功时返回值；超时时 `context.DeadlineExceeded` |
-
-```go
-deadline := time.Now().Add(5 * time.Second)
-val, err := retry.WithDeadline(ctx, deadline, fn)
-```
-
----
-
-### WithDeadlineVoid
-
-```go
-// 语法
-func WithDeadlineVoid(
-    ctx context.Context,
-    deadline time.Time,
-    fn func(ctx context.Context) error,
-) error
-```
-
-与 `WithDeadline` 相同，但 fn 只返回 error。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `ctx` | `context.Context` | 父上下文 |
-| `deadline` | `time.Time` | 截止时间 |
-| `fn` | `func(context.Context) error` | 要执行的函数，只返回 error |
-| 返回 | `error` | nil 表示成功 |
-
-```go
-err := retry.WithDeadlineVoid(ctx, time.Now().Add(30*time.Second), func(ctx context.Context) error {
-    return batchProcess(ctx, items)
-})
-```
-
----
-
-## RetryFn（函数式重试）
-
-### RetryFn
-
-```go
-type RetryFn func() error
-```
-
-函数式重试辅助类型，支持方法链式调用。将普通函数转换为 RetryFn 后直接调用 `WithRetry`。
-
-特点：
-- 无需 context 参数（适合简单无上下文函数）
-- 自动捕获 panic 并转为 error
-- 无退避等待，立即重试
-
----
-
-### WithRetry
-
-```go
-// 语法
-func (r RetryFn) WithRetry(maxRetries int) error
-```
-
-执行 fn，最多执行 `maxRetries+1` 次，自动捕获 panic。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `maxRetries` | `int` | 最大重试次数（不含首次） |
-| 返回 | `error` | nil 表示成功；重试耗尽时返回 "retry exhausted" 包裹错误 |
-
-```go
-// 简单重试：最多3次
-err := retry.RetryFn(func() error {
-    return doSomething()
-}).WithRetry(3)
-
-// 带 panic 保护的重试
-err := retry.RetryFn(func() error {
-    return riskyOperation()
-}).WithRetry(2)
-```
-
----
-
-## BindRetryToWorker
-
-### BindRetryToWorker
-
-```go
-// 语法
-func BindRetryToWorker(
-    ctx context.Context,
-    backend WorkerPoolBackend,
-    fn func(ctx context.Context) error,
-    maxRetries int,
-    initialBackoff time.Duration,
-    maxBackoff time.Duration,
-) error
-```
-
-向 worker 池提交任务，遇到 `ErrSubmitTimeout` 时自动退避重试。适用高负载场景下提交任务时池满的处理。
-
-**只重试提交超时错误**，其他错误（如 `ErrPoolClosed`）立即返回不重试。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `ctx` | `context.Context` | 上下文，取消后终止重试 |
-| `backend` | `WorkerPoolBackend` | 实现了 `Submit(ctx, fn) error` 接口的后端（Pool 实现此接口） |
-| `fn` | `func(context.Context) error` | 要提交执行的任务函数 |
-| `maxRetries` | `int` | 最大重试次数（不含首次提交） |
-| `initialBackoff` | `time.Duration` | 初始退避时间 |
-| `maxBackoff` | `time.Duration` | 最大退避时间上限 |
-| 返回 | `error` | nil 表示成功提交；其他 pool 错误或重试耗尽时返回 error |
-
-```go
-// 向协程池提交任务，提交超时时自动退避重试
-err := retry.BindRetryToWorker(ctx, pool, func(ctx context.Context) error {
-    return processItem(ctx, item)
-}, 3, 10*time.Millisecond, 1*time.Second)
-```
-
----
-
-### WorkerPoolBackend 接口
-
-```go
-type WorkerPoolBackend interface {
-    Submit(ctx context.Context, fn func(ctx context.Context) error) error
-}
-```
-
-Pool 自动实现此接口，可以直接作为 `BindRetryToWorker` 的 backend 参数。
-
----
-
-## 退避算法
-
-退避时间计算：
-
-```go
-backoff = min(initialBackoff × 2^attempt, maxBackoff)
-```
-
-| attempt | initialBackoff=100ms | maxBackoff=5s |
-|---------|---------------------|---------------|
-| 0 | 100ms | |
-| 1 | 200ms | |
-| 2 | 400ms | |
-| 3 | 800ms | |
-| 4 | 1.6s | |
-| 5 | 3.2s | |
-| 6 | 5s（触及上限） | |
-| 7+ | 5s（保持上限） | |
-
----
-
-## Context 取消传播
-
-所有重试函数都接受 `context.Context`，当 ctx 被取消时：
-- 正在执行的任务不会立即中断（取决于 fn 内部是否检查 ctx.Done()）
-- 重试循环终止，返回 `ctx.Err()`
-- 已经执行成功的结果不会丢失
-
-```go
-ctx, cancel := context.WithCancel(parentCtx)
-defer cancel()
-
-// 5秒后取消重试
-go func() {
-    time.Sleep(5 * time.Second)
-    cancel()
-}()
-
-err := retry.RetryWithBackoffVoid(ctx, fn, 100, 100*time.Millisecond, 1*time.Second)
-// 5秒后返回 context.Canceled
-```
-
----
-
-## Panic 自动恢复
-
-所有重试函数都通过 `invokeSafely` 包装 fn 调用，自动将 panic 转为 `PanicError`：
-
-```go
-err := retry.RetryWithCount(ctx, 3, func(ctx context.Context) error {
-    var db *Database
-    db.Query(ctx, "SELECT 1") // panic: nil pointer dereference
-    return nil
-})
-// err 类型为 *PanicError，包含完整调用栈
-```
-
----
-
-## 最佳实践
-
-### 1. 总是设置最大重试次数
-
-```go
-retry.RetryWithBackoff(ctx, fn, 3, ...)    // ✅ 好：最多3次重试
-retry.Retry(ctx, fn)                        // ⚠️ 慎用：无限重试，可能永远阻塞
-```
-
-### 2. 使用 RetryWithConfig 控制每次调用超时
-
-```go
-// 防止单次调用无限等待
-retry.RetryWithConfig(ctx, fn, 3, 100*time.Millisecond, 5*time.Second,
-    retry.TimeoutOpt{PerCallTimeout: 2 * time.Second})
-```
-
-### 3. 区分可重试和不可重试的错误
-
-```go
-cfg := async.RetryConfig{
-    MaxRetries: 3,
-    ShouldRetry: func(err error) bool {
-        return errors.Is(err, ErrNetwork) ||
-               errors.Is(err, ErrTimeout) ||
-               errors.Is(err, context.DeadlineExceeded)
-    },
-}
-```
-
-### 4. 使用 Jitter 避免惊群效应
-
-当多个客户端同时重试时，加入随机抖动避免同时打到服务端：
-
-```go
-cfg := async.RetryConfig{
-    MaxRetries:   5,
-    InitialDelay: 100 * time.Millisecond,
-    Jitter:       0.3, // 实际延迟 = delay × [0.7, 1.3]
-}
-```
-
-### 5. 记录重试日志
-
-```go
-OnRetry: func(attempt int, err error, delay time.Duration) {
-    async.LogWarn("重试中", async.Int("attempt", attempt), async.Err(err))
-}
-```
-
----
-
-## 高级示例
-
-### 重试 + 超时 + 退避组合
-
-```go
-// 完整的生产级重试策略
-result, err := retry.RetryWithConfig(ctx, func(ctx context.Context) (*Response, error) {
-    return httpClient.Do(ctx, req)
-}, 5,                          // 最多重试5次
-    100*time.Millisecond,       // 初始退避100ms
-    10*time.Second,             // 最大退避10s
-    retry.TimeoutOpt{PerCallTimeout: 3 * time.Second}, // 每次调用最多3秒
-)
-```
-
-### Worker池提交重试
-
-```go
-pool := async.NewPool[Result](async.IO())
-defer pool.Close()
-
-// 高负载下提交可能超时，自动退避重试
-err := retry.BindRetryToWorker(ctx, pool, func(ctx context.Context) error {
-    return processItem(ctx, item)
-}, 3, 10*time.Millisecond, 500*time.Millisecond)
-```
-
-### 不同退避策略对比
-
-```go
-// 指数退避：适合依赖后端恢复的场景（如 RPC 重连）
-retry.RetryWithBackoff(ctx, fn, 5, 100*time.Millisecond, 30*time.Second)
-
-// 线性退避：适合需要稳定间隔的轮询场景
-retry.RetryWithLinearBackoff(ctx, fn, 10, 5*time.Second)
-
-// 无退避：适合短暂故障立即重试
-retry.RetryFn(func() error { return tryLock() }).WithRetry(3)
-```
-
----
-
-## 性能基准
-
-| 场景 | 数据量 | 吞吐量 |
-|------|--------|--------|
-| Retry 无错误（首次成功） | 1M | **51M ops/s** |
-| Retry Backoff Race | 100K × 100并发 | **零竞态** |

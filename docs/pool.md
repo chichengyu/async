@@ -2,161 +2,467 @@
 
 ## 概述
 
-`Pool[T]` 是泛型协程池，复用 goroutine，适合长期运行、反复提交任务的后台服务场景。
+`Pool[T]` 是泛型协程池，复用固定数量的 goroutine 处理高频并发任务。通过 `Pool[T]()` Builder 链式构建，终端方法 `Run(fn)` 自动管理生命周期。
 
-**核心特性**:
-- 32 分片无锁存储，千万级并发无锁竞争
-- 自动扩缩容（基于 busy/concurrency 比率）
-- 流式结果消费（Stream channel + ResultCallback）
-- 环形缓冲（固定内存，适合海量任务）
-- 背压控制（MaxPending + Overflow 策略）
-- FailFast 快速失败
-- 丰富的 With* 链式配置组合方法
+**三种 Pool 入口**：
 
-> **⚠️ 生命周期必须成对**
+| 入口 | 说明 | 终端方法 |
+|------|------|----------|
+| `async.Pool[T]()` | 单协程池 | `.Run(fn)` |
+| `async.PoolMulti[T]()` | 水平分片协程池（MultiPool） | `.Run(fn)` |
+| `async.PoolSharded[T]()` | 分片协程池构建器（ShardPool，详见 Shard 文档） | `.Run(fn)` |
+
+> **⚠️ PoolBuilder 只有 `.Run(fn)` 作为终端方法，没有 `.Build()`**
 >
-> 创建 Pool 后必须调用 `Close()`、`WaitAndClose()` 或 `CloseAndWait()`，否则 worker goroutine 将永久泄漏。
+> `PoolBuilder[T]` 的唯一终端方法是 `.Run(fn func(ctx context.Context, p *Pool[T]) error) error`。fn 回调接收一个已创建好的 `*Pool[T]`，fn 返回后自动 Close 池。这与 GroupBuilder 不同——GroupBuilder 同时提供 `.Build()` 和 `.Run(fn)` 两种终端方法。
 >
 > **⚠️ Wait 一次性**
 >
-> `Wait()` 只能调用一次，调用后不可再 Submit。如需重复提交+等待，请使用 `Reset()`。
+> `Wait()`、`WaitTimeout()`、`WaitContext()` 三者互斥，只能调用其中一个。调用后不可再 Submit。如需重复提交+等待，请使用 `ResetWait()` 或 `Reset()`。
 >
 > **⚠️ Submit 后必须收集**
 >
 > Submit 后必须调用 Wait / WaitAndClose / CloseAndWait 中的一种来收集结果，否则创建的 goroutine 会泄漏。
->
-> **⚠️ Close 不等待**
->
-> `Close()` 会立即停止 worker，不等待正在执行的任务完成。生产环境推荐 `CloseAndWait()`。
+
+---
 
 ## 目录
 
-- [创建](#创建)
-  - [NewPool / DefaultPool](#newpool)
-  - [NewAutoScalePool](#newautoscalepool)
-  - [NewNoResultPool / DefaultNoResultPool](#newnoresultpool--defaultnoresultpool)
+- [PoolBuilder 链式方法速查表](#poolbuilder-链式方法速查表)
+- [MultiPoolBuilder 链式方法速查表](#multipoolbuilder-链式方法速查表)
+- [Pool 实例方法速查表](#pool-实例方法速查表)
+- [MultiPool 实例方法速查表](#multipool-实例方法速查表)
+- [默认值体系](#默认值体系)
+- [生产环境使用建议](#生产环境使用建议)
+- [基本配置与生命周期](#基本配置与生命周期)
 - [任务提交](#任务提交)
-  - [Submit / TrySubmit / SubmitAt](#submit)
-- [关闭与等待](#关闭与等待)
-  - [Wait / WaitAndClose / Close / CloseAndWait](#wait)
-  - [CloseAndWaitTimeout / CloseByIdle / Reset](#closeandwaittimeout)
-- [超时与上下文](#超时与上下文)
-  - [WithTimeout / WaitTimeout / WaitContext](#withtimeout)
-  - [WithContext / WithFailFast / WithFFCtx](#withcontext)
-- [With* 组合方法速查](#with-组合方法速查)
-- [结构体类型](#结构体类型)
-  - [PoolStats / SubmitResult](#poolstats)
-- [状态查询](#状态查询)
-  - [Size / Active / Busy / Pending / Stats](#size)
-  - [SuccessCount / FailCount / TotalCount / HasError / QueueDepth](#successcount)
-- [错误提取](#错误提取)
-  - [Errors / FirstError / JoinErrors / Values](#errors)
-- [自动扩缩容](#自动扩缩容)
-  - [EnableAutoScale / IsAutoScaleEnabled / DisableAutoScale](#enableautoscale)
+- [等待与关闭](#等待与关闭)
+- [状态查询与错误提取](#状态查询与错误提取)
 - [流式结果消费](#流式结果消费)
-  - [WithStreaming / StreamResults / StreamDropped / WithResultCallback](#withstreaming)
 - [环形缓冲](#环形缓冲)
-  - [WithRingBuffer / Flush / RingBufDropped](#withringbuffer)
 - [背压控制](#背压控制)
-  - [WithMaxPending / WithOverflow / WithMaxResults](#withmaxpending)
-  - [Resize / ResizeAndWaitTimeout](#resize)
-- [NoResultPool 辅助函数](#noresultpool-辅助函数)
-  - [SubmitAction / TrySubmitAction / GoAction](#submitaction)
-  - [SubmitActionWithTimeout / GoActionWithTimeout](#submitactionwithtimeout)
-  - [BuildAggregateNoResult / FillNoResultSkipped](#buildaggregatenoresult-1)
-- [Pool 便捷函数](#pool-便捷函数)
-  - [Submit / SubmitN / SubmitSafeN / SubmitBatch / MapPool / ForEachPool](#submit-便捷)
 - [MultiPool（水平分片协程池）](#multipool水平分片协程池)
-  - [创建：Shard / DefaultShard](#创建shard--defaultshard)
-  - [基础查询：ShardCount / GetShard](#基础查询shardcount--getshard)
-  - [任务分发：Submit / TrySubmit / SubmitKeyed / TrySubmitKeyed / SubmitBatch](#任务分发submit--trysubmit--submitkeyed--trysubmitkeyed--submitbatch)
-  - [结果收集：Wait / WaitAndClose / Close](#结果收集wait--waitandclose--close)
-  - [链式配置：WithTimeout / WithSubmitTimeout / WithStreaming / WithResultCallback](#链式配置withtimeout--withsubmittimeout--withstreaming--withresultcallback)
-  - [链式配置：WithRingBuffer / WithMaxPending / WithOverflow / WithMaxResults](#链式配置withringbuffer--withmaxpending--withoverflow--withmaxresults)
-  - [统计聚合：TotalActive / TotalBusy / TotalPending / TotalWorkerCount](#统计聚合totalactive--totalbusy--totalpending--totalworkercount)
-  - [统计聚合：TotalFailCount / TotalSuccessCount / TotalCount](#统计聚合totalfailcount--totalsuccesscount--totalcount)
-  - [Flush](#flush-multi)
-- [架构说明](#架构说明)
-- [性能基准](#性能基准)
+- [AutoScale 自动扩缩容](#autoscale-自动扩缩容)
+- [辅助函数](#辅助函数)
+- [自定义日志](#自定义日志)
+- [常见错误](#常见错误)
 
-## 创建
+---
 
-### NewPool
+## PoolBuilder 链式方法速查表
 
-```go
-// 语法
-func NewPool[T any](size int) *Pool[T]
-```
+### 入口
 
-| 参数 | 类型 | 说明 |
+| 方法 | 说明 |
+|------|------|
+| `async.Pool[T]()` | 创建协程池链式构建器 |
+| `async.PoolMulti[T]()` | 创建水平分片协程池构建器 |
+| `async.PoolSharded[T]()` | 创建分片协程池构建器（详见 [Shard 文档](shard.md)） |
+
+### PoolBuilder 链式配置方法
+
+| 方法 | 说明 | 默认值 |
+|------|------|--------|
+| `.Context(ctx)` | 设置上下文（自动注入 TraceID） | `context.Background()` |
+| `.Worker(n)` | worker 数量（n≤0 自动修正为 `IO()`） | `IO()`（`runtime.NumCPU()×2`） |
+| `.DefaultWorker()` | 使用 IO 并发度 `core.IO()`（`NumCPU×2`） | — |
+| `.Timeout(d)` | 单任务超时 | `core.GetDefaultTimeout()`（全局默认 30s） |
+| `.DefaultTimeout()` | 恢复为全局默认超时（`core.GetDefaultTimeout()`，30s） | — |
+| `.SubmitTimeout(d)` | 提交超时 | 无限制（阻塞等待） |
+| `.DefaultSubmitTimeout()` | 清除提交超时（设为 0 = 不限时） | — |
+| `.FailFast()` | 启用 FailFast（任一失败取消全体） | 关闭 |
+| `.DefaultFailFast()` | 关闭 FailFast | — |
+| `.MaxPending(n)` | 最大排队任务数 | 无限制（0 = 不限） |
+| `.DefaultMaxPending()` | 清除最大排队限制（设为 0） | — |
+| `.OverflowBlock()` | 队列满时阻塞等待（**默认**） | 默认 |
+| `.OverflowDrop()` | 队列满时丢弃新任务 | — |
+| `.OverflowError()` | 队列满时返回 `ErrQueueOverflow` | — |
+| `.Overflow(s)` | 设置 Overflow 策略（Block/Drop/Error） | `OverflowBlock`（Pool 结构体零值=0=Block） |
+| `.DefaultOverflow()` | 恢复默认溢出策略（`OverflowDrop`） | — |
+| `.RingBuf(cap)` | 环形缓冲容量 | 0（禁用） |
+| `.DefaultRingBuf()` | 恢复默认（禁用环形缓冲） | — |
+| `.MaxResults(n)` | 最大结果存储数（-1=默认100K, 0=无限） | `core.GetDefaultMaxResults()`（全局默认 100_000） |
+| `.DefaultMaxResults()` | 恢复默认最大结果数（-1 = 使用全局默认 100K） | — |
+| `.Streaming(buf)` | 流式结果 channel 缓冲大小（buf>0 启用） | 0（禁用） |
+| `.DefaultStreaming()` | 恢复默认（禁用流式，0） | — |
+| `.Config(fn)` | 函数式配置，通过闭包修改 `Config` | — |
+| `.DefaultPoolConfig()` | 重置所有配置为 `DefaultConfig()` | — |
+| `.Logger(l)` | 注入自定义日志（**全局生效**） | 静默 |
+| `.DefaultLogger()` | 恢复默认日志（`core.SetLogger(nil)`） | — |
+
+### PoolBuilder 终端方法
+
+| 方法 | 返回值 | 说明 |
+|------|--------|------|
+| `.Run(fn)` | `error` | 创建池 → 执行 fn → fn 返回后自动 Close |
+
+> **⚠️ `.Run(fn)` 回调签名**
+>
+> `fn func(ctx context.Context, p *Pool[T]) error`：`ctx` 是 builder 上设置的上下文，`p` 是已创建的协程池实例。fn 返回后自动 `Close` 池。
+
+---
+
+## MultiPoolBuilder 链式方法速查表
+
+`async.PoolMulti[T]()` 返回 `*MultiPoolBuilder[T]`，提供以下链式配置方法：
+
+### MultiPoolBuilder 链式配置方法
+
+| 方法 | 说明 | 默认值 |
+|------|------|--------|
+| `.Context(ctx)` | 设置上下文（自动注入 TraceID） | `context.Background()` |
+| `.Shards(n)` | 水平分片数（≤1 不启用分片） | 无分片（需显式设置） |
+| `.DefaultShards()` | 使用默认分片数（`GOMAXPROCS`，最少 2） | — |
+| `.Worker(n)` | 每分片 worker 数量（n≤0 自动修正） | `IO()`（`NumCPU×2`） |
+| `.DefaultWorker()` | 使用 IO 并发度 `core.IO()`（`NumCPU×2`） | — |
+| `.Timeout(d)` | 单任务超时 | `core.GetDefaultTimeout()`（全局默认 30s） |
+| `.DefaultTimeout()` | 恢复为全局默认超时（`core.GetDefaultTimeout()`，30s） | — |
+| `.SubmitTimeout(d)` | 提交超时 | 无限制（阻塞等待） |
+| `.DefaultSubmitTimeout()` | 清除提交超时（设为 0 = 阻塞等待） | — |
+| `.FailFast()` | 启用 FailFast | 关闭 |
+| `.DefaultFailFast()` | 关闭 FailFast | — |
+| `.MaxPending(n)` | 每分片最大排队任务数 | 无限制 |
+| `.DefaultMaxPending()` | 清除最大排队限制（设为 0） | — |
+| `.OverflowBlock()` | 队列满时阻塞等待（**默认**） | 默认 |
+| `.OverflowDrop()` | 队列满时丢弃新任务 | — |
+| `.OverflowError()` | 队列满时返回错误 | — |
+| `.Overflow(s)` | 设置 Overflow 策略 | `OverflowBlock`（Pool 结构体零值=0=Block） |
+| `.DefaultOverflow()` | 显式设为 `OverflowDrop` | — |
+| `.RingBuf(cap)` | 每分片环形缓冲容量 | 0（禁用） |
+| `.DefaultRingBuf()` | 恢复默认（禁用环形缓冲） | — |
+| `.MaxResults(n)` | 每分片最大结果数（-1=默认100K） | 100_000 |
+| `.DefaultMaxResults()` | 恢复默认最大结果数 | — |
+| `.Streaming(buf)` | 每分片流式结果 channel 缓冲大小 | 0（禁用） |
+| `.DefaultStreaming()` | 恢复默认（禁用流式） | — |
+| `.Pool(p)` | 注入外部协程池（分片复用，用户不再使用该池） | 无 |
+| `.DefaultPool()` | 清除外部池注入，恢复内部自动创建 | — |
+| `.Config(fn)` | 函数式配置，通过闭包修改 `Config` | — |
+| `.DefaultMultiPoolConfig()` | 重置所有配置为 `DefaultConfig()` | — |
+| `.Logger(l)` | 注入自定义日志（**全局生效**） | 静默 |
+| `.DefaultLogger()` | 恢复默认日志（`core.SetLogger(nil)`） | — |
+
+### MultiPoolBuilder 终端方法
+
+| 方法 | 返回值 | 说明 |
+|------|--------|------|
+| `.Run(fn)` | `error` | 创建池 → 分片 → 执行 fn → 自动 Close 所有分片 |
+
+> **⚠️ `.Run(fn)` 回调签名**
+>
+> `fn func(ctx context.Context, mp *MultiPool[T]) error`：`ctx` 是 builder 上设置的上下文，`mp` 是已创建的分片协程池实例。fn 返回后自动 `Close` 所有分片。
+
+---
+
+## Pool 实例方法速查表
+
+以下方法在 `Run` 回调中的 `p *Pool[T]` 实例上可用：
+
+### 任务提交
+
+| 方法 | 签名 | 说明 |
 |------|------|------|
-| `size` | `int` | worker 数量，<=0 时自动使用 `core.IO()`（CPU 核数×2） |
+| `Submit` | `func(ctx, fn) error` | 阻塞提交任务，等待有空闲 worker |
+| `SubmitAt` | `func(index, ctx, fn) error` | 指定索引位置提交，结果在 results[index] |
+| `TrySubmit` | `func(ctx, fn) error` | 非阻塞提交，满时返回 `ErrSubmitTimeout` |
 
-```go
-p := async.NewPool[string](8)   // 8 个 worker
-p := async.NewPool[int](0)      // 使用 IO 并发度
-p := async.NewPool[int](async.IO()) // 显式指定 IO 并发度
-p := async.NewPool[int](async.CPU()) // CPU 密集型并发度
-```
+### 等待与关闭
 
-### DefaultPool
+| 方法 | 返回值 | 说明 |
+|------|--------|------|
+| `Wait()` | `[]Result[T]` | 阻塞等待所有任务完成，返回结果切片 |
+| `WaitAndClose()` | `[]Result[T]` | 先 Wait 再 Close |
+| `WaitTimeout(d)` | `([]Result[T], bool)` | 带超时等待，ok=false 表示超时 |
+| `WaitContext(ctx)` | `([]Result[T], bool)` | 带 context 等待 |
+| `Close()` | — | 立即关闭，不等待未完成任务 |
+| `CloseAndWait()` | — | 等待所有任务完成后关闭 |
+| `CloseAndWaitTimeout(d)` | `(bool, <-chan struct{})` | 带超时的等待完成后关闭 |
+| `CloseByIdle(d)` | — | 空闲 d 时长后自动关闭 |
+| `Reset()` | `(*Pool[T], error)` | 完整重置状态以便复用 |
+| `ResetWait()` | `*Pool[T]` | 重置 waited 状态，允许继续 Submit+Wait |
 
-```go
-// 语法
-func DefaultPool[T any]() *Pool[T]
-```
+### 状态查询
 
-等价于 `NewPool[T](core.IO())`，使用默认 IO 并发度。
+| 方法 | 返回值 | 说明 |
+|------|--------|------|
+| `Size()` | `int` | 当前 worker 数量 |
+| `Active()` | `int` | 当前活跃（已启动未结束）的 goroutine 数 |
+| `Busy()` | `int` | 正在执行任务的 goroutine 数 |
+| `Pending()` | `int` | 排队中的任务数 |
+| `QueueDepth()` | `int` | 队列深度 |
+| `TotalCount()` | `int64` | 已提交任务总数 |
+| `SuccessCount()` | `int64` | 成功任务数 |
+| `FailCount()` | `int64` | 失败任务数 |
+| `HasError()` | `bool` | 是否有错误 |
+| `Stats()` | `PoolStats` | 运行时统计快照 |
 
-```go
-p := async.DefaultPool[string]()
-defer p.Close()
-```
+### 错误提取
 
-### NewAutoScalePool
+| 方法 | 返回值 | 说明 |
+|------|--------|------|
+| `Errors()` | `[]error` | 所有非 nil 错误切片 |
+| `FirstError()` | `error` | 第一个错误 |
+| `JoinErrors()` | `error` | 所有错误合并为一个 error（`errors.Join`） |
+| `Values()` | `[]T` | 提取所有成功的值切片 |
 
-```go
-// 语法
-func NewAutoScalePool[T any](size int, cfg *AutoScaleConfig) *Pool[T]
-```
+### 运行时配置（实例级）
 
-| 参数 | 类型 | 说明 |
+| 方法 | 签名 | 说明 |
 |------|------|------|
-| `size` | `int` | 初始 worker 数，<=0 使用 IO 并发度 |
-| `cfg` | `*AutoScaleConfig` | 扩缩容配置，nil 使用 DefaultAutoScaleConfig() |
+| `WithTimeout(d)` | `*Pool[T]` | 设置任务超时（d>0 生效） |
+| `WithSubmitTimeout(d)` | `*Pool[T]` | 设置提交超时（d>0 生效） |
+| `WithFailFast(ctx)` | `(*Pool[T], context.Context)` | 启用 FailFast，返回新的 ffCtx |
+| `WithFFCtx(ctx)` | `(*Pool[T], context.Context)` | `WithFailFast` 的缩写 |
+| `WithStreaming(bufSize)` | `*Pool[T]` | 启用流式结果（bufSize≤0 自动=Worker×2） |
+| `WithResultCallback(fn)` | `*Pool[T]` | 设置每个任务完成时的回调 |
+| `WithRingBuffer(cap, overflow)` | `*Pool[T]` | 启用环形缓冲 |
+| `WithMaxPending(n)` | `*Pool[T]` | 设置最大排队任务数 |
+| `WithOverflow(strategy)` | `*Pool[T]` | 设置溢出策略 |
+| `WithMaxResults(n)` | `*Pool[T]` | 设置最大结果数（≤0=无限） |
+| `WithTraceID(ctx)` | `(*Pool[T], context.Context)` | 注入 TraceID 并返回新 ctx |
+| `WithContext(ctx)` | `(*Pool[T], context.Context)` | 设置池级上下文 |
+| `MergeFailFastCancel(cancel)` | `*Pool[T]` | 合并外部 CancelFunc |
 
-```go
-p := async.NewAutoScalePool[int](4, nil) // 4 worker + 默认扩缩容配置
-defer p.Close()
+### 流式与环形缓冲
 
-p := async.NewAutoScalePool[int](4, &async.AutoScaleConfig{
-    MinWorkers:       2,
-    MaxWorkers:       500,
-    CheckInterval:    3 * time.Second,
-    ScaleUpThreshold: 0.6,
-    ScaleUpFactor:    1.5,
-    ScaleDownFactor:  0.7,
-})
+| 方法 | 返回值 | 说明 |
+|------|--------|------|
+| `StreamResults()` | `<-chan Result[T]` | 返回流式结果 channel |
+| `StreamDropped()` | `int64` | 因 stream channel 满被丢弃的结果数 |
+| `Flush(maxCount)` | `[]Result[T]` | 从环形缓冲中取出最多 maxCount 个结果 |
+| `RingBufDropped()` | `int64` | 因环形缓冲溢出被丢弃的元素数 |
+
+### 动态扩缩容
+
+| 方法 | 签名 | 说明 |
+|------|------|------|
+| `Resize(newSize)` | `int` | 调整 worker 数，返回实际大小 |
+| `ResizeAndWaitTimeout(newSize, timeout)` | — | 调整 worker 数并等待超时清理 |
+| `EnableAutoScale(config)` | — | 启用自动扩缩容（config=nil 使用默认配置） |
+| `DisableAutoScale()` | — | 停止自动扩缩容 |
+| `IsAutoScaleEnabled()` | `bool` | 是否已启用自动扩缩容 |
+| `Ctx()` | `context.Context` | 获取池级上下文 |
+
+---
+
+## MultiPool 实例方法速查表
+
+以下方法在 `Run` 回调中的 `mp *MultiPool[T]` 实例上可用：
+
+### 任务提交
+
+| 方法 | 签名 | 说明 |
+|------|------|------|
+| `Submit` | `func(ctx, fn) error` | 阻塞提交，round-robin 分发到某分片 |
+| `TrySubmit` | `func(ctx, fn) error` | 非阻塞提交，round-robin 分发 |
+| `SubmitKeyed` | `func(key, ctx, fn) error` | 按 key 哈希路由到固定分片（阻塞） |
+| `TrySubmitKeyed` | `func(key, ctx, fn) error` | 按 key 哈希路由到固定分片（非阻塞） |
+| `SubmitBatch` | `func(ctx, items, fn) []SubmitResult` | 批量提交，返回每项分片信息 |
+
+### 等待与关闭
+
+| 方法 | 返回值 | 说明 |
+|------|--------|------|
+| `Wait()` | `[]Result[T]` | 等待所有分片完成，合并结果 |
+| `WaitAndClose()` | `[]Result[T]` | 等待完成并关闭所有分片 |
+| `Close()` | — | 关闭所有分片 |
+
+### 查询
+
+| 方法 | 返回值 | 说明 |
+|------|--------|------|
+| `ShardCount()` | `int` | 分片数量 |
+| `GetShard(idx)` | `*Pool[T]` | 获取第 idx 个分片的 Pool 实例，越界返回 nil |
+
+### 运行时配置（代理到所有分片）
+
+| 方法 | 返回值 | 说明 |
+|------|--------|------|
+| `WithTimeout(d)` | `*MultiPool[T]` | 为所有分片设置任务超时 |
+| `WithSubmitTimeout(d)` | `*MultiPool[T]` | 为所有分片设置提交超时 |
+| `WithStreaming(bufSize)` | `*MultiPool[T]` | 为所有分片启用流式 |
+| `WithResultCallback(fn)` | `*MultiPool[T]` | 为所有分片设置结果回调 |
+| `WithRingBuffer(cap, overflow)` | `*MultiPool[T]` | 为所有分片启用环形缓冲 |
+| `WithMaxPending(n)` | `*MultiPool[T]` | 为所有分片设置最大排队 |
+| `WithOverflow(strategy)` | `*MultiPool[T]` | 为所有分片设置溢出策略 |
+| `WithMaxResults(n)` | `*MultiPool[T]` | 为所有分片设置最大结果数 |
+
+### 流式与冲洗
+
+| 方法 | 返回值 | 说明 |
+|------|--------|------|
+| `StreamResults()` | `<-chan Result[T]` | Fan-in 所有分片的流式结果 channel |
+| `Flush(maxPerShard)` | `[]Result[T]` | 从所有分片环形缓冲各取 maxPerShard 个结果 |
+
+### 统计汇总
+
+| 方法 | 返回值 | 说明 |
+|------|--------|------|
+| `TotalActive()` | `int` | 汇总各分片活跃任务数 |
+| `TotalBusy()` | `int` | 汇总各分片忙碌任务数 |
+| `TotalPending()` | `int` | 汇总各分片排队任务数 |
+| `TotalWorkerCount()` | `int` | 汇总各分片 worker 总数 |
+| `TotalCount()` | `int64` | 汇总所有分片任务总数 |
+| `TotalSuccessCount()` | `int64` | 汇总各分片成功数 |
+| `TotalFailCount()` | `int64` | 汇总各分片失败数 |
+
+---
+
+## 默认值体系
+
+Pool 的默认值遵循**三层架构**：全局级 → Builder 级 → 实例级。
+
+### 一层：全局默认值
+
+| 默认值 | 获取函数 | 修改函数 | 默认值 | 说明 |
+|--------|----------|----------|--------|------|
+| 默认超时 | `core.GetDefaultTimeout()` | `core.SetDefaultTimeout(d)` | **30s** | 设为 0 关闭默认超时 |
+| 提交超时 | `core.GetSubmitTimeout()` | `core.SetSubmitTimeout(d)` | **5s** | NewPool 时的默认 SubmitTimeout |
+| IO 并发度 | `core.IO()` | 不可修改 | **`runtime.NumCPU()×2`** | PoolBuilder 默认 Worker 数 |
+| 最大结果数 | `core.GetDefaultMaxResults()` | `core.SetDefaultMaxResults(n)` | **100_000** | `MaxResults(-1)` 时使用 |
+| 默认环形缓冲容量 | `core.GetDefaultRingBufferCap()` | `core.SetDefaultRingBufferCap(n)` | **0**（不启用） | `RingBuf(0)` 时不启用 |
+| 默认溢出策略 | `core.GetDefaultOverflowStrategy()` | `core.SetDefaultOverflowStrategy(s)` | **OverflowDrop** | 环形缓冲满时策略 |
+
+### 二层：Builder 级默认值
+
+| `Default*` 方法 | 源码行为 | 适用于 |
+|-----------------|----------|--------|
+| `.DefaultWorker()` | `b.cfg.Size = core.IO()`（`NumCPU×2`） | PoolBuilder, MultiPoolBuilder |
+| `.DefaultTimeout()` | `b.cfg.Timeout = 0`（applyConfig 不覆盖，池使用全局默认 `core.GetDefaultTimeout()` 30s） | PoolBuilder, MultiPoolBuilder |
+| `.DefaultSubmitTimeout()` | `b.cfg.SubmitTimeout = 0`（不限时） | PoolBuilder, MultiPoolBuilder |
+| `.DefaultFailFast()` | `b.cfg.FailFast = false` | PoolBuilder, MultiPoolBuilder |
+| `.DefaultMaxPending()` | `b.cfg.MaxPending = 0`（不限时） | PoolBuilder, MultiPoolBuilder |
+| `.DefaultOverflow()` | `b.cfg.Overflow = OverflowDrop` | PoolBuilder, MultiPoolBuilder |
+| `.DefaultRingBuf()` | `b.cfg.RingBufCap = 0`（不启用） | PoolBuilder, MultiPoolBuilder |
+| `.DefaultMaxResults()` | `b.cfg.MaxResults = -1`（-1 = 使用全局默认 100K） | PoolBuilder, MultiPoolBuilder |
+| `.DefaultStreaming()` | `b.cfg.Streaming = 0`（不启用） | PoolBuilder, MultiPoolBuilder |
+| `.DefaultShards()` | `b.shards = 0`（自动：GOMAXPROCS，最少 2） | MultiPoolBuilder |
+| `.DefaultPool()` | `b.extP = nil`（恢复内部自动创建） | MultiPoolBuilder |
+| `.DefaultPoolConfig()` | `b.cfg = DefaultConfig()`（全部默认） | PoolBuilder |
+| `.DefaultMultiPoolConfig()` | `b.cfg = DefaultConfig()`（全部默认） | MultiPoolBuilder |
+| `.DefaultLogger()` | `core.SetLogger(nil)`（恢复全局静默日志） | PoolBuilder, MultiPoolBuilder |
+
+### 三层：实例级 fallback
+
+Pool 实例上的配置方法（如 `p.WithTimeout(d)`）在特定条件下有内置 fallback：
+
+| 实例方法 | fallback 行为 |
+|----------|--------------|
+| `p.WithStreaming(bufSize)` | `bufSize ≤ 0` → `bufSize = p.Size() * 2` |
+| `p.EnableAutoScale(config)` | `config == nil` → 使用 `core.DefaultAutoScaleConfig()` |
+| `p.WithTimeout(d)` | 直接设置，无 fallback |
+| `p.WithSubmitTimeout(d)` | 直接设置，无 fallback |
+| `p.Resize(newSize)` | `newSize ≤ 0` → 使用 `core.IO()` |
+
+### 默认值覆盖优先级
+
+```
+全局默认值（core.Set*）
+    ↓ 被覆盖
+Builder 级显式设置（.Worker(n), .Timeout(d) 等）
+    ↓ 被覆盖
+实例级运行时设置（p.WithTimeout(d), p.Resize(n) 等）
 ```
 
-### NewNoResultPool / DefaultNoResultPool
+---
+
+## 生产环境使用建议
+
+### Pool vs Group 选型
+
+| 场景 | 推荐 | 理由 |
+|------|------|------|
+| 一次性批量处理 N 条记录 | **Group** | 用完即销毁，代码简单 |
+| 长期运行的消费者/定时器 | **Pool** | Worker 复用，避免频繁创建/销毁 |
+| 请求量波动的 API 网关 | **Pool + AutoScale** | 动态扩缩容，兼顾低延迟与资源 |
+| 海量任务（百万/千万） | **Pool + RingBuffer** | 环形缓冲防止内存爆炸 |
+
+### 生产推荐配置
 
 ```go
-// 语法
-func NewNoResultPool(size int) *NoResultPool  // NoResultPool = Pool[struct{}]
-func DefaultNoResultPool() *NoResultPool
+async.Pool[MyType]().Context(ctx).
+    Worker(async.IO()).
+    Timeout(30 * time.Second).              // 单任务超时
+    SubmitTimeout(5 * time.Second).         // 提交超时
+    MaxPending(10_000).                     // 最大排队 = 背压控制
+    Overflow(async.OverflowError).          // 超出返回错误供业务降级
+    MaxResults(100_000).                    // 限制结果切片（全局默认已是 100K）
+    RingBuf(50_000).                        // 环形缓冲兜底
+    Streaming(4096).                        // 流式消费降低内存峰值
+    Run(func(ctx context.Context, p *Pool[MyType]) error {
+        for i := 0; i < 1_000_000; i++ {
+            if err := p.Submit(ctx, fn); err != nil {
+                return err  // OverflowError 或 SubmitTimeout
+            }
+        }
+        results := p.Wait()
+        return handleResults(results)
+    })
 ```
 
-无返回值协程池，适合批量写入、通知发送等只关心错误的场景。
+### IO 密集型 vs CPU 密集型 Worker 数量
+
+| 类型 | 推荐并发度 | 常量 |
+|------|-----------|------|
+| IO 密集型（网络/文件） | `NumCPU × 2` | `async.IO()` |
+| CPU 密集型（计算） | `NumCPU` | `async.CPU()` |
+| 极高并发场景 | `NumCPU × 4` | `async.IOMulti(4)` |
+
+---
+
+## 基本配置与生命周期
+
+### 基础用法
 
 ```go
-p := async.NewNoResultPool(8)
-defer p.Close()
+err := async.Pool[int]().Context(ctx).
+    Worker(8).
+    Run(func(ctx context.Context, p *Pool[int]) error {
+        for i := 0; i < 100; i++ {
+            idx := i
+            p.Submit(ctx, func(ctx context.Context) (int, error) {
+                return heavyTask(ctx, idx)
+            })
+        }
+        results := p.Wait()
+        return checkResults(results)
+    })
+if err != nil {
+    log.Fatal(err)
+}
+```
 
-p.Submit(ctx, func(ctx context.Context) (struct{}, error) {
-    return struct{}{}, db.Insert(ctx, record)
-})
-p.Wait()
+### 完整配置
+
+```go
+err := async.Pool[string]().Context(ctx).
+    Worker(64).
+    Timeout(5 * time.Second).
+    FailFast().
+    MaxPending(10000).
+    Overflow(async.OverflowError).
+    Run(func(ctx context.Context, p *Pool[string]) error {
+        for _, item := range items {
+            err := p.Submit(ctx, func(ctx context.Context) (string, error) {
+                return process(item)
+            })
+            if err != nil {
+                return err
+            }
+        }
+        results := p.Wait()
+        return handleResults(results)
+    })
+```
+
+### 默认配置快速启动
+
+```go
+err := async.Pool[int]().Context(ctx).
+    DefaultPoolConfig().
+    Run(func(ctx context.Context, p *Pool[int]) error {
+        // 使用全部默认值：Worker=IO(), Timeout=30s, 无限制排队...
+        return nil
+    })
 ```
 
 ---
@@ -165,1692 +471,570 @@ p.Wait()
 
 ### Submit
 
-```go
-// 语法
-func (p *Pool[T]) Submit(ctx context.Context, fn func(context.Context) (T, error)) error
-```
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `ctx` | `context.Context` | 上下文，用于取消和 TraceID |
-| `fn` | `func(context.Context) (T, error)` | 任务函数，接收派生 context |
-| 返回 | `error` | ErrPoolClosed / ErrPoolWaited / ErrPoolWaiting / ErrSubmitTimeout / ErrQueueOverflow |
-
-提交一个任务到协程池。当 worker 全忙时阻塞等待空闲 worker（受 submitTimeout 限制）。
+阻塞提交任务，等待有空闲 worker 为止：
 
 ```go
-err := p.Submit(ctx, func(ctx context.Context) (string, error) {
-    return process(ctx), nil
+p.Submit(ctx, func(ctx context.Context) (string, error) {
+    return fetchData(ctx), nil
 })
-if err != nil {
-    log.Printf("提交失败: %v", err)
-}
 ```
 
 ### TrySubmit
 
-```go
-// 语法
-func (p *Pool[T]) TrySubmit(ctx context.Context, fn func(context.Context) (T, error)) error
-```
-
-非阻塞提交，worker 满时立即返回 `ErrSubmitTimeout`。
+非阻塞提交，worker 全忙时立即返回 `ErrSubmitTimeout`：
 
 ```go
 err := p.TrySubmit(ctx, fn)
 if errors.Is(err, async.ErrSubmitTimeout) {
-    // 满时降级处理
-    fallbackProcess()
+    log.Println("队列已满，任务被丢弃")
 }
 ```
 
 ### SubmitAt
 
-```go
-// 语法
-func (p *Pool[T]) SubmitAt(index int, ctx context.Context, fn func(context.Context) (T, error)) error
-```
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `index` | `int` | 结果在 `Wait()` 返回切片中的位置 |
-| `ctx` | `context.Context` | 上下文 |
-| `fn` | `func(context.Context) (T, error)` | 任务函数 |
-
-提交到指定结果位置，结果保持索引顺序。
+在指定索引位置提交任务，结果在 `Wait()` 返回的切片中保持对应位置：
 
 ```go
-for i, url := range urls {
+for i, item := range items {
     p.SubmitAt(i, ctx, func(ctx context.Context) (string, error) {
-        return fetchURL(ctx, url), nil
+        return process(ctx, items[i])
     })
 }
-results := p.Wait() // results[i] 对应 urls[i]
+// results[i] 对应 items[i]
 ```
 
 ---
 
-## 关闭与等待
+## 等待与关闭
 
 ### Wait
 
-```go
-// 语法
-func (p *Pool[T]) Wait() []core.Result[T]
-```
-
-等待所有已提交任务完成，返回结果切片（按提交顺序）。调用后不能再提交新任务。
+阻塞等待所有已提交任务完成，返回按提交顺序排列的结果切片：
 
 ```go
 results := p.Wait()
 for _, r := range results {
     if r.Ok() {
-        fmt.Println(r.Value)
+        fmt.Printf("成功: %v\n", r.Value)
     }
 }
 ```
 
 ### WaitAndClose
 
-```go
-// 语法
-func (p *Pool[T]) WaitAndClose() []core.Result[T]
-```
-
-等待所有已提交任务完成，关闭池，返回结果切片。
+等价于先 `Wait()` 再 `Close()`：
 
 ```go
 results := p.WaitAndClose()
 ```
 
-### Close
+### WaitTimeout / WaitContext
+
+超时后返回部分结果：
 
 ```go
-// 语法
-func (p *Pool[T]) Close()
-```
+// 带超时等待
+results, ok := p.WaitTimeout(3 * time.Second)
 
-停止所有 worker，丢弃未执行的任务。与 `WaitAndClose` 不同，不等待正在执行的任务完成。
-
-```go
-defer p.Close()
-```
-
-### CloseAndWait
-
-```go
-// 语法
-func (p *Pool[T]) CloseAndWait()
-```
-
-关闭池并等待所有 worker goroutine 退出。
-
-```go
-p.CloseAndWait()
-```
-
-### CloseAndWaitTimeout
-
-```go
-// 语法
-func (p *Pool[T]) CloseAndWaitTimeout(timeout time.Duration) (ok bool, done <-chan struct{})
-```
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `timeout` | `time.Duration` | 等待超时 |
-| 返回值1 `ok` | `bool` | 是否在超时内完成关闭 |
-| 返回值2 `done` | `<-chan struct{}` | 完成信号 channel |
-
-带超时的关闭并等待 worker 退出。
-
-```go
-ok, doneCh := p.CloseAndWaitTimeout(10 * time.Second)
-if !ok {
-    log.Println("关闭超时")
-}
-```
-
-### CloseByIdle
-
-```go
-// 语法
-func (p *Pool[T]) CloseByIdle(idleDuration time.Duration)
-```
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `idleDuration` | `time.Duration` | 空闲等待时间 |
-
-在空闲指定时间后自动关闭。适合临时使用的一次性 Pool。
-
-```go
-p := async.NewPool[string](8)
-// ... 使用 ...
-p.CloseByIdle(5 * time.Minute) // 空闲 5 分钟后自动关闭
-```
-
-### Reset
-
-```go
-// 语法
-func (p *Pool[T]) Reset() (*Pool[T], error)
-```
-
-关闭旧池，创建同等大小的新池（复用变量）。需在 Wait 后无活跃任务时调用。
-
-```go
-p := async.NewPool[string](8)
-// ... 第一轮处理 ...
-results := p.Wait()
-
-// 重置后开始第二轮
-newPool, err := p.Reset()
-if err != nil {
-    log.Fatal(err)
-}
-p = newPool
-```
-
----
-
-## 超时与上下文
-
-### WithTimeout
-
-```go
-// 语法
-func (p *Pool[T]) WithTimeout(d time.Duration) *Pool[T]
-```
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `d` | `time.Duration` | 每个任务的超时时间 |
-
-设置每个任务的超时时间，超时后任务 context 自动取消。
-
-```go
-p := async.NewPool[string](8).WithTimeout(30 * time.Second)
-```
-
-### WaitTimeout
-
-```go
-// 语法
-func (p *Pool[T]) WaitTimeout(timeout time.Duration) (results []core.Result[T], ok bool)
-```
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `timeout` | `time.Duration` | 等待超时 |
-| 返回值1 `results` | `[]core.Result[T]` | 已完成任务的结果 |
-| 返回值2 `ok` | `bool` | 是否所有任务完成 |
-
-带超时的等待。`ok=false` 表示部分任务未完成。
-
-```go
-results, ok := p.WaitTimeout(5 * time.Second)
-if !ok {
-    log.Println("等待超时，部分任务未完成")
-}
-```
-
-### WaitContext
-
-```go
-// 语法
-func (p *Pool[T]) WaitContext(ctx context.Context) (results []core.Result[T], ok bool)
-```
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `ctx` | `context.Context` | 控制等待的 context |
-| 返回值1 `results` | `[]core.Result[T]` | 已完成任务的结果 |
-| 返回值2 `ok` | `bool` | 是否所有任务完成 |
-
-通过 context 控制等待。`ctx` 被取消/Done 时返回当前已有结果。
-
-```go
-ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-defer cancel()
+// 通过 context 控制
 results, ok := p.WaitContext(ctx)
 ```
 
-### WithContext
+### Close / CloseAndWait / CloseAndWaitTimeout
 
-```go
-// 语法
-func (p *Pool[T]) WithContext(ctx context.Context) (*Pool[T], context.Context)
-```
+| 方法 | 说明 |
+|------|------|
+| `Close()` | 立即停止 worker，不等待任务完成 |
+| `CloseAndWait()` | 等待所有任务完成后关闭 |
+| `CloseAndWaitTimeout(d)` | 带超时的等待完成后关闭 |
 
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `ctx` | `context.Context` | 原始上下文 |
-| 返回 | `(*Pool[T], context.Context)` | 新 Pool + 可取消的子 context |
+### ResetWait / Reset
 
-创建绑定到 Pool 生命周期的子 context。Pool Close 时自动取消返回的 ctx。
-
-```go
-p, boundCtx := p.WithContext(ctx)
-// boundCtx 在 Pool.Close() 时自动取消
-go func() {
-    <-boundCtx.Done()
-    log.Println("Pool 已关闭")
-}()
-```
-
-### WithFailFast
-
-```go
-// 语法
-func (p *Pool[T]) WithFailFast(ctx context.Context) (*Pool[T], context.Context)
-```
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `ctx` | `context.Context` | 原始上下文 |
-| 返回 | `(*Pool[T], context.Context)` | Pool + 可取消的子 context |
-
-启用 FailFast 模式：第一个任务失败立即取消所有其他任务。
-
-```go
-p, ffCtx := p.WithFailFast(ctx)
-for _, item := range items {
-    p.Submit(ffCtx, func(ctx context.Context) (string, error) {
-        return validate(ctx, item) // 任一失败即取消全部
-    })
-}
-```
-
-### WithFFCtx
-
-```go
-// 语法
-func (p *Pool[T]) WithFFCtx(ctx context.Context) (*Pool[T], context.Context)
-```
-
-`WithFailFast` 的缩写形式。
+| 方法 | 说明 |
+|------|------|
+| `ResetWait()` | 重置 waited 状态，允许继续 Submit+Wait |
+| `Reset()` | 完整重置，允许继续 Submit+Wait |
 
 ---
 
-## With* 组合方法速查
+## 状态查询与错误提取
 
-以下是所有 `With*` 组合方法，命名格式为 `With[FF][Ctx|Timeout|SubmitTO|TraceID]*`：
+### 状态查询
 
-| 方法 | 说明 | 签名 |
-|------|------|------|
-| `WithTraceID(ctx)` | 注入 TraceID | `(*Pool[T], context.Context)` |
-| `WithContext(ctx)` | Context 绑定 | `(*Pool[T], context.Context)` |
-| `WithFailFast(ctx)` | 快速失败 | `(*Pool[T], context.Context)` |
-| `WithFFCtx(ctx)` | FailFast 缩写 | `(*Pool[T], context.Context)` |
-| `WithTimeout(d)` | 任务超时 | `*Pool[T]` |
-| `WithSubmitTimeout(d)` | 提交超时 | `*Pool[T]` |
-| `WithFFTraceID(ctx)` | FF + TraceID | `(*Pool[T], context.Context)` |
-| `WithFFSubmitTO(ctx, d)` | FF + 提交超时 | `(*Pool[T], context.Context)` |
-| `WithFFSubmitTOTraceID(ctx, d)` | FF + 提交超时 + TraceID | `(*Pool[T], context.Context)` |
-| `WithFFTimeout(ctx, d)` | FF + 任务超时 | `(*Pool[T], context.Context)` |
-| `WithFFTimeoutTraceID(ctx, d)` | FF + 任务超时 + TraceID | `(*Pool[T], context.Context)` |
-| `WithFFTimeoutSubmitTO(ctx, d, d)` | FF + 任务超时 + 提交超时 | `(*Pool[T], context.Context)` |
-| `WithFFTimeoutSubmitTOTraceID(ctx, d, d)` | FF + 任务超时 + 提交超时 + TraceID | `(*Pool[T], context.Context)` |
-| `WithCtxTraceID(ctx)` | Context + TraceID | `(*Pool[T], context.Context)` |
-| `WithCtxTimeout(ctx, d)` | Context + 任务超时 | `(*Pool[T], context.Context)` |
-| `WithCtxTimeoutTraceID(ctx, d)` | Context + 任务超时 + TraceID | `(*Pool[T], context.Context)` |
-| `WithCtxSubmitTO(ctx, d)` | Context + 提交超时 | `(*Pool[T], context.Context)` |
-| `WithCtxSubmitTOTraceID(ctx, d)` | Context + 提交超时 + TraceID | `(*Pool[T], context.Context)` |
+| 方法 | 说明 |
+|------|------|
+| `Size()` | 当前 worker 数量 |
+| `Active()` | 活跃 goroutine 数 |
+| `Busy()` | 正在执行任务的 goroutine 数 |
+| `Pending()` | 排队中的任务数 |
+| `QueueDepth()` | 队列深度 |
+| `TotalCount()` | 已提交任务总数 |
+| `SuccessCount()` | 成功任务数 |
+| `FailCount()` | 失败任务数 |
+| `HasError()` | 是否有错误 |
+| `Stats()` | 运行时统计快照 |
 
-```go
-// 完整组合示例
-p, ffCtx := async.NewPool[string](8).
-    WithFFTimeoutSubmitTOTraceID(ctx, 10*time.Second, 3*time.Second)
-// 等价于: WithFailFast + WithTimeout(10s) + WithSubmitTimeout(3s) + WithTraceID
-```
+### 错误提取
 
----
-
-## 结构体类型
-
-### PoolStats
-
-`Pool[T].Stats()` 返回的统计信息结构体，包含池的实时运行状态和历史统计。
+| 方法 | 说明 |
+|------|------|
+| `Errors()` | 所有非 nil 错误切片 |
+| `FirstError()` | 第一个错误 |
+| `JoinErrors()` | 所有错误合并为一个 error |
+| `Values()` | 提取所有成功的值切片 |
 
 ```go
-type PoolStats struct {
-    Size        int           // worker 数量
-    Active      int           // 当前活跃任务数
-    Busy        int           // 当前忙碌任务数（正在执行 fn）
-    Pending     int           // 等待中的任务数
-    FailFast    bool          // 是否启用 FailFast
-    Timeout     time.Duration // 全局任务超时时间
-    TotalTask   int64         // 历史提交任务总数
-    SuccessTask int64         // 历史成功任务数
-    FailTask    int64         // 历史失败任务数
-}
-```
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `Size` | `int` | 当前 worker 数量 |
-| `Active` | `int` | 当前已被 worker 接收的任务数（含正在执行的已出队任务） |
-| `Busy` | `int` | 当前正在执行 fn 的任务数 |
-| `Pending` | `int` | 排队等待 worker 处理的任务数 |
-| `FailFast` | `bool` | 是否启用快速失败模式 |
-| `Timeout` | `time.Duration` | 全局任务超时时间 |
-| `TotalTask` | `int64` | 自创建以来提交的任务总数 |
-| `SuccessTask` | `int64` | 成功完成的任务数 |
-| `FailTask` | `int64` | 失败的任务数 |
-
-```go
-stats := p.Stats()
-fmt.Printf("Worker: %d, 活跃: %d, 执行中: %d, 排队: %d\n",
-    stats.Size, stats.Active, stats.Busy, stats.Pending)
-fmt.Printf("累计: 总提交=%d, 成功=%d, 失败=%d\n",
-    stats.TotalTask, stats.SuccessTask, stats.FailTask)
-
-// 计算成功率
-if stats.TotalTask > 0 {
-    rate := float64(stats.SuccessTask) / float64(stats.TotalTask) * 100
-    fmt.Printf("成功率: %.2f%%\n", rate)
-}
-```
-
----
-
-### SubmitResult
-
-`SubmitN`/`SubmitSafeN`/`SubmitBatch` 便捷函数返回的提交结果，记录每个任务的提交状态。
-
-```go
-type SubmitResult struct {
-    Index int   // 任务在结果切片中的索引位置
-    Err   error // 提交错误（如超时、池已关闭等）
-}
-```
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `Index` | `int` | 任务在结果切片中的索引，-1 表示追加到末尾 |
-| `Err` | `error` | 提交时的错误，nil 表示提交成功 |
-
-```go
-p, results, err := async.SubmitN(ctx, fn, 10)
-if err != nil {
-    log.Fatal(err)
-}
-defer p.Close()
-
-for _, r := range results {
-    if r.Err != nil {
-        log.Printf("提交索引 %d 失败: %v", r.Index, r.Err)
-    }
-}
-```
-
----
-
-## 状态查询
-
-### Size
-
-返回当前 worker 协程的数量。该值在创建时指定，可通过 `Resize` 动态调整。
-
-```go
-// 语法
-func (p *Pool[T]) Size() int
-```
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| 无 | — | — |
-
-| 返回值 | 类型 | 说明 |
-|--------|------|------|
-| `int` | `int` | 当前 worker 数量 |
-
-```go
-p := async.NewPool[string](8)
-fmt.Println(p.Size()) // 8
-
-p.Resize(16)
-fmt.Println(p.Size()) // 16
-```
-
----
-
-### Active
-
-返回当前已被 worker 从 channel 取出（即已出队）的任务数量。活跃任务包括正在执行的和已接收但尚未开始执行的。
-
-```go
-// 语法
-func (p *Pool[T]) Active() int
-```
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| 无 | — | — |
-
-| 返回值 | 类型 | 说明 |
-|--------|------|------|
-| `int` | `int` | 当前活跃任务数 |
-
-```go
-p.Submit(ctx, fn1)
-p.Submit(ctx, fn2)
-p.Submit(ctx, fn3)
-
-time.Sleep(10 * time.Millisecond)
-fmt.Println(p.Active()) // 3（3 个任务已出队）
-```
-
----
-
-### Busy
-
-返回当前正在执行 fn 函数体的 worker 数量。
-
-```go
-// 语法
-func (p *Pool[T]) Busy() int
-```
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| 无 | — | — |
-
-| 返回值 | 类型 | 说明 |
-|--------|------|------|
-| `int` | `int` | 当前忙碌 worker 数 |
-
-```go
-// 扩缩容监控：当负载过高时扩容
-if float64(p.Busy())/float64(p.Size()) > 0.8 {
-    p.Resize(p.Size() * 2)
-    log.Printf("扩容至 %d worker", p.Size())
-}
-```
-
----
-
-### Pending
-
-返回正在排队等待 worker 处理的任务数（已提交但尚未出队）。
-
-```go
-// 语法
-func (p *Pool[T]) Pending() int
-```
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| 无 | — | — |
-
-| 返回值 | 类型 | 说明 |
-|--------|------|------|
-| `int` | `int` | 排队中的任务数 |
-
-```go
-// 背压监控
-if p.Pending() > 1000 {
-    log.Printf("积压严重: %d 个任务等待处理", p.Pending())
-}
-```
-
----
-
-### Stats
-
-返回 Pool 的完整运行统计快照，包含实时状态和历史累计数据。详见 [PoolStats 结构体](#poolstats)。
-
-```go
-// 语法
-func (p *Pool[T]) Stats() PoolStats
-```
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| 无 | — | — |
-
-| 返回值 | 类型 | 说明 |
-|--------|------|------|
-| `PoolStats` | `PoolStats` | 完整统计信息 |
-
-```go
-stats := p.Stats()
-fmt.Printf("Pool Stats: %+v\n", stats)
-```
-
----
-
-### SuccessCount
-
-返回自池创建以来成功完成的任务总数（即 fn 返回 err == nil 的任务）。
-
-```go
-// 语法
-func (p *Pool[T]) SuccessCount() int64
-```
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| 无 | — | — |
-
-| 返回值 | 类型 | 说明 |
-|--------|------|------|
-| `int64` | `int64` | 成功任务数 |
-
-```go
-p.Wait()
-fmt.Printf("成功: %d, 失败: %d\n", p.SuccessCount(), p.FailCount())
-```
-
----
-
-### FailCount
-
-返回自池创建以来失败的任务总数（即 fn 返回 err != nil 的任务，含 panic 恢复）。
-
-```go
-// 语法
-func (p *Pool[T]) FailCount() int64
-```
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| 无 | — | — |
-
-| 返回值 | 类型 | 说明 |
-|--------|------|------|
-| `int64` | `int64` | 失败任务数 |
-
-```go
-if p.FailCount() > 0 {
-    log.Printf("有 %d 个任务执行失败", p.FailCount())
-}
-```
-
----
-
-### TotalCount
-
-返回自池创建以来提交的任务总数（成功 + 失败）。
-
-```go
-// 语法
-func (p *Pool[T]) TotalCount() int64
-```
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| 无 | — | — |
-
-| 返回值 | 类型 | 说明 |
-|--------|------|------|
-| `int64` | `int64` | 总任务数 |
-
-```go
-total := p.TotalCount()
-fmt.Printf("已处理 %d 个任务\n", total)
-```
-
----
-
-### HasError
-
-返回是否有任务执行失败。建议在 `Wait()` 之后调用以获取完整结果。
-
-```go
-// 语法
-func (p *Pool[T]) HasError() bool
-```
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| 无 | — | — |
-
-| 返回值 | 类型 | 说明 |
-|--------|------|------|
-| `bool` | `bool` | true 表示至少有一个任务失败 |
-
-```go
-p.Wait()
+results := p.Wait()
 if p.HasError() {
-    log.Printf("存在失败任务，第一个错误: %v", p.FirstError())
+    for _, e := range p.Errors() {
+        log.Printf("错误: %v", e)
+    }
+    return p.JoinErrors()
 }
-```
-
----
-
-### QueueDepth
-
-返回当前排队深度，等价于 `Pending()`。用于监控和背压控制。
-
-```go
-// 语法
-func (p *Pool[T]) QueueDepth() int
-```
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| 无 | — | — |
-
-| 返回值 | 类型 | 说明 |
-|--------|------|------|
-| `int` | `int` | 排队深度 |
-
-```go
-// 在 WithMaxPending 配置后，监控排队深度
-depth := p.QueueDepth()
-if depth > p.Size()*2 {
-    log.Printf("排队深度异常: %d (worker: %d)", depth, p.Size())
-}
-```
-
----
-
-## 错误提取
-
-### Errors
-
-返回所有失败任务的错误切片（nil error 被跳过）。建议在 `Wait()` 之后调用以获取完整结果。返回 nil 表示所有任务成功。
-
-```go
-// 语法
-func (p *Pool[T]) Errors() []error
-```
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| 无 | — | — |
-
-| 返回值 | 类型 | 说明 |
-|--------|------|------|
-| `[]error` | `[]error` | 所有非 nil 错误的切片 |
-
-```go
-p.Wait()
-errs := p.Errors()
-if len(errs) == 0 {
-    fmt.Println("所有任务成功完成")
-    return
-}
-for i, err := range errs {
-    log.Printf("错误 #%d: %v", i, err)
-}
-```
-
----
-
-### FirstError
-
-返回第一个错误（按任务索引顺序）。无错误时返回 nil。建议在 `Wait()` 之后调用。
-
-```go
-// 语法
-func (p *Pool[T]) FirstError() error
-```
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| 无 | — | — |
-
-| 返回值 | 类型 | 说明 |
-|--------|------|------|
-| `error` | `error` | 第一个错误，无错误时为 nil |
-
-```go
-p.Wait()
-if firstErr := p.FirstError(); firstErr != nil {
-    log.Printf("首个失败: %v", firstErr)
-}
-```
-
----
-
-### JoinErrors
-
-将所有错误合并为一个 error，以 `"; "` 分隔每个错误信息。如果所有任务成功则返回 nil。
-
-```go
-// 语法
-func (p *Pool[T]) JoinErrors() error
-```
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| 无 | — | — |
-
-| 返回值 | 类型 | 说明 |
-|--------|------|------|
-| `error` | `error` | 合并后的错误，所有成功时为 nil |
-
-```go
-p.Wait()
-if joinedErr := p.JoinErrors(); joinedErr != nil {
-    log.Printf("批量错误: %v", joinedErr)
-    // 输出: "task1 failed: timeout; task3 failed: connection refused"
-}
-```
-
----
-
-### Values
-
-返回所有成功任务的返回值切片（失败任务不包含在内）。建议在 `Wait()` 之后调用。
-
-```go
-// 语法
-func (p *Pool[T]) Values() []T
-```
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| 无 | — | — |
-
-| 返回值 | 类型 | 说明 |
-|--------|------|------|
-| `[]T` | `[]T` | 所有成功任务的返回值 |
-
-```go
-p.Wait()
 values := p.Values()
-fmt.Printf("成功获取 %d 个结果\n", len(values))
-for i, v := range values {
-    fmt.Printf("结果 #%d: %v\n", i, v)
-}
 ```
-
----
-
-## 自动扩缩容
-
-### EnableAutoScale
-
-```go
-// 语法
-func (p *Pool[T]) EnableAutoScale(cfg *AutoScaleConfig)
-```
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `cfg` | `*AutoScaleConfig` | 扩缩容配置，nil 使用默认配置 |
-
-```go
-p := async.NewPool[int](4)
-p.EnableAutoScale(nil) // 使用默认配置
-
-p.EnableAutoScale(&async.AutoScaleConfig{
-    MinWorkers:       2,
-    MaxWorkers:       500,
-    CheckInterval:    3 * time.Second,
-    ScaleUpThreshold: 0.6,
-    ScaleUpFactor:    1.5,
-    ScaleDownFactor:  0.7,
-})
-```
-
-### IsAutoScaleEnabled
-
-```go
-// 语法
-func (p *Pool[T]) IsAutoScaleEnabled() bool
-```
-
-查询自动扩缩容是否已启用。
-
-### DisableAutoScale
-
-```go
-// 语法
-func (p *Pool[T]) DisableAutoScale()
-```
-
-停止自动扩缩容。
 
 ---
 
 ## 流式结果消费
 
-### WithStreaming
+通过 `.Streaming(buf)` 启用流式结果，结果通过 channel 实时发送：
 
 ```go
-// 语法
-func (p *Pool[T]) WithStreaming(bufSize int) *Pool[T]
-```
+err := async.Pool[string]().Context(ctx).
+    Worker(8).
+    Streaming(1024).
+    Run(func(ctx context.Context, p *Pool[string]) error {
+        ch := p.StreamResults()
 
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `bufSize` | `int` | channel 缓冲大小，<=0 时自动使用 `Size()*2` |
+        go func() {
+            for r := range ch {
+                if r.Ok() {
+                    fmt.Println("实时收到:", r.Value)
+                }
+            }
+        }()
 
-开启流式结果消费，任务完成时结果实时通过 channel 发送。
-
-```go
-p := async.NewPool[string](8).WithStreaming(0)
-defer p.Close()
-
-ch := p.StreamResults()
-go func() {
-    for r := range ch {
-        if r.Ok() {
-            fmt.Println("实时收到:", r.Value)
-        } else {
-            log.Println("失败:", r.Err)
+        for _, item := range items {
+            p.Submit(ctx, func(ctx context.Context) (string, error) {
+                return process(item)
+            })
         }
-    }
-}()
-
-for _, item := range items {
-    p.Submit(ctx, func(ctx context.Context) (string, error) {
-        return process(ctx, item), nil
+        p.Wait()
+        return nil
     })
-}
-p.Wait() // channel 在 Wait 完成后自动关闭
 ```
 
-### StreamResults
-
-```go
-// 语法
-func (p *Pool[T]) StreamResults() <-chan core.Result[T]
-```
-
-返回流式结果的只读 channel，必须在 `WithStreaming` 之后调用。未启用流式时返回 nil。channel 在 Wait 完成后自动关闭。
-
-### StreamDropped
-
-```go
-// 语法
-func (p *Pool[T]) StreamDropped() int64
-```
-
-返回因 stream channel 满而被丢弃的结果数。如果此值持续增长，说明消费者速度跟不上生产者。
-
-```go
-go func() {
-    ticker := time.NewTicker(10 * time.Second)
-    for range ticker.C {
-        dropped := p.StreamDropped()
-        if dropped > 0 {
-            log.Warn("stream drop", dropped)
-        }
-    }
-}()
-```
-
-### WithResultCallback
-
-```go
-// 语法
-func (p *Pool[T]) WithResultCallback(fn func(core.Result[T])) *Pool[T]
-```
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `fn` | `func(core.Result[T])` | 每个任务完成时调用的回调（在 worker goroutine 中执行，应尽量轻量） |
-
-```go
-var successCnt atomic.Int64
-
-p := async.NewPool[string](8).WithResultCallback(func(r core.Result[string]) {
-    if r.Ok() {
-        successCnt.Add(1)
-    }
-})
-```
+> **⚠️ Streaming 与 Wait 互斥**
+>
+> `Streaming(bufSize > 0)` 启用流式消费后，`Wait()` 仍可调用但结果为空（结果已通过 channel 发出）。使用流式模式时，建议不依赖 `Wait()` 的返回结果。
+>
+> **⚠️ 消费者慢时静默丢弃**
+>
+> stream channel 满时采用非阻塞写入，结果会被静默丢弃。通过 `p.StreamDropped()` 监控丢弃量。
 
 ---
 
 ## 环形缓冲
 
-### WithRingBuffer
+环形缓冲适用于海量任务场景，避免 `Wait()` 时内存爆炸。配合 `Flush` 分批消费：
 
 ```go
-// 语法
-func (p *Pool[T]) WithRingBuffer(capacity int, overflow core.OverflowStrategy) *Pool[T]
-```
+err := async.Pool[string]().Context(ctx).
+    Worker(8).
+    RingBuf(10000).
+    OverflowDrop().
+    Run(func(ctx context.Context, p *Pool[string]) error {
+        for i := 0; i < 10_000_000; i++ {
+            p.Submit(ctx, fn)
+        }
 
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `capacity` | `int` | 缓冲容量 |
-| `overflow` | `core.OverflowStrategy` | 满时策略：`OverflowDrop` / `OverflowBlock` / `OverflowError` |
-
-用固定容量环形缓冲替代无限增长的 results 切片，适合千万级任务量。
-
-```go
-p := async.NewPool[string](8).WithRingBuffer(10000, async.OverflowDrop)
-defer p.Close()
-
-for i := 0; i < 10_000_000; i++ {
-    p.Submit(ctx, func(ctx context.Context) (string, error) {
-        return heavyWork(ctx), nil
+        // 分批 Flush 消费结果
+        for {
+            batch := p.Flush(5000)
+            if len(batch) == 0 {
+                break
+            }
+            processBatch(batch)
+        }
+        return nil
     })
-}
 ```
 
-### Flush
-
-```go
-// 语法
-func (p *Pool[T]) Flush(maxCount int) []core.Result[T]
-```
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `maxCount` | `int` | 最大取出数量，<=0 取出全部 |
-| 返回 | `[]core.Result[T]` | 取出的结果切片 |
-
-从环形缓冲中取出结果。未启用环形缓冲时返回 nil。
-
-```go
-for {
-    batch := p.Flush(5000)
-    if len(batch) == 0 { break }
-    consume(batch)
-}
-remaining := p.Wait()
-```
-
-### RingBufDropped
-
-```go
-// 语法
-func (p *Pool[T]) RingBufDropped() int64
-```
-
-返回环形缓冲区因 `OverflowDrop` 覆盖丢弃的元素数。
+> **⚠️ RingBuf 不限制 results 切片**
+>
+> 环形缓冲和 results 切片是两套并行的存储通道。如需完全避免 results 增长，请配合设置 `MaxResults(0)`。
 
 ---
 
 ## 背压控制
 
-### WithMaxPending
+通过 `MaxPending` + `Overflow` 策略控制队列大小，防止任务堆积导致 OOM：
 
 ```go
-// 语法
-func (p *Pool[T]) WithMaxPending(maxPending int) *Pool[T]
+err := async.Pool[string]().Context(ctx).
+    Worker(8).
+    MaxPending(1000).
+    OverflowError().
+    Run(func(ctx context.Context, p *Pool[string]) error {
+        for _, item := range items {
+            err := p.Submit(ctx, func(ctx context.Context) (string, error) {
+                return process(item)
+            })
+            if errors.Is(err, async.ErrQueueOverflow) {
+                fallbackProcess(item) // 降级处理
+                continue
+            }
+        }
+        results := p.Wait()
+        return handleResults(results)
+    })
 ```
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `maxPending` | `int` | 最大等待任务数，<=0 无限制 |
-
-### WithOverflow
-
-```go
-// 语法
-func (p *Pool[T]) WithOverflow(strategy core.OverflowStrategy) *Pool[T]
-```
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `strategy` | `core.OverflowStrategy` | `OverflowBlock` / `OverflowDrop` / `OverflowError` |
-
-### WithMaxResults
-
-```go
-// 语法
-func (p *Pool[T]) WithMaxResults(maxResults int) *Pool[T]
-```
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `maxResults` | `int` | results 切片容量上限，**默认 0=无限** |
-
-限制 results 切片的内存增长。超出上限后，新结果仅通过流式或环形缓冲区消费。
-
-> **⚠️ 默认无限制，长期运行的 Pool 必须设置**
->
-> 默认值 `0` 意味着 **results 切片永无上限**，千万级提交将导致内存中保留千万个 Result 对象。
-> `WithRingBuffer` 不能替代此设置——环形缓冲和 results 切片是并行的两个存储通道。
-> 详见 [生产最佳实践 - WithMaxResults 默认值陷阱](#生产最佳实践)。
-
-```go
-p := async.NewPool[string](8).
-    WithMaxPending(1000).
-    WithOverflow(async.OverflowError).
-    WithMaxResults(1_000_000)    // 最多保留 100 万个结果
-defer p.Close()
-
-for _, item := range items {
-    err := p.Submit(ctx, fn)
-    if errors.Is(err, async.ErrQueueOverflow) {
-        fallbackProcess(item)
-        continue
-    }
-}
-
-depth := p.QueueDepth()
-```
-
-### Resize
-
-```go
-// 语法
-func (p *Pool[T]) Resize(newSize int) int
-```
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `newSize` | `int` | 新 worker 数量 |
-| 返回 | `int` | 实际设置的 worker 数 |
-
-调整 worker 数量。扩容立即创建新 worker，缩容通过发送 Quit 信号逐步退出。
-
-```go
-newSize := p.Resize(50) // 调整为 50 worker
-```
-
----
-
-### ResizeAndWaitTimeout
-
-```go
-// 语法
-func (p *Pool[T]) ResizeAndWaitTimeout(newSize int, timeout time.Duration)
-```
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `newSize` | `int` | 新 worker 数量 |
-| `timeout` | `time.Duration` | 等待正在执行的任务完成的最长时间 |
-
-调整 worker 数量后等待 current 任务完成。先调用 `Resize()` 缩容，然后等待 `sync.WaitGroup` 完成，但有超时保护。
-
-**与 `Resize` 的区别**：`Resize` 立即返回，不等待现有任务。`ResizeAndWaitTimeout` 在 Resize 后阻塞等待现有任务完成（最多等待 timeout 时间）。
-
-**使用示例**:
-
-```go
-// 缩容到 5 个 worker，最多等待 10 秒让正在执行的任务完成
-p.ResizeAndWaitTimeout(5, 10*time.Second)
-```
-
----
-
-## NoResultPool 辅助函数
-
-这些便捷函数封装了 `NoResultPool`（即 `Pool[struct{}]`）的常见操作模式。
-
-### SubmitAction
-
-```go
-// 语法
-func SubmitAction(p *NoResultPool, ctx context.Context, fn func(context.Context) error) error
-```
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `p` | `*NoResultPool` | 无返回值协程池 |
-| `ctx` | `context.Context` | 上下文 |
-| `fn` | `func(context.Context) error` | 任务函数 |
-| 返回 | `error` | 提交错误 |
-
-阻塞提交无返回值动作。
-
-```go
-async.SubmitAction(p, ctx, func(ctx context.Context) error {
-    return processItem(ctx)
-})
-```
-
-### TrySubmitAction
-
-```go
-// 语法
-func TrySubmitAction(p *NoResultPool, ctx context.Context, fn func(context.Context) error) error
-```
-
-非阻塞提交无返回值动作，worker 满时返回 `ErrSubmitTimeout`。
-
-### SubmitAtAction
-
-```go
-// 语法
-func SubmitAtAction(p *NoResultPool, index int, ctx context.Context, fn func(context.Context) error) error
-```
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `index` | `int` | 结果位置索引 |
-
-指定位置提交无返回值动作。
-
-### TrySubmitAtAction
-
-```go
-// 语法
-func TrySubmitAtAction(p *NoResultPool, index int, ctx context.Context, fn func(context.Context) error) error
-```
-
-指定位置非阻塞提交。
-
-### GoAction
-
-```go
-// 语法
-func GoAction(p *NoResultPool, ctx context.Context, fn func(context.Context) error)
-```
-
-提交并断言成功（失败则 panic），适合初始化阶段。
-
-### SubmitActionWithTimeout
-
-```go
-// 语法
-func SubmitActionWithTimeout(p *NoResultPool, ctx context.Context, timeout time.Duration, fn func(context.Context) error) error
-```
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `timeout` | `time.Duration` | 任务超时 |
-
-带超时提交无返回值动作。
-
-### SubmitAtActionWithTimeout
-
-```go
-// 语法
-func SubmitAtActionWithTimeout(p *NoResultPool, index int, ctx context.Context, timeout time.Duration, fn func(context.Context) error) error
-```
-
-指定位置带超时提交。
-
-### GoActionWithTimeout
-
-```go
-// 语法
-func GoActionWithTimeout(p *NoResultPool, ctx context.Context, timeout time.Duration, fn func(context.Context) error)
-```
-
-带超时提交并断言成功。
-
-### BuildAggregateNoResult
-
-```go
-// 语法
-func BuildAggregateNoResult(nr *NoResultPool) (*core.AggregateNoResult, error)
-```
-
-从 NoResultPool 构建聚合统计信息。
-
-### FillNoResultSkipped
-
-```go
-// 语法
-func FillNoResultSkipped(nr *NoResultPool, total int) error
-```
-
-为 NoResultPool 填充跳过任务的占位（FailFast 被跳过的任务）。
-
----
-
-## Pool 便捷函数
-
-快速创建池并提交任务的单次操作。
-
-### Submit (便捷)
-
-```go
-// 语法
-func Submit[T any](ctx context.Context, fn func(context.Context) (T, error)) (*Pool[T], int, error)
-```
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `ctx` | `context.Context` | 上下文 |
-| `fn` | `func(context.Context) (T, error)` | 任务函数 |
-| 返回1 | `*Pool[T]` | 创建的协程池（需 Close） |
-| 返回2 | `int` | 任务在结果中的索引 |
-| 返回3 | `error` | 提交错误 |
-
-```go
-p, idx, err := async.Submit(ctx, fn)
-defer p.Close()
-results := p.Wait()
-```
-
-### SubmitN
-
-```go
-// 语法
-func SubmitN[T any](ctx context.Context, fn func(context.Context) (T, error), n int) (*Pool[T], []SubmitResult, error)
-```
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `n` | `int` | 任务数量 |
-
-提交 N 个相同任务。
-
-```go
-p, submitResults, err := async.SubmitN(ctx, fn, 100)
-defer p.Close()
-```
-
-### SubmitSafeN
-
-```go
-// 语法
-func SubmitSafeN[T any](ctx context.Context, fn func(context.Context) (T, error), n int) (*Pool[T], []SubmitResult)
-```
-
-提交 N 个任务（失败 panic）。
-
-```go
-p, submitResults := async.SubmitSafeN(ctx, fn, 50)
-defer p.Close()
-```
-
-### SubmitBatch
-
-```go
-// 语法
-func SubmitBatch[T, S any](ctx context.Context, items []S, fn func(context.Context, S) (T, error)) (*Pool[T], []SubmitResult, error)
-```
-
-对切片批量提交。
-
-```go
-users := []string{"alice", "bob", "charlie"}
-p, results, err := async.SubmitBatch(ctx, users, func(ctx context.Context, name string) (*User, error) {
-    return db.QueryUser(ctx, name)
-})
-defer p.Close()
-```
-
-### MapPool
-
-```go
-// 语法
-func MapPool[T, R any](ctx context.Context, items []T, fn func(context.Context, T) (R, error), concurrency int) (*Pool[R], []core.Result[R], error)
-```
-
-Pool 版 Map。
-
-### ForEachPool
-
-```go
-// 语法
-func ForEachPool[T any](ctx context.Context, items []T, fn func(context.Context, T) error, concurrency int) (*NoResultPool, error)
-```
-
-Pool 版 ForEach。
 
 ---
 
 ## MultiPool（水平分片协程池）
 
-`MultiPool[T]` 通过将 N 个 Pool 实例组合在一起，以 round-robin 方式分发任务，实现水平扩展。每个分片池独立运行，互不影响，可突破单 Pool 的 channel 瓶颈（单 Pool 约 37万 QPS，8 分片可达 ~300万 QPS）。
+当单 Pool 达到 QPS 上限时，通过水平扩展突破瓶颈：
 
-**核心特性**：
-- Round-robin 分发（利用 `submitIdx` 原子递增）
-- Keyed 分发（按 key 哈希固定分片）
-- 批量提交（SubmitBatch）
-- 所有链式配置代理到各分片
-- 统计聚合（汇总所有分片数据）
-
-> **⚠️ 分片结果不保证全局顺序**
->
-> `MultiPool.Wait()` 依次合并各分片的结果，分片 A 的全部结果在分片 B 之前。但分片之间并未按时间排序，因此不保证全局提交顺序。
->
-> **⚠️ 通过 Pool.Shard() 创建，不要直接 New**
->
-> `MultiPool` 没有公开的构造函数，必须通过 `Pool.Shard()` 或 `Pool.DefaultShard()` 创建。第一个分片复用原 Pool，其余自动克隆配置。
->
-> **⚠️ 分片数不能超过 CPU 核心数的 16 倍**
->
-> `shards > runtime.GOMAXPROCS(0) * 16` 时返回只有当前 Pool 的单分片 MultiPool。过多分片会增加调度开销，适得其反。
-
-### 创建：Shard / DefaultShard
+### 基本用法
 
 ```go
-// 方法签名
-func (p *Pool[T]) Shard(shards int) *MultiPool[T]
-func (p *Pool[T]) DefaultShard() *MultiPool[T]
-```
-
-| 方法 | 说明 |
-|------|------|
-| `p.Shard(n)` | 创建 n 个分片的 MultiPool，`n <= 1` 返回单分片 |
-| `p.DefaultShard()` | 使用 `max(2, GOMAXPROCS)` 作为分片数 |
-
-```go
-// 基本用法
-mp := async.NewPool[int](100).Shard(8)
-defer mp.Close()
-
-// 配合自动扩缩容：8 分片 × 每个 4 worker（32 worker 初始）→ 按需扩缩
-mp := async.NewPool[int](4).
-    WithMaxPending(10000).
-    Shard(8)
-defer mp.Close()
-
-// 配合背压控制：16 分片，每个 50 worker，溢出丢弃
-mp := async.NewPool[int](50).
-    WithMaxPending(5000).
-    WithOverflow(core.OverflowDrop).
-    Shard(16)
-defer mp.Close()
-
-// CPU 自动分片
-mp := async.NewPool[int](100).DefaultShard()
-```
-
-### 基础查询：ShardCount / GetShard
-
-```go
-func (mp *MultiPool[T]) ShardCount() int
-func (mp *MultiPool[T]) GetShard(idx int) *Pool[T]
-```
-
-| 方法 | 说明 |
-|------|------|
-| `ShardCount()` | 返回分片数 |
-| `GetShard(i)` | 获取第 i 个分片的 Pool 实例，可对其单独配置 AutoScale 等 |
-
-```go
-mp := pool.NewPool[int](4).
-    WithMaxPending(5000).
-    Shard(4)
-
-// 为每个分片单独开启 AutoScale
-for i := 0; i < mp.ShardCount(); i++ {
-    mp.GetShard(i).EnableAutoScale(nil)
-}
-```
-
-### 任务分发
-
-```go
-func (mp *MultiPool[T]) Submit(ctx context.Context, fn func(context.Context) (T, error)) error
-func (mp *MultiPool[T]) TrySubmit(ctx context.Context, fn func(context.Context) (T, error)) error
-func (mp *MultiPool[T]) SubmitKeyed(key uint64, ctx context.Context, fn func(context.Context) (T, error)) error
-func (mp *MultiPool[T]) TrySubmitKeyed(key uint64, ctx context.Context, fn func(context.Context) (T, error)) error
-func (mp *MultiPool[T]) SubmitBatch(ctx context.Context, items []T, fn func(context.Context, T) (T, error)) []SubmitResult
-```
-
-| 方法 | 分发策略 | 说明 |
-|------|----------|------|
-| `Submit` | Round-robin | 阻塞提交 |
-| `TrySubmit` | Round-robin | 非阻塞提交 |
-| `SubmitKeyed` | Hash(key) | 同一 key 固定分片，阻塞 |
-| `TrySubmitKeyed` | Hash(key) | 同一 key 固定分片，非阻塞 |
-| `SubmitBatch` | 逐元素 Round-robin | 批量提交，返回 `[]SubmitResult` |
-
-```go
-mp := async.NewPool[int](100).Shard(8)
-defer mp.Close()
-
-// Round-robin 分发
-for i := 0; i < 10_000_000; i++ {
-    mp.Submit(ctx, func(ctx context.Context) (int, error) {
-        return i * 2, nil
-    })
-}
-results := mp.Wait()
-
-// Keyed 分发：相同 key 落到同一分片（保证顺序）
-for _, userID := range userIDs {
-    mp.SubmitKeyed(uint64(userID), ctx, func(ctx context.Context) (int, error) {
-        return processUser(ctx, userID)
-    })
-}
-
-// 批量提交
-items := []int{1, 2, 3, 4, 5}
-submitResults := mp.SubmitBatch(ctx, items, func(ctx context.Context, n int) (int, error) {
-    return n * n, nil
-})
-for _, sr := range submitResults {
-    if sr.Err != nil {
-        log.Printf("submit index %d failed: %v", sr.Index, sr.Err)
-    }
-}
-```
-
-### 结果收集：Wait / WaitAndClose / Close
-
-```go
-func (mp *MultiPool[T]) Wait() []core.Result[T]
-func (mp *MultiPool[T]) WaitAndClose() []core.Result[T]
-func (mp *MultiPool[T]) Close()
-```
-
-| 方法 | 说明 |
-|------|------|
-| `Wait()` | 等待所有分片完成，合并结果 |
-| `WaitAndClose()` | 等待完成 + 关闭所有分片 |
-| `Close()` | 立即关闭所有分片（不等待） |
-
-```go
-mp := async.NewPool[int](100).Shard(8)
-
-// 方式一：先 Wait 再 Close
-results := mp.Wait()
-mp.Close()
-
-// 方式二：一步完成（推荐）
-results := mp.WaitAndClose()
-```
-
-### 链式配置
-
-MultiPool 的所有 With* 方法代理到内部每个分片：
-
-```go
-func (mp *MultiPool[T]) WithTimeout(d time.Duration) *MultiPool[T]
-func (mp *MultiPool[T]) WithSubmitTimeout(d time.Duration) *MultiPool[T]
-func (mp *MultiPool[T]) WithStreaming(bufSize int) *MultiPool[T]
-func (mp *MultiPool[T]) WithResultCallback(fn func(core.Result[T])) *MultiPool[T]
-func (mp *MultiPool[T]) WithRingBuffer(capacity int, overflow core.OverflowStrategy) *MultiPool[T]
-func (mp *MultiPool[T]) WithMaxPending(n int) *MultiPool[T]
-func (mp *MultiPool[T]) WithOverflow(strategy core.OverflowStrategy) *MultiPool[T]
-func (mp *MultiPool[T]) WithMaxResults(n int) *MultiPool[T]
-```
-
-| 方法 | 说明 |
-|------|------|
-| `WithTimeout(d)` | 为所有分片设置任务超时 |
-| `WithSubmitTimeout(d)` | 为所有分片设置提交超时 |
-| `WithStreaming(n)` | 为所有分片启用流式结果消费（各分片 channel 独立） |
-| `WithResultCallback(fn)` | 为所有分片设置结果回调 |
-| `WithRingBuffer(cap, over)` | 为所有分片启用环形缓冲 |
-| `WithMaxPending(n)` | 为所有分片设置最大等待数（背压控制） |
-| `WithOverflow(strat)` | 为所有分片设置溢出策略 |
-| `WithMaxResults(n)` | 为所有分片设置最大结果数 |
-
-```go
-mp := async.NewPool[int](100).Shard(8).
-    WithTimeout(5 * time.Second).
-    WithMaxPending(10000).
-    WithOverflow(core.OverflowDrop)
-defer mp.Close()
-```
-
-> **⚠️ WithStreaming 各分片独立**
->
-> 启用流式后，每个分片有独立的 channel。如需统一消费，推荐使用 `WithResultCallback`。
-
-### 统计聚合
-
-```go
-func (mp *MultiPool[T]) TotalActive() int
-func (mp *MultiPool[T]) TotalBusy() int
-func (mp *MultiPool[T]) TotalPending() int
-func (mp *MultiPool[T]) TotalWorkerCount() int
-func (mp *MultiPool[T]) TotalFailCount() int64
-func (mp *MultiPool[T]) TotalSuccessCount() int64
-func (mp *MultiPool[T]) TotalCount() int64
-func (mp *MultiPool[T]) Flush(maxPerShard int) []core.Result[T]
-```
-
-| 方法 | 说明 |
-|------|------|
-| `TotalActive()` | 所有分片活跃任务总数 |
-| `TotalBusy()` | 所有分片忙碌 worker 总数 |
-| `TotalPending()` | 所有分片等待队列总长度 |
-| `TotalWorkerCount()` | 所有分片 worker 总数 |
-| `TotalFailCount()` | 所有分片失败任务总数 |
-| `TotalSuccessCount()` | 所有分片成功任务总数 |
-| `TotalCount()` | 所有分片任务总数 |
-| `Flush(maxPerShard)` | 排空所有分片环形缓冲区结果 |
-
-```go
-mp := async.NewPool[int](100).Shard(8)
-defer mp.Close()
-
-// 提交任务...
-for i := 0; i < 100000; i++ {
-    mp.Submit(ctx, fn)
-}
-
-// 监控分片状态
-fmt.Printf("workers: %d, active: %d, busy: %d, pending: %d\n",
-    mp.TotalWorkerCount(), mp.TotalActive(), mp.TotalBusy(), mp.TotalPending())
-
-// 排空环形缓冲区
-results := mp.Flush(1000)
-```
-
----
-
-## 架构说明
-
-Pool 内部使用 **32 分片无锁存储**：
-
-```
-┌────────────────────────────────────────────┐
-│                  Pool[T]                    │
-│                                             │
-│  submitIdx (atomic) ──→ 分片路由            │
-│       │                                     │
-│  ┌────┴────┬─────────┬─────────┬─────────┐ │
-│  │ Shard 0 │ Shard 1 │  ...    │ Shard 31│ │
-│  │ mu      │ mu      │         │ mu      │ │
-│  │ results │ results │         │ results │ │
-│  │ cancels │ cancels │         │ cancels │ │
-│  └─────────┴─────────┴─────────┴─────────┘ │
-│                                             │
-│  Worker[0] Worker[1] ... Worker[N-1]        │
-│     ↑ taskCh (buffered channel)              │
-└────────────────────────────────────────────┘
-```
-
-- **分片路由**：`shardIdx = submitIdx % 32`，`localIdx = submitIdx / 32`
-- **原子序号**：`submitIdx` 用 `atomic.Int64` 递增，无需全局锁
-- **分片锁**：每个分片独立 `sync.Mutex`，锁竞争降至 1/32
-- **结果顺序**：按 `submitIdx` 确定全局顺序，Wait 时遍历合并
-
-这种设计消除了全局锁竞争，在千万级并发下保持线性吞吐。
-
----
-
-## 生产最佳实践
-
-> **⚠️ 必读：以下配置不当可能在生产高并发下导致 OOM**
-
-### WithMaxResults 默认值陷阱
-
-`WithMaxResults` **默认值为 0（无限制）**，即所有提交任务的结果都会永久保留在 results 切片中：
-
-```go
-// ❌ 危险：长期运行的服务，结果切片无界增长，最终 OOM
-p := async.NewPool[string](8)
-for {
-    p.Submit(ctx, heavyTask)
-}
-p.Wait() // 内存爆炸
-```
-
-`WithRingBuffer` 和 results 切片是**并行的两个存储通道**，只配环形缓冲不会限制 results 切片增长。必须按场景选择至少一种内存控制策略：
-
-```go
-// ✅ 方案1：限制 results 切片容量（推荐）
-p := async.NewPool[string](8).WithMaxResults(100_000)
-
-// ✅ 方案2：环形缓冲（需配合 WithMaxResults 真正限制 results 切片）
-p := async.NewPool[string](8).
-    WithMaxResults(100_000).
-    WithRingBuffer(50_000, async.OverflowDrop)
-
-// ✅ 方案3：流式消费（用 WithStreaming + WithMaxResults）
-p := async.NewPool[string](8).
-    WithMaxResults(100_000).
-    WithStreaming(4096)
-```
-
-### 长期运行 Pool 完整配置
-
-```go
-// ✅ 推荐的生产级 Pool 配置模板
-p := async.NewPool[MyType](async.IO()).
-    WithTimeout(30 * time.Second).           // 单个任务超时
-    WithSubmitTimeout(5 * time.Second).      // 提交等待超时
-    WithMaxPending(10000).                   // 最大排队任务数
-    WithOverflow(async.OverflowError).       // 超出返回错误，触发降级
-    WithMaxResults(100_000).                 // 限制 results 切片内存（默认0=无限！）
-    WithRingBuffer(50_000, async.OverflowDrop). // 固定环形缓冲兜底
-    WithResultCallback(func(r core.Result[MyType]) {
-        // 轻量回调：记录 metrics、打点等
-    })
-```
-
-> **⚠️ Pool vs Group 选型**
->
-> | 场景 | 推荐 | 原因 |
-> |------|------|------|
-> | 长期运行的后台服务（百万/QPS） | **Pool** | goroutine 复用，32 分片锁 |
-> | 一次性批量任务（几千~几万） | **Group** | 用完即销毁，编码简单 |
-> | 海量短任务（千万级）| **Pool + RingBuffer** | Group 每任务新建 goroutine，千万级内存爆炸 |
-
-### 流式消费注意事项
-
-`WithStreaming` 使用非阻塞 `select default` 写入，消费者慢时会**静默丢弃**结果。务必监控 `StreamDropped()`：
-
-```go
-go func() {
-    ticker := time.NewTicker(10 * time.Second)
-    for range ticker.C {
-        if dropped := p.StreamDropped(); dropped > 0 {
-            log.Printf("[ALERT] stream results dropped: %d", dropped)
+err := async.PoolMulti[string]().Context(ctx).
+    Shards(8).              // 8 个分片
+    Worker(16).             // 每分片 16 worker = 128 总 worker
+    Run(func(ctx context.Context, mp *MultiPool[string]) error {
+        for _, url := range urls {
+            mp.Submit(ctx, func(ctx context.Context) (string, error) {
+                return httpGet(ctx, url)
+            })
         }
-    }
-}()
+        results := mp.WaitAndClose()
+        return handleResults(results)
+    })
 ```
 
-### 全局初始化配置
+### RoundRobin 分发（默认）
 
 ```go
-func init() {
-    async.SetDefaultTimeout(30 * time.Second)       // 默认超时
-    async.SetSubmitTimeout(5 * time.Second)          // 提交超时
-    async.SetTaskFailLogLevel(async.LogLevelWarn)    // 失败日志降级，减少噪音
-    async.SetTraceLogEnabled(false)                  // 关闭 Trace 日志
-    async.SetLogger(myProductionLogger)              // 注入自定义 Logger
-}
+err := async.PoolMulti[string]().Context(ctx).
+    Shards(8).Worker(4).
+    Run(func(ctx context.Context, mp *MultiPool[string]) error {
+        for _, item := range items {
+            mp.Submit(ctx, func(ctx context.Context) (string, error) {
+                return process(item)
+            })
+        }
+        results := mp.Wait()
+        handleResults(results)
+        return nil
+    })
 ```
 
-> **⚠️ 生命周期必须成对**
->
-> 创建 Pool 后必须调用 `Close()`、`WaitAndClose()` 或 `CloseAndWait()`，否则 worker goroutine 将永久泄漏。
->
-> **⚠️ Wait 一次性**
->
-> `Wait()` 只能调用一次，调用后不可再 Submit。如需重复提交+等待，请使用 `Reset()`。
->
-> **⚠️ Submit 后必须收集**
->
-> Submit 后必须调用 Wait / WaitAndClose / CloseAndWait 中的一种来收集结果，否则创建的 goroutine 会泄漏。
->
-> **⚠️ Close 不等待**
->
-> `Close()` 会立即停止 worker，不等待正在执行的任务完成。生产环境推荐 `CloseAndWait()`。
+### Key 亲和提交
+
+```go
+err := async.PoolMulti[int]().Context(ctx).
+    Shards(8).Worker(4).
+    Run(func(ctx context.Context, mp *MultiPool[int]) error {
+        for _, userID := range userIDs {
+            // 同一 userID 始终路由到同一分片
+            mp.SubmitKeyed(uint64(userID), ctx, func(ctx context.Context) (int, error) {
+                return processUser(ctx, userID)
+            })
+        }
+        results := mp.Wait()
+        handleResults(results)
+        return nil
+    })
+```
+
+### 非阻塞批量提交
+
+```go
+err := async.PoolMulti[int]().Context(ctx).
+    Shards(8).Worker(4).
+    Run(func(ctx context.Context, mp *MultiPool[int]) error {
+        results := mp.SubmitBatch(ctx, items, func(ctx context.Context, item int) (int, error) {
+            return process(item)
+        })
+        for _, r := range results {
+            if r.Err != nil {
+                log.Printf("分片 %d 索引 %d 提交失败", r.ShardIdx, r.Index)
+            }
+        }
+        allResults := mp.Wait()
+        handleResults(allResults)
+        return nil
+    })
+```
+
+### 流式消费（Fan-in 所有分片）
+
+```go
+err := async.PoolMulti[string]().Context(ctx).
+    Shards(8).Worker(4).
+    Run(func(ctx context.Context, mp *MultiPool[string]) error {
+        mp.WithStreaming(1024)
+
+        go func() {
+            for _, item := range items {
+                mp.Submit(ctx, func(ctx context.Context) (string, error) {
+                    return process(item)
+                })
+            }
+            mp.WaitAndClose()
+        }()
+
+        for r := range mp.StreamResults() {
+            if !r.Ok() {
+                log.Printf("失败: %v", r.Err)
+                continue
+            }
+            saveResult(r.Value)
+        }
+        return nil
+    })
+```
+
+### 运行时配置代理
+
+```go
+err := async.PoolMulti[int]().Context(ctx).
+    Shards(8).Worker(4).
+    Run(func(ctx context.Context, mp *MultiPool[int]) error {
+        // 运行时为所有分片统一设置
+        mp.WithTimeout(10 * time.Second)
+        mp.WithMaxPending(5000)
+        mp.WithMaxResults(50000)
+
+        for _, item := range items {
+            mp.Submit(ctx, processItem)
+        }
+        results := mp.Wait()
+        return handleResults(results)
+    })
+```
+
+### 统计汇总
+
+```go
+err := async.PoolMulti[int]().Context(ctx).
+    Shards(8).Worker(4).
+    Run(func(ctx context.Context, mp *MultiPool[int]) error {
+        for _, item := range items {
+            mp.Submit(ctx, processItem)
+        }
+        results := mp.Wait()
+
+        fmt.Printf("总 worker: %d, 总任务: %d, 成功: %d, 失败: %d\n",
+            mp.TotalWorkerCount(),
+            mp.TotalCount(),
+            mp.TotalSuccessCount(),
+            mp.TotalFailCount())
+        return nil
+    })
+```
+
+### 注入外部池
+
+```go
+err := async.PoolMulti[string]().Context(ctx).
+    Worker(8).
+    Shards(4).        // 水平分片
+    Run(func(ctx context.Context, mp *MultiPool[string]) error {
+        // Run 内部已自动创建外部池并注入
+        for _, item := range items {
+            mp.Submit(ctx, processItem)
+        }
+        results := mp.Wait()
+        return handleResults(results)
+    })
+```
 
 ---
 
-## 性能基准
+## AutoScale 自动扩缩容
 
-| 场景 | 吞吐量 | 说明 |
-|------|--------|------|
-| Pool.Submit + Wait 10M | **370K ops/s** | 千万任务提交+等待，32分片 |
-| AutoScalePool 1M | **117K ops/s** | 自动扩缩容 |
-| AutoScalePool TrySubmit 5M | **943K ops/s** | 非阻塞提交+自动扩缩容 |
+Pool 支持运行时自动扩缩容，根据 busy/concurrency 比率动态调整 worker 数：
+
+```go
+err := async.Pool[int]().Context(ctx).
+    Worker(4).
+    Run(func(ctx context.Context, p *Pool[int]) error {
+        // 运行时启用自动扩缩容
+        p.EnableAutoScale(&async.AutoScaleConfig{
+            MinWorkers:         2,
+            MaxWorkers:         100,
+            CheckInterval:      5 * time.Second,
+            ScaleUpThreshold:   0.7,
+            ScaleDownThreshold: 0.2,
+            ScaleUpChecks:      3,
+            ScaleDownChecks:    5,
+            ScaleUpFactor:      1.5,
+            ScaleDownFactor:    0.75,
+        })
+
+        for _, item := range items {
+            p.Submit(ctx, processItem)
+        }
+        results := p.Wait()
+        return handleResults(results)
+    })
+```
+
+> **⚠️ AutoScale 相关方法**
+>
+> - `p.EnableAutoScale(config)`：config 为 nil 时自动使用 `DefaultAutoScaleConfig()`
+> - `p.DisableAutoScale()`：停止自动扩缩容
+> - `p.IsAutoScaleEnabled()`：查询是否已启用
+> - `p.Resize(newSize)`：手动调整 worker 数
+
+---
+
+## 辅助函数
+
+### ForEachPool —— 切片元素协程池并发
+
+`async.ForEachPool` 为切片每个元素创建协程池任务，只关心 error，等价于 Pool 版本的 ForEach。
+
+```go
+files := []string{"f1.txt", "f2.txt", "f3.txt"}
+_, err := async.ForEachPool(ctx, files, func(ctx context.Context, path string) error {
+    return os.Remove(path)
+}, async.IO())
+if err != nil {
+    log.Printf("删除失败: %v", err)
+}
+```
+
+| 参数 | 说明 | 默认值 |
+|------|------|--------|
+| `ctx` | 上下文 | — |
+| `items` | 切片数据 | — |
+| `fn` | 处理函数 `func(context.Context, T) error` | — |
+| `concurrency` | 并发度（≤0 使用 `IO()`） | `IO()` |
+
+返回值 `*NoResultPool` 是 `*Pool[struct{}]` 的类型别名，提供 `FirstError()` 获取第一个错误。
+
+### Pool[T].Shard(shards) / DefaultShard()
+
+从单个 `Pool[T]` 实例创建 `MultiPool[T]`，继承原 Pool 的所有配置：
+
+```go
+p, ctx := pool.New[int](8).WithContext(ctx)
+
+// 按指定分片数创建 MultiPool
+mp := p.Shard(4)
+
+// 按 CPU 核数自动分片（最少 2）
+mp := p.DefaultShard()
+
+defer mp.Close()
+```
+
+| 方法 | 说明 |
+|------|------|
+| `.Shard(shards)` | 创建 `shards` 个分片的 MultiPool，继承超时、FailFast、环形缓冲等配置 |
+| `.DefaultShard()` | 按 `GOMAXPROCS` 自动分片（最少 2） |
+
+`Shard()` 会复制 Pool 的 `timeout`、`submitTimeout`、`maxPending`、`overflowStrat`、`maxResults`、`failFast`、`ringBuf`、`streamCh`、`resultCb`、`autoScale` 等全部运行时配置到所有分片。
+
+---
+
+## 自定义日志
+
+```go
+err := async.Pool[int]().
+    Logger(myLogger).    // 全局生效
+    Run(fn)
+
+err := async.Pool[int]().
+    Logger(myLogger).
+    DefaultLogger().     // 全局恢复默认
+    Run(fn)
+```
+
+---
+
+## 常见错误
+
+- **❌ Submit 后忘记 Wait**：`Submit` 只是提交任务到 channel，worker 异步执行。不调用 `Wait()` / `WaitAndClose()` / `Close()` 会导致 goroutine 泄漏。Run 模式会自动 Close，Build/New 模式必须手动处理。
+
+  ```go
+  // ❌ 错误：未 Wait
+  p, ctx := pool.New[int](8).WithContext(ctx)
+  p.Submit(ctx, fn)
+  // 没有 Wait → goroutine 泄漏
+
+  // ✅ 正确
+  results := p.Wait()
+  ```
+
+- **❌ Wait 后继续 Submit**：`Wait()` 一次性使用，调用后通道被标记为已完成，再次 `Submit` 会返回错误。如需复用请调用 `ResetWait()` 或 `Reset()`。
+
+  ```go
+  // ✅ 正确：复用 Pool
+  results1 := p.Wait()
+  p.ResetWait()
+  p.Submit(ctx, fn2)
+  results2 := p.Wait()
+  ```
+
+- **❌ OverflowBlock + 无 SubmitTimeout → 死锁**：`Pool` 结构体零值 `OverflowStrategy = 0 = OverflowBlock`，即**默认溢出策略是阻塞**。如果 `Worker` 全忙且 `MaxPending` 未设置（不限队列），Submit 会一直阻塞而非快速失败。生产环境建议显式设置 `SubmitTimeout` 或 `Overflow(OverflowError)`。
+
+  ```go
+  // ❌ 危险：无限阻塞
+  p := async.Pool[int](nil).Worker(8).Run(fn)
+
+  // ✅ 生产级：30s 提交超时或错误降级
+  async.Pool[int]().Context(ctx).
+      Worker(8).SubmitTimeout(30*time.Second).
+      Overflow(async.OverflowError).Run(fn)
+  ```
+
+- **❌ DefaultOverflow() ≠ 恢复运行时默认**：`DefaultOverflow()` 将 Builder 的 `cfg.Overflow` 设为 `OverflowDrop`（用于环形缓冲的默认溢出策略），但 Pool 实例的**运行时默认溢出策略是 `OverflowBlock`**。这两个是不同的概念：一个是 Builder 层的全局默认值引用，一个是实例的零值行为。不要混淆。
+
+- **❌ PoolBuilder 没有 `.Build()`**：与 GroupBuilder 不同，`PoolBuilder` 只有 `.Run(fn)` 作为终端方法，没有 `.Build()`。需要手动管理 Pool 生命周期时使用 `pool.New[T](n)`。
+
+  ```go
+  // ❌ 错误：PoolBuilder 没有 Build
+  p := async.Pool[int]().Build()  // 编译错误
+
+  // ✅ 正确：New 手动管理
+  p, _ := pool.New[int](8).WithContext(ctx)
+  defer p.Close()
+  ```
+
+- **❌ MaxResults 溢出静默截断**：`MaxResults` 默认 100_000。如果提交了 150_000 个任务，超出的 50_000 个结果会被静默丢弃。确认任务量后调整或在 `ring buffer + flush` 模式下工作。
+
+  ```go
+  // 场景：提交 500K 任务
+  async.Pool[int]().Context(ctx).
+      Worker(64).
+      MaxResults(0).        // 0 = 无限制（确保不丢结果）
+      Streaming(4096).      // + 流式消费降低内存峰值
+      Run(fn)
+  ```
+
+- **❌ Streaming 未消费导致 worker 阻塞**：启用 `Streaming(buf)` 后，结果写入 stream channel。如果不消费 `StreamResults()`，channel `buf` 写满后 worker 会阻塞等待消费方读取。必须配合消费者 goroutine。
+
+  ```go
+  // ✅ 正确：启用 Streaming 后立即消费
+  err := async.Pool[int]().Context(ctx).
+      Streaming(1024).Run(func(ctx context.Context, p *Pool[int]) error {
+          go func() {
+              for r := range p.StreamResults() {
+                  handle(r)
+              }
+          }()
+          // ... Submit 任务 ...
+          return nil
+      })
+  ```
+
+- **❌ Logger 全局副作用**：`.Logger(l)` 影响**全局**所有 Pool/Group/Retry 等组件（内部调用 `core.SetLogger(l)`）。在测试或需要隔离日志时，记得用 `.DefaultLogger()` 恢复。
+
+- **❌ EnableAutoScale(config) 传入 nil 的歧义**：`config == nil` 时自动使用 `DefaultAutoScaleConfig()`，也就是说 `EnableAutoScale(nil)` 会启用扩缩容而非禁用。要禁调用 `DisableAutoScale()`。
+
+- **❌ RingBuffer 不 Flush 导致结果丢失**：环形缓冲中的结果需要通过 `Flush()` 定时取出，否则被新结果覆盖后永久丢失。长期运行的 Pool 必须定期 Flush。

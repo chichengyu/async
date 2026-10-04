@@ -1,2976 +1,953 @@
-# MapReduce（数据并行）文档
+# Map/Reduce（数据并行）文档
 
 ## 概述
 
-MapReduce 模块对集合数据并行处理，灵感来自函数式编程，但使用 goroutine 并发执行。
+Slice 模块提供切片元素的并发/串行处理，支持 Map / ForEach / Reduce / Stream 四种终端操作。通过 `SliceBuilder[T,R]` 链式构建器配置策略和模式。
 
-**核心特性**:
-- 并发 Map / ForEach / Reduce
-- Chunk（分块）处理大数据集
-- Chunked（逐元素分块）精细控制内存
-- FailFast 快速失败模式
-- Timeout 超时控制
-- FailFast + Timeout 组合（FFTimeout）
-- 串行版本（Serial）
-- Result 辅助函数
+**两种入口**：
 
-> **⚠️ Map / ForEach 不保序**
->
-> `Map()` / `ForEach()` 并发执行不保证元素处理顺序。如果顺序重要，使用 `MapSerial()` / `ForEachSerial()`。
->
-> **⚠️ Chunk 分块粒度**
->
-> `Chunk` 将原始切片按块大小拆分，`Chunked` 是逐元素均匀分配。大数据集推荐 `Chunked` 避免某块过大导致内存峰值。
->
-> **⚠️ FailFast 立即返回**
->
-> `MapWithFailFast` / `ForEachWithFailFast` 任意一个元素失败即中断所有并发任务并返回错误，其他成功的结果会被丢弃。
->
-> **⚠️ 零元素切片**
->
-> 传入空切片时所有 Map / ForEach 函数返回空的 `[]Result[T]`，不会报错。
+| 入口 | 说明 | 终端方法 |
+|------|------|----------|
+| `async.Slice[T](ctx, items)` | 同类型切片构建器（R=T） | `.Map(fn) / .ForEach(fn) / .Reduce(init, fn) / .Stream(fn, buf)` |
+| `async.SliceWith[R](ctx, items)` | 跨类型切片构建器（T→R） | `.Map(fn) / .ForEach(fn) / .Reduce(init, fn) / .Stream(fn, buf)` |
 
-**包路径**: `github.com/chichengyu/async/mapreduce`
+**三种模式**：
 
-**顶层便捷封装**: 所有函数同时通过 `async.*` 在顶层包中暴露，使用方式为 `async.Map(...)`、`async.ForEach(...)` 等。
+| 模式 | 获取方式 | 说明 |
+|------|------|------|
+| 默认并行模式 | `async.Slice(ctx, items)` 直接使用 | 默认并发度 IO |
+| `.Parallel()` | `async.Slice(ctx, items).Parallel()` | 显式并行+可配置并发/分片/池化等 |
+| `.Serial()` | `async.Slice(ctx, items).Serial()` | 串行模式，不并发 |
+
+> **⚠️ 默认就是并行模式**
+>
+> `async.Slice(ctx, items)` 创建后直接就是并行模式（默认并发度 IO）。不需要调用 `.Parallel()` 就已经是并行。`.Parallel()` 用于在串行模式后切换回并行模式。
+>
+> **⚠️ 模式切换**
+>
+> - `SliceBuilder` → `.Serial()` → `SerialSlice` → `.ToParallel()` → `ParallelSlice`
+> - `SliceBuilder` → `.Parallel()` → `ParallelSlice` → `.ToSerial()` → `SerialSlice`
+> - `SliceBuilder` 默认已是并行，不需要 `.Parallel()` 即可使用并行配置方法
+>
+> **⚠️ 串行模式下不暴露并行配置方法**
+>
+> `SerialSlice` 只有 `FailFast()` / `NoFailFast()` / `Timeout()` / `DefaultTimeout()` / `Logger()`，没有 `Worker()` / `Pool()` / `Shards()` / `Chunk()` 等并行配置。如需并行配置，先 `.ToParallel()` 切换到 `ParallelSlice`。
+>
+> **⚠️ Reduce 始终串行**
+>
+> `Reduce(initial, fn)` 不受策略中并发配置影响，始终串行聚合。
+
+---
 
 ## 目录
 
-- [概述](#概述)
-- [函数命名约定](#函数命名约定)
-- [公共类型](#公共类型)
-  - [Result](#result)
-- [Map（并发映射）](#map并发映射)
-  - [Map](#map)
-  - [MapWithFailFast](#mapwithfailfast)
-  - [MapSerial](#mapserial)
-  - [MapSerialFailFast](#mapserialfailfast)
-- [ForEach（并发遍历）](#foreach并发遍历)
-  - [ForEach](#foreach)
-  - [ForEachWithFailFast](#foreachwithfailfast)
-  - [ForEachSerial](#foreachserial)
-  - [ForEachSerialFailFast](#foreachserialfailfast)
-- [Reduce（串行归约）](#reduce串行归约)
-  - [Reduce（串行）](#reduce串行)
-- [Reduce（并发归约）](#reduce并发归约)
-  - [Reduce（并发）](#reduce并发)
-  - [DefaultReduce](#defaultreduce)
-  - [ReduceWithFailFast](#reducewithfailfast)
-  - [DefaultReduceWithFailFast](#defaultreducewithfailfast)
-  - [ReduceWithTimeout](#reducewithtimeout)
-  - [DefaultReduceWithTimeout](#defaultreducewithtimeout)
-  - [ReduceWithFFTimeout](#reducewithfftimeout)
-  - [DefaultReduceWithFFTimeout](#defaultreducewithfftimeout)
-- [Chunk（切片分块）](#chunk切片分块)
-  - [Chunk](#chunk)
-  - [ChunkN](#chunkn)
-- [Result 辅助函数](#result-辅助函数)
-  - [ResultValues](#resultvalues)
-  - [ResultErrors](#resulterrors)
-  - [Every](#every)
-  - [Some](#some)
-  - [AnyError](#anyerror)
-  - [PartitionResults](#partitionresults)
-  - [Flat](#flat)
-  - [OnlyErrors](#onlyerrors)
-- [其他辅助函数](#其他辅助函数)
-  - [Partition](#partition)
-  - [Must](#must)
-  - [SafeCall](#safecall)
-  - [SafeCallVoid](#safecallvoid)
-  - [SafeCallWithResult](#safecallwithresult)
-- [Map 扩展变体](#map-扩展变体)
-  - [DefaultMap](#defaultmap)
-  - [DefaultMapWithFailFast](#defaultmapwithfailfast)
-  - [MapWithTimeout](#mapwithtimeout)
-  - [DefaultMapWithTimeout](#defaultmapwithtimeout)
-  - [MapWithFFTimeout](#mapwithfftimeout)
-  - [DefaultMapWithFFTimeout](#defaultmapwithfftimeout)
-- [ForEach 扩展变体](#foreach-扩展变体)
-  - [DefaultForEach](#defaultforeach)
-  - [DefaultForEachWithFailFast](#defaultforeachwithfailfast)
-  - [ForEachWithTimeout](#foreachwithtimeout)
-  - [DefaultForEachWithTimeout](#defaultforeachwithtimeout)
-  - [ForEachWithFFTimeout](#foreachwithfftimeout)
-  - [DefaultForEachWithFFTimeout](#defaultforeachwithfftimeout)
-- [MapChunk（分块 Map）](#mapchunk分块-map)
-  - [MapChunk](#mapchunk)
-  - [DefaultMapChunk](#defaultmapchunk)
-  - [MapChunkWithFailFast](#mapchunkwithfailfast)
-  - [DefaultMapChunkWithFailFast](#defaultmapchunkwithfailfast)
-  - [MapChunkWithTimeout](#mapchunkwithtimeout)
-  - [DefaultMapChunkWithTimeout](#defaultmapchunkwithtimeout)
-  - [MapChunkWithFFTimeout](#mapchunkwithfftimeout)
-  - [DefaultMapChunkWithFFTimeout](#defaultmapchunkwithfftimeout)
-- [MapChunked（逐元素分块 Map）](#mapchunked逐元素分块-map)
-  - [MapChunked](#mapchunked)
-  - [DefaultMapChunked](#defaultmapchunked)
-  - [MapChunkedWithFailFast](#mapchunkedwithfailfast)
-  - [DefaultMapChunkedWithFailFast](#defaultmapchunkedwithfailfast)
-  - [MapChunkedWithTimeout](#mapchunkedwithtimeout)
-  - [DefaultMapChunkedWithTimeout](#defaultmapchunkedwithtimeout)
-  - [MapChunkedWithFFTimeout](#mapchunkedwithfftimeout)
-  - [DefaultMapChunkedWithFFTimeout](#defaultmapchunkedwithfftimeout)
-- [ForEachChunk（分块 ForEach）](#foreachchunk分块-foreach)
-  - [ForEachChunk](#foreachchunk)
-  - [DefaultForEachChunk](#defaultforeachchunk)
-  - [ForEachChunkWithFailFast](#foreachchunkwithfailfast)
-  - [DefaultForEachChunkWithFailFast](#defaultforeachchunkwithfailfast)
-  - [ForEachChunkWithTimeout](#foreachchunkwithtimeout)
-  - [DefaultForEachChunkWithTimeout](#defaultforeachchunkwithtimeout)
-  - [ForEachChunkWithFFTimeout](#foreachchunkwithfftimeout)
-  - [DefaultForEachChunkWithFFTimeout](#defaultforeachchunkwithfftimeout)
-- [ForEachChunked（逐元素分块 ForEach）](#foreachchunked逐元素分块-foreach)
-  - [ForEachChunked](#foreachchunked)
-  - [DefaultForEachChunked](#defaultforeachchunked)
-  - [ForEachChunkedWithFailFast](#foreachchunkedwithfailfast)
-  - [DefaultForEachChunkedWithFailFast](#defaultforeachchunkedwithfailfast)
-  - [ForEachChunkedWithTimeout](#foreachchunkedwithtimeout)
-  - [DefaultForEachChunkedWithTimeout](#defaultforeachchunkedwithtimeout)
-  - [ForEachChunkedWithFFTimeout](#foreachchunkedwithfftimeout)
-  - [DefaultForEachChunkedWithFFTimeout](#defaultforeachchunkedwithfftimeout)
-- [变体选择指南](#变体选择指南)
-- [完整示例](#完整示例)
-- [性能基准](#性能基准)
+- [SliceBuilder 链式方法速查表](#slicebuilder-链式方法速查表)
+- [SerialSlice 方法速查表](#serialslice-方法速查表)
+- [ParallelSlice 方法速查表](#parallelslice-方法速查表)
+- [数据操作方法](#数据操作方法)
+- [终端操作：Map](#终端操作map)
+- [终端操作：ForEach](#终端操作foreach)
+- [终端操作：Reduce](#终端操作reduce)
+- [终端操作：Stream（流式）](#终端操作stream流式)
+- [SliceResult 结果访问](#sliceresult-结果访问)
+- [ForEachResult 结果访问](#foreachresult-结果访问)
+- [模式切换完整示例](#模式切换完整示例)
+- [默认并行模式](#默认并行模式)
+- [Parallel 模式（显式并行）](#parallel-模式显式并行)
+- [Serial 模式（串行）](#serial-模式串行)
+- [跨类型 Map（SliceWith）](#跨类型-map-slicewith)
+- [MapBatch / ForEachBatch（批量处理）](#mapbatch--foreachbatch批量处理)
+- [Pool 注入](#pool-注入)
+- [默认值体系](#默认值体系)
+- [生产环境使用建议](#生产环境使用建议)
+- [自定义日志](#自定义日志)
+- [Map 容器（K-V 泛型容器）](#map-容器k-v-泛型容器)
 
 ---
 
-## 函数命名约定
+## SliceBuilder 链式方法速查表
 
-| 前缀/后缀 | 含义 | 示例 |
-|-----------|------|------|
-| `Default*` | 使用 `core.IO()` 作为默认并发度 | `DefaultMap` |
-| `*WithFailFast` | 第一个任务失败时取消其余任务 | `MapWithFailFast` |
-| `*WithTimeout` | 每个任务有独立超时限制 | `MapWithTimeout` |
-| `*WithFFTimeout` | FailFast + Timeout 组合 | `MapWithFFTimeout` |
-| `*Chunk` | fn 接收整个 chunk（批量处理） | `MapChunk` |
-| `*Chunked` | fn 接收单个元素（逐元素） | `MapChunked` |
-| `*Serial` | 串行执行 | `MapSerial` |
+### 入口
+
+| 方法 | 说明 |
+|------|------|
+| `async.Slice[T](ctx, items)` | 同类型切片构建器（默认并行） |
+| `async.SliceWith[R](ctx, items)` | 跨类型切片构建器（默认并行） |
+
+### 配置方法（SliceBuilder 可直接使用）
+
+| 方法 | 说明 | 默认值 |
+|------|------|--------|
+| `.Context(ctx)` | 设置上下文（自动注入 TraceID） | `ctx` 参数 |
+| `.Worker(n)` | 并发度（n ≤ 0 恢复 IO 并发度） | `IO()` |
+| `.DefaultWorker()` | 使用默认 IO 并发度 | — |
+| `.DefaultPool()` | 创建默认并发度协程池并注入（自动管理生命周期） | — |
+| `.Pool(p)` | 注入外部协程池（用户管理生命周期） | 无 |
+| `.PoolAuto(p)` | 注入外部协程池（自动 Close） | 无 |
+| `.Timeout(d)` | 单任务超时 | 30s |
+| `.DefaultTimeout()` | 恢复默认超时（30s） | — |
+| `.FailFast()` | 启用 FailFast（任一失败立即终止其余） | 关闭 |
+| `.DefaultFailFast()` | 关闭 FailFast | — |
+| `.Shards(n)` | 水平分片数（n ≤ 0 用 GOMAXPROCS） | 无分片 |
+| `.DefaultShard()` | 使用默认分片（GOMAXPROCS，最少 2） | — |
+| `.Chunk(size)` | 分块处理大小 | 无分块 |
+| `.DefaultChunk()` | 使用默认分块（100） | — |
+| `.Buf(size)` | Stream 缓冲区大小 | 0（自适应） |
+| `.DefaultBuf()` | 使用默认流式缓冲 | — |
+| `.Logger(l)` | 注入自定义日志（全局生效） | 静默 |
+| `.DefaultLogger()` | 恢复默认日志 | — |
+
+### 模式切换
+
+| 方法 | 返回类型 | 说明 |
+|------|------|------|
+| `.Serial()` | `*SerialSlice[T,R]` | 切换为串行模式 |
+| `.Parallel()` | `*ParallelSlice[T,R]` | 切换为并行模式 |
+
+### 终端方法
+
+| 方法 | 返回值 | 说明 |
+|------|--------|------|
+| `.Map(fn)` | `*SliceResult[R]` | 并行/串行 Map 处理 |
+| `.MapBatch(fn)` | `*SliceResult[R]` | 分块 Map（需配合 Chunk） |
+| `.ForEach(fn)` | `*ForEachResult` | 并行/串行 ForEach |
+| `.ForEachBatch(fn)` | `*ForEachResult` | 分块 ForEach（需配合 Chunk） |
+| `.Reduce(initial, fn)` | `(R, error)` | 串行聚合（始终串行） |
+| `.Stream(fn, bufSize)` | `<-chan Result[R]` | 流式 Map |
 
 ---
 
-## 公共类型
+## SerialSlice 方法速查表
 
-### Result
+### 配置方法
+
+| 方法 | 说明 |
+|------|------|
+| `.FailFast()` | 启用 FailFast |
+| `.NoFailFast()` | 关闭 FailFast |
+| `.Timeout(d)` | 单任务超时 |
+| `.DefaultTimeout()` | 恢复默认超时 |
+| `.Logger(l)` | 注入自定义日志 |
+
+### 模式切换
+
+| 方法 | 返回类型 | 说明 |
+|------|------|------|
+| `.ToParallel()` | `*ParallelSlice[T,R]` | 切换到并行模式 |
+
+### 终端方法
+
+| 方法 | 返回值 | 说明 |
+|------|--------|------|
+| `.Map(fn)` | `*SliceResult[R]` | 串行 Map |
+| `.ForEach(fn)` | `*ForEachResult` | 串行 ForEach |
+| `.Reduce(initial, fn)` | `(R, error)` | 串行聚合 |
+| `.Stream(fn, bufSize)` | `<-chan Result[R]` | 串行流式 |
+
+> **⚠️ SerialSlice 没有 Worker/Pool/Shards/Chunk/Buf/MapBatch/ForEachBatch 方法**
+>
+> 串行模式不涉及并发，因此这些并行配置方法和批量处理方法不可用。需要时先 `.ToParallel()` 切换。
+
+---
+
+## ParallelSlice 方法速查表
+
+### 配置方法
+
+| 方法 | 说明 |
+|------|------|
+| `.Worker(n)` | 并发度 |
+| `.DefaultWorker()` | 默认 IO 并发度 |
+| `.Pool(p)` | 注入外部协程池 |
+| `.PoolAuto(p)` | 注入外部协程池（自动 Close） |
+| `.DefaultPool()` | 创建默认池 |
+| `.FailFast()` | 启用 FailFast |
+| `.NoFailFast()` | 关闭 FailFast |
+| `.Timeout(d)` | 单任务超时 |
+| `.DefaultTimeout()` | 恢复默认超时（30s） |
+| `.Shards(n)` | 水平分片数 |
+| `.DefaultShard()` | 默认分片数 |
+| `.Chunk(size)` | 分块大小 |
+| `.DefaultChunk()` | 默认分块（100） |
+| `.Logger(l)` | 注入自定义日志 |
+
+### 模式切换
+
+| 方法 | 返回类型 | 说明 |
+|------|------|------|
+| `.ToSerial()` | `*SerialSlice[T,R]` | 切换到串行模式 |
+
+### 终端方法
+
+| 方法 | 返回值 | 说明 |
+|------|--------|------|
+| `.Map(fn)` | `*SliceResult[R]` | 并行 Map |
+| `.MapBatch(fn)` | `*SliceResult[R]` | 分块并行 Map |
+| `.ForEach(fn)` | `*ForEachResult` | 并行 ForEach |
+| `.ForEachBatch(fn)` | `*ForEachResult` | 分块并行 ForEach |
+| `.Stream(fn, bufSize)` | `<-chan Result[R]` | 并行流式 |
+
+---
+
+## 数据操作方法
+
+以下方法均可链式调用，在 `Map/ForEach` 执行之前对切片进行变换。所有三个构建器（`SliceBuilder`、`ParallelSlice`、`SerialSlice`）均共享这些方法。
+
+### 排序
+
+| 方法 | 说明 |
+|------|------|
+| `.Sort(cmp)` | 非稳定排序 |
+| `.StableSort(cmp)` | 稳定排序 |
+| `.IsSorted(cmp)` | 判断是否已排序 |
+| `.Reverse()` | 原地反转 |
+
+### 过滤与去重
+
+| 方法 | 说明 |
+|------|------|
+| `.Filter(pred)` | 保留满足条件的元素（≥1000 自动并行） |
+| `.DeleteFunc(pred)` | 删除满足条件的元素（与 Filter 语义相反） |
+| `.Compact(eq)` | 移除相邻重复 |
+| `.Dedup(eq)` | 全局去重（需 comparable） |
+
+### 增删改
+
+| 方法 | 说明 |
+|------|------|
+| `.Append(vals...)` | 末尾追加 |
+| `.Prepend(vals...)` | 头部插入 |
+| `.Insert(idx, vals...)` | 指定位置插入 |
+| `.Delete(i)` | 删除单个元素 |
+| `.DeleteRange(i, j)` | 删除范围 |
+| `.Replace(i, j, vals...)` | 替换范围 |
+| `.Take(n)` | 保留前 n 个 |
+| `.Drop(n)` | 丢弃前 n 个 |
+| `.SliceRange(i, j)` | 截取子切片 |
+| `.Clip()` | 释放多余容量 |
+| `.Grow(n)` | 扩展容量 |
+| `.Shuffle()` | 随机打乱 |
+| `.Repeat(n)` | 重复拼接 |
+
+### 查询
+
+| 方法 | 说明 |
+|------|------|
+| `.Len()` | 元素数量 |
+| `.IsEmpty()` | 是否为空 |
+| `.First()` | 第一个元素 |
+| `.Last()` | 最后一个元素 |
+| `.Items()` | 直接引用（慎改） |
+| `.Values()` | 浅拷贝 |
+| `.Clone()` | 等价于 Values() |
+| `.Contains(pred)` | 是否包含（≥100 自动并行） |
+| `.Index(pred)` | 第一个匹配的索引 |
+| `.Find(pred)` | 第一个匹配的元素 |
+| `.FindLast(pred)` | 最后一个匹配的元素 |
+| `.All(pred)` | 是否全满足（≥100 自动并行） |
+| `.Any(pred)` | 是否有满足（≥100 自动并行） |
+| `.Count(pred)` | 满足条件的数量（≥100 自动并行） |
+
+---
+
+## 终端操作：Map
+
+### 基本 Map（默认并行）
 
 ```go
-type Result[T any] struct {
-    Value T
-    Err   error
+results := async.Slice[int](ctx, []int{1, 2, 3, 4, 5}).
+    Worker(8).
+    Map(func(ctx context.Context, v int) (string, error) {
+        return strconv.Itoa(v * 2), nil
+    })
+
+if results.Err() {
+    log.Fatal(results.Error())
+}
+vals := results.Values()  // ["2", "4", "6", "8", "10"]
+```
+
+### 并行 + FailFast + 超时
+
+```go
+results := async.Slice[string](ctx, urls).
+    Worker(16).
+    FailFast().
+    Timeout(5 * time.Second).
+    Map(func(ctx context.Context, url string) ([]byte, error) {
+        return httpGet(ctx, url)
+    })
+```
+
+### 并行 + 分片
+
+```go
+results := async.Slice[int](ctx, bigData).
+    Worker(8).
+    Shards(4).   // 4 分片并行处理
+    Map(heavyCompute)
+```
+
+---
+
+## 终端操作：ForEach
+
+无返回值的遍历操作，适合写数据库、发消息等副作用操作。
+
+```go
+r := async.Slice[string](ctx, records).
+    Worker(16).
+    ForEach(func(ctx context.Context, record string) error {
+        return db.Insert(ctx, record)
+    })
+
+if r.Err() {
+    log.Printf("失败 %d / %d", r.FailCount(), r.Total())
 }
 ```
 
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `Value` | `T` | 结果值（仅 Err == nil 时有效） |
-| `Err` | `error` | 错误（nil 表示成功） |
+---
 
-**方法**:
+## 终端操作：Reduce
+
+串行聚合，不受并发配置影响。
+
+```go
+sum, err := async.Slice[int](ctx, nums).
+    Reduce(0, func(ctx context.Context, acc int, v int) (int, error) {
+        return acc + v, nil
+    })
+```
+
+---
+
+## 终端操作：Stream（流式）
+
+边执行边通过 channel 返回结果，适合大批量数据实时处理。
+
+```go
+ch := async.Slice[int](ctx, items).
+    Worker(16).
+    Buf(1024).            // channel 缓冲
+    Stream(func(ctx context.Context, v int) (int, error) {
+        return process(ctx, v)
+    }, 0)                // bufSize=0 使用 Buf() 设置的值
+
+for res := range ch {
+    if res.Err != nil {
+        log.Printf("错误: %v", res.Err)
+        continue
+    }
+    fmt.Println(res.Value)
+}
+```
+
+---
+
+## SliceResult 结果访问
+
+| 方法 | 说明 |
+|------|------|
+| `.Error()` | 第一个错误（遍历所有结果） |
+| `.Ok()` | 全部成功返回 true |
+| `.Err()` | 有错误返回 true |
+| `.Values()` | 所有成功的值切片 |
+| `.Errors()` | 所有错误切片 |
+| `.FailValues()` | 失败输入值（原始 T 类型元素） |
+| `.Results()` | 原始 Result[R] 切片 |
+| `.Must()` | 有错误时 panic |
+| `.Unwrap()` | `([]R, error)` |
+| `.Len()` | 结果数量 |
+| `.First()` | 第一个成功值 |
+
+```go
+results := async.Slice[int](ctx, nums).Worker(8).Map(fn)
+
+if results.Err() {
+    for _, e := range results.Errors() {
+        log.Printf("错误: %v", e)
+    }
+    for _, fv := range results.FailValues() {
+        log.Printf("失败元素的原始值: %v", fv)
+    }
+    return
+}
+
+// 链式 Must 取结果
+values := results.Must()
+```
+
+---
+
+## ForEachResult 结果访问
+
+| 方法 | 说明 |
+|------|------|
+| `.Error()` | 第一个错误 |
+| `.Ok()` | 无错误返回 true |
+| `.Err()` | 有错误返回 true |
+| `.Total()` | 总任务数 |
+| `.FailCount()` | 失败任务数 |
+| `.SuccessCount()` | 成功任务数 |
+
+---
+
+## 模式切换完整示例
+
+### 默认并行模式
+
+不需要 `.Parallel()`，直接使用：
+
+```go
+results := async.Slice[int](ctx, items).
+    Sort(func(a, b int) int { return a - b }).   // 数据操作
+    Filter(func(v int) bool { return v > 0 }).    // 数据操作
+    Worker(16).                                   // 并行配置
+    FailFast().
+    Map(func(ctx context.Context, v int) (string, error) {
+        return process(ctx, v)
+    })
+```
+
+### Parallel 模式（显式并行）
+
+```go
+results := async.Slice[int](ctx, items).
+    Parallel().             // 显式切换并行模式
+    Worker(16).             // 只能用 ParallelSlice 的并行配置
+    Shards(8).
+    FailFast().
+    Map(fn)
+```
+
+### 串行模式
+
+```go
+results := async.Slice[int](ctx, items).
+    Serial().               // 串行模式
+    FailFast().
+    Map(fn)                 // 串行执行
+```
+
+### 模式来回切换
+
+```go
+sb := async.Slice[int](ctx, items)
+// 串行模式做确定性操作
+sb.Serial().Sort(cmp).Filter(pred)
+// 切回并行做批量处理
+result := sb.Parallel().Worker(8).Map(fn)
+
+// 或者链式：
+serial := async.Slice[int](ctx, items).Serial()
+serial.Filter(pred)
+result := serial.ToParallel().Worker(8).Map(fn)
+```
+
+> **⚠️ SerialSlice → ParallelSlice 后可以继续链式数据操作**
+>
+> `SerialSlice` 和 `ParallelSlice` 都嵌入 `*sliceBase`，共享所有数据操作方法（Sort/Filter/Chunk/Values 等约 40 个方法）。切换到 `ParallelSlice` 后既可以继续数据操作，也可以配置并发参数。
+
+---
+
+## 跨类型 Map（SliceWith）
+
+输入类型为 T，输出类型为 R：
+
+```go
+results := async.SliceWith[string](ctx, []int{1, 2, 3}).
+    Worker(8).
+    Map(func(ctx context.Context, n int) (string, error) {
+        return strconv.Itoa(n), nil
+    })
+vals := results.Values()  // ["1", "2", "3"]
+```
+
+> **⚠️ 泛型参数顺序**
+>
+> `async.SliceWith[R](ctx, items)`：R 是输出类型，T 由 items 自动推断。注意泛型参数顺序是 `[R, T]`，调用时只需显式提供 R。
+
+---
+
+## MapBatch / ForEachBatch（批量处理）
+
+配合 `Chunk(size)` 使用，fn 接收整个分块切片：
+
+```go
+// MapBatch：每个分块返回一个结果
+results := async.Slice[int](ctx, items).
+    Chunk(100).            // 每 100 个元素为一块
+    Worker(8).
+    MapBatch(func(ctx context.Context, chunk []int) (int, error) {
+        sum := 0
+        for _, v := range chunk {
+            sum += v
+        }
+        return sum, nil    // 每个 chunk 一个结果
+    })
+
+// ForEachBatch：每个分块执行副作用
+r := async.Slice[string](ctx, records).
+    Chunk(200).
+    Worker(4).
+    ForEachBatch(func(ctx context.Context, chunk []string) error {
+        return db.BatchInsert(ctx, chunk)
+    })
+```
+
+> **⚠️ Chunk ≠ Shards**
+>
+> - `Chunk(n)`：将切片按每 n 个元素分块，逐步提交给并发 worker 处理。适合限制单次内存占用的场景。
+> - `Shards(n)`：将切片均匀分成 n 份，每份由一个独立 goroutine 全权处理。适合减少锁竞争。
+
+---
+
+## Pool 注入
+
+将任务提交到外部协程池中执行：
+
+```go
+// 方式一：Pool(p)，用户管理生命周期
+p := pool.NewPool[string](16)
+defer p.Close()
+
+results := async.Slice[string](ctx, items).
+    Pool(p).
+    Map(processFunc)
+
+// 方式二：PoolAuto(p)，自动 Close
+results := async.Slice[string](ctx, items).
+    PoolAuto(pool.NewPool[string](16)).
+    Map(processFunc)
+
+// 方式三：DefaultPool()，内部创建并自动管理
+results := async.Slice[string](ctx, items).
+    DefaultPool().
+    Map(processFunc)
+```
+
+---
+
+## 默认值体系
+
+### SliceBuilder 配置默认值
+
+| 默认值 | 获取/恢复方法 | 默认值 | 说明 |
+|--------|-------------|--------|------|
+| 默认并发度 | `.DefaultWorker()` | **`IO()`**（`NumCPU×2`） | 默认并行模式使用 |
+| 默认超时 | `.DefaultTimeout()` | **30s** | 全局默认超时 |
+| 默认 FailFast | `.DefaultFailFast()` | **关闭** | 不启用快速失败 |
+| 默认分片 | `.DefaultShard()` | **GOMAXPROCS**（最少 2） | 不启用分片时无此行 |
+| 默认分块 | `.DefaultChunk()` | **100** | 常量 `defaultBatchSize` |
+| 默认 Buf | `.DefaultBuf()` | **自适应**（≤0 时：n≤16384 则=n，否则=16384） | Stream channel 缓冲 |
+| 默认池 | `.DefaultPool()` | **内部自动创建** | 注入外部池后恢复为默认 |
+| 默认日志 | `.DefaultLogger()` | **静默** | `core.SetLogger(nil)` |
+
+### 模式专属默认值
+
+| 模式 | 专有 Default* | 说明 |
+|------|--------------|------|
+| SliceBuilder（默认并行） | 除 Logger 外全部可用 | 等同于 ParallelSlice |
+| ParallelSlice | `.DefaultWorker()`, `.DefaultShard()`, `.DefaultChunk()`, `.DefaultPool()` | 并行配置可通过 Default* 恢复 |
+| SerialSlice | `.DefaultTimeout()` | 仅超时可恢复默认 |
+
+### 默认值覆盖优先级
+
+```
+全局默认值（core.Set*）
+    ↓ 被覆盖
+Builder 级设置（.Worker(n), .Timeout(d) 等）
+    ↓ 被覆盖
+Default* 恢复为特定默认值
+    ↓ 覆盖
+终端操作（.Map(fn) / .ForEach(fn) 等）
+```
+
+---
+
+## 生产环境使用建议
+
+### 模式选型速查
+
+| 场景 | 推荐 | 理由 |
+|------|------|------|
+| 小数据量（<100条）快速处理 | **Map / ForEach** | 无需复杂配置 |
+| 大切片（>10000条）IO操作 | **Map + Shards** | 分片减少锁竞争 |
+| 实时流式消费 | **Stream** | 边执行边消费 |
+| 汇总/聚合 | **Reduce** | 始终串行，天然安全 |
+| 需要按 key 分组处理 | **MapBatch / ForEachBatch** | 分组批量处理 |
+| 外部已有协程池复用 | **Pool 注入** | 避免重复创建 worker |
+
+### 并发度与分片数建议
+
+| 数据量 | 推荐 Worker | 推荐 Shards | 理由 |
+|--------|------------|------------|------|
+| <100 | `NumCPU` | 不分片 | 小数据量无需分片 |
+| 100~10000 | `IO()` | 不分片 | IO 密集型直接并发 |
+| 10000~100000 | `IO()` | `GOMAXPROCS` | 分片降低锁竞争 |
+| >100000 | `IOMulti(4)` | `GOMAXPROCS`~16 | 充分横向扩展 |
+
+### Chunk 与 MapBatch 配合
+
+```go
+// 批量处理：每 500 个元素一批
+results := async.Slice[string](ctx, millions).
+    Worker(16).
+    Shards(8).
+    Chunk(500).                    // 每批 500 个
+    MapBatch(func(ctx context.Context, batch []string) ([]Result[string], error) {
+        return batchInsertDB(ctx, batch)
+    })
+```
+
+### Stream 缓冲设置建议
+
+| 数据量 | 推荐 Buf | 理由 |
+|--------|---------|------|
+| <1000 | 0（自适应） | 自动计算 |
+| 1000~10000 | 2048 | 平衡内存与吞吐 |
+| >10000 | 16384 | 最大默认值 |
+
+### 常见错误
+
+- **❌ 大切片不设 MaxResults 用 Wait 取全部**：默认 100K 可能 OOM，建议用 Stream 流式消费或配合 Chunk 批量处理
+- **❌ 小切片过度分片**：Shards > 数据量/Worker 时无意义，分片数不超过并发度
+- **❌ Reduce 期望并行**：Reduce 永远串行，不支持 Worker/Shards 配置
+- **❌ ForEach 结果未检查**：`ForEachResult.Err()` 可能为 true，建议始终检查
+- **❌ SliceBuilder 链式构建器复用**：构建器非线程安全，每次使用应创建新实例
+
+---
+
+## 自定义日志
+
+```go
+results := async.Slice[int](ctx, items).
+    Logger(myLogger).   // 全局生效
+    Worker(8).
+    Map(fn)
+
+results := async.Slice[int](ctx, items).
+    Logger(myLogger).
+    DefaultLogger().    // 全局恢复默认
+    Map(fn)
+```
+
+---
+
+## Map 容器（K-V 泛型容器）
+
+`async.Map[K, V]` 是泛型 key-value 容器，支持链式调用和并发/串行处理。`K` 必须满足 `comparable` 约束，`V` 为任意类型。
+
+### 创建入口
+
+| 函数 | 说明 |
+|------|------|
+| `async.NewMap[K,V]()` | 创建空容器 |
+| `async.NewMapCap[K,V](capacity)` | 创建空容器，预分配 capacity 容量 |
+| `async.MapFrom[K,V](m)` | 从原生 map 创建（深拷贝） |
+| `async.MapFromRef[K,V](m)` | 从原生 map 创建（直接引用，不拷贝） |
+
+```go
+m := async.NewMap[string, int]()
+m.Set("a", 1).Set("b", 2)
+
+// 深拷贝
+m2 := async.MapFrom(map[string]int{"x": 1, "y": 2})
+
+// 引用（外部修改会影响 m3）
+raw := map[string]int{"x": 1}
+m3 := async.MapFromRef(raw)
+```
+
+### Map 容器方法速查表
+
+#### 基础读写
 
 | 方法 | 签名 | 说明 |
 |------|------|------|
-| `Ok` | `func (r Result[T]) Ok() bool` | Err == nil 返回 true |
-| `IsPanic` | `func (r Result[T]) IsPanic() bool` | 错误由 panic 导致返回 true |
+| `Get(key)` | `(V, bool)` | 获取键值，不存在时返回零值和 false |
+| `Set(key, value)` | `*Map[K,V]` | 设置键值对，覆盖已有值 |
+| `SetAll(entries)` | `*Map[K,V]` | 批量设置键值对 |
+| `Delete(keys...)` | `*Map[K,V]` | 删除一个或多个键 |
+| `GetAndDelete(key)` | `(V, bool)` | 获取后删除 |
+| `GetOrDefault(key, defaultVal)` | `V` | 获取键值，不存在时返回默认值 |
+| `GetOrSet(key, defaultVal)` | `(V, bool)` | 获取已有值；不存在时设置默认值，第二个返回值 true 表示已设置新值 |
+
+#### 基础查询
+
+| 方法 | 签名 | 说明 |
+|------|------|------|
+| `Has(key)` | `bool` | 键是否存在 |
+| `Len()` | `int` | 键值对数量 |
+| `IsEmpty()` | `bool` | 是否为空 |
+| `Clear()` | `*Map[K,V]` | 清空所有键值对 |
+
+#### 遍历
+
+| 方法 | 签名 | 说明 |
+|------|------|------|
+| `Range(fn)` | `*Map[K,V]` | 遍历所有键值对，`fn` 返回 false 时提前终止 |
+| `ForEach(fn)` | `*Map[K,V]` | 遍历所有键值对（不可提前终止） |
+
+#### 提取
+
+| 方法 | 签名 | 说明 |
+|------|------|------|
+| `Keys()` | `[]K` | 返回所有键 |
+| `Values()` | `[]V` | 返回所有值 |
+| `Clone()` | `map[K]V` | 返回底层原生 map 的浅拷贝 |
+| `AsMap()` | `map[K]V` | 返回底层原生 map 的直接引用 |
+
+#### 过滤与变换
+
+| 方法 | 签名 | 说明 |
+|------|------|------|
+| `Filter(fn)` | `*Map[K,V]` | 过滤键值对，保留 fn 返回 true 的条目（原地操作） |
+| `FilterKeys(fn)` | `*Map[K,V]` | 过滤键，保留 fn 返回 true 的条目 |
+| `FilterValues(fn)` | `*Map[K,V]` | 过滤值，保留 fn 返回 true 的条目 |
+| `Reject(fn)` | `*Map[K,V]` | 删除 fn 返回 true 的条目（与 Filter 语义相反） |
+| `MapValues(fn)` | `*Map[K,V]` | 原地变换所有值，fn 接收 key 和 value 返回新 value |
+
+#### 合并
+
+| 方法 | 签名 | 说明 |
+|------|------|------|
+| `Merge(other)` | `*Map[K,V]` | 将原生 map 合并到当前容器，同名键会被覆盖 |
+| `MergeMap(other)` | `*Map[K,V]` | 将另一个 Map 合并到当前容器，同名键会被覆盖 |
+| `MergeWithDefault(other)` | `*Map[K,V]` | 合并原生 map，同名键不会覆盖已有值 |
+
+#### 集合运算
+
+| 方法 | 签名 | 说明 |
+|------|------|------|
+| `Intersect(other)` | `*Map[K,V]` | 返回与 other 的交集（新 Map） |
+| `Union(other)` | `*Map[K,V]` | 返回与 other 的并集（新 Map） |
+| `Diff(other)` | `*Map[K,V]` | 返回差集（当前有 other 无的键，新 Map） |
+| `Equal(other)` | `bool` | 比较两个 Map 是否相等 |
+
+#### 高级查询
+
+| 方法 | 签名 | 说明 |
+|------|------|------|
+| `Find(fn)` | `(K, V, bool)` | 查找第一个满足 fn 的键值对 |
+| `All(fn)` | `bool` | 检查所有条目是否都满足 fn |
+| `Any(fn)` | `bool` | 检查是否存在满足 fn 的条目 |
+| `Count(fn)` | `int` | 统计满足 fn 的条目数 |
 
 ```go
-r := core.Result[int]{Value: 42, Err: nil}
-if r.Ok() {
-    fmt.Println(r.Value) // 42
-}
+// 链式操作
+m := async.NewMap[string, int]().
+    Set("a", 1).Set("b", 2).Set("c", 3)
 
-r2 := core.Result[int]{Err: errors.New("fail")}
-if !r2.Ok() {
-    fmt.Println(r2.Err) // fail
-}
+// 过滤 + 变换
+m.Filter(func(k string, v int) bool { return v > 1 }).
+  MapValues(func(k string, v int) int { return v * 10 })
+
+// 遍历（可提前终止）
+m.Range(func(k string, v int) bool {
+    fmt.Println(k, v)
+    return true
+})
+
+// 集合运算
+a := async.NewMap[int, string]().Set(1, "a").Set(2, "b")
+b := async.NewMap[int, string]().Set(2, "x").Set(3, "y")
+union := a.Union(b)      // {1:"a", 2:"x", 3:"y"}
+inter := a.Intersect(b)  // {2:"b"}
+diff := a.Diff(b)        // {1:"a"}
+
+// 高级查询
+k, v, found := m.Find(func(k string, v int) bool { return v > 5 })
+all := m.All(func(k string, v int) bool { return v > 0 })   // true
+any := m.Any(func(k string, v int) bool { return v == 2 })  // true
+cnt := m.Count(func(k string, v int) bool { return v > 2 }) // 1
 ```
 
 ---
 
-## Map（并发映射）
+### MapChain（Map 并发操作链构建器）
 
-### Map
+`MapChain` 提供 map 的并发/串行处理能力，支持模式切换、分片、超时等配置。
 
-```go
-func Map[T any, R any](
-    ctx context.Context,
-    items []T,
-    fn func(context.Context, T) (R, error),
-    concurrency int,
-) ([]core.Result[R], error)
-```
+#### 入口
 
-并发处理切片中的每个元素，返回 Result 切片。内部使用 chunk 分块 + goroutine 池实现，panic 自动恢复并包装为 `PanicError`。
+| 函数 | 说明 |
+|------|------|
+| `async.NewMapChain[K,V](ctx, data)` | 创建 MapChain，输出类型与 V 一致 |
+| `async.NewMapChainWith[K,V,R](ctx, data)` | 创建 MapChain，输出类型为 R |
 
-| 参数 | 类型 | 说明 |
+#### MapChain 链式配置方法
+
+| 方法 | 说明 | 默认值 |
+|------|------|--------|
+| `.Context(ctx)` | 设置上下文 | 入口 ctx |
+| `.Serial()` | 切换到串行模式 | — |
+| `.Parallel()` | 切换到并行模式 | 默认 |
+| `.Worker(n)` | 设置并发度 | `IO()` |
+| `.DefaultWorker()` | 恢复默认 IO 并发度 | — |
+| `.Pool(p)` | 注入外部协程池 | — |
+| `.PoolAuto(p)` | 注入协程池（自动 Close） | — |
+| `.DefaultPool()` | 使用内置协程池 | — |
+| `.Timeout(d)` | 设置单任务超时 | 30s |
+| `.DefaultTimeout()` | 恢复默认超时 | — |
+| `.FailFast()` | 启用快速失败 | 关闭 |
+| `.DefaultFailFast()` | 关闭快速失败 | — |
+| `.Shards(n)` | 设置水平分片数 | 不分片 |
+| `.DefaultShard()` | 按 GOMAXPROCS 分片 | — |
+| `.Buf(size)` | 设置 Stream 缓冲区 | 0（自适应） |
+| `.DefaultBuf()` | 清除 Buf 设置 | — |
+| `.Chunk(size)` | 设置分块大小 | 100 |
+| `.DefaultChunk()` | 恢复默认分块大小 | — |
+| `.Logger(l)` | 注入自定义日志（全局生效） | 静默 |
+| `.DefaultLogger()` | 恢复默认日志 | — |
+
+#### MapParallel 专属方法
+
+| 方法 | 说明 |
+|------|------|
+| `.ToSerial()` | 切换到串行模式 |
+| `.Worker(n)` | 设置并发度 |
+| `.DefaultWorker()` | 恢复默认 |
+| `.Pool(p)` | 注入外部协程池 |
+| `.PoolAuto(p)` | 注入协程池（自动 Close） |
+| `.DefaultPool()` | 使用内置 |
+| `.FailFast()` | 启用 FailFast |
+| `.NoFailFast()` | 关闭 FailFast |
+| `.DefaultFailFast()` | 恢复默认 |
+| `.Timeout(d)` | 设置超时 |
+| `.DefaultTimeout()` | 恢复默认 |
+| `.Shards(n)` | 分片数 |
+| `.DefaultShard()` | 默认分片 |
+| `.Buf(size)` | 缓冲区 |
+| `.DefaultBuf()` | 清除缓冲 |
+| `.Chunk(size)` | 分块大小 |
+| `.DefaultChunk()` | 默认分块 |
+| `.Logger(l)` | 自定义日志 |
+
+#### MapSerial 专属方法
+
+| 方法 | 说明 |
+|------|------|
+| `.ToParallel()` | 切换到并行模式 |
+| `.FailFast()` | 启用 FailFast |
+| `.NoFailFast()` | 关闭 FailFast |
+| `.Timeout(d)` | 设置超时 |
+| `.DefaultTimeout()` | 恢复默认 |
+| `.Logger(l)` | 自定义日志 |
+
+#### MapChain 终端方法
+
+| 方法 | 签名 | 返回 | 说明 |
+|------|------|------|------|
+| `.Map(fn)` | `(ctx, K, V) → (R, error)` | `*MapResult[K,R]` | 并发映射 |
+| `.MapToFn(fn)` | `(ctx, K, V) → (R, error)` | `*MapResult[K,R]` | Map 别名（向后兼容） |
+| `.ForEach(fn)` | `(ctx, K, V) → error` | `*MapForEachResult` | 并发遍历 |
+| `.Filter(fn)` | `(ctx, K, V) → bool` | `(*Map[K,V], error)` | 并发过滤 |
+| `.Stream(fn, bufSize)` | `(ctx, K, V) → (R, error)` | `<-chan core.Result[R]` | 流式映射 |
+| `.Reduce(initial, fn)` | `(ctx, R, K, V) → (R, error)` | `(R, error)` | 串行聚合 |
+| `.MapBatch(fn)` | `(ctx, []MapEntry[K,V]) → (R, error)` | `*MapResult[K,R]` | 批量映射 |
+| `.ForEachBatch(fn)` | `(ctx, []MapEntry[K,V]) → error` | `*MapForEachResult` | 批量遍历 |
+
+#### MapChain 数据操作方法（链式）
+
+这些方法继承自 `MapBase`，支持在链式构建器中直接操作底层数据：
+
+| 方法 | 签名 | 说明 |
 |------|------|------|
-| `ctx` | `context.Context` | 上下文，自动注入 TraceID |
-| `items` | `[]T` | 待处理的元素切片 |
-| `fn` | `func(context.Context, T) (R, error)` | 处理函数，接收 ctx 和元素，返回结果和错误 |
-| `concurrency` | `int` | 并发度，<=0 时使用 `core.IO()`；超过 len(items) 时截断为 len(items) |
-| 返回 | `([]core.Result[R], error)` | 结果切片（保持原始顺序）和错误（非 FailFast 时始终为 nil） |
+| `.Has(key)` | `bool` | 键是否存在 |
+| `.Get(key)` | `(V, bool)` | 获取键值 |
+| `.Set(key, value)` | `*MapChain` | 设置键值对 |
+| `.SetAll(entries)` | `*MapChain` | 批量设置 |
+| `.Delete(keys...)` | `*MapChain` | 删除键 |
+| `.Clear()` | `*MapChain` | 清空所有键值对 |
+| `.Len()` | `int` | 返回键值对数量 |
+| `.IsEmpty()` | `bool` | 是否为空 |
+| `.Keys()` | `[]K` | 所有键 |
+| `.Values()` | `[]V` | 所有值 |
+| `.AsMap()` | `map[K]V` | 底层原生 map 的引用 |
+| `.Range(fn)` | `*MapChain` | 遍历（可提前终止） |
+| `.Find(fn)` | `(K, V, bool)` | 查找第一个满足 fn 的条目 |
+| `.All(fn)` | `bool` | 是否所有条目都满足 fn |
+| `.Any(fn)` | `bool` | 是否存在满足 fn 的条目 |
+| `.Count(fn)` | `int` | 统计满足 fn 的条目数 |
+| `.FilterKV(fn)` | `*MapChain` | 过滤键值对（原地操作） |
+| `.Reject(fn)` | `*MapChain` | 删除满足 fn 的条目 |
+| `.MapValues(fn)` | `*MapChain` | 原地变换所有值 |
+| `.Merge(other)` | `*MapChain` | 合并原生 map |
+| `.MergeMap(m)` | `*MapChain` | 合并另一个 Map |
+| `.MergeWithDefault(other)` | `*MapChain` | 合并不覆盖已有键 |
 
-**使用示例**:
+#### MapResult 方法
 
-```go
-items := []int{1, 2, 3, 4, 5}
-
-results, err := mapreduce.Map(ctx, items, func(ctx context.Context, x int) (string, error) {
-    return fmt.Sprintf("item-%d", x), nil
-}, 4)
-if err != nil {
-    log.Fatal(err)
-}
-// results = [{Value:"item-1"}, {Value:"item-2"}, {Value:"item-3"}, {Value:"item-4"}, {Value:"item-5"}]
-
-for _, r := range results {
-    if r.Ok() {
-        fmt.Println(r.Value)
-    }
-}
-
-// 使用 async 顶层包
-results2 := async.Map(ctx, items, async.IO(), func(ctx context.Context, x int) (string, error) {
-    return fmt.Sprintf("item-%d", x), nil
-})
-```
-
-**处理含错误的结果**:
-
-```go
-input := []int{1, 2, 3, 4, 5}
-results, _ := mapreduce.Map(ctx, input, func(ctx context.Context, v int) (int, error) {
-    if v%2 == 0 {
-        return 0, fmt.Errorf("skip even: %d", v)
-    }
-    return v * 10, nil
-}, 2)
-
-for i, r := range results {
-    if r.Ok() {
-        fmt.Printf("[%d] 成功: %d\n", i, r.Value)  // [0] 10, [2] 30, [4] 50
-    } else {
-        fmt.Printf("[%d] 失败: %v\n", i, r.Err)    // [1] skip even: 2, [3] skip even: 4
-    }
-}
-```
-
-**空切片和 nil 处理**:
-
-```go
-// 空切片
-results, _ := mapreduce.Map(ctx, []int{}, fn, 4)
-// results = nil
-
-// nil 切片
-results, _ := mapreduce.Map(ctx, ([]int)(nil), fn, 4)
-// results = nil
-```
-
----
-
-### MapWithFailFast
-
-```go
-func MapWithFailFast[T any, R any](
-    ctx context.Context,
-    items []T,
-    fn func(context.Context, T) (R, error),
-    concurrency int,
-) ([]core.Result[R], error)
-```
-
-与 Map 相同，但第一个任务失败时取消其余任务。**返回第一个错误**。
-
-| 参数 | 类型 | 说明 |
+| 方法 | 签名 | 说明 |
 |------|------|------|
-| `ctx` | `context.Context` | 上下文，自动注入 TraceID |
-| `items` | `[]T` | 待处理的元素切片 |
-| `fn` | `func(context.Context, T) (R, error)` | 处理函数 |
-| `concurrency` | `int` | 并发度，<=0 使用 core.IO() |
-| 返回 | `([]core.Result[R], error)` | 结果切片和第一个错误（失败后剩余结果可能为零值） |
+| `Data()` | `map[K]R` | 返回结果 map |
+| `Len()` | `int` | 返回条目数 |
+| `Keys()` | `[]K` | 返回所有键 |
+| `Values()` | `[]R` | 返回所有值 |
+| `Error()` | `error` | 返回第一个错误 |
+| `Err()` | `bool` | 是否有错误 |
 
-**内部机制**: 通过 `context.WithCancel` 创建可取消的子 context，任一 goroutine 失败时调用 `cancel()`，其他 goroutine 检测到 `ctx.Done()` 后跳过后续元素并设置 `Err = ctx.Err()`。
+`MapRes[K,R]` 是 `MapResult[K,R]` 的向后兼容别名。
 
-**使用示例**:
+#### MapForEachResult 方法
 
-```go
-results, err := mapreduce.MapWithFailFast(ctx, items, func(ctx context.Context, x int) (int, error) {
-    if x == 500000 {
-        return 0, errors.New("fail at 500000")
-    }
-    return x, nil
-}, 8)
-if err != nil {
-    log.Printf("快速失败: %v", err)
-}
-
-// 通过 async 顶层包
-results, err := async.MapWithFailFast(ctx, items, async.IO(), fn)
-```
-
----
-
-### MapSerial
-
-```go
-func MapSerial[T any, R any](
-    ctx context.Context,
-    items []T,
-    fn func(context.Context, T) (R, error),
-) ([]core.Result[R], error)
-```
-
-串行处理切片元素，返回 Result 切片。适合数据量小或需要严格顺序的场景。内部使用 `core.SafeCall` 自动捕获 panic。
-
-| 参数 | 类型 | 说明 |
+| 方法 | 签名 | 说明 |
 |------|------|------|
-| `ctx` | `context.Context` | 上下文，自动注入 TraceID |
-| `items` | `[]T` | 待处理的元素切片 |
-| `fn` | `func(context.Context, T) (R, error)` | 处理函数 |
-| 返回 | `([]core.Result[R], error)` | 结果切片，非 FailFast 时 Err 始终为 nil |
+| `Total()` | `int64` | 总处理数 |
+| `FailCount()` | `int64` | 失败数 |
+| `SuccessCount()` | `int64` | 成功数 |
+| `Error()` | `error` | 第一个错误 |
+| `Err()` | `bool` | 是否有错误 |
 
-**使用示例**:
-
-```go
-// 基础用法
-results, err := mapreduce.MapSerial(ctx, items, fn)
-
-// 通过 async 顶层包
-results := async.MapSerial(ctx, items, fn)
-
-// 小数据量有序处理
-results, _ := mapreduce.MapSerial(ctx, []int{1, 2, 3}, func(ctx context.Context, n int) (int, error) {
-    return n * 2, nil
-})
-// results = [{Value:2}, {Value:4}, {Value:6}]
-```
-
----
-
-### MapSerialFailFast
+#### MapEntry 类型
 
 ```go
-func MapSerialFailFast[T any, R any](
-    ctx context.Context,
-    items []T,
-    fn func(context.Context, T) (R, error),
-) ([]core.Result[R], error)
-```
-
-串行带快速失败的 Map，首个失败立即返回，不继续处理后续元素。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `ctx` | `context.Context` | 上下文，自动注入 TraceID |
-| `items` | `[]T` | 待处理的元素切片 |
-| `fn` | `func(context.Context, T) (R, error)` | 处理函数 |
-| 返回 | `([]core.Result[R], error)` | 结果切片和第一个错误 |
-
-**使用示例**:
-
-```go
-results, err := mapreduce.MapSerialFailFast(ctx, items, fn)
-if err != nil {
-    log.Printf("第 %d 个元素失败: %v", len(results)-1, err)
-}
-
-// 通过 async 顶层包
-results, err := async.MapSerialFailFast(ctx, items, fn)
-```
-
----
-
-## ForEach（并发遍历）
-
-### ForEach
-
-```go
-func ForEach[T any](
-    ctx context.Context,
-    items []T,
-    fn func(context.Context, T) error,
-    concurrency int,
-) (total int64, failCnt int64, firstErr error, results []core.Result[struct{}])
-```
-
-并发遍历切片，执行只返回 error 的函数。使用 Group 实现并发控制。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `ctx` | `context.Context` | 上下文，自动注入 TraceID |
-| `items` | `[]T` | 待遍历的元素切片 |
-| `fn` | `func(context.Context, T) error` | 处理函数，只返回 error |
-| `concurrency` | `int` | 并发度，<=0 使用 core.IO()；concurrency<=1 时走串行路径 |
-| 返回 `total` | `int64` | 总任务数 |
-| 返回 `failCnt` | `int64` | 失败任务数 |
-| 返回 `firstErr` | `error` | 第一个错误（nil 表示全部成功） |
-| 返回 `results` | `[]core.Result[struct{}]` | 每个任务的详细结果 |
-
-**使用示例**:
-
-```go
-total, fail, firstErr, results := mapreduce.ForEach(ctx, msgs, func(ctx context.Context, msg string) error {
-    return send(ctx, msg)
-}, 10)
-fmt.Printf("总数=%d 失败=%d\n", total, fail)
-
-// 通过 async 顶层包
-nr, err := async.ForEach(ctx, msgs, async.IO(), func(ctx context.Context, msg string) error {
-    return send(ctx, msg)
-})
-if err != nil {
-    log.Printf("发送失败: %v", err)
-}
-fmt.Printf("成功: %d, 失败: %d\n", nr.SuccessCount(), nr.FailCount())
-```
-
-**空切片和 nil 处理**:
-
-```go
-total, _, _, _ := mapreduce.ForEach(ctx, []int{}, fn, 4)
-// total = 0
-
-total, _, _, _ := mapreduce.ForEach(ctx, ([]int)(nil), fn, 4)
-// total = 0
-```
-
-**panic 自动恢复**:
-
-```go
-total, failCnt, _, _ := mapreduce.ForEach(ctx, []int{1, 2, 3}, func(ctx context.Context, v int) error {
-    if v == 2 {
-        panic("foreach panic at 2")
-    }
-    return nil
-}, 2)
-// total = 3, failCnt >= 1
-```
-
----
-
-### ForEachWithFailFast
-
-```go
-func ForEachWithFailFast[T any](
-    ctx context.Context,
-    items []T,
-    fn func(context.Context, T) error,
-    concurrency int,
-) (total int64, failCnt int64, firstErr error, results []core.Result[struct{}])
-```
-
-与 ForEach 相同，但第一个任务失败时取消其余任务。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `ctx` | `context.Context` | 上下文，自动注入 TraceID |
-| `items` | `[]T` | 待遍历元素 |
-| `fn` | `func(context.Context, T) error` | 处理函数 |
-| `concurrency` | `int` | 并发度，<=0 使用 core.IO() |
-| 返回 | `(int64, int64, error, []core.Result[struct{}])` | 统计信息 |
-
-**使用示例**:
-
-```go
-var processed atomic.Int64
-total, failCnt, firstErr, _ := mapreduce.ForEachWithFailFast(ctx, items, func(ctx context.Context, v int) error {
-    processed.Add(1)
-    if v == 2 {
-        return fmt.Errorf("fail fast at %d", v)
-    }
-    return nil
-}, 2)
-// total = len(items), failCnt >= 1, firstErr != nil
-
-// 通过 async 顶层包
-nr, err := async.ForEachWithFailFast(ctx, items, async.IO(), fn)
-```
-
----
-
-### ForEachSerial
-
-```go
-func ForEachSerial[T any](
-    ctx context.Context,
-    items []T,
-    fn func(context.Context, T) error,
-) (total int64, failCnt int64, firstErr error, results []core.Result[struct{}])
-```
-
-串行遍历切片，逐个执行并收集错误。内部使用 `core.SafeCallVoid` 自动捕获 panic。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `ctx` | `context.Context` | 上下文，自动注入 TraceID |
-| `items` | `[]T` | 待遍历元素 |
-| `fn` | `func(context.Context, T) error` | 处理函数 |
-| 返回 | 统计信息 | 同 ForEach |
-
-**使用示例**:
-
-```go
-total, failCnt, firstErr, _ := mapreduce.ForEachSerial(ctx, []int{10, 20, 30}, func(ctx context.Context, v int) error {
-    return nil
-})
-// total = 3, failCnt = 0, firstErr = nil
-
-// 通过 async 顶层包
-nr, err := async.ForEachSerial(ctx, items, fn)
-```
-
----
-
-### ForEachSerialFailFast
-
-```go
-func ForEachSerialFailFast[T any](
-    ctx context.Context,
-    items []T,
-    fn func(context.Context, T) error,
-) (total int64, failCnt int64, firstErr error, results []core.Result[struct{}])
-```
-
-串行带快速失败的 ForEach，首个错误立即返回。内部使用 `core.SafeCallVoid` + `context.WithCancel` 实现。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `ctx` | `context.Context` | 上下文，自动注入 TraceID |
-| `items` | `[]T` | 待遍历元素 |
-| `fn` | `func(context.Context, T) error` | 处理函数 |
-| 返回 | 统计信息 | 同 ForEach |
-
-**使用示例**:
-
-```go
-total, failCnt, firstErr, _ := mapreduce.ForEachSerialFailFast(ctx, items, fn)
-
-// 通过 async 顶层包
-nr, err := async.ForEachSerialFailFast(ctx, items, fn)
-```
-
----
-
-## Reduce（串行归约）
-
-### Reduce（串行）
-
-```go
-func Reduce[T any, R any](
-    ctx context.Context,
-    items []T,
-    initial R,
-    fn func(context.Context, R, T) (R, error),
-) (R, error)
-```
-
-串行聚合：对每个元素调用 `fn(acc, item)`，累积结果。**Reduce 始终串行执行**。这是 mapreduce.go 中定义的纯串行 Reduce。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `ctx` | `context.Context` | 上下文，自动注入 TraceID |
-| `items` | `[]T` | 待聚合的元素切片 |
-| `initial` | `R` | 初始累加值 |
-| `fn` | `func(context.Context, R, T) (R, error)` | 聚合函数，接收 ctx、累加值和当前元素 |
-| 返回 | `(R, error)` | 最终累加值和可能的错误 |
-
-**使用示例**:
-
-```go
-// 数值求和
-nums := []int{1, 2, 3, 4, 5}
-total, err := mapreduce.Reduce(ctx, nums, 0, func(ctx context.Context, acc int, n int) (int, error) {
-    return acc + n, nil
-})
-// total = 15
-
-// 空切片返回初始值
-result, _ := mapreduce.Reduce(ctx, []int{}, 100, func(ctx context.Context, acc int, v int) (int, error) {
-    return acc + v, nil
-})
-// result = 100
-
-// 单元素
-result, _ := mapreduce.Reduce(ctx, []int{42}, 0, func(ctx context.Context, acc int, v int) (int, error) {
-    return acc + v, nil
-})
-// result = 42
-
-// 字符串拼接
-result, _ := mapreduce.Reduce(ctx, []string{"a", "b", "c"}, "", func(ctx context.Context, acc string, v string) (string, error) {
-    return acc + v, nil
-})
-// result = "abc"
-
-// 自定义初始值计算平均值
-avg, err := mapreduce.Reduce(ctx, ratings, 0.0, func(ctx context.Context, acc float64, r float64) (float64, error) {
-    return acc + r / float64(len(ratings)), nil
-})
-```
-
-**中途失败**:
-
-```go
-sum, err := mapreduce.Reduce(ctx, nums, 0, func(ctx context.Context, acc int, n int) (int, error) {
-    if n < 0 {
-        return acc, fmt.Errorf("negative number: %d", n)
-    }
-    return acc + n, nil
-})
-if err != nil {
-    // 返回已累积的结果和错误
+type MapEntry[K comparable, V any] struct {
+    Key K
+    Val V
 }
 ```
 
----
+用于 `MapBatch` / `ForEachBatch` 的批量操作条目。
 
-## Reduce（并发归约）
-
-> **注意**：上文 [Reduce（串行）](#reduce串行) 是串行版本（`fn(acc, item)`）。本节是**并发版本**——先通过 Map 并发计算每个元素的值，再串行归约。
-
-并发 Reduce 分两阶段执行：
-1. **Map 阶段**：并发调用 `mapFn` 计算每个元素的值
-2. **Reduce 阶段**：串行调用 `reduceFn` 累积成功的结果（失败值跳过）
-
-### Reduce（并发）
+#### 使用示例
 
 ```go
-func Reduce[T any, R any](
-    ctx context.Context,
-    items []T,
-    concurrency int,
-    mapFn func(context.Context, T) (R, error),
-    initial R,
-    reduceFn func(R, R) R,
-) (R, error)
-```
-
-并发 Map + 串行 Reduce。先对每个元素并发调用 `mapFn`，再用 `reduceFn` 累积所有成功值（失败值跳过）。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `ctx` | `context.Context` | 上下文 |
-| `items` | `[]T` | 待处理的元素切片 |
-| `concurrency` | `int` | Map 阶段的并发度 |
-| `mapFn` | `func(context.Context, T) (R, error)` | Map 阶段处理函数 |
-| `initial` | `R` | 聚合初始值 |
-| `reduceFn` | `func(R, R) R` | 聚合函数，接收累积值和当前值 |
-| 返回 | `(R, error)` | 最终累积值和第一个错误 |
-
-**使用示例**:
-
-```go
-// 并发计算所有数的平方和：1² + 2² + 3² + 4² + 5² = 55
-sum, err := mapreduce.Reduce(ctx, []int{1, 2, 3, 4, 5}, 4,
-    func(ctx context.Context, n int) (int, error) {
-        return n * n, nil
-    },
-    0,
-    func(acc, val int) int {
-        return acc + val
-    },
-)
-// sum = 55
-
-// 通过 async 顶层包
-sum, err := async.Reduce(ctx, []int{1, 2, 3, 4, 5}, async.IO(),
-    func(ctx context.Context, n int) (int, error) { return n * n, nil },
-    0,
-    func(acc, val int) int { return acc + val },
-)
-```
-
----
-
-### DefaultReduce
-
-```go
-func DefaultReduce[T any, R any](
-    ctx context.Context,
-    items []T,
-    mapFn func(context.Context, T) (R, error),
-    initial R,
-    reduceFn func(R, R) R,
-) (R, error)
-```
-
-使用默认 IO 并发度的并发 Reduce。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `ctx` | `context.Context` | 上下文 |
-| `items` | `[]T` | 待处理元素 |
-| `mapFn` | `func(context.Context, T) (R, error)` | Map 阶段处理函数 |
-| `initial` | `R` | 聚合初始值 |
-| `reduceFn` | `func(R, R) R` | 聚合函数 |
-| 返回 | `(R, error)` | 最终结果和错误 |
-
-**使用示例**:
-
-```go
-sum, err := mapreduce.DefaultReduce(ctx, nums, mapFn, 0, reduceFn)
-
-// 通过 async 顶层包
-sum, err := async.DefaultReduce(ctx, nums, mapFn, 0, reduceFn)
-```
-
----
-
-### ReduceWithFailFast
-
-```go
-func ReduceWithFailFast[T any, R any](
-    ctx context.Context,
-    items []T,
-    concurrency int,
-    mapFn func(context.Context, T) (R, error),
-    initial R,
-    reduceFn func(R, R) R,
-) (R, error)
-```
-
-带 FailFast 的并发 Reduce。任一 Map 任务失败立即取消其余任务。失败时返回 `initial` 和第一个错误。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `ctx` | `context.Context` | 上下文 |
-| `items` | `[]T` | 待处理元素 |
-| `concurrency` | `int` | Map 阶段并发度 |
-| `mapFn` | `func(context.Context, T) (R, error)` | Map 阶段处理函数 |
-| `initial` | `R` | 聚合初始值 |
-| `reduceFn` | `func(R, R) R` | 聚合函数 |
-| 返回 | `(R, error)` | 失败时返回 initial 和第一个错误 |
-
-**使用示例**:
-
-```go
-sum, err := mapreduce.ReduceWithFailFast(ctx, nums, 8, mapFn, 0, reduceFn)
-if err != nil {
-    log.Printf("计算失败，任一元素出错则快速终止: %v", err)
-}
-
-// 通过 async 顶层包
-sum, err := async.ReduceWithFailFast(ctx, nums, async.IO(), mapFn, 0, reduceFn)
-```
-
----
-
-### DefaultReduceWithFailFast
-
-```go
-func DefaultReduceWithFailFast[T any, R any](
-    ctx context.Context,
-    items []T,
-    mapFn func(context.Context, T) (R, error),
-    initial R,
-    reduceFn func(R, R) R,
-) (R, error)
-```
-
-使用默认并发度的 FailFast Reduce。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `ctx` | `context.Context` | 上下文 |
-| `items` | `[]T` | 待处理元素 |
-| `mapFn` | `func(context.Context, T) (R, error)` | Map 阶段处理函数 |
-| `initial` | `R` | 聚合初始值 |
-| `reduceFn` | `func(R, R) R` | 聚合函数 |
-| 返回 | `(R, error)` | 最终结果和错误 |
-
-**使用示例**:
-
-```go
-sum, err := mapreduce.DefaultReduceWithFailFast(ctx, nums, mapFn, 0, reduceFn)
-
-// 通过 async 顶层包
-sum, err := async.DefaultReduceWithFailFast(ctx, nums, mapFn, 0, reduceFn)
-```
-
----
-
-### ReduceWithTimeout
-
-```go
-func ReduceWithTimeout[T any, R any](
-    ctx context.Context,
-    items []T,
-    concurrency int,
-    timeout time.Duration,
-    mapFn func(context.Context, T) (R, error),
-    initial R,
-    reduceFn func(R, R) R,
-) (R, error)
-```
-
-带单任务超时的并发 Reduce。超时任务的 mapFn 结果跳过不参与归约。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `ctx` | `context.Context` | 上下文 |
-| `items` | `[]T` | 待处理元素 |
-| `concurrency` | `int` | Map 阶段并发度 |
-| `timeout` | `time.Duration` | 单任务超时时间 |
-| `mapFn` | `func(context.Context, T) (R, error)` | Map 阶段处理函数 |
-| `initial` | `R` | 聚合初始值 |
-| `reduceFn` | `func(R, R) R` | 聚合函数 |
-| 返回 | `(R, error)` | 最终结果和第一个错误 |
-
-**使用示例**:
-
-```go
-sum, err := mapreduce.ReduceWithTimeout(ctx, urls, 8, 3*time.Second, computeFn, 0, addFn)
-
-// 通过 async 顶层包
-sum, err := async.ReduceWithTimeout(ctx, urls, async.IO(), 3*time.Second, computeFn, 0, addFn)
-```
-
----
-
-### DefaultReduceWithTimeout
-
-```go
-func DefaultReduceWithTimeout[T any, R any](
-    ctx context.Context,
-    items []T,
-    timeout time.Duration,
-    mapFn func(context.Context, T) (R, error),
-    initial R,
-    reduceFn func(R, R) R,
-) (R, error)
-```
-
-使用默认并发度的带超时 Reduce。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `ctx` | `context.Context` | 上下文 |
-| `items` | `[]T` | 待处理元素 |
-| `timeout` | `time.Duration` | 单任务超时 |
-| `mapFn` | `func(context.Context, T) (R, error)` | Map 阶段处理函数 |
-| `initial` | `R` | 聚合初始值 |
-| `reduceFn` | `func(R, R) R` | 聚合函数 |
-| 返回 | `(R, error)` | 最终结果和错误 |
-
-**使用示例**:
-
-```go
-sum, err := mapreduce.DefaultReduceWithTimeout(ctx, urls, 3*time.Second, computeFn, 0, addFn)
-
-// 通过 async 顶层包
-sum, err := async.DefaultReduceWithTimeout(ctx, urls, 3*time.Second, computeFn, 0, addFn)
-```
-
----
-
-### ReduceWithFFTimeout
-
-```go
-func ReduceWithFFTimeout[T any, R any](
-    ctx context.Context,
-    items []T,
-    concurrency int,
-    timeout time.Duration,
-    mapFn func(context.Context, T) (R, error),
-    initial R,
-    reduceFn func(R, R) R,
-) (R, error)
-```
-
-带 FailFast 和单任务超时的并发 Reduce。任一 Map 任务超时或失败立即取消其余任务。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `ctx` | `context.Context` | 上下文 |
-| `items` | `[]T` | 待处理元素 |
-| `concurrency` | `int` | Map 阶段并发度 |
-| `timeout` | `time.Duration` | 单任务超时 |
-| `mapFn` | `func(context.Context, T) (R, error)` | Map 阶段处理函数 |
-| `initial` | `R` | 聚合初始值 |
-| `reduceFn` | `func(R, R) R` | 聚合函数 |
-| 返回 | `(R, error)` | 失败时返回 initial 和第一个错误 |
-
-**使用示例**:
-
-```go
-sum, err := mapreduce.ReduceWithFFTimeout(ctx, urls, 8, 2*time.Second, computeFn, 1.0, productFn)
-
-// 通过 async 顶层包
-sum, err := async.ReduceWithFFTimeout(ctx, urls, async.IO(), 2*time.Second, computeFn, 1.0, productFn)
-```
-
----
-
-### DefaultReduceWithFFTimeout
-
-```go
-func DefaultReduceWithFFTimeout[T any, R any](
-    ctx context.Context,
-    items []T,
-    timeout time.Duration,
-    mapFn func(context.Context, T) (R, error),
-    initial R,
-    reduceFn func(R, R) R,
-) (R, error)
-```
-
-使用默认并发度的 FailFast + 超时 Reduce。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `ctx` | `context.Context` | 上下文 |
-| `items` | `[]T` | 待处理元素 |
-| `timeout` | `time.Duration` | 单任务超时 |
-| `mapFn` | `func(context.Context, T) (R, error)` | Map 阶段处理函数 |
-| `initial` | `R` | 聚合初始值 |
-| `reduceFn` | `func(R, R) R` | 聚合函数 |
-| 返回 | `(R, error)` | 最终结果和错误 |
-
-**使用示例**:
-
-```go
-sum, err := mapreduce.DefaultReduceWithFFTimeout(ctx, urls, 3*time.Second, computeFn, 1.0, productFn)
-```
-
----
-
-## Chunk（切片分块）
-
-### Chunk
-
-```go
-func Chunk[T any](items []T, chunkSize int) [][]T
-```
-
-将切片按大小均分。适用于将大数据集拆分为并发处理的小块。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `items` | `[]T` | 待分割的元素切片 |
-| `chunkSize` | `int` | 每块大小，<=0 或切片为空时返回 nil |
-| 返回 | `[][]T` | 分块后的二维切片 |
-
-**使用示例**:
-
-```go
-// 均匀分块
-input := []int{1, 2, 3, 4, 5, 6}
-chunks := mapreduce.Chunk(input, 2)
-// chunks = [[1,2], [3,4], [5,6]]
-
-// 不均匀分块
-chunks = mapreduce.Chunk([]int{1, 2, 3, 4, 5}, 2)
-// chunks = [[1,2], [3,4], [5]]
-
-// 单元素
-chunks = mapreduce.Chunk([]int{42}, 3)
-// chunks = [[42]]
-
-// 大数据集
-bigSlice := make([]int, 1000000)
-chunks = mapreduce.Chunk(bigSlice, 1000)
-// 分成约 1000 块，每块约 1000 个元素
-
-// 边界情况
-chunks = mapreduce.Chunk([]int{}, 3)       // nil
-chunks = mapreduce.Chunk(([]int)(nil), 3)  // nil
-chunks = mapreduce.Chunk([]int{1, 2, 3}, 0) // nil
-
-// 配合并发使用
-for _, chunk := range chunks {
-    g.Go(ctx, func(ctx context.Context) (Result, error) {
-        return batchProcess(ctx, chunk), nil
+data := map[string]int{"a": 1, "b": 2, "c": 3, "d": 4}
+
+// 并发 Map
+result := async.NewMapChain[string, int](ctx, data).
+    Worker(8).
+    Shards(4).
+    Map(func(ctx context.Context, k string, v int) (string, error) {
+        return strings.ToUpper(k) + "_" + strconv.Itoa(v*10), nil
     })
+
+fmt.Println(result.Data()) // map[a:A_10 b:B_20 c:C_30 d:D_40]
+
+// 串行 + 过滤
+filtered, err := async.NewMapChain[string, int](ctx, data).
+    Serial().
+    Filter(func(ctx context.Context, k string, v int) bool {
+        return v > 2
+    })
+
+// 流式处理
+ch := async.NewMapChain[string, int](ctx, data).
+    Parallel().Worker(4).
+    Stream(func(ctx context.Context, k string, v int) (string, error) {
+        return k, nil
+    }, 1024)
+
+for r := range ch {
+    fmt.Println(r.Value)
 }
 
-// 通过 async 顶层包
-chunks := async.Chunk(bigSlice, 1000)
+// 批量处理
+result := async.NewMapChain[string, int](ctx, data).
+    Chunk(2).
+    MapBatch(func(ctx context.Context, batch []async.MapEntry[string, int]) (string, error) {
+        return batch[0].Key, nil
+    })
 ```
-
----
-
-### ChunkN
-
-```go
-func ChunkN[T any](items []T, n int) [][]T
-```
-
-将切片按份数均分。`n` 为目标份数。内部先计算 `chunkSize = ceil(len(items) / n)`，再调用 `Chunk`。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `items` | `[]T` | 待分割的元素切片 |
-| `n` | `int` | 目标份数，<=0 或切片为空时返回 nil |
-| 返回 | `[][]T` | 分块后的二维切片 |
-
-**使用示例**:
-
-```go
-// 将 100 个元素均分成 4 份
-input := make([]int, 100)
-chunks := mapreduce.ChunkN(input, 4)
-// 4 个 chunk，每个约 25 个元素
-
-// 将切片均分为 CPU 核心数份
-chunks := mapreduce.ChunkN(items, runtime.NumCPU())
-
-// 通过 async 顶层包
-chunks := async.ChunkN(items, 5)
-```
-
----
-
-## Result 辅助函数
-
-### ResultValues
-
-```go
-func ResultValues[T any](results []core.Result[T]) []T
-```
-
-从 Result 切片中提取所有成功值（跳过错误结果）。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `results` | `[]core.Result[T]` | Result 切片 |
-| 返回 | `[]T` | 成功值切片（仅包含 Err == nil 的 Value） |
-
-**使用示例**:
-
-```go
-results := mapreduce.DefaultMap(ctx, items, fn)
-vals := mapreduce.ResultValues(results)
-// 只包含 Err == nil 的 Value
-
-// 通过 async 顶层包
-values := async.ResultValues(results)
-```
-
----
-
-### ResultErrors
-
-```go
-func ResultErrors[T any](results []core.Result[T]) []error
-```
-
-从 Result 切片中提取所有错误（跳过成功结果）。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `results` | `[]core.Result[T]` | Result 切片 |
-| 返回 | `[]error` | 错误切片（仅包含非 nil 错误） |
-
-**使用示例**:
-
-```go
-errs := mapreduce.ResultErrors(results)
-
-// 通过 async 顶层包
-errs := async.ResultErrors(results)
-if len(errs) > 0 {
-    log.Printf("有 %d 个任务失败", len(errs))
-}
-```
-
----
-
-### Every
-
-```go
-func Every[T any](results []core.Result[T]) bool
-```
-
-检查所有 Result 是否都成功。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `results` | `[]core.Result[T]` | Result 切片 |
-| 返回 | `bool` | 全部成功返回 true（空切片也返回 true） |
-
-**使用示例**:
-
-```go
-if mapreduce.Every(results) {
-    fmt.Println("全部成功")
-}
-
-// 通过 async 顶层包
-if async.Every(results) {
-    fmt.Println("全部成功")
-}
-```
-
----
-
-### Some
-
-```go
-func Some[T any](results []core.Result[T]) bool
-```
-
-检查是否至少有一个 Result 成功。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `results` | `[]core.Result[T]` | Result 切片 |
-| 返回 | `bool` | 至少有一个成功返回 true |
-
-**使用示例**:
-
-```go
-if mapreduce.Some(results) {
-    fmt.Println("至少有一个成功")
-}
-
-// 通过 async 顶层包
-if async.Some(results) {
-    fmt.Println("至少有一个成功")
-}
-```
-
----
-
-### AnyError
-
-```go
-func AnyError[T any](results []core.Result[T]) bool
-```
-
-检查是否有任何失败的 Result。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `results` | `[]core.Result[T]` | Result 切片 |
-| 返回 | `bool` | 有任何一个失败返回 true |
-
-**使用示例**:
-
-```go
-if mapreduce.AnyError(results) {
-    log.Println("存在失败的任务")
-}
-
-// 通过 async 顶层包
-if async.AnyError(results) {
-    fmt.Println("存在失败的任务")
-}
-```
-
----
-
-### PartitionResults
-
-```go
-func PartitionResults[T any](results []core.Result[T]) (successes []T, failures []error)
-```
-
-将 Result 切片拆分为成功值和失败错误两个切片。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `results` | `[]core.Result[T]` | Result 切片 |
-| 返回 `successes` | `[]T` | 成功值切片 |
-| 返回 `failures` | `[]error` | 失败错误切片 |
-
-**使用示例**:
-
-```go
-successes, failures := mapreduce.PartitionResults(results)
-fmt.Printf("成功: %d, 失败: %d\n", len(successes), len(failures))
-
-// 通过 async 顶层包（函数名不同：Partition）
-values, errors := async.Partition(results)
-fmt.Printf("成功 %d 个, 失败 %d 个\n", len(values), len(errors))
-```
-
----
-
-### Flat
-
-```go
-func Flat[T any](results []core.Result[T]) []T
-```
-
-从 Result 切片中提取所有值，**丢弃错误（包括错误结果的零值也会被包含）**。
-
-> **注意**：与 `ResultValues` 的区别是 `Flat` 不跳过错误结果的 Value（零值），而 `ResultValues` 跳过错结果。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `results` | `[]core.Result[T]` | Result 切片 |
-| 返回 | `[]T` | 所有 Value（包括错误结果的零值） |
-
-**使用示例**:
-
-```go
-allVals := mapreduce.Flat(results)
-// 结果数与 results 长度一致
-
-// 通过 async 顶层包
-values := async.Flat(results)
-```
-
----
-
-### OnlyErrors
-
-```go
-func OnlyErrors[T any](results []core.Result[T]) []error
-```
-
-从 Result 切片中提取所有非 nil 错误。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `results` | `[]core.Result[T]` | Result 切片 |
-| 返回 | `[]error` | 所有非 nil 错误 |
-
-**使用示例**:
-
-```go
-errs := mapreduce.OnlyErrors(results)
-
-// 通过 async 顶层包
-errs := async.OnlyErrors(results)
-```
-
----
-
-## 其他辅助函数
-
-### Partition
-
-```go
-func Partition[T any](items []T, pred func(T) bool) (matched []T, unmatched []T)
-```
-
-按条件将切片拆分为匹配和不匹配两个切片。不会修改原始切片。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `items` | `[]T` | 原始切片 |
-| `pred` | `func(T) bool` | 判断函数，true 进入 matched |
-| 返回 `matched` | `[]T` | 匹配的元素切片 |
-| 返回 `unmatched` | `[]T` | 不匹配的元素切片 |
-
-**使用示例**:
-
-```go
-// 分离奇偶数
-evens, odds := mapreduce.Partition([]int{1, 2, 3, 4, 5, 6}, func(n int) bool {
-    return n%2 == 0
-})
-// evens = [2, 4, 6], odds = [1, 3, 5]
-
-// 结合并发处理
-items := []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}
-evens, odds := mapreduce.Partition(items, func(n int) bool { return n%2 == 0 })
-evenResults := mapreduce.DefaultMap(ctx, evens, processEven)
-oddResults := mapreduce.DefaultMap(ctx, odds, processOdd)
-```
-
----
-
-### Must
-
-```go
-func Must[T any](val T, err error) T
-```
-
-错误时 panic，适用于测试或初始化场景。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `val` | `T` | 结果值 |
-| `err` | `error` | 可能的错误 |
-| 返回 | `T` | val（err 为 nil 时） |
-
-**使用示例**:
-
-```go
-cfg := mapreduce.Must(loadConfig("config.yaml"))
-
-// 适用于变量初始化
-db := mapreduce.Must(sql.Open("postgres", dsn))
-```
-
----
-
-### SafeCall
-
-安全调用 fn，自动捕获 panic 并包装为 `PanicError`。使用 `core.SafeCall`。
-
-```go
-// 语法
-func SafeCall[T any, R any](ctx context.Context, item T, fn func(context.Context, item T) (R, error)) (R, error)
-```
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `ctx` | `context.Context` | 上下文 |
-| `item` | `T` | 传递给 fn 的参数 |
-| `fn` | `func(context.Context, T) (R, error)` | 要执行的函数 |
-
-| 返回值 | 类型 | 说明 |
-|--------|------|------|
-| `(R, error)` | `(R, error)` | 结果值和错误（panic 时包装为 PanicError） |
-
-```go
-val, err := async.SafeCall(ctx, input, func(ctx context.Context, item MyType) (string, error) {
-    return item.DoSomething(ctx)
-})
-if err != nil {
-    log.Printf("调用失败: %v", err)
-}
-```
-
-### SafeCallVoid
-
-安全调用 fn（无返回值），自动捕获 panic 转换为 error。使用 `core.SafeCallVoid`。
-
-```go
-// 语法
-func SafeCallVoid[T any](ctx context.Context, item T, fn func(context.Context, item T) error) error
-```
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `ctx` | `context.Context` | 上下文 |
-| `item` | `T` | 传递给 fn 的参数 |
-| `fn` | `func(context.Context, T) error` | 要执行的函数 |
-
-| 返回值 | 类型 | 说明 |
-|--------|------|------|
-| `error` | `error` | 错误（panic 时包装为 PanicError，正常完成返回 nil） |
-
-```go
-err := async.SafeCallVoid(ctx, input, func(ctx context.Context, item MyType) error {
-    return item.DoSomething(ctx)
-})
-```
-
-### SafeCallWithResult
-
-安全调用 fn，自动捕获 panic 并包装为 `PanicError`。除捕获 panic 外还额外包含 stack trace 日志记录。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `ctx` | `context.Context` | 上下文 |
-| `item` | `T` | 传递给 fn 的参数 |
-| `fn` | `func(context.Context, T) (R, error)` | 要执行的函数 |
-| 返回 `val` | `R` | 结果值（panic 时为零值） |
-| 返回 `err` | `error` | 错误（panic 时包装为 PanicError） |
-
-**使用示例**:
-
-```go
-val, err := mapreduce.SafeCallWithResult(ctx, input, func(ctx context.Context, item MyType) (string, error) {
-    return item.Process(ctx)
-})
-if err != nil {
-    var pe *core.PanicError
-    if errors.As(err, &pe) {
-        log.Printf("函数 panic 了: %v\n堆栈: %s", pe.Value, pe.Stack)
-    }
-}
-```
-
----
-
-## Map 扩展变体
-
-扩展变体位于 `extended.go`，同时通过 `async.*` 在顶层包暴露。
-
-### DefaultMap
-
-```go
-func DefaultMap[T any, R any](
-    ctx context.Context,
-    items []T,
-    fn func(ctx context.Context, item T) (R, error),
-) []core.Result[R]
-```
-
-使用 `core.IO()` 作为默认并发度的 Map。忽略 Map 返回的 error（因为 Map 非 FailFast 不会返回错误）。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `ctx` | `context.Context` | 上下文 |
-| `items` | `[]T` | 待处理的元素切片 |
-| `fn` | `func(context.Context, T) (R, error)` | 处理函数 |
-| 返回 | `[]core.Result[R]` | 结果切片 |
-
-**使用示例**:
-
-```go
-results := mapreduce.DefaultMap(ctx, ids, func(ctx context.Context, id int) (*User, error) {
-    return userRepo.FindByID(ctx, id)
-})
-
-// 通过 async 顶层包
-results := async.DefaultMap(ctx, ids, fn)
-```
-
----
-
-### DefaultMapWithFailFast
-
-```go
-func DefaultMapWithFailFast[T any, R any](
-    ctx context.Context,
-    items []T,
-    fn func(ctx context.Context, item T) (R, error),
-) ([]core.Result[R], error)
-```
-
-使用默认并发度的 FailFast Map。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `ctx` | `context.Context` | 上下文 |
-| `items` | `[]T` | 待处理元素 |
-| `fn` | `func(context.Context, T) (R, error)` | 处理函数 |
-| 返回 | `([]core.Result[R], error)` | 结果和第一个错误 |
-
-**使用示例**:
-
-```go
-results, err := mapreduce.DefaultMapWithFailFast(ctx, ids, fn)
-
-// 通过 async 顶层包
-results, err := async.DefaultMapWithFailFast(ctx, ids, fn)
-```
-
----
-
-### MapWithTimeout
-
-```go
-func MapWithTimeout[T any, R any](
-    ctx context.Context,
-    items []T,
-    concurrency int,
-    timeout time.Duration,
-    fn func(ctx context.Context, item T) (R, error),
-) []core.Result[R]
-```
-
-带单任务超时的并发 Map。使用 Group 实现，超时任务的结果 Err 为 `context.DeadlineExceeded`。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `ctx` | `context.Context` | 上下文 |
-| `items` | `[]T` | 待处理元素 |
-| `concurrency` | `int` | 并发度，<=0 使用 core.IO() |
-| `timeout` | `time.Duration` | **每个任务的超时时间** |
-| `fn` | `func(context.Context, T) (R, error)` | 处理函数 |
-| 返回 | `[]core.Result[R]` | 结果切片（超时任务 Err 为 DeadlineExceeded） |
-
-**使用示例**:
-
-```go
-results := mapreduce.MapWithTimeout(ctx, urls, 8, 5*time.Second, func(ctx context.Context, url string) (*Body, error) {
-    return httpGet(ctx, url)
-})
-
-// 通过 async 顶层包
-results := async.MapWithTimeout(ctx, urls, async.IO(), 5*time.Second, fn)
-```
-
----
-
-### DefaultMapWithTimeout
-
-```go
-func DefaultMapWithTimeout[T any, R any](
-    ctx context.Context,
-    items []T,
-    timeout time.Duration,
-    fn func(ctx context.Context, item T) (R, error),
-) []core.Result[R]
-```
-
-使用默认并发度的带超时 Map。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `ctx` | `context.Context` | 上下文 |
-| `items` | `[]T` | 待处理元素 |
-| `timeout` | `time.Duration` | 单任务超时 |
-| `fn` | `func(context.Context, T) (R, error)` | 处理函数 |
-| 返回 | `[]core.Result[R]` | 结果切片 |
-
-**使用示例**:
-
-```go
-results := mapreduce.DefaultMapWithTimeout(ctx, ids, 3*time.Second, fn)
-
-// 通过 async 顶层包
-results := async.DefaultMapWithTimeout(ctx, ids, 3*time.Second, fn)
-```
-
----
-
-### MapWithFFTimeout
-
-```go
-func MapWithFFTimeout[T any, R any](
-    ctx context.Context,
-    items []T,
-    concurrency int,
-    timeout time.Duration,
-    fn func(ctx context.Context, item T) (R, error),
-) ([]core.Result[R], error)
-```
-
-带 FailFast 和单任务超时的并发 Map。任一任务超时或失败都会触发 FailFast 取消。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `ctx` | `context.Context` | 上下文 |
-| `items` | `[]T` | 待处理元素 |
-| `concurrency` | `int` | 并发度，<=0 使用 core.IO() |
-| `timeout` | `time.Duration` | 单任务超时 |
-| `fn` | `func(context.Context, T) (R, error)` | 处理函数 |
-| 返回 | `([]core.Result[R], error)` | 结果和第一个错误 |
-
-**内部机制**: 通过 Group 的 `WithFailFast(ctx)` + `WithTimeout(timeout)` 组合实现。
-
-**使用示例**:
-
-```go
-results, err := mapreduce.MapWithFFTimeout(ctx, urls, 8, 3*time.Second, func(ctx context.Context, url string) (*Body, error) {
-    return httpGet(ctx, url)
-})
-if err != nil {
-    log.Printf("首个失败: %v", err)
-}
-
-// 通过 async 顶层包
-results, err := async.MapWithFFTimeout(ctx, urls, async.IO(), 3*time.Second, fn)
-```
-
----
-
-### DefaultMapWithFFTimeout
-
-```go
-func DefaultMapWithFFTimeout[T any, R any](
-    ctx context.Context,
-    items []T,
-    timeout time.Duration,
-    fn func(ctx context.Context, item T) (R, error),
-) ([]core.Result[R], error)
-```
-
-使用默认并发度的 FailFast + 超时 Map。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `ctx` | `context.Context` | 上下文 |
-| `items` | `[]T` | 待处理元素 |
-| `timeout` | `time.Duration` | 单任务超时 |
-| `fn` | `func(context.Context, T) (R, error)` | 处理函数 |
-| 返回 | `([]core.Result[R], error)` | 结果和错误 |
-
-**使用示例**:
-
-```go
-results, err := mapreduce.DefaultMapWithFFTimeout(ctx, ids, 3*time.Second, fn)
-
-// 通过 async 顶层包
-results, err := async.DefaultMapWithFFTimeout(ctx, ids, 3*time.Second, fn)
-```
-
----
-
-## ForEach 扩展变体
-
-### DefaultForEach
-
-```go
-func DefaultForEach[T any](
-    ctx context.Context,
-    items []T,
-    fn func(ctx context.Context, item T) error,
-) (total int64, failCnt int64, firstErr error, results []core.Result[struct{}])
-```
-
-使用默认并发度的 ForEach。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `ctx` | `context.Context` | 上下文 |
-| `items` | `[]T` | 待遍历元素 |
-| `fn` | `func(context.Context, T) error` | 处理函数 |
-| 返回 | 统计信息 | 同 ForEach |
-
-**使用示例**:
-
-```go
-total, fail, firstErr, _ := mapreduce.DefaultForEach(ctx, msgs, sendFn)
-
-// 通过 async 顶层包
-nr, err := async.DefaultForEach(ctx, msgs, sendFn)
-```
-
----
-
-### DefaultForEachWithFailFast
-
-```go
-func DefaultForEachWithFailFast[T any](
-    ctx context.Context,
-    items []T,
-    fn func(ctx context.Context, item T) error,
-) (total int64, failCnt int64, firstErr error, results []core.Result[struct{}])
-```
-
-使用默认并发度的 FailFast ForEach。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `ctx` | `context.Context` | 上下文 |
-| `items` | `[]T` | 待遍历元素 |
-| `fn` | `func(context.Context, T) error` | 处理函数 |
-| 返回 | 统计信息 | 同 ForEach |
-
-**使用示例**:
-
-```go
-total, fail, firstErr, _ := mapreduce.DefaultForEachWithFailFast(ctx, tasks, fn)
-
-// 通过 async 顶层包
-nr, err := async.DefaultForEachWithFailFast(ctx, tasks, fn)
-```
-
----
-
-### ForEachWithTimeout
-
-```go
-func ForEachWithTimeout[T any](
-    ctx context.Context,
-    items []T,
-    concurrency int,
-    timeout time.Duration,
-    fn func(ctx context.Context, item T) error,
-) (total int64, failCnt int64, firstErr error, results []core.Result[struct{}])
-```
-
-带单任务超时的 ForEach。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `ctx` | `context.Context` | 上下文 |
-| `items` | `[]T` | 待遍历元素 |
-| `concurrency` | `int` | 并发度 |
-| `timeout` | `time.Duration` | 单任务超时 |
-| `fn` | `func(context.Context, T) error` | 处理函数 |
-| 返回 | 统计信息 | 同 ForEach |
-
-**使用示例**:
-
-```go
-total, fail, firstErr, _ := mapreduce.ForEachWithTimeout(ctx, msgs, 10, 2*time.Second, sendFn)
-
-// 通过 async 顶层包
-nr, err := async.ForEachWithTimeout(ctx, msgs, async.IO(), 2*time.Second, sendFn)
-```
-
----
-
-### DefaultForEachWithTimeout
-
-```go
-func DefaultForEachWithTimeout[T any](
-    ctx context.Context,
-    items []T,
-    timeout time.Duration,
-    fn func(ctx context.Context, item T) error,
-) (total int64, failCnt int64, firstErr error, results []core.Result[struct{}])
-```
-
-使用默认并发度的带超时 ForEach。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `ctx` | `context.Context` | 上下文 |
-| `items` | `[]T` | 待遍历元素 |
-| `timeout` | `time.Duration` | 单任务超时 |
-| `fn` | `func(context.Context, T) error` | 处理函数 |
-| 返回 | 统计信息 | 同 ForEach |
-
-**使用示例**:
-
-```go
-total, fail, firstErr, _ := mapreduce.DefaultForEachWithTimeout(ctx, msgs, 2*time.Second, sendFn)
-
-// 通过 async 顶层包
-nr, err := async.DefaultForEachWithTimeout(ctx, msgs, 2*time.Second, sendFn)
-```
-
----
-
-### ForEachWithFFTimeout
-
-```go
-func ForEachWithFFTimeout[T any](
-    ctx context.Context,
-    items []T,
-    concurrency int,
-    timeout time.Duration,
-    fn func(ctx context.Context, item T) error,
-) (total int64, failCnt int64, firstErr error, results []core.Result[struct{}])
-```
-
-带 FailFast 和单任务超时的 ForEach。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `ctx` | `context.Context` | 上下文 |
-| `items` | `[]T` | 待遍历元素 |
-| `concurrency` | `int` | 并发度 |
-| `timeout` | `time.Duration` | 单任务超时 |
-| `fn` | `func(context.Context, T) error` | 处理函数 |
-| 返回 | 统计信息 | 同 ForEach |
-
-**使用示例**:
-
-```go
-total, fail, firstErr, _ := mapreduce.ForEachWithFFTimeout(ctx, tasks, 8, 3*time.Second, fn)
-
-// 通过 async 顶层包
-nr, err := async.ForEachWithFFTimeout(ctx, tasks, async.IO(), 3*time.Second, fn)
-```
-
----
-
-### DefaultForEachWithFFTimeout
-
-```go
-func DefaultForEachWithFFTimeout[T any](
-    ctx context.Context,
-    items []T,
-    timeout time.Duration,
-    fn func(ctx context.Context, item T) error,
-) (total int64, failCnt int64, firstErr error, results []core.Result[struct{}])
-```
-
-使用默认并发度的 FailFast + 超时 ForEach。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `ctx` | `context.Context` | 上下文 |
-| `items` | `[]T` | 待遍历元素 |
-| `timeout` | `time.Duration` | 单任务超时 |
-| `fn` | `func(context.Context, T) error` | 处理函数 |
-| 返回 | 统计信息 | 同 ForEach |
-
-**使用示例**:
-
-```go
-total, fail, firstErr, _ := mapreduce.DefaultForEachWithFFTimeout(ctx, tasks, 3*time.Second, fn)
-
-// 通过 async 顶层包
-nr, err := async.DefaultForEachWithFFTimeout(ctx, tasks, 3*time.Second, fn)
-```
-
----
-
-## MapChunk（分块 Map）
-
-`MapChunk` 系列函数的 fn 接收**整个 chunk 切片**，适合批量 RPC 调用、batch DB 操作等需要一次处理多条数据的场景。内部先调用 `Chunk` 分块，再对分块后的切片调用对应的 Map 函数。
-
-### MapChunk
-
-```go
-func MapChunk[T any, R any](
-    ctx context.Context,
-    items []T,
-    concurrency int,
-    batchSize int,
-    fn func(ctx context.Context, chunk []T) (R, error),
-) []core.Result[R]
-```
-
-先按 `batchSize` 分块，再并发处理每个块。fn 接收整个 chunk。每个 chunk 生成一个 Result，所以结果数量 = chunk 数量。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `ctx` | `context.Context` | 上下文 |
-| `items` | `[]T` | 待处理元素 |
-| `concurrency` | `int` | 并发度（处理 chunk 的并发数） |
-| `batchSize` | `int` | 每块大小 |
-| `fn` | `func(context.Context, []T) (R, error)` | 处理函数，接收整个 chunk |
-| 返回 | `[]core.Result[R]` | 结果切片（每个 chunk 一个结果） |
-
-**使用示例**:
-
-```go
-results := mapreduce.MapChunk(ctx, items, 8, 100, fn)
-
-// 通过 async 顶层包
-results := async.MapChunk(ctx, items, 8, 100, fn)
-```
-
----
-
-### DefaultMapChunk
-
-```go
-func DefaultMapChunk[T any, R any](
-    ctx context.Context,
-    items []T,
-    batchSize int,
-    fn func(ctx context.Context, chunk []T) (R, error),
-) []core.Result[R]
-```
-
-使用默认并发度（= `len(chunkedItems)`，即 chunk 数量）的分块 Map。无需手动指定并发度。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `ctx` | `context.Context` | 上下文 |
-| `items` | `[]T` | 待处理元素 |
-| `batchSize` | `int` | 每块大小 |
-| `fn` | `func(context.Context, []T) (R, error)` | 处理函数，接收整个 chunk |
-| 返回 | `[]core.Result[R]` | 结果切片（每个 chunk 一个结果） |
-
-**使用示例**:
-
-```go
-results := mapreduce.DefaultMapChunk(ctx, items, 100, fn)
-
-// 通过 async 顶层包
-results := async.DefaultMapChunk(ctx, items, 100, fn)
-```
-
-> **⚠️ 默认并发度等于 chunk 数**
->
-> `DefaultMapChunk` 使用 `len(chunkedItems)` 作为并发度。如果数据量大、chunk 数多（如 100 万条数据分 10000 个 chunk），会瞬间启动大量 goroutine。此时建议用 `MapChunk` 手动控制并发度。
-
----
-
-### MapChunkWithFailFast
-
-```go
-func MapChunkWithFailFast[T any, R any](
-    ctx context.Context,
-    items []T,
-    concurrency int,
-    batchSize int,
-    fn func(ctx context.Context, chunk []T) (R, error),
-) ([]core.Result[R], error)
-```
-
-先按 `batchSize` 分块，再以 FailFast 模式并发处理每个块。**任何 chunk 处理失败时立即取消其余任务**。第二个返回值 `error` 表示第一个遇到的错误。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `ctx` | `context.Context` | 上下文 |
-| `items` | `[]T` | 待处理元素 |
-| `concurrency` | `int` | 并发度（处理 chunk 的并发数） |
-| `batchSize` | `int` | 每块大小 |
-| `fn` | `func(context.Context, []T) (R, error)` | 处理函数，接收整个 chunk |
-| 返回1 | `[]core.Result[R]` | 结果切片（可能不完整，因为被提前取消） |
-| 返回2 | `error` | 第一个遇到的错误，无错误时为 nil |
-
-**使用示例**:
-
-```go
-results, err := mapreduce.MapChunkWithFailFast(ctx, items, 4, 100, fn)
-if err != nil {
-    log.Printf("chunk processing failed early: %v", err)
-}
-
-// 通过 async 顶层包
-results, err := async.MapChunkWithFailFast(ctx, items, 4, 100, fn)
-```
-
----
-
-### DefaultMapChunkWithFailFast
-
-```go
-func DefaultMapChunkWithFailFast[T any, R any](
-    ctx context.Context,
-    items []T,
-    batchSize int,
-    fn func(ctx context.Context, chunk []T) (R, error),
-) ([]core.Result[R], error)
-```
-
-使用默认并发度的 FailFast 分块 Map。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `ctx` | `context.Context` | 上下文 |
-| `items` | `[]T` | 待处理元素 |
-| `batchSize` | `int` | 每块大小 |
-| `fn` | `func(context.Context, []T) (R, error)` | 处理函数 |
-| 返回1 | `[]core.Result[R]` | 结果切片 |
-| 返回2 | `error` | 第一个遇到的错误 |
-
-**使用示例**:
-
-```go
-results, err := mapreduce.DefaultMapChunkWithFailFast(ctx, items, 100, fn)
-```
-
----
-
-### MapChunkWithTimeout
-
-```go
-func MapChunkWithTimeout[T any, R any](
-    ctx context.Context,
-    items []T,
-    concurrency int,
-    batchSize int,
-    timeout time.Duration,
-    fn func(ctx context.Context, chunk []T) (R, error),
-) []core.Result[R]
-```
-
-先分块，再给每个 chunk 添加超时并并发处理。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `ctx` | `context.Context` | 上下文 |
-| `items` | `[]T` | 待处理元素 |
-| `concurrency` | `int` | 并发度 |
-| `batchSize` | `int` | 每块大小 |
-| `timeout` | `time.Duration` | 单 chunk 超时时间 |
-| `fn` | `func(context.Context, []T) (R, error)` | 处理函数 |
-| 返回 | `[]core.Result[R]` | 结果切片（超时的 chunk 结果为 `context.DeadlineExceeded`） |
-
-**使用示例**:
-
-```go
-results := mapreduce.MapChunkWithTimeout(ctx, items, 4, 100, 5*time.Second, fn)
-```
-
----
-
-### DefaultMapChunkWithTimeout
-
-```go
-func DefaultMapChunkWithTimeout[T any, R any](
-    ctx context.Context,
-    items []T,
-    batchSize int,
-    timeout time.Duration,
-    fn func(ctx context.Context, chunk []T) (R, error),
-) []core.Result[R]
-```
-
-使用默认并发度的带超时分块 Map。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `ctx` | `context.Context` | 上下文 |
-| `items` | `[]T` | 待处理元素 |
-| `batchSize` | `int` | 每块大小 |
-| `timeout` | `time.Duration` | 单 chunk 超时时间 |
-| `fn` | `func(context.Context, []T) (R, error)` | 处理函数 |
-| 返回 | `[]core.Result[R]` | 结果切片 |
-
-**使用示例**:
-
-```go
-results := mapreduce.DefaultMapChunkWithTimeout(ctx, items, 100, 5*time.Second, fn)
-```
-
----
-
-### MapChunkWithFFTimeout
-
-```go
-func MapChunkWithFFTimeout[T any, R any](
-    ctx context.Context,
-    items []T,
-    concurrency int,
-    batchSize int,
-    timeout time.Duration,
-    fn func(ctx context.Context, chunk []T) (R, error),
-) ([]core.Result[R], error)
-```
-
-先分块，再以 FailFast + 超时模式并发处理每个块。任何 chunk 超时或失败时立即取消其余任务。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `ctx` | `context.Context` | 上下文 |
-| `items` | `[]T` | 待处理元素 |
-| `concurrency` | `int` | 并发度 |
-| `batchSize` | `int` | 每块大小 |
-| `timeout` | `time.Duration` | 单 chunk 超时时间 |
-| `fn` | `func(context.Context, []T) (R, error)` | 处理函数 |
-| 返回1 | `[]core.Result[R]` | 结果切片 |
-| 返回2 | `error` | 第一个遇到的错误 |
-
-**使用示例**:
-
-```go
-results, err := mapreduce.MapChunkWithFFTimeout(ctx, items, 4, 100, 5*time.Second, fn)
-if err != nil {
-    log.Printf("chunk processing failed: %v", err)
-}
-```
-
----
-
-### DefaultMapChunkWithFFTimeout
-
-```go
-func DefaultMapChunkWithFFTimeout[T any, R any](
-    ctx context.Context,
-    items []T,
-    batchSize int,
-    timeout time.Duration,
-    fn func(ctx context.Context, chunk []T) (R, error),
-) ([]core.Result[R], error)
-```
-
-使用默认并发度的 FailFast + 超时分块 Map。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `ctx` | `context.Context` | 上下文 |
-| `items` | `[]T` | 待处理元素 |
-| `batchSize` | `int` | 每块大小 |
-| `timeout` | `time.Duration` | 单 chunk 超时时间 |
-| `fn` | `func(context.Context, []T) (R, error)` | 处理函数 |
-| 返回1 | `[]core.Result[R]` | 结果切片 |
-| 返回2 | `error` | 第一个遇到的错误 |
-
-**使用示例**:
-
-```go
-results, err := mapreduce.DefaultMapChunkWithFFTimeout(ctx, items, 100, 5*time.Second, fn)
-```
-
----
-
-## MapChunked（逐元素分块 Map）
-
-`MapChunked` 系列函数先分块，但 fn 接收**单个元素**，效果等同于先分块再对每块的每个元素并发处理。适合需要在分块粒度控制内存但 fn 仍是逐元素操作的场景（如分块读取文件后逐行处理）。**结果数组长度 = items 数量**。
-
-### MapChunked
-
-```go
-func MapChunked[T any, R any](
-    ctx context.Context,
-    items []T,
-    concurrency int,
-    batchSize int,
-    fn func(ctx context.Context, item T) (R, error),
-) []core.Result[R]
-```
-
-先按 `batchSize` 分块，再对每块的每个元素并发执行 fn。结果按原始顺序排列，数量等于 `len(items)`。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `ctx` | `context.Context` | 上下文 |
-| `items` | `[]T` | 待处理元素 |
-| `concurrency` | `int` | 并发度 |
-| `batchSize` | `int` | 每块大小（用于控制单次处理的内存占用） |
-| `fn` | `func(context.Context, T) (R, error)` | 处理函数，接收单个元素 |
-| 返回 | `[]core.Result[R]` | 结果切片（长度 = len(items)） |
-
-**使用示例**:
-
-```go
-results := mapreduce.MapChunked(ctx, items, 8, 200, func(ctx context.Context, item Item) (Result, error) {
-    return processItem(ctx, item)
-})
-
-// 通过 async 顶层包
-results := async.MapChunked(ctx, items, 8, 200, fn)
-```
-
----
-
-### DefaultMapChunked
-
-```go
-func DefaultMapChunked[T any, R any](
-    ctx context.Context,
-    items []T,
-    batchSize int,
-    fn func(ctx context.Context, item T) (R, error),
-) []core.Result[R]
-```
-
-使用默认并发度的逐元素分块 Map。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `ctx` | `context.Context` | 上下文 |
-| `items` | `[]T` | 待处理元素 |
-| `batchSize` | `int` | 每块大小 |
-| `fn` | `func(context.Context, T) (R, error)` | 处理函数 |
-| 返回 | `[]core.Result[R]` | 结果切片 |
-
-**使用示例**:
-
-```go
-results := mapreduce.DefaultMapChunked(ctx, items, 200, fn)
-```
-
----
-
-### MapChunkedWithFailFast
-
-```go
-func MapChunkedWithFailFast[T any, R any](
-    ctx context.Context,
-    items []T,
-    concurrency int,
-    batchSize int,
-    fn func(ctx context.Context, item T) (R, error),
-) ([]core.Result[R], error)
-```
-
-逐元素分块 Map + FailFast 模式。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `ctx` | `context.Context` | 上下文 |
-| `items` | `[]T` | 待处理元素 |
-| `concurrency` | `int` | 并发度 |
-| `batchSize` | `int` | 每块大小 |
-| `fn` | `func(context.Context, T) (R, error)` | 处理函数 |
-| 返回1 | `[]core.Result[R]` | 结果切片 |
-| 返回2 | `error` | 第一个遇到的错误 |
-
-**使用示例**:
-
-```go
-results, err := mapreduce.MapChunkedWithFailFast(ctx, items, 8, 200, fn)
-if err != nil {
-    log.Printf("processing failed early: %v", err)
-}
-```
-
----
-
-### DefaultMapChunkedWithFailFast
-
-```go
-func DefaultMapChunkedWithFailFast[T any, R any](
-    ctx context.Context,
-    items []T,
-    batchSize int,
-    fn func(ctx context.Context, item T) (R, error),
-) ([]core.Result[R], error)
-```
-
-使用默认并发度的 FailFast 逐元素分块 Map。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `ctx` | `context.Context` | 上下文 |
-| `items` | `[]T` | 待处理元素 |
-| `batchSize` | `int` | 每块大小 |
-| `fn` | `func(context.Context, T) (R, error)` | 处理函数 |
-| 返回1 | `[]core.Result[R]` | 结果切片 |
-| 返回2 | `error` | 第一个遇到的错误 |
-
-**使用示例**:
-
-```go
-results, err := mapreduce.DefaultMapChunkedWithFailFast(ctx, items, 200, fn)
-```
-
----
-
-### MapChunkedWithTimeout
-
-```go
-func MapChunkedWithTimeout[T any, R any](
-    ctx context.Context,
-    items []T,
-    concurrency int,
-    batchSize int,
-    timeout time.Duration,
-    fn func(ctx context.Context, item T) (R, error),
-) []core.Result[R]
-```
-
-逐元素分块 Map + 超时模式。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `ctx` | `context.Context` | 上下文 |
-| `items` | `[]T` | 待处理元素 |
-| `concurrency` | `int` | 并发度 |
-| `batchSize` | `int` | 每块大小 |
-| `timeout` | `time.Duration` | 单元素超时时间 |
-| `fn` | `func(context.Context, T) (R, error)` | 处理函数 |
-| 返回 | `[]core.Result[R]` | 结果切片（超时元素结果为 `context.DeadlineExceeded`） |
-
-**使用示例**:
-
-```go
-results := mapreduce.MapChunkedWithTimeout(ctx, items, 8, 200, 3*time.Second, fn)
-```
-
----
-
-### DefaultMapChunkedWithTimeout
-
-```go
-func DefaultMapChunkedWithTimeout[T any, R any](
-    ctx context.Context,
-    items []T,
-    batchSize int,
-    timeout time.Duration,
-    fn func(ctx context.Context, item T) (R, error),
-) []core.Result[R]
-```
-
-使用默认并发度的带超时逐元素分块 Map。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `ctx` | `context.Context` | 上下文 |
-| `items` | `[]T` | 待处理元素 |
-| `batchSize` | `int` | 每块大小 |
-| `timeout` | `time.Duration` | 单元素超时时间 |
-| `fn` | `func(context.Context, T) (R, error)` | 处理函数 |
-| 返回 | `[]core.Result[R]` | 结果切片 |
-
-**使用示例**:
-
-```go
-results := mapreduce.DefaultMapChunkedWithTimeout(ctx, items, 200, 3*time.Second, fn)
-```
-
----
-
-### MapChunkedWithFFTimeout
-
-```go
-func MapChunkedWithFFTimeout[T any, R any](
-    ctx context.Context,
-    items []T,
-    concurrency int,
-    batchSize int,
-    timeout time.Duration,
-    fn func(ctx context.Context, item T) (R, error),
-) ([]core.Result[R], error)
-```
-
-逐元素分块 Map + FailFast + 超时模式。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `ctx` | `context.Context` | 上下文 |
-| `items` | `[]T` | 待处理元素 |
-| `concurrency` | `int` | 并发度 |
-| `batchSize` | `int` | 每块大小 |
-| `timeout` | `time.Duration` | 单元素超时时间 |
-| `fn` | `func(context.Context, T) (R, error)` | 处理函数 |
-| 返回1 | `[]core.Result[R]` | 结果切片 |
-| 返回2 | `error` | 第一个遇到的错误 |
-
-**使用示例**:
-
-```go
-results, err := mapreduce.MapChunkedWithFFTimeout(ctx, items, 8, 200, 3*time.Second, fn)
-```
-
----
-
-### DefaultMapChunkedWithFFTimeout
-
-```go
-func DefaultMapChunkedWithFFTimeout[T any, R any](
-    ctx context.Context,
-    items []T,
-    batchSize int,
-    timeout time.Duration,
-    fn func(ctx context.Context, item T) (R, error),
-) ([]core.Result[R], error)
-```
-
-使用默认并发度的 FailFast + 超时逐元素分块 Map。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `ctx` | `context.Context` | 上下文 |
-| `items` | `[]T` | 待处理元素 |
-| `batchSize` | `int` | 每块大小 |
-| `timeout` | `time.Duration` | 单元素超时时间 |
-| `fn` | `func(context.Context, T) (R, error)` | 处理函数 |
-| 返回1 | `[]core.Result[R]` | 结果切片 |
-| 返回2 | `error` | 第一个遇到的错误 |
-
-**使用示例**:
-
-```go
-results, err := mapreduce.DefaultMapChunkedWithFFTimeout(ctx, items, 200, 3*time.Second, fn)
-```
-
----
-
-## ForEachChunk（分块 ForEach）
-
-`ForEachChunk` 系列函数的 fn 接收**整个 chunk 切片**，只返回 error。适用于分块执行无返回值的副作用操作（如批量写入、批量删除）。内部先调用 `Chunk` 分块，再对分块后的切片调用对应的 ForEach 函数。返回值包含总数、失败数、首个错误、详细结果。
-
-**ForEachChunk 的返回签名与 MapChunk 不同**：所有 ForEach/ForEachChunk/ForEachChunked 系列函数的返回值统一为 `(total int64, failCnt int64, firstErr error, results []core.Result[struct{}])`。
-
-### ForEachChunk
-
-```go
-func ForEachChunk[T any](
-    ctx context.Context,
-    items []T,
-    concurrency int,
-    batchSize int,
-    fn func(ctx context.Context, chunk []T) error,
-) (total int64, failCnt int64, firstErr error, results []core.Result[struct{}])
-```
-
-先按 `batchSize` 分块，再并发处理每个块，fn 只返回 error。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `ctx` | `context.Context` | 上下文 |
-| `items` | `[]T` | 待处理元素 |
-| `concurrency` | `int` | 并发度 |
-| `batchSize` | `int` | 每块大小 |
-| `fn` | `func(context.Context, []T) error` | 处理函数，接收整个 chunk，只返回 error |
-| 返回1 | `int64` | total：总 chunk 数 |
-| 返回2 | `int64` | failCnt：失败 chunk 数 |
-| 返回3 | `error` | firstErr：第一个遇到的错误 |
-| 返回4 | `[]core.Result[struct{}]` | results：各 chunk 的处理结果详情 |
-
-**使用示例**:
-
-```go
-total, failCnt, firstErr, results := mapreduce.ForEachChunk(ctx, items, 4, 100, func(ctx context.Context, batch []Item) error {
-    return batchInsert(ctx, batch)
-})
-if firstErr != nil {
-    log.Printf("batch insert: %d/%d failed, first error: %v", failCnt, total, firstErr)
-}
-
-// 通过 async 顶层包
-total, failCnt, firstErr, results := async.ForEachChunk(ctx, items, 4, 100, fn)
-```
-
----
-
-### DefaultForEachChunk
-
-```go
-func DefaultForEachChunk[T any](
-    ctx context.Context,
-    items []T,
-    batchSize int,
-    fn func(ctx context.Context, chunk []T) error,
-) (total int64, failCnt int64, firstErr error, results []core.Result[struct{}])
-```
-
-使用默认并发度的分块 ForEach。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `ctx` | `context.Context` | 上下文 |
-| `items` | `[]T` | 待处理元素 |
-| `batchSize` | `int` | 每块大小 |
-| `fn` | `func(context.Context, []T) error` | 处理函数 |
-| 返回1~4 | — | 同 ForEachChunk |
-
-**使用示例**:
-
-```go
-total, failCnt, firstErr, results := mapreduce.DefaultForEachChunk(ctx, items, 100, fn)
-```
-
----
-
-### ForEachChunkWithFailFast
-
-```go
-func ForEachChunkWithFailFast[T any](
-    ctx context.Context,
-    items []T,
-    concurrency int,
-    batchSize int,
-    fn func(ctx context.Context, chunk []T) error,
-) (total int64, failCnt int64, firstErr error, results []core.Result[struct{}])
-```
-
-分块 ForEach + FailFast 模式。任何 chunk 失败时立即取消其余任务。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `ctx` | `context.Context` | 上下文 |
-| `items` | `[]T` | 待处理元素 |
-| `concurrency` | `int` | 并发度 |
-| `batchSize` | `int` | 每块大小 |
-| `fn` | `func(context.Context, []T) error` | 处理函数 |
-| 返回1~4 | — | 同 ForEachChunk（FailFast 下结果可能不完整） |
-
-**使用示例**:
-
-```go
-total, failCnt, firstErr, results := mapreduce.ForEachChunkWithFailFast(ctx, items, 4, 100, fn)
-```
-
----
-
-### DefaultForEachChunkWithFailFast
-
-```go
-func DefaultForEachChunkWithFailFast[T any](
-    ctx context.Context,
-    items []T,
-    batchSize int,
-    fn func(ctx context.Context, chunk []T) error,
-) (total int64, failCnt int64, firstErr error, results []core.Result[struct{}])
-```
-
-使用默认并发度的 FailFast 分块 ForEach。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `ctx` | `context.Context` | 上下文 |
-| `items` | `[]T` | 待处理元素 |
-| `batchSize` | `int` | 每块大小 |
-| `fn` | `func(context.Context, []T) error` | 处理函数 |
-| 返回1~4 | — | 同 ForEachChunk |
-
-**使用示例**:
-
-```go
-total, failCnt, firstErr, results := mapreduce.DefaultForEachChunkWithFailFast(ctx, items, 100, fn)
-```
-
----
-
-### ForEachChunkWithTimeout
-
-```go
-func ForEachChunkWithTimeout[T any](
-    ctx context.Context,
-    items []T,
-    concurrency int,
-    batchSize int,
-    timeout time.Duration,
-    fn func(ctx context.Context, chunk []T) error,
-) (total int64, failCnt int64, firstErr error, results []core.Result[struct{}])
-```
-
-分块 ForEach + 超时模式。每个 chunk 有独立的超时限制。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `ctx` | `context.Context` | 上下文 |
-| `items` | `[]T` | 待处理元素 |
-| `concurrency` | `int` | 并发度 |
-| `batchSize` | `int` | 每块大小 |
-| `timeout` | `time.Duration` | 单 chunk 超时时间 |
-| `fn` | `func(context.Context, []T) error` | 处理函数 |
-| 返回1~4 | — | 同 ForEachChunk |
-
-**使用示例**:
-
-```go
-total, failCnt, firstErr, results := mapreduce.ForEachChunkWithTimeout(ctx, items, 4, 100, 10*time.Second, fn)
-```
-
----
-
-### DefaultForEachChunkWithTimeout
-
-```go
-func DefaultForEachChunkWithTimeout[T any](
-    ctx context.Context,
-    items []T,
-    batchSize int,
-    timeout time.Duration,
-    fn func(ctx context.Context, chunk []T) error,
-) (total int64, failCnt int64, firstErr error, results []core.Result[struct{}])
-```
-
-使用默认并发度的带超时分块 ForEach。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `ctx` | `context.Context` | 上下文 |
-| `items` | `[]T` | 待处理元素 |
-| `batchSize` | `int` | 每块大小 |
-| `timeout` | `time.Duration` | 单 chunk 超时时间 |
-| `fn` | `func(context.Context, []T) error` | 处理函数 |
-| 返回1~4 | — | 同 ForEachChunk |
-
-**使用示例**:
-
-```go
-total, failCnt, firstErr, results := mapreduce.DefaultForEachChunkWithTimeout(ctx, items, 100, 10*time.Second, fn)
-```
-
----
-
-### ForEachChunkWithFFTimeout
-
-```go
-func ForEachChunkWithFFTimeout[T any](
-    ctx context.Context,
-    items []T,
-    concurrency int,
-    batchSize int,
-    timeout time.Duration,
-    fn func(ctx context.Context, chunk []T) error,
-) (total int64, failCnt int64, firstErr error, results []core.Result[struct{}])
-```
-
-分块 ForEach + FailFast + 超时模式。任何 chunk 超时或失败时立即取消其余任务。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `ctx` | `context.Context` | 上下文 |
-| `items` | `[]T` | 待处理元素 |
-| `concurrency` | `int` | 并发度 |
-| `batchSize` | `int` | 每块大小 |
-| `timeout` | `time.Duration` | 单 chunk 超时时间 |
-| `fn` | `func(context.Context, []T) error` | 处理函数 |
-| 返回1~4 | — | 同 ForEachChunk |
-
-**使用示例**:
-
-```go
-total, failCnt, firstErr, results := mapreduce.ForEachChunkWithFFTimeout(ctx, items, 4, 100, 10*time.Second, fn)
-```
-
----
-
-### DefaultForEachChunkWithFFTimeout
-
-```go
-func DefaultForEachChunkWithFFTimeout[T any](
-    ctx context.Context,
-    items []T,
-    batchSize int,
-    timeout time.Duration,
-    fn func(ctx context.Context, chunk []T) error,
-) (total int64, failCnt int64, firstErr error, results []core.Result[struct{}])
-```
-
-使用默认并发度的 FailFast + 超时分块 ForEach。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `ctx` | `context.Context` | 上下文 |
-| `items` | `[]T` | 待处理元素 |
-| `batchSize` | `int` | 每块大小 |
-| `timeout` | `time.Duration` | 单 chunk 超时时间 |
-| `fn` | `func(context.Context, []T) error` | 处理函数 |
-| 返回1~4 | — | 同 ForEachChunk |
-
-**使用示例**:
-
-```go
-total, failCnt, firstErr, results := mapreduce.DefaultForEachChunkWithFFTimeout(ctx, items, 100, 10*time.Second, fn)
-```
-
----
-
-## ForEachChunked（逐元素分块 ForEach）
-
-`ForEachChunked` 系列函数先分块，但 fn 接收**单个元素**，只返回 error。适合需要在分块粒度控制内存但 fn 仍是逐元素副作用操作的场景。内部先按 `batchSize` 分块，对每块内的元素逐个并发调用 `ForEach` / `ForEachWithFailFast`。**结果数组长度 = chunk 数量 = ceil(len(items)/batchSize)**。
-
-### ForEachChunked
-
-```go
-func ForEachChunked[T any](
-    ctx context.Context,
-    items []T,
-    concurrency int,
-    batchSize int,
-    fn func(ctx context.Context, item T) error,
-) (total int64, failCnt int64, firstErr error, results []core.Result[struct{}])
-```
-
-先按 `batchSize` 分块，再对每块内的元素逐一并发执行 fn。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `ctx` | `context.Context` | 上下文 |
-| `items` | `[]T` | 待处理元素 |
-| `concurrency` | `int` | 并发度 |
-| `batchSize` | `int` | 每块大小（控制单次处理的内存占用） |
-| `fn` | `func(context.Context, T) error` | 处理函数，接收单个元素，只返回 error |
-| 返回1 | `int64` | total：总任务数 |
-| 返回2 | `int64` | failCnt：失败任务数 |
-| 返回3 | `error` | firstErr：第一个遇到的错误 |
-| 返回4 | `[]core.Result[struct{}]` | results：各 chunk 的处理结果详情（长度 = chunk 数） |
-
-**使用示例**:
-
-```go
-total, failCnt, firstErr, results := mapreduce.ForEachChunked(ctx, items, 8, 200, func(ctx context.Context, item Item) error {
-    return processItem(ctx, item)
-})
-
-// 通过 async 顶层包
-total, failCnt, firstErr, results := async.ForEachChunked(ctx, items, 8, 200, fn)
-```
-
----
-
-### DefaultForEachChunked
-
-```go
-func DefaultForEachChunked[T any](
-    ctx context.Context,
-    items []T,
-    batchSize int,
-    fn func(ctx context.Context, item T) error,
-) (total int64, failCnt int64, firstErr error, results []core.Result[struct{}])
-```
-
-使用默认并发度的逐元素分块 ForEach。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `ctx` | `context.Context` | 上下文 |
-| `items` | `[]T` | 待处理元素 |
-| `batchSize` | `int` | 每块大小 |
-| `fn` | `func(context.Context, T) error` | 处理函数 |
-| 返回1~4 | — | 同 ForEachChunked |
-
-**使用示例**:
-
-```go
-total, failCnt, firstErr, results := mapreduce.DefaultForEachChunked(ctx, items, 200, fn)
-```
-
----
-
-### ForEachChunkedWithFailFast
-
-```go
-func ForEachChunkedWithFailFast[T any](
-    ctx context.Context,
-    items []T,
-    concurrency int,
-    batchSize int,
-    fn func(ctx context.Context, item T) error,
-) (total int64, failCnt int64, firstErr error, results []core.Result[struct{}])
-```
-
-逐元素分块 ForEach + FailFast 模式。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `ctx` | `context.Context` | 上下文 |
-| `items` | `[]T` | 待处理元素 |
-| `concurrency` | `int` | 并发度 |
-| `batchSize` | `int` | 每块大小 |
-| `fn` | `func(context.Context, T) error` | 处理函数 |
-| 返回1~4 | — | 同 ForEachChunked |
-
-**使用示例**:
-
-```go
-total, failCnt, firstErr, results := mapreduce.ForEachChunkedWithFailFast(ctx, items, 8, 200, fn)
-```
-
----
-
-### DefaultForEachChunkedWithFailFast
-
-```go
-func DefaultForEachChunkedWithFailFast[T any](
-    ctx context.Context,
-    items []T,
-    batchSize int,
-    fn func(ctx context.Context, item T) error,
-) (total int64, failCnt int64, firstErr error, results []core.Result[struct{}])
-```
-
-使用默认并发度的 FailFast 逐元素分块 ForEach。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `ctx` | `context.Context` | 上下文 |
-| `items` | `[]T` | 待处理元素 |
-| `batchSize` | `int` | 每块大小 |
-| `fn` | `func(context.Context, T) error` | 处理函数 |
-| 返回1~4 | — | 同 ForEachChunked |
-
-**使用示例**:
-
-```go
-total, failCnt, firstErr, results := mapreduce.DefaultForEachChunkedWithFailFast(ctx, items, 200, fn)
-```
-
----
-
-### ForEachChunkedWithTimeout
-
-```go
-func ForEachChunkedWithTimeout[T any](
-    ctx context.Context,
-    items []T,
-    concurrency int,
-    batchSize int,
-    timeout time.Duration,
-    fn func(ctx context.Context, item T) error,
-) (total int64, failCnt int64, firstErr error, results []core.Result[struct{}])
-```
-
-逐元素分块 ForEach + 超时模式。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `ctx` | `context.Context` | 上下文 |
-| `items` | `[]T` | 待处理元素 |
-| `concurrency` | `int` | 并发度 |
-| `batchSize` | `int` | 每块大小 |
-| `timeout` | `time.Duration` | 单元素超时时间 |
-| `fn` | `func(context.Context, T) error` | 处理函数 |
-| 返回1~4 | — | 同 ForEachChunked |
-
-**使用示例**:
-
-```go
-total, failCnt, firstErr, results := mapreduce.ForEachChunkedWithTimeout(ctx, items, 8, 200, 3*time.Second, fn)
-```
-
----
-
-### DefaultForEachChunkedWithTimeout
-
-```go
-func DefaultForEachChunkedWithTimeout[T any](
-    ctx context.Context,
-    items []T,
-    batchSize int,
-    timeout time.Duration,
-    fn func(ctx context.Context, item T) error,
-) (total int64, failCnt int64, firstErr error, results []core.Result[struct{}])
-```
-
-使用默认并发度的带超时逐元素分块 ForEach。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `ctx` | `context.Context` | 上下文 |
-| `items` | `[]T` | 待处理元素 |
-| `batchSize` | `int` | 每块大小 |
-| `timeout` | `time.Duration` | 单元素超时时间 |
-| `fn` | `func(context.Context, T) error` | 处理函数 |
-| 返回1~4 | — | 同 ForEachChunked |
-
-**使用示例**:
-
-```go
-total, failCnt, firstErr, results := mapreduce.DefaultForEachChunkedWithTimeout(ctx, items, 200, 3*time.Second, fn)
-```
-
----
-
-### ForEachChunkedWithFFTimeout
-
-```go
-func ForEachChunkedWithFFTimeout[T any](
-    ctx context.Context,
-    items []T,
-    concurrency int,
-    batchSize int,
-    timeout time.Duration,
-    fn func(ctx context.Context, item T) error,
-) (total int64, failCnt int64, firstErr error, results []core.Result[struct{}])
-```
-
-逐元素分块 ForEach + FailFast + 超时模式。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `ctx` | `context.Context` | 上下文 |
-| `items` | `[]T` | 待处理元素 |
-| `concurrency` | `int` | 并发度 |
-| `batchSize` | `int` | 每块大小 |
-| `timeout` | `time.Duration` | 单元素超时时间 |
-| `fn` | `func(context.Context, T) error` | 处理函数 |
-| 返回1~4 | — | 同 ForEachChunked |
-
-**使用示例**:
-
-```go
-total, failCnt, firstErr, results := mapreduce.ForEachChunkedWithFFTimeout(ctx, items, 8, 200, 3*time.Second, fn)
-```
-
----
-
-### DefaultForEachChunkedWithFFTimeout
-
-```go
-func DefaultForEachChunkedWithFFTimeout[T any](
-    ctx context.Context,
-    items []T,
-    batchSize int,
-    timeout time.Duration,
-    fn func(ctx context.Context, item T) error,
-) (total int64, failCnt int64, firstErr error, results []core.Result[struct{}])
-```
-
-使用默认并发度的 FailFast + 超时逐元素分块 ForEach。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `ctx` | `context.Context` | 上下文 |
-| `items` | `[]T` | 待处理元素 |
-| `batchSize` | `int` | 每块大小 |
-| `timeout` | `time.Duration` | 单元素超时时间 |
-| `fn` | `func(context.Context, T) error` | 处理函数 |
-| 返回1~4 | — | 同 ForEachChunked |
-
-**使用示例**:
-
-```go
-total, failCnt, firstErr, results := mapreduce.DefaultForEachChunkedWithFFTimeout(ctx, items, 200, 3*time.Second, fn)
-```
-
----
-
-## 变体选择指南
-
-### Map/ForEach 函数对照表
-
-| 系列 | fn 接收 | 结果长度 | 适用场景 |
-|------|---------|----------|----------|
-| `Map` | 单个元素 | `len(items)` | 标准并发处理 |
-| `MapChunk` | 整个 chunk | chunk 数 | 批量 RPC / 批量 DB 操作 |
-| `MapChunked` | 单个元素 | `len(items)` | 分块控制内存，逐元素处理 |
-| `ForEach` | 单个元素 | `len(items)` | 无返回值的副作用操作 |
-| `ForEachChunk` | 整个 chunk | chunk 数 | 批量写入 / 批量删除 |
-| `ForEachChunked` | 单个元素 | chunk 数 | 分块控制内存，逐元素副作用 |
-
-### 后缀变体选择
-
-| 后缀 | 用法 | 说明 |
-|------|------|------|
-| _（无后缀） | `Map(...)` | 基础并发版本，不提前终止 |
-| `WithFailFast` | `MapWithFailFast(...)` | 第一个错误发生时立即取消所有剩余任务 |
-| `WithTimeout` | `MapWithTimeout(...)` | 每个任务有独立的超时限制 |
-| `WithFFTimeout` | `MapWithFFTimeout(...)` | FailFast + 超时模式，最先超时或出错即取消 |
-| `Default` | `DefaultMap(...)` | 使用 `core.IO()` 自动推断并发度 |
-
-### MapChunk vs MapChunked 的区别
-
-| 维度 | MapChunk | MapChunked |
-|------|----------|------------|
-| fn 参数 | `[]T`（整个 chunk） | `T`（单个元素） |
-| 结果数量 | chunk 数量 | `len(items)` |
-| 内部实现 | 调用 `Map` | 内部遍历 chunk，对每个元素调用 `GoAt` |
-| 适用场景 | 批量 RPC / batch DB | 分块控制内存，fn 不变 |
-
----
-
-## 完整示例
-
-### 批量 RPC 调用（MapChunk）
-
-```go
-package main
-
-import (
-    "context"
-    "fmt"
-    "log"
-    "time"
-
-    "github.com/yourusername/async/mapreduce"
-)
-
-func main() {
-    ctx := context.Background()
-    userIDs := make([]int64, 10000)
-    for i := range userIDs {
-        userIDs[i] = int64(i + 1)
-    }
-
-    // 每批 100 个 ID，4 个并发 worker，FailFast + 每批 5s 超时
-    results, err := mapreduce.MapChunkWithFFTimeout(ctx, userIDs, 4, 100, 5*time.Second,
-        func(ctx context.Context, batch []int64) ([]User, error) {
-            return batchQueryUsers(ctx, batch)
-        },
-    )
-    if err != nil {
-        log.Fatalf("batch query failed: %v", err)
-    }
-
-    // 汇总结果
-    allUsers := make([]User, 0, len(userIDs))
-    for _, r := range results {
-        if r.Err != nil {
-            log.Printf("batch failed: %v", r.Err)
-            continue
-        }
-        allUsers = append(allUsers, r.Value...)
-    }
-    fmt.Printf("queried %d users\n", len(allUsers))
-}
-```
-
-### 分布式 Reduce
-
-```go
-// 先并发计算所有分段的 local count，再串行 merge
-chunks := mapreduce.Chunk(data, 10000)
-counts, _ := mapreduce.MapWithFailFast(ctx, chunks, func(ctx context.Context, chunk []int64) (int64, error) {
-    return localCount(chunk), nil
-}, 8)
-
-// 串行归约：计算最终总和
-totalCount := mapreduce.Reduce(counts, func(ctx context.Context, acc int64, cnt int64) (int64, error) {
-    return acc + cnt, nil
-}, 0)
-fmt.Printf("total count: %d\n", totalCount)
-```
-
-### 大文件逐块处理（ForEachChunked）
-
-```go
-lines := readAllLines("data.txt")
-total, failCnt, firstErr, _ := mapreduce.ForEachChunked(ctx, lines, 8, 1000,
-    func(ctx context.Context, line string) error {
-        return processLine(ctx, line)
-    },
-)
-if firstErr != nil {
-    log.Printf("processed %d/%d lines, first error: %v", total-failCnt, total, firstErr)
-}
-```
-
----
-
-## 性能基准
-
-以下为典型场景的性能参考（仅供参考，实际性能取决于 fn 的具体实现和硬件环境）：
-
-| 场景 | 数据量 | 函数 | 并发度 | 批次大小 | 预期耗时对比（vs 串行） |
-|------|--------|------|--------|----------|------------------------|
-| 单元素轻量计算 | 10000 | `Map` | 8 | — | ~8x 加速 |
-| 批量 RPC | 10000 | `MapChunk` | 4 | 100 | ~80x 加速（减少 RPC 次数） |
-| 大文件逐行处理 | 1000000 | `ForEachChunked` | 8 | 5000 | ~8x 加速，内存可控 |
-| 分布式 Reduce | 1000000 | `Map` + `Reduce` | 16 | — | ~16x 加速（Map 阶段） |
-
-**调优建议**：
-- **IO 密集型**：并发度可设置为 CPU 核数的 2~4 倍
-- **CPU 密集型**：并发度建议等于 CPU 核数
-- **分块策略**：RPC/DB 场景 batchSize 建议 50~200；内存敏感场景按实际可用内存 / 单元素大小计算
-- **超时时间**：建议设置为 P99 延迟的 2~3 倍
-- **FailFast**：适合错误需要立即感知的场景；不适合需要尽力完成所有任务的场景
-- **Panic 恢复**：所有函数内置 panic 恢复机制，会通过 `core.PanicError` 包装
-- **Cancellation**：所有函数通过 context 支持取消、超时传播
