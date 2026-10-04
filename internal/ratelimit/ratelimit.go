@@ -223,12 +223,13 @@ func (rl *RateLimiter) startRefill() {
 				curBatch := rl.batchSizeForRate(r)
 				rl.resizeMu.RLock()
 				added := 0
+			refill:
 				for i := 0; i < curBatch; i++ {
 					select {
 					case rl.tokens <- struct{}{}:
 						added++
 					default:
-						break
+						break refill
 					}
 				}
 				rl.resizeMu.RUnlock()
@@ -464,6 +465,7 @@ func (rl *RateLimiter) Resize(newRate int) {
 	defer rl.resizeMu.Unlock()
 
 	oldTokens := rl.tokens
+	inFlight := cap(oldTokens) - len(oldTokens)
 	newTokens := make(chan struct{}, newRate)
 	for i := 0; i < cap(oldTokens); i++ {
 		select {
@@ -475,7 +477,11 @@ func (rl *RateLimiter) Resize(newRate int) {
 	rl.tokens = newTokens
 	rl.size = int32(newRate)
 	rl.rate.Store(int32(newRate))
-	for i := 0; i < newRate; i++ {
+	fill := newRate - inFlight
+	if fill < 0 {
+		fill = 0
+	}
+	for i := 0; i < fill; i++ {
 		newTokens <- struct{}{}
 	}
 	close(oldTokens)
