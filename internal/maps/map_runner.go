@@ -63,6 +63,17 @@ func (r *MapRunner[K, V, R]) ForEach(fn func(context.Context, K, V) error) (tota
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					atomic.AddInt64(&failCnt, 1)
+					mu.Lock()
+					if firstErr == nil {
+						firstErr = core.NewPanicError(r)
+					}
+					failFastTriggered = true
+					mu.Unlock()
+				}
+			}()
 			for e := range ch {
 				mu.Lock()
 				if failFastTriggered {
@@ -141,6 +152,15 @@ func (r *MapRunner[K, V, R]) Map(fn func(context.Context, K, V) (R, error)) *Map
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					mu.Lock()
+					if firstErr == nil {
+						firstErr = core.NewPanicError(r)
+					}
+					mu.Unlock()
+				}
+			}()
 			for e := range ch {
 				mu.Lock()
 				if firstErr != nil && r.policy.IsFailFast() {
@@ -236,6 +256,13 @@ func (r *MapRunner[K, V, R]) Stream(fn func(context.Context, K, V) (R, error), b
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
+				defer func() {
+					if r := recover(); r != nil {
+						mu.Lock()
+						failFastDone = true
+						mu.Unlock()
+					}
+				}()
 				for e := range taskCh {
 					mu.Lock()
 					if failFastDone {
@@ -325,6 +352,15 @@ func (r *MapRunner[K, V, R]) MapBatch(fn func(context.Context, []MapEntry[K, V])
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					mu.Lock()
+					if firstErr == nil {
+						firstErr = core.NewPanicError(r)
+					}
+					mu.Unlock()
+				}
+			}()
 			for chunk := range ch {
 				mu.Lock()
 				if firstErr != nil && r.policy.IsFailFast() {
@@ -399,6 +435,17 @@ func (r *MapRunner[K, V, R]) ForEachBatch(fn func(context.Context, []MapEntry[K,
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					atomic.AddInt64(&failCnt, 1)
+					mu.Lock()
+					if firstErr == nil {
+						firstErr = core.NewPanicError(r)
+					}
+					failFastTriggered = true
+					mu.Unlock()
+				}
+			}()
 			for chunk := range ch {
 				mu.Lock()
 				if failFastTriggered {

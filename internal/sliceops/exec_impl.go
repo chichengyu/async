@@ -887,6 +887,14 @@ func mapParallelFF[T any, R any](ctx context.Context, cancel context.CancelFunc,
 		w.Add(1)
 		go func(start, end int) {
 			defer w.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					for j := start; j < end; j++ {
+						results[j] = core.Result[R]{Err: core.NewPanicError(r)}
+					}
+					cancel()
+				}
+			}()
 			for j := start; j < end; j++ {
 				select {
 				case <-ctx.Done():

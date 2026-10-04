@@ -148,7 +148,9 @@ func RetryWithConfig[T any](
 		}
 
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
-			return zero, err
+			if ctx.Err() != nil {
+				return zero, err
+			}
 		}
 
 		if attempt == maxRetries {

@@ -27,10 +27,11 @@ type Mu[T any] struct {
 	ts []T        // 内部切片
 }
 
-// Append 线程安全地追加元素。add 函数在锁内执行，保证原子性。
+// Append 线程安全地追加元素。add 函数在锁外执行以保证并发性能，
+// append 操作在锁内执行保证线程安全。
 //
 // 参数：
-//   - add：生成要追加元素的函数，在锁内执行
+//   - add：生成要追加元素的函数（在锁外执行，可并发）
 //
 // 使用示例：
 //
@@ -38,9 +39,10 @@ type Mu[T any] struct {
 //	mu.Append(func() int { return 42 })
 //	mu.Append(func() int { return computeSomething() })
 func (m *Mu[T]) Append(add func() T) {
+	v := add()
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.ts = append(m.ts, add())
+	m.ts = append(m.ts, v)
+	m.mu.Unlock()
 }
 
 // Snapshot 返回当前所有元素的副本，线程安全。

@@ -1121,6 +1121,36 @@ func (p *Pool[T]) SubmitAt(index int, ctx context.Context, fn func(context.Conte
 		return core.ErrPoolClosed
 	}
 
+	// 原子化背压检查：与 submitIndexed 一致的 maxPending + overflowStrat 管控，
+	// 消除 SubmitAt 绕过背压限制的安全隐患。
+	var pendingAcquired bool
+	if mp := p.maxPending; mp > 0 {
+		switch p.overflowStrat {
+		case core.OverflowDrop:
+			if !p.tryAcquirePendingSlot(mp) {
+				p.addInFlight.Add(-1)
+				if int64(index) >= p.submitIdx.Load() {
+					p.submitIdx.Store(int64(index) + 1)
+				}
+				p.resultsSet(int64(index), core.Result[T]{Err: core.ErrQueueOverflow, Occupied: true})
+				atomic.AddInt64(&p.errCnt, 1)
+				return nil
+			}
+			pendingAcquired = true
+		case core.OverflowError:
+			if !p.tryAcquirePendingSlot(mp) {
+				p.addInFlight.Add(-1)
+				if int64(index) >= p.submitIdx.Load() {
+					p.submitIdx.Store(int64(index) + 1)
+				}
+				p.resultsSet(int64(index), core.Result[T]{Err: core.ErrQueueOverflow, Occupied: true})
+				atomic.AddInt64(&p.errCnt, 1)
+				return core.ErrQueueOverflow
+			}
+			pendingAcquired = true
+		}
+	}
+
 	taskCtx, taskCancel := context.WithCancel(ctx)
 
 	// 确保分片存储能容纳此索引
@@ -1128,7 +1158,9 @@ func (p *Pool[T]) SubmitAt(index int, ctx context.Context, fn func(context.Conte
 		p.resultsAppend(taskCancel)
 	}
 
-	p.pending.Add(1)
+	if !pendingAcquired {
+		p.pending.Add(1)
+	}
 	p.wg.Add(1)
 	p.addInFlight.Add(-1)
 
@@ -1181,18 +1213,46 @@ func (p *Pool[T]) TrySubmit(ctx context.Context, fn func(context.Context) (T, er
 		p.addInFlight.Add(-1)
 		return core.ErrPoolWaiting
 	}
+
+	// 原子化背压检查：与 submitIndexed 一致的 maxPending + overflowStrat 管控，
+	// 消除 TrySubmit 绕过背压限制的安全隐患。
+	var pendingAcquired bool
+	if mp := p.maxPending; mp > 0 {
+		switch p.overflowStrat {
+		case core.OverflowDrop:
+			if !p.tryAcquirePendingSlot(mp) {
+				p.addInFlight.Add(-1)
+				atomic.AddInt64(&p.errCnt, 1)
+				return nil
+			}
+			pendingAcquired = true
+		case core.OverflowError:
+			if !p.tryAcquirePendingSlot(mp) {
+				p.addInFlight.Add(-1)
+				atomic.AddInt64(&p.errCnt, 1)
+				return core.ErrQueueOverflow
+			}
+			pendingAcquired = true
+		}
+	}
+
 	taskCtx, taskCancel := context.WithCancel(ctx)
 
 	// 二次检查：防止检查通过后 Close() 被调用导致 wg 泄漏
 	if p.closed.Load() {
 		p.addInFlight.Add(-1)
 		taskCancel()
+		if pendingAcquired {
+			p.pending.Add(-1)
+		}
 		return core.ErrPoolClosed
 	}
 
 	idx := p.resultsAppend(taskCancel)
 
-	p.pending.Add(1)
+	if !pendingAcquired {
+		p.pending.Add(1)
+	}
 	p.wg.Add(1)
 	p.addInFlight.Add(-1)
 

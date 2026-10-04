@@ -52,6 +52,7 @@ func (sw *SlidingWindowRateLimiter) Allow() bool {
 		return sw.timestamps[i].After(cutoff)
 	})
 	sw.timestamps = sw.timestamps[cutoffIdx:]
+	sw.reclaimCapacity()
 	if len(sw.timestamps) < sw.limit {
 		sw.timestamps = append(sw.timestamps, now)
 		return true
@@ -73,6 +74,7 @@ func (sw *SlidingWindowRateLimiter) AllowN(n int) bool {
 		return sw.timestamps[i].After(cutoff)
 	})
 	sw.timestamps = sw.timestamps[cutoffIdx:]
+	sw.reclaimCapacity()
 	if len(sw.timestamps)+n <= sw.limit {
 		for j := 0; j < n; j++ {
 			sw.timestamps = append(sw.timestamps, now)
@@ -80,4 +82,14 @@ func (sw *SlidingWindowRateLimiter) AllowN(n int) bool {
 		return true
 	}
 	return false
+}
+
+func (sw *SlidingWindowRateLimiter) reclaimCapacity() {
+	const maxWasteRatio = 4
+	const minWasteThreshold = 1024
+	if cap(sw.timestamps) > maxWasteRatio*len(sw.timestamps) && cap(sw.timestamps) > minWasteThreshold {
+		trimmed := make([]time.Time, len(sw.timestamps))
+		copy(trimmed, sw.timestamps)
+		sw.timestamps = trimmed
+	}
 }

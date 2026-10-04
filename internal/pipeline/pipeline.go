@@ -125,15 +125,17 @@ func Execute[T any](
 			wg.Add(1)
 			go func(start, end int) {
 				defer wg.Done()
+				currentIdx := start
 				defer func() {
 					if r := recover(); r != nil {
-						for j := start; j < end; j++ {
+						for j := currentIdx; j < end; j++ {
 							var zero T
 							nextResults[j] = core.Result[T]{Value: zero, Err: core.NewPanicError(r)}
 						}
 					}
 				}()
 				for j := start; j < end; j++ {
+					currentIdx = j
 					if stage.SkipOnError && resultsList[j].Err != nil {
 						nextResults[j] = resultsList[j]
 						continue
@@ -204,15 +206,17 @@ func ExecuteWithMeta[T any](
 			wg.Add(1)
 			go func(start, end int) {
 				defer wg.Done()
+				currentIdx := start
 				defer func() {
 					if r := recover(); r != nil {
-						for j := start; j < end; j++ {
+						for j := currentIdx; j < end; j++ {
 							var zero T
 							stageResults[j] = core.Result[T]{Value: zero, Err: core.NewPanicError(r)}
 						}
 					}
 				}()
 				for j := start; j < end; j++ {
+					currentIdx = j
 					if stage.SkipOnError && itemErrs[j] != nil {
 						var zero T
 						stageResults[j] = core.Result[T]{Value: zero, Err: itemErrs[j]}
@@ -354,15 +358,17 @@ func ExecutePipe[T any](
 			wg.Add(1)
 			go func(start, end int) {
 				defer wg.Done()
+				currentIdx := start
 				defer func() {
 					if r := recover(); r != nil {
-						for j := start; j < end; j++ {
+						for j := currentIdx; j < end; j++ {
 							var zero T
 							nextResults[j] = core.Result[T]{Value: zero, Err: core.NewPanicError(r)}
 						}
 					}
 				}()
 				for j := start; j < end; j++ {
+					currentIdx = j
 					if stage.SkipOnError && resultsList[j].Err != nil {
 						nextResults[j] = resultsList[j]
 						continue
@@ -536,15 +542,17 @@ func (p *Pipeline[T]) executeNative(
 			wg.Add(1)
 			go func(start, end int) {
 				defer wg.Done()
+				currentIdx := start
 				defer func() {
 					if r := recover(); r != nil {
-						for j := start; j < end; j++ {
+						for j := currentIdx; j < end; j++ {
 							var zero T
 							nextResults[j] = core.Result[T]{Value: zero, Err: core.NewPanicError(r)}
 						}
 					}
 				}()
 				for j := start; j < end; j++ {
+					currentIdx = j
 					if stage.SkipOnError && resultsList[j].Err != nil {
 						nextResults[j] = resultsList[j]
 						continue
@@ -653,15 +661,17 @@ func (p *Pipeline[T]) executeWithMetaNative(
 			wg.Add(1)
 			go func(start, end int) {
 				defer wg.Done()
+				currentIdx := start
 				defer func() {
 					if r := recover(); r != nil {
-						for j := start; j < end; j++ {
+						for j := currentIdx; j < end; j++ {
 							var zero T
 							stageResults[j] = core.Result[T]{Value: zero, Err: core.NewPanicError(r)}
 						}
 					}
 				}()
 				for j := start; j < end; j++ {
+					currentIdx = j
 					if stage.SkipOnError && elemErrs[j] != nil {
 						var zero T
 						stageResults[j] = core.Result[T]{Value: zero, Err: elemErrs[j]}

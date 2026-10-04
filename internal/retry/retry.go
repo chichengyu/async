@@ -229,6 +229,9 @@ func computeBackoff(attempt int, initialBackoff time.Duration, maxBackoff time.D
 	if initialBackoff <= 0 {
 		return 0
 	}
+	if attempt > 30 {
+		attempt = 30
+	}
 	mul := math.Pow(2, float64(attempt))
 	backoff := time.Duration(mul) * initialBackoff
 	if maxBackoff > 0 && backoff > maxBackoff {
