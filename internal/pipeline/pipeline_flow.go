@@ -68,6 +68,7 @@ type Flow[T any] struct {
 	addInFlight atomic.Int64
 	submitIdx   atomic.Int64
 	errCnt      int64
+	resultCnt   atomic.Int64 // 成功写入 resultCh 的结果总数
 }
 
 // FlowConfig Flow 配置。
@@ -83,6 +84,7 @@ type flowStage[T any] struct {
 	inputCh     chan *flowItem[T] // 接收上游数据（阶段 0 的 inputCh 由 Submit 写入）
 	outputCh    chan *flowItem[T] // 发送给下游（最终阶段为 nil，直接写 resultCh）
 	wg          sync.WaitGroup
+	active      atomic.Int64 // 当前正在处理元素的 worker 数量
 }
 
 // flowItem 流经管道各阶段的数据载体，以指针形式传递避免拷贝。
@@ -296,7 +298,9 @@ func (fl *Flow[T]) stageWorker(
 ) {
 	defer fs.wg.Done()
 	for item := range fs.inputCh {
+		fs.active.Add(1)
 		fl.processStageItem(fs, item, fn, stageName)
+		fs.active.Add(-1)
 	}
 }
 
@@ -334,6 +338,7 @@ func (fl *Flow[T]) processStageItem(
 		r := core.Result[T]{Value: item.value, Err: item.err, Occupied: true}
 		select {
 		case fl.resultCh <- r:
+			fl.resultCnt.Add(1)
 		case <-fl.ctx.Done():
 			// 管道关闭中，丢弃该结果
 		}
@@ -354,4 +359,60 @@ func (fl *Flow[T]) waitAddInFlight() {
 			time.Sleep(100 * time.Microsecond)
 		}
 	}
+}
+
+// ──────────────────────────── 统计 ────────────────────────────
+
+// FlowStageStats Flow 单个阶段的运行时统计。
+type FlowStageStats struct {
+	Name        string // 阶段名
+	Concurrency int    // 配置的 worker 总数
+	Active      int64  // 当前正在处理元素的 worker 数
+	InputBuf    int    // input channel 当前积压
+	OutputBuf   int    // output channel 当前积压（最终阶段为 0）
+}
+
+// FlowStats Flow 的完整运行时统计快照。
+type FlowStats struct {
+	Stages      []FlowStageStats // 各阶段统计（顺序与配置一致）
+	ResultBuf   int              // result channel 当前积压
+	TotalSubmit int64            // 历史总提交数
+	TotalError  int64            // 历史总错误数
+	TotalResult int64            // 成功写入 resultCh 的结果总数
+	Closed      bool             // 管道是否已关闭
+}
+
+// Stats 返回 Flow 的完整运行时统计快照。
+// 所有计数均为原子读取，可在任意 goroutine 中安全调用。
+//
+// 使用示例：
+//
+//	s := fl.Stats()
+//	for _, st := range s.Stages {
+//	    fmt.Printf("阶段 %s: 活跃=%d/%d, 输入积压=%d\n",
+//	        st.Name, st.Active, st.Concurrency, st.InputBuf)
+//	}
+func (fl *Flow[T]) Stats() FlowStats {
+	s := FlowStats{
+		ResultBuf:   len(fl.resultCh),
+		TotalSubmit: fl.submitIdx.Load(),
+		TotalError:  atomic.LoadInt64(&fl.errCnt),
+		TotalResult: fl.resultCnt.Load(),
+		Closed:      fl.closed.Load(),
+		Stages:      make([]FlowStageStats, len(fl.stages)),
+	}
+	for i, fs := range fl.stages {
+		ob := 0
+		if fs.outputCh != nil {
+			ob = len(fs.outputCh)
+		}
+		s.Stages[i] = FlowStageStats{
+			Name:        fs.name,
+			Concurrency: fs.concurrency,
+			Active:      fs.active.Load(),
+			InputBuf:    len(fs.inputCh),
+			OutputBuf:   ob,
+		}
+	}
+	return s
 }

@@ -2497,3 +2497,600 @@ func TestFlow_NewFlowDirect(t *testing.T) {
 		t.Fatalf("missing results: %v", expected)
 	}
 }
+
+// ============================================================
+// 十、Flow.Stats() 测试
+// ============================================================
+
+func TestFlowStats_Basic(t *testing.T) {
+	for _, tier := range test.UseTier {
+		t.Run(tier.Name, func(t *testing.T) {
+			test.SkipIfTooLarge(t, tier.Size)
+			ctx := context.Background()
+			fl := NewPipelineBuilder([]int{}).Context(ctx).
+				Stage("double", 4).
+				Flow().
+				Run(func(ctx context.Context, stage string, v int) (int, error) {
+					return v * 2, nil
+				})
+			defer fl.Close()
+
+			items := genItems(tier.Size)
+
+			var wg sync.WaitGroup
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for range fl.Results() {
+				}
+			}()
+
+			if _, err := fl.SubmitBatch(ctx, items); err != nil {
+				t.Fatalf("SubmitBatch: %v", err)
+			}
+
+			stats := fl.Stats()
+			if stats.TotalSubmit != int64(tier.Size) {
+				t.Fatalf("TotalSubmit: expected %d, got %d", tier.Size, stats.TotalSubmit)
+			}
+			if stats.TotalError != 0 {
+				t.Fatalf("TotalError: expected 0, got %d", stats.TotalError)
+			}
+			if stats.Closed {
+				t.Fatal("expected Closed=false before Close()")
+			}
+			if len(stats.Stages) != 1 {
+				t.Fatalf("expected 1 stage, got %d", len(stats.Stages))
+			}
+			if stats.Stages[0].Name != "double" {
+				t.Fatalf("stage name: expected 'double', got %s", stats.Stages[0].Name)
+			}
+			if stats.Stages[0].Concurrency != 4 {
+				t.Fatalf("stage concurrency: expected 4, got %d", stats.Stages[0].Concurrency)
+			}
+
+			remaining := fl.Close()
+			wg.Wait()
+			_ = remaining
+
+			statsAfter := fl.Stats()
+			if !statsAfter.Closed {
+				t.Fatal("expected Closed=true after Close()")
+			}
+			if statsAfter.TotalResult != int64(tier.Size) {
+				t.Fatalf("TotalResult: expected %d, got %d", tier.Size, statsAfter.TotalResult)
+			}
+		})
+	}
+}
+
+func TestFlowStats_MultiStage(t *testing.T) {
+	for _, tier := range test.UseTier {
+		t.Run(tier.Name, func(t *testing.T) {
+			test.SkipIfTooLarge(t, tier.Size)
+			ctx := context.Background()
+			fl := NewPipelineBuilder([]int{}).Context(ctx).
+				Stage("x2", 4).Stage("+10", 2).Stage("final", 4).
+				Flow().
+				Run(func(ctx context.Context, stage string, v int) (int, error) {
+					switch stage {
+					case "x2":
+						return v * 2, nil
+					case "+10":
+						return v + 10, nil
+					case "final":
+						return v, nil
+					}
+					return v, nil
+				})
+			defer fl.Close()
+
+			var wg sync.WaitGroup
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for range fl.Results() {
+				}
+			}()
+
+			items := genItems(tier.Size)
+			if _, err := fl.SubmitBatch(ctx, items); err != nil {
+				t.Fatalf("SubmitBatch: %v", err)
+			}
+
+			stats := fl.Stats()
+			if stats.TotalSubmit != int64(tier.Size) {
+				t.Fatalf("TotalSubmit: expected %d, got %d", tier.Size, stats.TotalSubmit)
+			}
+			if len(stats.Stages) != 3 {
+				t.Fatalf("expected 3 stages, got %d", len(stats.Stages))
+			}
+			stageNames := []string{"x2", "+10", "final"}
+			for i, name := range stageNames {
+				if stats.Stages[i].Name != name {
+					t.Fatalf("stage[%d] name: expected '%s', got '%s'", i, name, stats.Stages[i].Name)
+				}
+			}
+
+			remaining := fl.Close()
+			wg.Wait()
+			_ = remaining
+
+			statsAfter := fl.Stats()
+			if !statsAfter.Closed {
+				t.Fatal("expected Closed=true after Close()")
+			}
+			if statsAfter.TotalResult != int64(tier.Size) {
+				t.Fatalf("TotalResult: expected %d, got %d", tier.Size, statsAfter.TotalResult)
+			}
+			if statsAfter.TotalError != 0 {
+				t.Fatalf("TotalError: expected 0, got %d", statsAfter.TotalError)
+			}
+		})
+	}
+}
+
+func TestFlowStats_WithError(t *testing.T) {
+	for _, tier := range test.UseTier {
+		t.Run(tier.Name, func(t *testing.T) {
+			test.SkipIfTooLarge(t, tier.Size)
+			ctx := context.Background()
+			fl := NewPipelineBuilder([]int{}).Context(ctx).
+				Stage("half_err", 4).
+				Flow().
+				Run(func(ctx context.Context, stage string, v int) (int, error) {
+					if v%2 == 0 {
+						return 0, errors.New("even error")
+					}
+					return v, nil
+				})
+			defer fl.Close()
+
+			var wg sync.WaitGroup
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for range fl.Results() {
+				}
+			}()
+
+			items := genItems(tier.Size)
+			if _, err := fl.SubmitBatch(ctx, items); err != nil {
+				t.Fatalf("SubmitBatch: %v", err)
+			}
+
+			remaining := fl.Close()
+			wg.Wait()
+
+			stats := fl.Stats()
+			if stats.TotalSubmit != int64(tier.Size) {
+				t.Fatalf("TotalSubmit: expected %d, got %d", tier.Size, stats.TotalSubmit)
+			}
+			if stats.TotalError == 0 {
+				t.Fatal("expected TotalError > 0 for half-error scenario")
+			}
+			expectedErrors := int64((tier.Size + 1) / 2)
+			if stats.TotalError != expectedErrors {
+				t.Fatalf("TotalError: expected %d, got %d", expectedErrors, stats.TotalError)
+			}
+			if !stats.Closed {
+				t.Fatal("expected Closed=true after Close()")
+			}
+			_ = remaining
+		})
+	}
+}
+
+func TestFlowStats_ActiveCount(t *testing.T) {
+	ctx := context.Background()
+
+	fl := NewPipelineBuilder([]int{}).Context(ctx).
+		Stage("slow", 4).
+		Flow().
+		Run(func(ctx context.Context, stage string, v int) (int, error) {
+			time.Sleep(50 * time.Millisecond)
+			return v, nil
+		})
+	defer fl.Close()
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for range fl.Results() {
+		}
+	}()
+
+	n := 100
+	for i := 0; i < n; i++ {
+		if _, err := fl.Submit(ctx, i); err != nil {
+			t.Fatalf("Submit %d: %v", i, err)
+		}
+	}
+
+	time.Sleep(20 * time.Millisecond)
+	stats := fl.Stats()
+	if stats.Stages[0].Active <= 0 {
+		t.Fatalf("expected Active > 0 during processing, got %d", stats.Stages[0].Active)
+	}
+	if stats.Stages[0].InputBuf <= 0 {
+		t.Fatalf("expected InputBuf > 0 during processing, got %d", stats.Stages[0].InputBuf)
+	}
+
+	remaining := fl.Close()
+	wg.Wait()
+	_ = remaining
+
+	statsAfter := fl.Stats()
+	if statsAfter.Stages[0].Active != 0 {
+		t.Fatalf("expected Active=0 after Close, got %d", statsAfter.Stages[0].Active)
+	}
+	if statsAfter.Stages[0].InputBuf != 0 {
+		t.Fatalf("expected InputBuf=0 after Close, got %d", statsAfter.Stages[0].InputBuf)
+	}
+}
+
+func TestFlowStats_ConcurrentAccess(t *testing.T) {
+	ctx := context.Background()
+	fl := NewPipelineBuilder([]int{}).Context(ctx).
+		Stage("echo", 8).
+		Flow().
+		Run(func(ctx context.Context, stage string, v int) (int, error) {
+			return v, nil
+		})
+	defer fl.Close()
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for range fl.Results() {
+		}
+	}()
+
+	n := 2000
+	for i := 0; i < n; i++ {
+		if _, err := fl.Submit(ctx, i); err != nil {
+			t.Fatalf("Submit %d: %v", i, err)
+		}
+	}
+
+	var statsWg sync.WaitGroup
+	statsWg.Add(4)
+	for i := 0; i < 4; i++ {
+		go func() {
+			defer statsWg.Done()
+			for j := 0; j < 100; j++ {
+				s := fl.Stats()
+				_ = s.Stages[0].Active
+				_ = s.Stages[0].InputBuf
+				_ = s.TotalSubmit
+				_ = s.TotalError
+			}
+		}()
+	}
+	statsWg.Wait()
+
+	remaining := fl.Close()
+	wg.Wait()
+
+	stats := fl.Stats()
+	if stats.TotalSubmit != int64(n) {
+		t.Fatalf("TotalSubmit: expected %d, got %d", n, stats.TotalSubmit)
+	}
+	if stats.TotalResult != int64(n) {
+		t.Fatalf("TotalResult: expected %d, got %d", n, stats.TotalResult)
+	}
+	_ = remaining
+}
+
+func TestFlowStats_ResultBuf(t *testing.T) {
+	for _, tier := range test.UseTier {
+		t.Run(tier.Name, func(t *testing.T) {
+			test.SkipIfTooLarge(t, tier.Size)
+			ctx := context.Background()
+			fl := NewPipelineBuilder([]int{}).Context(ctx).
+				Stage("identity", 4).
+				Flow().
+				BufSize(256).
+				Run(func(ctx context.Context, stage string, v int) (int, error) {
+					return v, nil
+				})
+			defer fl.Close()
+
+			submitN := tier.Size
+			if submitN > 512 {
+				submitN = 512
+			}
+			items := genItems(submitN)
+			if _, err := fl.SubmitBatch(ctx, items); err != nil {
+				t.Fatalf("SubmitBatch: %v", err)
+			}
+
+			time.Sleep(10 * time.Millisecond)
+			stats := fl.Stats()
+			if stats.ResultBuf <= 0 {
+				t.Fatalf("expected ResultBuf > 0 with no consumer, got %d", stats.ResultBuf)
+			}
+
+			var wg sync.WaitGroup
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for range fl.Results() {
+				}
+			}()
+
+			remaining := fl.Close()
+			wg.Wait()
+			_ = remaining
+
+			statsAfter := fl.Stats()
+			if statsAfter.ResultBuf != 0 {
+				t.Fatalf("expected ResultBuf=0 after Close and drain, got %d", statsAfter.ResultBuf)
+			}
+		})
+	}
+}
+
+func TestFlowStats_OutputBuf(t *testing.T) {
+	ctx := context.Background()
+	fl := NewPipelineBuilder([]int{}).Context(ctx).
+		Stage("producer", 8).
+		Stage("consumer", 4).
+		Flow().
+		Run(func(ctx context.Context, stage string, v int) (int, error) {
+			switch stage {
+			case "producer":
+				return v * 2, nil
+			case "consumer":
+				time.Sleep(200 * time.Millisecond)
+				return v, nil
+			}
+			return v, nil
+		})
+	defer fl.Close()
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for range fl.Results() {
+		}
+	}()
+
+	n := 200
+	for i := 0; i < n; i++ {
+		if _, err := fl.Submit(ctx, i); err != nil {
+			t.Fatalf("Submit %d: %v", i, err)
+		}
+	}
+
+	time.Sleep(10 * time.Millisecond)
+	s := fl.Stats()
+	if s.Stages[0].OutputBuf <= 0 {
+		t.Fatalf("producer is non-final with slow consumer, expected OutputBuf > 0, got %d", s.Stages[0].OutputBuf)
+	}
+	if s.Stages[1].OutputBuf != 0 {
+		t.Fatalf("consumer is final stage, expected OutputBuf=0, got %d", s.Stages[1].OutputBuf)
+	}
+
+	remaining := fl.Close()
+	wg.Wait()
+	_ = remaining
+
+	sAfter := fl.Stats()
+	if sAfter.Stages[0].OutputBuf != 0 {
+		t.Fatalf("expected OutputBuf=0 after Close, got stage0=%d", sAfter.Stages[0].OutputBuf)
+	}
+	if sAfter.Stages[1].OutputBuf != 0 {
+		t.Fatalf("expected OutputBuf=0 after Close, got stage1=%d", sAfter.Stages[1].OutputBuf)
+	}
+}
+
+func TestFlowStats_TotalResult_WithError(t *testing.T) {
+	for _, tier := range test.UseTier {
+		t.Run(tier.Name, func(t *testing.T) {
+			test.SkipIfTooLarge(t, tier.Size)
+			ctx := context.Background()
+			fl := NewPipelineBuilder([]int{}).Context(ctx).
+				Stage("half_err", 4).
+				Flow().
+				Run(func(ctx context.Context, stage string, v int) (int, error) {
+					if v%2 == 0 {
+						return 0, errors.New("even error")
+					}
+					return v, nil
+				})
+			defer fl.Close()
+
+			var wg sync.WaitGroup
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for range fl.Results() {
+				}
+			}()
+
+			items := genItems(tier.Size)
+			if _, err := fl.SubmitBatch(ctx, items); err != nil {
+				t.Fatalf("SubmitBatch: %v", err)
+			}
+
+			remaining := fl.Close()
+			wg.Wait()
+
+			s := fl.Stats()
+			if s.TotalSubmit != int64(tier.Size) {
+				t.Fatalf("TotalSubmit: expected %d, got %d", tier.Size, s.TotalSubmit)
+			}
+			expectedErrors := int64((tier.Size + 1) / 2)
+			if s.TotalError != expectedErrors {
+				t.Fatalf("TotalError: expected %d, got %d", expectedErrors, s.TotalError)
+			}
+			if s.TotalResult != int64(tier.Size) {
+				t.Fatalf("TotalResult: error items still reach resultCh, expected %d, got %d",
+					tier.Size, s.TotalResult)
+			}
+			_ = remaining
+		})
+	}
+}
+
+func TestFlowStats_MultiStagePerStage(t *testing.T) {
+	for _, tier := range test.UseTier {
+		t.Run(tier.Name, func(t *testing.T) {
+			test.SkipIfTooLarge(t, tier.Size)
+			ctx := context.Background()
+			fl := NewPipelineBuilder([]int{}).Context(ctx).
+				Stage("slow", 3).
+				Stage("mid", 4).
+				Stage("final", 2).
+				Flow().
+				Run(func(ctx context.Context, stage string, v int) (int, error) {
+					time.Sleep(10 * time.Millisecond)
+					switch stage {
+					case "slow":
+						return v + 1, nil
+					case "mid":
+						return v * 10, nil
+					case "final":
+						return v - 1, nil
+					}
+					return v, nil
+				})
+			defer fl.Close()
+
+			var wg sync.WaitGroup
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for range fl.Results() {
+				}
+			}()
+
+			submitN := tier.Size
+			if submitN > 300 {
+				submitN = 300
+			}
+			items := genItems(submitN)
+			if _, err := fl.SubmitBatch(ctx, items); err != nil {
+				t.Fatalf("SubmitBatch: %v", err)
+			}
+
+			time.Sleep(15 * time.Millisecond)
+			s := fl.Stats()
+			if len(s.Stages) != 3 {
+				t.Fatalf("expected 3 stages, got %d", len(s.Stages))
+			}
+			expectedConcurrencies := []int{3, 4, 2}
+			expectedNames := []string{"slow", "mid", "final"}
+			for i := 0; i < 3; i++ {
+				if s.Stages[i].Name != expectedNames[i] {
+					t.Fatalf("stage[%d].Name: expected '%s', got '%s'", i, expectedNames[i], s.Stages[i].Name)
+				}
+				if s.Stages[i].Concurrency != expectedConcurrencies[i] {
+					t.Fatalf("stage[%d].Concurrency: expected %d, got %d", i, expectedConcurrencies[i], s.Stages[i].Concurrency)
+				}
+			}
+			if s.Stages[0].Active <= 0 {
+				t.Fatalf("stage[0] is bottleneck, expected Active > 0, got %d", s.Stages[0].Active)
+			}
+			if s.Stages[0].InputBuf <= 0 {
+				t.Fatalf("stage[0].InputBuf: expected >0 during processing, got %d", s.Stages[0].InputBuf)
+			}
+			t.Logf("stage0 OutputBuf=%d, stage1 OutputBuf=%d", s.Stages[0].OutputBuf, s.Stages[1].OutputBuf)
+			if s.Stages[2].OutputBuf != 0 {
+				t.Fatalf("stage[2] is final, OutputBuf must be 0, got %d", s.Stages[2].OutputBuf)
+			}
+
+			remaining := fl.Close()
+			wg.Wait()
+
+			sAfter := fl.Stats()
+			if sAfter.TotalSubmit != int64(submitN) {
+				t.Fatalf("TotalSubmit: expected %d, got %d", submitN, sAfter.TotalSubmit)
+			}
+			if sAfter.TotalResult != int64(submitN) {
+				t.Fatalf("TotalResult: expected %d, got %d", submitN, sAfter.TotalResult)
+			}
+			if sAfter.TotalError != 0 {
+				t.Fatalf("TotalError: expected 0, got %d", sAfter.TotalError)
+			}
+			for i := 0; i < 3; i++ {
+				if sAfter.Stages[i].Active != 0 {
+					t.Fatalf("stage[%d].Active after Close: expected 0, got %d", i, sAfter.Stages[i].Active)
+				}
+				if sAfter.Stages[i].InputBuf != 0 {
+					t.Fatalf("stage[%d].InputBuf after Close: expected 0, got %d", i, sAfter.Stages[i].InputBuf)
+				}
+				if sAfter.Stages[i].OutputBuf != 0 {
+					t.Fatalf("stage[%d].OutputBuf after Close: expected 0, got %d", i, sAfter.Stages[i].OutputBuf)
+				}
+			}
+			_ = remaining
+		})
+	}
+}
+
+func TestFlowStats_StatsBeforeConsumer(t *testing.T) {
+	for _, tier := range test.UseTier {
+		t.Run(tier.Name, func(t *testing.T) {
+			test.SkipIfTooLarge(t, tier.Size)
+			ctx := context.Background()
+			fl := NewPipelineBuilder([]int{}).Context(ctx).
+				Stage("proc", 4).
+				Flow().
+				BufSize(256).
+				Run(func(ctx context.Context, stage string, v int) (int, error) {
+					return v * 2, nil
+				})
+			defer fl.Close()
+
+			submitN := tier.Size
+			if submitN > 512 {
+				submitN = 512
+			}
+			items := genItems(submitN)
+			if _, err := fl.SubmitBatch(ctx, items); err != nil {
+				t.Fatalf("SubmitBatch: %v", err)
+			}
+
+			time.Sleep(20 * time.Millisecond)
+			s := fl.Stats()
+			if s.TotalSubmit != int64(submitN) {
+				t.Fatalf("TotalSubmit: expected %d before consumer, got %d", submitN, s.TotalSubmit)
+			}
+			if s.TotalError != 0 {
+				t.Fatalf("TotalError: expected 0 before consumer, got %d", s.TotalError)
+			}
+			if s.Stages[0].Name != "proc" {
+				t.Fatalf("Stage name: expected 'proc', got %s", s.Stages[0].Name)
+			}
+			if s.Stages[0].Concurrency != 4 {
+				t.Fatalf("Concurrency: expected 4, got %d", s.Stages[0].Concurrency)
+			}
+			if s.ResultBuf <= 0 {
+				t.Fatalf("ResultBuf: expected >0 without consumer drain, got %d", s.ResultBuf)
+			}
+			if s.Stages[0].OutputBuf != 0 {
+				t.Fatalf("single stage is final, OutputBuf must be 0, got %d", s.Stages[0].OutputBuf)
+			}
+			if s.Closed {
+				t.Fatal("expected Closed=false before Close")
+			}
+
+			var wg sync.WaitGroup
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for range fl.Results() {
+				}
+			}()
+
+			remaining := fl.Close()
+			wg.Wait()
+			_ = remaining
+		})
+	}
+}

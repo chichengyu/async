@@ -814,6 +814,12 @@ type Flow[T any] = pipeline.Flow[T]
 // FlowConfig Flow 的配置。
 type FlowConfig[T any] = pipeline.FlowConfig[T]
 
+// FlowStats Flow 的运行时统计快照。
+type FlowStats = pipeline.FlowStats
+
+// FlowStageStats Flow 单个阶段的运行时统计。
+type FlowStageStats = pipeline.FlowStageStats
+
 // NewFlow 创建 Flow。
 func NewFlow[T any](
 	ctx context.Context,
