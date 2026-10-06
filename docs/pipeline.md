@@ -734,10 +734,13 @@ defer fl.Close()
 
 | 方法 | 说明 |
 |------|------|
-| `.Submit(ctx, item)` | 提交单个元素 |
-| `.SubmitBatch(ctx, items)` | 批量提交 |
+| `.Submit(ctx, item)` | 提交单个元素，返回提交序号和错误 `(int, error)` |
+| `.SubmitBatch(ctx, items)` | 批量提交，返回成功数量和首个错误 `(int, error)` |
 | `.Results()` | 返回结果 channel `<-chan Result[T]` |
-| `.Close()` | 优雅关闭：提交结束信号 → 等待所有 worker 完成 → 关闭结果 channel |
+| `.SubmitCount()` | 返回历史总提交量 `int64` |
+| `.ErrCount()` | 返回历史总错误数 `int64` |
+| `.Stats()` | 返回运行时监控快照 `FlowStats`（含各阶段详情） |
+| `.Close()` | 优雅关闭，返回 resultCh 中未被读取的残留结果 `[]Result[T]`（幂等） |
 
 ### 完整示例：常驻数据管道
 
@@ -778,6 +781,73 @@ for r := range fl.Results() {
     saveToDB(r.Value)
 }
 ```
+
+### Flow 运行时监控：Stats()
+
+`Stats()` 返回 `FlowStats` 运行时快照，用于监控长期运行管道的健康状况。所有读取均为无锁快照，可在任意 goroutine 中并发调用。
+
+#### FlowStats 结构体
+
+```go
+type FlowStats struct {
+    Stages      []FlowStageStats // 各阶段运行状态详情
+    ResultBuf   int              // 结果 channel 当前积压（len(resultCh)）
+    TotalSubmit int64            // 历史总提交数
+    TotalError  int64            // 历史总错误数（含 panic 恢复）
+    TotalResult int64            // 到达 resultCh 的结果总数
+    Closed      bool             // 管道是否已关闭
+}
+```
+
+#### FlowStageStats 结构体
+
+```go
+type FlowStageStats struct {
+    Name        string // 阶段名称
+    Concurrency int    // 配置的 worker 总数
+    Active      int64  // 当前正在处理 fn 的 worker 数
+    InputBuf    int    // input channel 当前积压
+    OutputBuf   int    // output channel 当前积压（最终阶段为 0）
+}
+```
+
+#### 使用示例
+
+```go
+fl := async.Pipeline[int]().
+    Stage("parse", 4).Stage("enrich", 8).
+    BufSize(256).
+    Flow().
+    Run(handler)
+defer fl.Close()
+
+// 监控 goroutine
+go func() {
+    ticker := time.NewTicker(5 * time.Second)
+    defer ticker.Stop()
+    for range ticker.C {
+        s := fl.Stats()
+        log.Printf("管道状态: 提交=%d 错误=%d 结果=%d 关闭=%v",
+            s.TotalSubmit, s.TotalError, s.TotalResult, s.Closed)
+        for _, st := range s.Stages {
+            log.Printf("  阶段[%s]: 活跃=%d/%d 输入积压=%d 输出积压=%d",
+                st.Name, st.Active, st.Concurrency, st.InputBuf, st.OutputBuf)
+        }
+    }
+}()
+
+// 正常提交 + 消费...
+```
+
+#### 监控指标解读
+
+| 指标 | 正常范围 | 异常信号 |
+|------|---------|---------|
+| `Active == Concurrency` | 正常工作 | 持续满载可能需扩容 |
+| `InputBuf 持续增长` | 低或 0 | 上游生产 > 下游消费，存在瓶颈 |
+| `OutputBuf 持续增长` | 低或 0 | 下游阶段处理慢，存在瓶颈 |
+| `TotalError / TotalSubmit > 阈值` | 接近 0 | 业务异常率过高 |
+| `ResultBuf 持续增长` | 低 | 结果消费端跟不上，存在 OOM 风险 |
 
 ---
 
@@ -960,7 +1030,7 @@ results, err := async.Pipeline[Data](items).Context(ctx).
 - **❌ 所有阶段都用相同并发度**：不同阶段不同 IO/CPU 特征，应独立设置
 - **❌ Flow 模式未设 BufSize**：默认缓冲 256 可能不够，高吞吐需增大
 - **❌ 大结果集未设 MaxResults**：默认 100K 可能导致 OOM，大结果集设为 0（无限）需谨慎
-- **❌ 长期运行的 Flow 未监控**：建议定期获取 `Flow.SubmitCount()` / `Flow.ErrCount()` 监控提交量和错误数
+- **❌ 长期运行的 Flow 未监控**：建议定期调用 `Flow.Stats()` 获取运行时快照，监控各阶段活跃 worker 数、channel 积压、错误率等指标。`SubmitCount()` / `ErrCount()` 可作为轻量替代
 
 ---
 
