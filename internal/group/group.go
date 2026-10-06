@@ -1095,6 +1095,7 @@ func (g *Group[T]) Reset() (*Group[T], error) {
 		return g, fmt.Errorf("async: Group.Reset called with %d active tasks, wait for all tasks to complete first", g.active.Load())
 	}
 	g.results = nil
+	g.freeIndices = nil
 	g.cancels = nil
 	g.cancel = nil
 	g.failFast.Store(false)

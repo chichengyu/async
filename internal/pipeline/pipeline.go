@@ -382,7 +382,8 @@ func ExecutePipe[T any](
 		resultsList = nextResults
 	}
 
-	// 最终阶段：使用 Group + ResultCallback 流式消费（异步提交，防止死锁）
+	// 最终阶段：Group 并发处理，Wait 收集完成后串行写入 outCh。
+	// 不使用 ResultCallback 阻塞发送，切断 Worker→Channel→Worker 循环依赖，根治死锁。
 	finalStage := stages[len(stages)-1]
 	finalConcurrency := finalStage.Concurrency
 	if finalConcurrency <= 0 {
@@ -405,9 +406,6 @@ func ExecutePipe[T any](
 	outCh := make(chan core.Result[T], bufSize)
 
 	g := group.NewGroup[T](finalConcurrency)
-	g.WithResultCallback(func(r core.Result[T]) {
-		outCh <- r
-	})
 
 	go func() {
 		for _, r := range resultsList {
@@ -424,7 +422,10 @@ func ExecutePipe[T any](
 				return fn(ctx, stageName, item)
 			})
 		}
-		g.Wait()
+		results := g.Wait()
+		for _, r := range results {
+			outCh <- r
+		}
 		close(outCh)
 	}()
 	return outCh
