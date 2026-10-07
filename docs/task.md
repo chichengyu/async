@@ -37,6 +37,7 @@ Task 提供单个异步任务的执行能力。通过 `Task[T]()` / `TaskVoid()`
 - [默认值体系](#默认值体系)
 - [生产环境使用建议](#生产环境使用建议)
 - [自定义日志](#自定义日志)
+- [Mu 并发安全切片](#mu-并发安全切片)
 
 ---
 
@@ -556,4 +557,68 @@ async.Task[int]().
     Logger(myLogger).
     DefaultLogger().     // 全局恢复
     Go(fn)
+```
+
+---
+
+## Mu 并发安全切片
+
+`async.Mu[T]` 是一个轻量级泛型并发安全切片容器，适用于多个 goroutine 并发收集结果的场景。内部使用 `sync.Mutex` 保护底层切片，提供 `Append`（追加）和 `Snapshot`（快照）两个核心方法。
+
+> **⚠️ Mu 不是协程池/任务组的替代品**
+>
+> `Mu[T]` 只负责安全地并发追加和读取数据，不管理 goroutine 生命周期。无法设置并发度、超时、FailFast 等参数。需要这些能力请使用 Pool 或 Group。
+
+### 创建
+
+```go
+var mu async.Mu[string]     // 零值即可使用，无需初始化
+var intMu async.Mu[int]
+```
+
+### Append
+
+线程安全地追加元素。参数 `add` 是一个工厂函数，在锁外执行以保证并发性能，`append` 操作在锁内执行保证线程安全。
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `add` | `func() T` | 生成要追加元素的工厂函数（在锁外执行） |
+
+```go
+var mu async.Mu[int]
+
+mu.Append(func() int { return 42 })
+mu.Append(func() int { return computeSomething() })
+```
+
+### Snapshot
+
+返回当前所有元素的副本，线程安全。每次调用都会分配新切片，原数据不受后续 `Append` 影响。
+
+```go
+items := mu.Snapshot()
+for _, item := range items {
+    fmt.Println(item)
+}
+```
+
+### 完整示例
+
+```go
+var mu async.Mu[string]
+var wg sync.WaitGroup
+
+for i := 0; i < 100; i++ {
+    wg.Add(1)
+    go func(n int) {
+        defer wg.Done()
+        mu.Append(func() string {
+            return fmt.Sprintf("result-%d", n)
+        })
+    }(i)
+}
+
+wg.Wait()
+all := mu.Snapshot() // 获取所有结果的副本
+fmt.Printf("收集到 %d 条结果\n", len(all))
 ```
