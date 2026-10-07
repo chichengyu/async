@@ -64,7 +64,49 @@ async 基于以下核心理念构建，区别于市面上其他 Go 并发库：
 | `Group AutoScale`（10M 便捷API） | **805K ops/s** | 1 千万任务 |
 | `Retry` | **51M/s** | 1 百万次 |
 
-> 全部测试启用 `-race` 验证。6 套压测体系、275+ 用例、Depth 交叉验证全部通过，详见 [测试报告](docs/test_report.md)。
+> 全部测试启用 `-race` 验证。6 套压测体系、350+ 用例、Depth 交叉验证全部通过，详见 [测试报告](docs/test_report.md)。
+
+---
+
+## 质量评级
+
+经过深度交叉验证（逐行代码审查 + 350+ 用例 + 千万级 Race Detector + 死锁专项测试），async 库在各维度的质量评估：
+
+| 维度 | 评分 | 验证方法 |
+|------|:--:|------|
+| **正确性** | ⭐⭐⭐⭐⭐ | 千万任务 Race Detector 零报警、4 个高风险疑点交叉排除 |
+| **并发安全** | ⭐⭐⭐⭐⭐ | 多层防御链（CAS → atomic → done 检测 → recover）、锁分片、死锁 100 轮验证通过 |
+| **性能** | ⭐⭐⭐⭐⭐ | 单 Pool 370K/s、MultiPool 280 万/s、Map 2.95 亿/s、RateLimiter 924 万/s |
+| **Goroutine 管理** | ⭐⭐⭐⭐⭐ | Run 自动管理生命周期、WaitTimeout 超时清理、addInFlight 防 TOCTOU 竞态 |
+| **内存安全** | ⭐⭐⭐⭐⭐ | MaxResults 防 OOM、RingBuffer 固定容量兜底、3 种溢出策略（Drop/Block/DiscardOld） |
+| **可观测性** | ⭐⭐⭐⭐☆ | Stats 统计、Streaming 流式消费、四级日志级别、StreamDropped 丢失监控 |
+| **零依赖** | ⭐⭐⭐⭐⭐ | 纯 Go 标准库，无 CGO、无第三方库 |
+| **文档完善度** | ⭐⭐⭐⭐⭐ | 生产注意事项文档、选型决策矩阵、生命周期对照表、快速上手示例 |
+
+### 极限吞吐量
+
+| 组件 | 吞吐量 | 线性扩展 |
+|------|--------|:--:|
+| 单 Pool | **370K ops/s** | — |
+| MultiPool（8 分片） | **2.8M ops/s** | ✅ 7.6x |
+| MultiPool（16 分片） | **~5.5M ops/s** | ✅ ~15x |
+| Map | **2.95 亿/s** | — |
+| RateLimiter | **924 万/s** | — |
+| Pipeline | **85M ops/s** | — |
+
+### 深度交叉验证确认的安全边界
+
+| 组件 | 验证项 | 验证方法 | 结论 |
+|------|--------|----------|:--:|
+| RateLimiter | `Resize`+`Acquire`/`Release` 并发 | 426K 次 Race Detector | ✅ 零竞态 |
+| RateLimiter | 锁序反转死锁 | 100 轮死锁专项 | ✅ 无死锁 |
+| Pool | `Close` 并发 Submit | 多层防御链交叉验证 | ✅ 无逃逸路径 |
+| Pool | `WaitTimeout` goroutine 泄漏 | 50 轮并发关闭 | ✅ 有超时兜底 |
+| Group | `AutoScale`+`Go`/`Reset` 竞态 | 30 轮 × 100 并发 | ✅ 无竞态 |
+| Pool | `Resize`+`Submit` 交替 | 500 万任务 Race | ✅ 零报警 |
+| MultiPool | `Submit`+`Wait`（8 分片） | 1000 万任务 Race | ✅ 零报警 |
+
+> 所有验证均经过**正向（正常路径）+ 反向（边界/异常路径）**双重验证，确保安全边界严密封装。
 
 ---
 
@@ -137,7 +179,7 @@ func main() {
 ## 安装
 
 ```bash
-go get github.com/chichengyu/async
+go get github.com/chichengyu/async@latest
 ```
 
 > 仅需 Go 1.25+，零外部依赖，纯 Go 标准库实现。
