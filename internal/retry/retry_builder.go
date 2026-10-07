@@ -690,10 +690,12 @@ func (c *RetryChain[T]) executeCore(
 			}
 			backoff := computeBackoff(attempt, initialBackoff, maxBackoff)
 			if backoff > 0 {
+				timer := time.NewTimer(backoff)
+				defer timer.Stop()
 				select {
 				case <-c.ctx.Done():
 					return zero, c.ctx.Err()
-				case <-time.After(backoff):
+				case <-timer.C:
 				}
 			}
 			continue
@@ -738,10 +740,12 @@ func (c *RetryChain[T]) executeCore(
 		}
 		backoff := computeBackoff(attempt, initialBackoff, maxBackoff)
 		if backoff > 0 {
+			timer := time.NewTimer(backoff)
+			defer timer.Stop()
 			select {
 			case <-c.ctx.Done():
 				return zero, c.ctx.Err()
-			case <-time.After(backoff):
+			case <-timer.C:
 			}
 		}
 	}

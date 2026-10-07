@@ -1369,9 +1369,11 @@ func (p *Pool[T]) ResizeAndWaitTimeout(newSize int, timeout time.Duration) {
 		p.wg.Wait()
 		close(done)
 	}()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
 	select {
 	case <-done:
-	case <-time.After(timeout):
+	case <-timer.C:
 	}
 }
 
@@ -1722,6 +1724,8 @@ func (p *Pool[T]) CloseAndWaitTimeout(timeout time.Duration) (ok bool, workerDon
 		close(done)
 	}()
 
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
 	select {
 	case <-done:
 		p.drainOrphanTasks()
@@ -1737,7 +1741,7 @@ func (p *Pool[T]) CloseAndWaitTimeout(timeout time.Duration) (ok bool, workerDon
 		p.wg.Wait()
 		p.drainStreaming()
 		return true, nil
-	case <-time.After(timeout):
+	case <-timer.C:
 		go func() {
 			<-done
 			p.drainOrphanTasks()

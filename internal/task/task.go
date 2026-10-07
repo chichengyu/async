@@ -286,13 +286,15 @@ func (ar *AsyncResult[T]) WaitTimeout(timeout time.Duration) (T, error, bool) {
 
 	// 步骤 4：阻塞等待结果或超时
 	go ar.getResult()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
 	select {
 	case <-ar.ready:
 		ar.mu.Lock()
 		r := ar.result
 		ar.mu.Unlock()
 		return r.Value, r.Err, true
-	case <-time.After(timeout):
+	case <-timer.C:
 		var zero T
 		return zero, core.ErrTimeout, false
 	}
