@@ -615,3 +615,53 @@ func Must[T any](v T, err error) T
 - **❌ `SetDefaultSubmitTimeout` 与 Pool Submit 超时不匹配**：`SubmitTimeout` 是**每次 Submit 调用的超时上限**，而 `SetDefaultTimeout` 是**每个任务的执行超时上限**。两者独立，不要混淆。
 
 - **❌ `MergeCancel` 顺序错误导致资源泄漏**：`MergeCancel(old, new)` 返回的函数先调用 `old()` 再调用 `new()`。如果 `new` 依赖 `old` 的资源（如 span.Finish 依赖 ctx），先 cancel old 会导致 new 执行异常。
+
+---
+
+## 生产推荐配置
+
+```go
+package main
+
+import (
+    "time"
+    "github.com/chichengyu/async"
+)
+
+func init() {
+    // ========== 必须设置 ==========
+
+    // 1. 默认任务超时：防止单个任务永久阻塞 worker
+    async.SetDefaultTimeout(30 * time.Second)
+
+    // 2. 提交超时：worker 满时最多等多久，防止 Submit 无限阻塞
+    async.SetSubmitTimeout(5 * time.Second)
+
+    // 3. 最大结果数：防止结果切片无界增长导致 OOM
+    async.SetMaxResults(100_000)
+
+    // ========== 推荐设置 ==========
+
+    // 4. 清理超时：WaitTimeout 后残留 goroutine 的最大存活时间
+    async.SetMaxCleanupDuration(30 * time.Minute)
+
+    // 5. 失败日志级别：建议生产环境用 Warn，仅打印失败任务
+    async.SetTaskFailLogLevel(async.LogLevelWarn)
+
+    // 6. 设置并发度（根据部署环境）
+    //    默认值 = NumCPU × 2，对于 8 核以上的容器环境已足够
+    //    如果想显式控制：
+    // async.SetDefaultWorkerSize(16)
+
+    // ========== 可选设置 ==========
+
+    // 7. TraceID 对接：如果使用 gin/go-zero/tRPC 等框架
+    // async.SetTraceIDKey("X-Trace-Id")        // 字符串 key
+    // async.SetTraceIDKey(trpc.TraceIDKey)     // tRPC 框架
+
+    // 8. 自定义日志注入
+    // async.SetLogger(myLogger)
+}
+```
+
+> **⚠️ 以上配置建议在 `init()` 中一次性设置**，所有 `Set*` 函数基于 `sync/atomic` 实现，线程安全但运行时修改可能导致瞬时不一致。
