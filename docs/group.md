@@ -1136,6 +1136,35 @@ g := async.Group[int]().Context(ctx).
     Pool(myPool).Build()
 defer g.Close() // Group Close 不会 Close 外部 Pool
 // 外部 Pool 需自行关闭：defer myPool.Close()
+
+// ========== GroupVoid（无返回值）：仅关心错误 ==========
+async.GroupVoid().Context(ctx).
+    Worker(async.IO()).
+    Timeout(30 * time.Second).
+    FailFast().
+    Run(func(ctx context.Context, nr *group.NoResult) error {
+        for _, record := range records {
+            nr.Go(ctx, func(ctx context.Context) error {
+                return db.Insert(ctx, record)
+            })
+        }
+        return nil
+    })
+
+// ========== MultiGroup（8 分片）：水平扩展避免单 Group 锁竞争 ==========
+async.GroupMulti[int]().Context(ctx).
+    Shards(8).                              // 8 个独立 Group 分片
+    Worker(1).                              // 每分片 1 worker（分片本身提供并行度）
+    Timeout(30 * time.Second).
+    FailFast().
+    Run(func(ctx context.Context, mg *group.MultiGroup[int]) error {
+        for _, user := range users {
+            mg.GoKeyed(hash(user.ID), ctx, func(ctx context.Context) (int, error) {
+                return processUser(ctx, user)
+            })
+        }
+        return nil
+    })
 ```
 
 ### 8. 错误处理最佳实践

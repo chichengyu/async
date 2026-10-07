@@ -1006,3 +1006,80 @@ result := async.NewMapChain[string, int](ctx, data).
         return batch[0].Key, nil
     })
 ```
+
+---
+
+### Map 容器 & MapChain 生产推荐配置
+
+```go
+// ========== MapChain 并发映射：标准 K-V 并行处理 ==========
+data := map[string]int{"a": 1, "b": 2, "c": 3, "d": 4}
+
+result := async.NewMapChain[string, int](ctx, data).
+    Worker(16).
+    Shards(8).                              // 8 分片降低锁竞争
+    Timeout(30 * time.Second).              // 单条目超时
+    FailFast().                             // 任一失败立即停止
+    Map(func(ctx context.Context, k string, v int) (string, error) {
+        return processKV(ctx, k, v)
+    })
+if result.Err() {
+    log.Printf("部分失败: %v", result.Error())
+}
+fmt.Println(result.Data())                  // map[string]string
+
+// ========== MapChain 流式消费：边处理边消费 ==========
+ch := async.NewMapChain[string, int](ctx, data).
+    Worker(16).Shards(8).
+    Buf(4096).                              // channel 缓冲
+    Stream(func(ctx context.Context, k string, v int) (string, error) {
+        return processKV(ctx, k, v)
+    }, 4096)
+for r := range ch {
+    if r.Err != nil {
+        log.Printf("处理失败 key=%s: %v", r.Value, r.Err)
+        continue
+    }
+    saveResult(r.Value)
+}
+
+// ========== MapChain 批量 + 分块：数据库批量操作 ==========
+result := async.NewMapChain[string, Record](ctx, data).
+    Worker(8).Shards(4).
+    Chunk(200).                             // 每 200 条一批
+    Timeout(60 * time.Second).              // 批量操作加大超时
+    MapBatch(func(ctx context.Context, batch []async.MapEntry[string, Record]) (int64, error) {
+        return db.BatchUpsert(ctx, batch)
+    })
+
+// ========== MapChain 聚合（Reduce + 并发前处理）==========
+result, err := async.NewMapChain[string, int](ctx, data).
+    Worker(16).
+    Timeout(30 * time.Second).
+    FailFast().
+    Reduce(0, func(ctx context.Context, acc int, k string, v int) (int, error) {
+        return acc + v, nil
+    })
+if err != nil {
+    log.Printf("聚合失败: %v", err)
+}
+// 或先并发转换再串行聚合
+r, _ := async.NewMapChainWith[string, int](ctx, data).  // With 改变输出类型
+    Worker(16).Shards(8).FailFast().
+    Map(func(ctx context.Context, k string, v int) (*Processed, error) {
+        return heavyTransform(ctx, v), nil
+    })
+reduced, err := async.NewMapChain[string, *Processed](ctx, r.Data()).
+    Serial().                               // 聚合必须串行
+    Reduce(0.0, func(ctx context.Context, acc float64, k string, v *Processed) (float64, error) {
+        return acc + v.Score, nil
+    })
+
+// ========== Map 操作链（同步操作，构建查询 ==========
+// 不涉及并发，结构 线程安全
+m := async.NewMap[string, int]().
+    Set("a", 1).Set("b", 2).Set("c", 3).
+    Filter(func(k string, v int) bool { return v > 1 }).
+    MapValues(func(k string, v int) int { return v * 10 })
+// m.AsMap() → map["b":20 "c":30]
+```

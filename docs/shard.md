@@ -854,6 +854,27 @@ err := async.PoolSharded[Record]().Context(ctx).
         results := sp.Wait()
         return handleResults(results)
     })
+
+// ShardedGroup 生产级配置
+g := async.GroupSharded[Record]().Context(ctx).
+    Shards(16).                             // 16 分片
+    Worker(4).                              // 每分片 4 worker = 64 总 worker
+    Distribution(async.Hash).               // Hash 分发，同 key 在同一分片
+    KeyFn(func(r Record) uint64 {
+        return uint64(r.UserID)
+    }).
+    Timeout(30 * time.Second).              // 单任务超时
+    FailFast().                             // 任一失败立即停止
+    Build()
+defer g.Close()
+
+sg, ffCtx := g.WithFailFast(ctx)           // 派生 FailFast ctx
+for _, v := range records {
+    g.GoKeyed(hash(v.UserID), ffCtx, func(ctx context.Context) (*Record, error) {
+        return process(ctx, v)
+    })
+}
+results := g.Wait()                         // []*Record
 ```
 
 ### 常见错误

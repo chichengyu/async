@@ -399,6 +399,53 @@ async.Pool[MyType]().Context(ctx).
     })
 ```
 
+### MultiPool 生产推荐配置
+
+当单 Pool 达到 QPS 上限（~37万/s）时，通过水平分片线性扩展吞吐量：
+
+```go
+// 8 分片 MultiPool：吞吐量 ~2.8M ops/s（7.6x 线性扩展）
+async.PoolMulti[MyType]().Context(ctx).
+    Shards(8).                              // 8 个独立 Pool 分片
+    Worker(async.IO()).                     // 每分片 worker 数（总 = 8 × IO）
+    Timeout(30 * time.Second).              // 单任务超时
+    SubmitTimeout(5 * time.Second).         // 提交超时
+    MaxPending(5_000).                      // 每分片最大排队
+    Overflow(async.OverflowError).          // 超出返回错误
+    MaxResults(100_000).                    // 每分片最大结果数
+    RingBuf(50_000).                        // 每分片环形缓冲
+    Run(func(ctx context.Context, mp *MultiPool[MyType]) error {
+        for i := 0; i < 10_000_000; i++ {
+            idx := i
+            if err := mp.Submit(ctx, func(ctx context.Context) (MyType, error) {
+                return process(ctx, idx)
+            }); err != nil {
+                return err
+            }
+        }
+        results := mp.WaitAndClose()
+        return handleResults(results)
+    })
+
+// 16 分片 MultiPool：吞吐量 ~5.5M ops/s（~15x 线性扩展）
+// 适合千万级 QPS 的极限场景
+async.PoolMulti[MyType]().Context(ctx).
+    Shards(16).
+    Worker(async.IO()).
+    MaxResults(100_000).RingBuf(50_000).
+    Overflow(async.OverflowDrop).           // 极限场景用 Drop 避免阻塞
+    Run(func(ctx context.Context, mp *MultiPool[MyType]) error {
+        for i := 0; i < 100_000_000; i++ {
+            idx := i
+            mp.Submit(ctx, func(ctx context.Context) (MyType, error) {
+                return process(ctx, idx)
+            })
+        }
+        results := mp.WaitAndClose()
+        return handleResults(results)
+    })
+```
+
 ### IO 密集型 vs CPU 密集型 Worker 数量
 
 | 类型 | 推荐并发度 | 常量 |
