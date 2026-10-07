@@ -455,6 +455,58 @@ val, err := async.Retry[string](ctx).
     })
 ```
 
+### 生产推荐配置
+
+```go
+// ========== 标准 RPC 重试：指数退避 + 超时 ==========
+// 适用场景：下游偶发 502/503，幂等查询
+data, err := async.Retry[*Data](ctx).
+    Exponential().
+    MaxRetries(3).                                      // 初试 + 3 次重试 = 共 4 次
+    Backoff(200*time.Millisecond, 10*time.Second).      // 200ms→400ms→800ms→1600ms
+    PerCallTimeout(5 * time.Second).                    // ⚠️ 单次调用兜底，防止 hang
+    Execute(func(ctx context.Context) (*Data, error) {
+        return rpcClient.Query(ctx, req)
+    })
+// 总最长耗时 ≈ (10s + 5s) × 4 = 60s
+
+// ========== 限流下游重试：指数退避 + RateLimiter ==========
+// 适用场景：下游有 QPS 限制，需限速重试
+data, err := async.Retry[*Data](ctx).
+    Exponential().
+    MaxRetries(10).                                     // 限流场景多试几次
+    Backoff(500*time.Millisecond, 30*time.Second).      // 长间隔避让
+    PerCallTimeout(10 * time.Second).                   // 单次超时
+    RateLimiter().
+    Rate(10).Per(time.Second).Shards(4).               // 每秒最多 10 次重试
+    Burst(20).                                          // 允许瞬时突发 20 次
+    Execute(func(ctx context.Context) (*Data, error) {
+        return rateLimitedAPI.Query(ctx, req)
+    })
+
+// ========== 自适应限流重试：动态调整并发 ==========
+// 适用场景：下游容量不稳定，需根据成功率自适应
+data, err := async.Retry[*Data](ctx).
+    Exponential().MaxRetries(5).
+    Backoff(100*time.Millisecond, 15*time.Second).
+    PerCallTimeout(3 * time.Second).
+    Adaptive().
+    MinWorker(2).MaxWorker(50).                         // 并发度 2~50 自动调节
+    Execute(func(ctx context.Context) (*Data, error) {
+        return unstableSvc.Query(ctx, req)
+    })
+
+// ========== 关键写入重试：最大努力保证 ==========
+// ⚠️ 确认下游支持幂等，否则勿用
+err := async.RetryVoid(ctx).
+    Exponential().MaxRetries(10).
+    Backoff(1*time.Second, 60*time.Second).             // 最长等 60s
+    PerCallTimeout(30 * time.Second).
+    ExecuteVoid(func(ctx context.Context) error {
+        return db.WriteWithIdempotentKey(ctx, key, data)
+    })
+```
+
 ### 常见错误
 
 - **❌ 不设 PerCallTimeout**：下游 hang 住时重试循环卡死，建议总超时 = `(BackoffMax + PerCallTimeout) × (MaxRetries + 1)`

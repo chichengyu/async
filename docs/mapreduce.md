@@ -608,6 +608,61 @@ results := async.Slice[string](ctx, millions).
 | 1000~10000 | 2048 | 平衡内存与吞吐 |
 | >10000 | 16384 | 最大默认值 |
 
+### 生产推荐配置
+
+```go
+// ========== 小数据量（< 1 万）：标准 Map ==========
+results := async.Slice[string](ctx, items).
+    Worker(16).
+    Timeout(30 * time.Second).          // 单元素超时
+    FailFast().                         // 任一失败立即停止
+    Map(func(ctx context.Context, item string) (Result, error) {
+        return transform(ctx, item)
+    })
+values := results.Values()
+if results.Err() {
+    log.Printf("部分失败: %v", results.Error())
+}
+
+// ========== 中数据量（1~10 万）+ 分片：降低锁竞争 ==========
+results := async.Slice[string](ctx, items).
+    Worker(async.IO()).                 // CPU×2
+    FailFast().
+    Shards(16).                         // 16 路分片，锁竞争降低 16 倍
+    Map(func(ctx context.Context, item string) (Result, error) {
+        return ioBoundProcess(ctx, item)
+    })
+for _, r := range results.Results() {
+    if r.Ok() { handle(r.Value) }
+}
+
+// ========== 大数据量（10~100 万）+ 流式消费：边处理边消费 ==========
+ch := async.Slice[Record](ctx, records).
+    Worker(async.IO()).
+    FailFast().
+    Timeout(10 * time.Second).
+    Stream(func(ctx context.Context, r Record) (Record, error) {
+        return process(ctx, r)
+    }, 4096)                            // channel 缓冲
+for res := range ch {
+    if res.Err != nil {
+        log.Printf("处理失败: %v", res.Err)
+        continue
+    }
+    saveToDB(res.Value)
+}
+
+// ========== 海量数据（> 100 万）+ 分块批量：减少提交开销 ==========
+async.Slice[Record](ctx, millions).
+    Worker(16).
+    Shards(16).
+    Chunk(500).                         // 每 500 条一批
+    Timeout(60 * time.Second).          // 批量操作加大超时
+    MapBatch(func(ctx context.Context, batch []Record) ([]int64, error) {
+        return db.BatchInsert(ctx, batch)
+    })
+```
+
 ### 常见错误
 
 - **❌ 大切片不设 MaxResults 用 Wait 取全部**：默认 100K 可能 OOM，建议用 Stream 流式消费或配合 Chunk 批量处理

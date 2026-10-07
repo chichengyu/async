@@ -535,6 +535,70 @@ go func() {
 result, err := t.Result()
 ```
 
+### 生产推荐配置
+
+```go
+// ========== 基础异步任务：生产标准配置 ==========
+ar := async.Task[Data]().Context(ctx).
+    WithTimeout(30 * time.Second).      // ⚠️ 必须设置兜底超时，防止 goroutine 泄漏
+    Bounded(100).                       // ⚠️ 必须限制并发，防止连接数/Goroutine 爆炸
+    Go(func(ctx context.Context) (Data, error) {
+        return callExternalAPI(ctx, req)
+    })
+
+data, err := ar.Wait()
+if err != nil {
+    return fmt.Errorf("task failed: %w", err)
+}
+
+// ========== 可取消任务：支持主动终止 ==========
+t := async.Task[*Order]().Context(ctx).
+    WithTimeout(60 * time.Second).      // 长耗时任务加大超时
+    Bounded(200).                       // IO 密集型可适当放宽
+    GoResult(func(ctx context.Context) (*Order, error) {
+        return paymentService.Process(ctx, orderID)
+    })
+
+// 超时自动取消
+go func() {
+    select {
+    case <-time.After(10 * time.Second):
+        t.Cancel()
+    case <-ctx.Done():
+        t.Cancel()
+    }
+}()
+
+order, err := t.Result()
+
+// ========== 千万元素批量异步：BoundedRunner ==========
+runner := async.NewBoundedRunnerBuilder().Max(1000).Build()
+var wg sync.WaitGroup
+for i := 0; i < 10_000_000; i++ {
+    idx := i
+    wg.Add(1)
+    go func() {
+        defer wg.Done()
+        ar := async.Task[int]().Context(ctx).
+            Bounded(runner).            // 全局信号量限流，最多 1000 并发
+            Go(func(ctx context.Context) (int, error) {
+                return process(ctx, idx)
+            })
+        val, err := ar.Wait()
+        _ = val; _ = err
+    }()
+}
+wg.Wait()
+
+// ========== Fire-and-Forget：发射后不管 ==========
+async.TaskVoid().Context(ctx).
+    WithTimeout(5 * time.Second).
+    GoAct(func(ctx context.Context) error {
+        return metrics.Report(ctx, event)
+    })
+// 不调用 Wait()——适合日志、监控等非关键路径
+```
+
 ### 常见错误
 
 - **❌ GoResult 不调用 Result/Cancel**：`GoResult` 内部启用了独立 goroutine，必须调用 `Result()` 或 `Cancel()`，否则 goroutine 泄漏

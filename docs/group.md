@@ -1076,7 +1076,69 @@ for r := range g.StreamResults() {
 }
 ```
 
-### 7. 错误处理最佳实践
+### 7. 生产推荐配置
+
+```go
+// 小批量（< 5 万）一次性任务：标准配置
+async.Group[Record]().Context(ctx).
+    Worker(async.IO()).                 // 默认 CPU×2
+    Timeout(30 * time.Second).          // 单任务超时
+    FailFast().                         // 任一失败立即停止
+    Run(func(ctx context.Context, g *group.Group[Record]) error {
+        for _, r := range records {
+            g.Go(ctx, func(ctx context.Context) (Record, error) {
+                return process(ctx, r)
+            })
+        }
+        return nil
+    })
+
+// 中批量（5~50 万）+ 流式消费：降低内存峰值
+async.Group[Record]().Context(ctx).
+    Worker(async.IO()).
+    Timeout(30 * time.Second).
+    Streaming(2048).                    // 流式结果 channel
+    Build()
+defer g.Close()
+
+go func() {
+    for _, r := range records {
+        g.Go(ctx, func(ctx context.Context) (Record, error) {
+            return process(ctx, r)
+        })
+    }
+    g.Wait()
+}()
+
+for r := range g.StreamResults() {
+    if r.Ok() { handle(r.Value) }
+}
+
+// 海量任务（> 50 万）：用 Pool，不要用 Group
+// Group 每任务新建 goroutine，海量场景用 Pool 复用 worker
+async.Pool[Record]().Context(ctx).
+    Worker(async.IO()).
+    MaxResults(100_000).RingBuf(50_000).
+    Overflow(async.OverflowDrop).
+    Run(func(ctx context.Context, p *async.Pool[Record]) error {
+        for _, r := range records {
+            p.Submit(ctx, func(ctx context.Context) (Record, error) {
+                return process(ctx, r)
+            })
+        }
+        results := p.Wait()
+        return handleResults(results)
+    })
+
+// 外部 Pool 注入：共享已有协程池
+myPool := async.Pool[int]().Worker(32).Build() // 注意：手动管理生命周期
+g := async.Group[int]().Context(ctx).
+    Pool(myPool).Build()
+defer g.Close() // Group Close 不会 Close 外部 Pool
+// 外部 Pool 需自行关闭：defer myPool.Close()
+```
+
+### 8. 错误处理最佳实践
 
 ```go
 g := async.Group[int]().Context(ctx).Build()
