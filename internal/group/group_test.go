@@ -1538,3 +1538,247 @@ func TestGroup_WaitTimeout_Zero(t *testing.T) {
 	results, ok := g.WaitTimeout(0)
 	t.Logf("Group WaitTimeout(0): ok=%v, results=%d", ok, len(results))
 }
+
+// ==================== MultiGroup WaitTimeout / WaitContext ====================
+
+func TestMultiGroup_WaitTimeout(t *testing.T) {
+	g := NewGroup[int](4)
+	defer g.Close()
+	mg := g.Shard(4)
+	defer mg.Close()
+	ctx := context.Background()
+
+	for i := 0; i < 100; i++ {
+		_ = mg.Go(ctx, func(ctx context.Context) (int, error) {
+			time.Sleep(10 * time.Millisecond)
+			return i, nil
+		})
+	}
+	results, ok := mg.WaitTimeout(5 * time.Second)
+	if !ok || len(results) != 100 {
+		t.Fatalf("MultiGroup.WaitTimeout failed: ok=%v, len=%d", ok, len(results))
+	}
+}
+
+func TestMultiGroup_WaitContext(t *testing.T) {
+	g := NewGroup[int](4)
+	defer g.Close()
+	mg := g.Shard(4)
+	defer mg.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	for i := 0; i < 100; i++ {
+		_ = mg.Go(ctx, func(ctx context.Context) (int, error) { return i, nil })
+	}
+	results, ok := mg.WaitContext(ctx)
+	if !ok || len(results) != 100 {
+		t.Fatalf("MultiGroup.WaitContext failed: ok=%v, len=%d", ok, len(results))
+	}
+}
+
+func TestMultiGroup_WaitContext_Cancel(t *testing.T) {
+	g := NewGroup[int](4)
+	defer g.Close()
+	mg := g.Shard(4)
+	defer mg.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+
+	for i := 0; i < 100; i++ {
+		_ = mg.Go(ctx, func(ctx context.Context) (int, error) {
+			time.Sleep(500 * time.Millisecond)
+			return i, nil
+		})
+	}
+	cancel()
+	_, ok := mg.WaitContext(ctx)
+	if ok {
+		t.Fatal("expected cancelled (ok=false)")
+	}
+}
+
+func TestMultiGroup_WaitTimeout_ActuallyTimesOut(t *testing.T) {
+	g := NewGroup[int](4)
+	defer g.Close()
+	mg := g.Shard(4)
+	defer mg.Close()
+	ctx := context.Background()
+
+	for i := 0; i < 100; i++ {
+		_ = mg.Go(ctx, func(ctx context.Context) (int, error) {
+			time.Sleep(500 * time.Millisecond)
+			return i, nil
+		})
+	}
+	_, ok := mg.WaitTimeout(50 * time.Millisecond)
+	if ok {
+		t.Fatal("expected timeout (ok=false)")
+	}
+}
+
+func TestMultiGroup_WaitContext_WithDeadline(t *testing.T) {
+	g := NewGroup[int](4)
+	defer g.Close()
+	mg := g.Shard(4)
+	defer mg.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	for i := 0; i < 100; i++ {
+		_ = mg.Go(ctx, func(ctx context.Context) (int, error) {
+			time.Sleep(500 * time.Millisecond)
+			return i, nil
+		})
+	}
+	_, ok := mg.WaitContext(ctx)
+	if ok {
+		t.Fatal("expected deadline exceeded (ok=false)")
+	}
+}
+
+func TestMultiGroup_WaitTimeout_Negative(t *testing.T) {
+	g := NewGroup[int](4)
+	defer g.Close()
+	mg := g.Shard(2)
+	defer mg.Close()
+	_, ok := mg.WaitTimeout(-1)
+	if ok {
+		t.Fatal("expected negative timeout → ok=false")
+	}
+}
+
+func TestMultiGroup_WaitTimeout_Zero(t *testing.T) {
+	g := NewGroup[int](4)
+	defer g.Close()
+	mg := g.Shard(2)
+	defer mg.Close()
+	for i := 0; i < 10; i++ {
+		_ = mg.Go(context.Background(), func(ctx context.Context) (int, error) {
+			time.Sleep(500 * time.Millisecond)
+			return i, nil
+		})
+	}
+	_, ok := mg.WaitTimeout(0)
+	if ok {
+		t.Fatal("expected zero timeout → ok=false")
+	}
+}
+
+func TestMultiGroup_WaitContext_AlreadyCancelled(t *testing.T) {
+	g := NewGroup[int](4)
+	defer g.Close()
+	mg := g.Shard(2)
+	defer mg.Close()
+	for i := 0; i < 10; i++ {
+		_ = mg.Go(context.Background(), func(ctx context.Context) (int, error) {
+			time.Sleep(500 * time.Millisecond)
+			return i, nil
+		})
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, ok := mg.WaitContext(ctx)
+	if ok {
+		t.Fatal("expected already-cancelled context → ok=false")
+	}
+}
+
+// ==================== MultiGroup 边界：空组 ====================
+
+func TestMultiGroup_WaitTimeout_Empty(t *testing.T) {
+	g := NewGroup[int](4)
+	defer g.Close()
+	mg := g.Shard(2)
+	defer mg.Close()
+	results, ok := mg.WaitTimeout(time.Second)
+	if !ok {
+		t.Fatal("empty MultiGroup WaitTimeout should return ok=true")
+	}
+	if len(results) != 0 {
+		t.Fatalf("empty MultiGroup: len=%d, want 0", len(results))
+	}
+}
+
+func TestMultiGroup_WaitContext_Empty(t *testing.T) {
+	g := NewGroup[int](4)
+	defer g.Close()
+	mg := g.Shard(2)
+	defer mg.Close()
+	results, ok := mg.WaitContext(context.Background())
+	if !ok {
+		t.Fatal("empty MultiGroup WaitContext should return ok=true")
+	}
+	if len(results) != 0 {
+		t.Fatalf("empty MultiGroup: len=%d, want 0", len(results))
+	}
+}
+
+// ==================== MultiGroup 破坏性：重复调用 / 交叉调用 ====================
+
+func TestMultiGroup_WaitTimeout_Twice(t *testing.T) {
+	g := NewGroup[int](4)
+	defer g.Close()
+	mg := g.Shard(2)
+	defer mg.Close()
+	for i := 0; i < 100; i++ {
+		_ = mg.Go(context.Background(), func(ctx context.Context) (int, error) {
+			return 1, nil
+		})
+	}
+	r1, ok1 := mg.WaitTimeout(time.Second)
+	r2, ok2 := mg.WaitTimeout(time.Second)
+	if !ok1 || !ok2 || len(r1) != 100 || len(r2) != 100 {
+		t.Fatalf("WaitTimeout twice: ok1=%v len1=%d ok2=%v len2=%d", ok1, len(r1), ok2, len(r2))
+	}
+}
+
+func TestMultiGroup_WaitContext_Twice(t *testing.T) {
+	g := NewGroup[int](4)
+	defer g.Close()
+	mg := g.Shard(2)
+	defer mg.Close()
+	for i := 0; i < 100; i++ {
+		_ = mg.Go(context.Background(), func(ctx context.Context) (int, error) {
+			return 1, nil
+		})
+	}
+	r1, ok1 := mg.WaitContext(context.Background())
+	r2, ok2 := mg.WaitContext(context.Background())
+	if !ok1 || !ok2 || len(r1) != 100 || len(r2) != 100 {
+		t.Fatalf("WaitContext twice: ok1=%v len1=%d ok2=%v len2=%d", ok1, len(r1), ok2, len(r2))
+	}
+}
+
+func TestMultiGroup_WaitTimeout_Then_WaitContext(t *testing.T) {
+	g := NewGroup[int](4)
+	defer g.Close()
+	mg := g.Shard(2)
+	defer mg.Close()
+	for i := 0; i < 100; i++ {
+		_ = mg.Go(context.Background(), func(ctx context.Context) (int, error) {
+			return 1, nil
+		})
+	}
+	r1, ok1 := mg.WaitTimeout(time.Second)
+	r2, ok2 := mg.WaitContext(context.Background())
+	if !ok1 || !ok2 || len(r1) != 100 || len(r2) != 100 {
+		t.Fatalf("WaitTimeout→WaitContext: ok1=%v len1=%d ok2=%v len2=%d", ok1, len(r1), ok2, len(r2))
+	}
+}
+
+func TestMultiGroup_WaitContext_Then_WaitTimeout(t *testing.T) {
+	g := NewGroup[int](4)
+	defer g.Close()
+	mg := g.Shard(2)
+	defer mg.Close()
+	for i := 0; i < 100; i++ {
+		_ = mg.Go(context.Background(), func(ctx context.Context) (int, error) {
+			return 1, nil
+		})
+	}
+	r1, ok1 := mg.WaitContext(context.Background())
+	r2, ok2 := mg.WaitTimeout(time.Second)
+	if !ok1 || !ok2 || len(r1) != 100 || len(r2) != 100 {
+		t.Fatalf("WaitContext→WaitTimeout: ok1=%v len1=%d ok2=%v len2=%d", ok1, len(r1), ok2, len(r2))
+	}
+}

@@ -121,6 +121,38 @@ func TestGo_WaitTimeout_Success(t *testing.T) {
 	}
 }
 
+func TestGo_WaitContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	ar := Go(ctx, func(ctx context.Context) (int, error) {
+		time.Sleep(500 * time.Millisecond)
+		return 1, nil
+	})
+	cancel()
+	val, err, ok := ar.WaitContext(ctx)
+	if ok {
+		t.Fatalf("expected cancelled, got value=%d", val)
+	}
+	if err == nil {
+		t.Fatal("expected error from context cancellation")
+	}
+}
+
+func TestGo_WaitContext_Success(t *testing.T) {
+	ar := Go(context.Background(), func(ctx context.Context) (int, error) {
+		return 99, nil
+	})
+	val, err, ok := ar.WaitContext(context.Background())
+	if !ok {
+		t.Fatal("expected success")
+	}
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if val != 99 {
+		t.Fatalf("expected 99, got %d", val)
+	}
+}
+
 func TestGo_Ok_NotOk(t *testing.T) {
 	ar := Go(context.Background(), func(ctx context.Context) (int, error) {
 		return 1, nil
@@ -384,6 +416,35 @@ func TestGoAct_WaitTimeout_Success(t *testing.T) {
 		return nil
 	})
 	_, err, ok := ar.WaitTimeout(time.Second)
+	if !ok {
+		t.Fatal("expected success")
+	}
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestGoAct_WaitContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	ar := GoAct(ctx, func(ctx context.Context) error {
+		time.Sleep(500 * time.Millisecond)
+		return nil
+	})
+	cancel()
+	_, err, ok := ar.WaitContext(ctx)
+	if ok {
+		t.Fatal("expected cancelled")
+	}
+	if err == nil {
+		t.Fatal("expected error from context cancellation")
+	}
+}
+
+func TestGoAct_WaitContext_Success(t *testing.T) {
+	ar := GoAct(context.Background(), func(ctx context.Context) error {
+		return nil
+	})
+	_, err, ok := ar.WaitContext(context.Background())
 	if !ok {
 		t.Fatal("expected success")
 	}
@@ -1244,6 +1305,36 @@ func TestGo_WaitCh_Concurrent(t *testing.T) {
 	}
 }
 
+func TestGo_WaitContext_Concurrent(t *testing.T) {
+	for _, tier := range test.UseTier {
+		t.Run(tier.Name, func(t *testing.T) {
+			test.SkipIfTooLarge(t, tier.Size)
+
+			var wg sync.WaitGroup
+			var success, cancelled atomic.Int64
+			wg.Add(tier.Size)
+			for i := 0; i < tier.Size; i++ {
+				go func() {
+					defer wg.Done()
+					ar := Go(context.Background(), func(ctx context.Context) (int, error) {
+						return 1, nil
+					})
+					_, _, ok := ar.WaitContext(context.Background())
+					if ok {
+						success.Add(1)
+					} else {
+						cancelled.Add(1)
+					}
+				}()
+			}
+			wg.Wait()
+			if cancelled.Load() > 0 {
+				t.Fatalf("cancellations: %d", cancelled.Load())
+			}
+		})
+	}
+}
+
 func TestGo_MultipleWait_Concurrent(t *testing.T) {
 	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
@@ -1274,6 +1365,106 @@ func TestGo_MultipleWait_Concurrent(t *testing.T) {
 			}
 			wg.Wait()
 		})
+	}
+}
+
+// ==================== WaitContext 多场景交叉验证 ====================
+
+func TestGo_WaitContext_WithDeadline(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	ar := Go(ctx, func(ctx context.Context) (int, error) {
+		time.Sleep(500 * time.Millisecond)
+		return 1, nil
+	})
+	val, err, ok := ar.WaitContext(ctx)
+	if ok {
+		t.Fatalf("expected deadline exceeded, got value=%d", val)
+	}
+	if err == nil {
+		t.Fatal("expected error from deadline")
+	}
+}
+
+func TestGo_WaitContext_OnCompleted(t *testing.T) {
+	ar := Go(context.Background(), func(ctx context.Context) (int, error) {
+		return 99, nil
+	})
+	ar.Wait()
+	val, err, ok := ar.WaitContext(context.Background())
+	if !ok {
+		t.Fatal("expected ok=true on completed task")
+	}
+	if err != nil || val != 99 {
+		t.Fatalf("expected 99/nil, got val=%d, err=%v", val, err)
+	}
+}
+
+func TestGo_WaitContext_WaitTimeout_Race(t *testing.T) {
+	ar := Go(context.Background(), func(ctx context.Context) (int, error) {
+		time.Sleep(100 * time.Millisecond)
+		return 42, nil
+	})
+
+	var wg sync.WaitGroup
+	var ctxOk, tmtOk atomic.Int64
+	n := 100
+	wg.Add(n * 2)
+
+	for i := 0; i < n; i++ {
+		go func() {
+			defer wg.Done()
+			_, _, ok := ar.WaitContext(context.Background())
+			if ok {
+				ctxOk.Add(1)
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			_, _, ok := ar.WaitTimeout(5 * time.Second)
+			if ok {
+				tmtOk.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+
+	if ctxOk.Load()+tmtOk.Load() != int64(n*2) {
+		t.Fatalf("race: WaitContext ok=%d, WaitTimeout ok=%d, want all ok", ctxOk.Load(), tmtOk.Load())
+	}
+}
+
+func TestGo_WaitContext_AlreadyCancelled(t *testing.T) {
+	ar := Go(context.Background(), func(ctx context.Context) (int, error) {
+		time.Sleep(500 * time.Millisecond)
+		return 1, nil
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err, ok := ar.WaitContext(ctx)
+	if ok {
+		t.Fatal("expected ok=false for already-cancelled context")
+	}
+	if err != context.Canceled {
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+}
+
+func TestGo_WaitContext_Sequence(t *testing.T) {
+	ar := Go(context.Background(), func(ctx context.Context) (int, error) {
+		return 77, nil
+	})
+	v, err := ar.Wait()
+	if v != 77 || err != nil {
+		t.Fatalf("Wait() failed: %d, %v", v, err)
+	}
+	v2, err2, ok2 := ar.WaitContext(context.Background())
+	if !ok2 || v2 != 77 || err2 != nil {
+		t.Fatalf("WaitContext after Wait failed: %d, %v, %v", v2, err2, ok2)
+	}
+	v3, err3, ok3 := ar.WaitTimeout(time.Second)
+	if !ok3 || v3 != 77 || err3 != nil {
+		t.Fatalf("WaitTimeout after WaitContext failed: %d, %v, %v", v3, err3, ok3)
 	}
 }
 

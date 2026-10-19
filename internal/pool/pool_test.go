@@ -2289,3 +2289,157 @@ func TestResizeAndWaitTimeout_Zero(t *testing.T) {
 	p.ResizeAndWaitTimeout(0, 2500*time.Millisecond)
 	t.Logf("ResizeAndWaitTimeout(0): size=%d", p.Size())
 }
+
+// ==================== MultiPool WaitTimeout / WaitContext ====================
+
+func TestMultiPool_WaitTimeout(t *testing.T) {
+	mp := NewPool[int](4).Shard(2)
+	defer mp.Close()
+	ctx := context.Background()
+
+	for i := 0; i < 100; i++ {
+		_ = mp.Submit(ctx, func(ctx context.Context) (int, error) {
+			time.Sleep(10 * time.Millisecond)
+			return i, nil
+		})
+	}
+	results, ok := mp.WaitTimeout(5 * time.Second)
+	if !ok || len(results) != 100 {
+		t.Fatalf("MultiPool.WaitTimeout failed: ok=%v, len=%d", ok, len(results))
+	}
+}
+
+func TestMultiPool_WaitContext(t *testing.T) {
+	mp := NewPool[int](4).Shard(2)
+	defer mp.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	for i := 0; i < 100; i++ {
+		_ = mp.Submit(ctx, func(ctx context.Context) (int, error) { return i, nil })
+	}
+	results, ok := mp.WaitContext(ctx)
+	if !ok || len(results) != 100 {
+		t.Fatalf("MultiPool.WaitContext failed: ok=%v, len=%d", ok, len(results))
+	}
+}
+
+func TestMultiPool_WaitContext_Cancel(t *testing.T) {
+	mp := NewPool[int](4).Shard(2)
+	defer mp.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+
+	for i := 0; i < 100; i++ {
+		_ = mp.Submit(ctx, func(ctx context.Context) (int, error) {
+			time.Sleep(500 * time.Millisecond)
+			return i, nil
+		})
+	}
+	cancel()
+	_, ok := mp.WaitContext(ctx)
+	if ok {
+		t.Fatal("expected cancelled (ok=false)")
+	}
+}
+
+func TestMultiPool_WaitTimeout_ActuallyTimesOut(t *testing.T) {
+	mp := NewPool[int](4).Shard(2)
+	defer mp.Close()
+	ctx := context.Background()
+
+	for i := 0; i < 100; i++ {
+		_ = mp.Submit(ctx, func(ctx context.Context) (int, error) {
+			time.Sleep(500 * time.Millisecond)
+			return i, nil
+		})
+	}
+	_, ok := mp.WaitTimeout(50 * time.Millisecond)
+	if ok {
+		t.Fatal("expected timeout (ok=false)")
+	}
+}
+
+func TestMultiPool_WaitContext_WithDeadline(t *testing.T) {
+	mp := NewPool[int](4).Shard(2)
+	defer mp.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	for i := 0; i < 100; i++ {
+		_ = mp.Submit(ctx, func(ctx context.Context) (int, error) {
+			time.Sleep(500 * time.Millisecond)
+			return i, nil
+		})
+	}
+	_, ok := mp.WaitContext(ctx)
+	if ok {
+		t.Fatal("expected deadline exceeded (ok=false)")
+	}
+}
+
+func TestMultiPool_WaitTimeout_Negative(t *testing.T) {
+	mp := NewPool[int](4).Shard(2)
+	defer mp.Close()
+	_, ok := mp.WaitTimeout(-1)
+	if ok {
+		t.Fatal("expected negative timeout → ok=false")
+	}
+}
+
+func TestMultiPool_WaitTimeout_Zero(t *testing.T) {
+	mp := NewPool[int](4).Shard(2)
+	defer mp.Close()
+	for i := 0; i < 10; i++ {
+		_ = mp.Submit(context.Background(), func(ctx context.Context) (int, error) {
+			time.Sleep(500 * time.Millisecond)
+			return i, nil
+		})
+	}
+	_, ok := mp.WaitTimeout(0)
+	if ok {
+		t.Fatal("expected zero timeout → ok=false")
+	}
+}
+
+func TestMultiPool_WaitContext_AlreadyCancelled(t *testing.T) {
+	mp := NewPool[int](4).Shard(2)
+	defer mp.Close()
+	for i := 0; i < 10; i++ {
+		_ = mp.Submit(context.Background(), func(ctx context.Context) (int, error) {
+			time.Sleep(500 * time.Millisecond)
+			return i, nil
+		})
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, ok := mp.WaitContext(ctx)
+	if ok {
+		t.Fatal("expected already-cancelled context → ok=false")
+	}
+}
+
+// ==================== MultiPool 边界：空池 ====================
+
+func TestMultiPool_WaitTimeout_Empty(t *testing.T) {
+	mp := NewPool[int](4).Shard(2)
+	defer mp.Close()
+	results, ok := mp.WaitTimeout(time.Second)
+	if !ok {
+		t.Fatal("empty MultiPool WaitTimeout should return ok=true")
+	}
+	if len(results) != 0 {
+		t.Fatalf("empty MultiPool: len=%d, want 0", len(results))
+	}
+}
+
+func TestMultiPool_WaitContext_Empty(t *testing.T) {
+	mp := NewPool[int](4).Shard(2)
+	defer mp.Close()
+	results, ok := mp.WaitContext(context.Background())
+	if !ok {
+		t.Fatal("empty MultiPool WaitContext should return ok=true")
+	}
+	if len(results) != 0 {
+		t.Fatalf("empty MultiPool: len=%d, want 0", len(results))
+	}
+}
