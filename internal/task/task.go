@@ -1,7 +1,7 @@
 // Package task 提供单个异步任务和带 cancel 功能的 AsyncResult。
 //
 // 核心类型：
-//   - AsyncResult[T]：异步结果句柄，支持 Wait/WaitTimeout/Cancel/Ok/IsPanic
+//   - AsyncResult[T]：异步结果句柄，支持 Wait/WaitTimeout/WaitContext/Cancel/Ok/IsPanic
 //   - Task[T]：可取消的异步任务，包含 Ctx、Cancel、Result
 //   - TaskVoid：无返回值异步任务（在 async 层实现）
 //
@@ -297,6 +297,75 @@ func (ar *AsyncResult[T]) WaitTimeout(timeout time.Duration) (T, error, bool) {
 	case <-timer.C:
 		var zero T
 		return zero, core.ErrTimeout, false
+	}
+}
+
+// WaitContext 带 Context 控制等待，返回 (值, 错误, 是否在取消前完成)。
+// 当 ctx 被取消或超时时返回 (zero, ctx.Err(), false)。
+// 多个 goroutine 可同时调用，结果是安全的。
+//
+// 参数：
+//   - ctx：上下文，取消后立即返回
+//
+// 使用示例：
+//
+//	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+//	defer cancel()
+//	val, err, ok := ar.WaitContext(ctx)
+//	if !ok {
+//	    log.Println("等待被取消: %v", err)
+//	    return
+//	}
+func (ar *AsyncResult[T]) WaitContext(ctx context.Context) (T, error, bool) {
+	// 步骤 1：快速路径 — ready 已关闭，结果已缓存
+	select {
+	case <-ar.ready:
+		ar.mu.Lock()
+		r := ar.result
+		ar.mu.Unlock()
+		return r.Value, r.Err, true
+	default:
+	}
+
+	// 步骤 2：检查 populated — 之前 Cancel/WaitTimeout/WaitContext 已经读到结果
+	ar.mu.Lock()
+	if ar.populated {
+		r := ar.result
+		ar.mu.Unlock()
+		return r.Value, r.Err, true
+	}
+
+	// 步骤 3：非阻塞尝试从 channel 读取
+	if ar.results != nil {
+		select {
+		case r, ok := <-ar.results:
+			if ok {
+				ar.result = r
+				ar.populated = true
+				ar.mu.Unlock()
+				select {
+				case <-ar.ready:
+				default:
+					close(ar.ready)
+				}
+				return r.Value, r.Err, true
+			}
+		default:
+		}
+	}
+	ar.mu.Unlock()
+
+	// 步骤 4：阻塞等待结果或 ctx 取消
+	go ar.getResult()
+	select {
+	case <-ar.ready:
+		ar.mu.Lock()
+		r := ar.result
+		ar.mu.Unlock()
+		return r.Value, r.Err, true
+	case <-ctx.Done():
+		var zero T
+		return zero, ctx.Err(), false
 	}
 }
 

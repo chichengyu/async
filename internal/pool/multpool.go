@@ -82,6 +82,52 @@ func (mp *MultiPool[T]) WaitAndClose() []core.Result[T] {
 	return all
 }
 
+func (mp *MultiPool[T]) WaitTimeout(d time.Duration) ([]core.Result[T], bool) {
+	if len(mp.pools) == 0 {
+		return nil, true
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), d)
+	defer cancel()
+	return mp.WaitContext(ctx)
+}
+
+func (mp *MultiPool[T]) WaitContext(ctx context.Context) ([]core.Result[T], bool) {
+	if len(mp.pools) == 0 {
+		return nil, true
+	}
+	if len(mp.pools) == 1 {
+		return mp.pools[0].WaitContext(ctx)
+	}
+
+	n := len(mp.pools)
+	type shardResult struct {
+		results []core.Result[T]
+		ok      bool
+	}
+	shardResults := make([]shardResult, n)
+	var wg sync.WaitGroup
+	wg.Add(n)
+
+	for i, p := range mp.pools {
+		go func(idx int, pl *Pool[T]) {
+			defer wg.Done()
+			shardResults[idx].results, shardResults[idx].ok = pl.WaitContext(ctx)
+		}(i, p)
+	}
+
+	wg.Wait()
+
+	var all []core.Result[T]
+	allOk := true
+	for i := range shardResults {
+		all = append(all, shardResults[i].results...)
+		if !shardResults[i].ok {
+			allOk = false
+		}
+	}
+	return all, allOk
+}
+
 func (mp *MultiPool[T]) Close() {
 	for _, p := range mp.pools {
 		p.Close()

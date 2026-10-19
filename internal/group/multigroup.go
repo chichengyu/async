@@ -66,6 +66,54 @@ func (mg *MultiGroup[T]) Wait() []core.Result[T] {
 	return all
 }
 
+// WaitTimeout 等待所有分片完成或超时，所有分片并行等待共享同一个超时时钟。
+func (mg *MultiGroup[T]) WaitTimeout(d time.Duration) ([]core.Result[T], bool) {
+	if len(mg.groups) == 0 {
+		return nil, true
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), d)
+	defer cancel()
+	return mg.WaitContext(ctx)
+}
+
+// WaitContext 等待所有分片完成或 ctx 取消，所有分片并行等待共享同一个 ctx。
+func (mg *MultiGroup[T]) WaitContext(ctx context.Context) ([]core.Result[T], bool) {
+	if len(mg.groups) == 0 {
+		return nil, true
+	}
+	if len(mg.groups) == 1 {
+		return mg.groups[0].WaitContext(ctx)
+	}
+
+	n := len(mg.groups)
+	type shardResult struct {
+		results []core.Result[T]
+		ok      bool
+	}
+	shardResults := make([]shardResult, n)
+	var wg sync.WaitGroup
+	wg.Add(n)
+
+	for i, g := range mg.groups {
+		go func(idx int, grp *Group[T]) {
+			defer wg.Done()
+			shardResults[idx].results, shardResults[idx].ok = grp.WaitContext(ctx)
+		}(i, g)
+	}
+
+	wg.Wait()
+
+	var all []core.Result[T]
+	allOk := true
+	for i := range shardResults {
+		all = append(all, shardResults[i].results...)
+		if !shardResults[i].ok {
+			allOk = false
+		}
+	}
+	return all, allOk
+}
+
 // Close 关闭所有分片，释放资源。
 func (mg *MultiGroup[T]) Close() {
 	for _, g := range mg.groups {
