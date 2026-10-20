@@ -9,9 +9,9 @@
 
 协程池 · 任务组 · Map/Reduce · 重试 · 限流 · 管道 · 分片 — 链式构建，生产就绪。
 
-> **✅ 深度交叉验证报告：[极限并发测试报告](docs/test_report.md)** — 4 个高风险疑点全部验证通过，Race Detector 零竞态。
+> **✅ 深度交叉验证报告：[极限并发测试报告](docs/test_report.md)** — 5 项深度验证（4 项误判排除 + 1 项真实 Bug 已根治），Race Detector 零竞态。
 >
-> **🛡️ 生产就绪** — 350+ 用例 · 全子包 Race 零报警 · 32 新模块 Chain 高并发覆盖 · 生产注意事项 [速查](docs/production.md)
+> **🛡️ 生产就绪** — 440+ 用例 · 全子包 Race 零报警 · 32 新模块 Chain 高并发覆盖 · 生产注意事项 [速查](docs/production.md)
 
 ---
 
@@ -64,17 +64,17 @@ async 基于以下核心理念构建，区别于市面上其他 Go 并发库：
 | `Group AutoScale`（10M 便捷API） | **805K ops/s** | 1 千万任务 |
 | `Retry` | **51M/s** | 1 百万次 |
 
-> 全部测试启用 `-race` 验证。6 套压测体系、350+ 用例、Depth 交叉验证全部通过，详见 [测试报告](docs/test_report.md)。
+> 全部测试启用 `-race` 验证。7 套压测体系、440+ 用例、Depth 交叉验证全部通过，详见 [测试报告](docs/test_report.md)。
 
 ---
 
 ## 质量评级
 
-经过深度交叉验证（逐行代码审查 + 350+ 用例 + 千万级 Race Detector + 死锁专项测试），async 库在各维度的质量评估：
+经过深度交叉验证（逐行代码审查 + 440+ 用例 + 千万级 Race Detector + 死锁专项测试），async 库在各维度的质量评估：
 
 | 维度 | 评分 | 验证方法 |
 |------|:--:|------|
-| **正确性** | ⭐⭐⭐⭐⭐ | 千万任务 Race Detector 零报警、4 个高风险疑点交叉排除 |
+| **正确性** | ⭐⭐⭐⭐⭐ | 千万任务 Race Detector 零报警、5 项深度交叉验证（4 项误判排除 + 1 项 Bug 已根治） |
 | **并发安全** | ⭐⭐⭐⭐⭐ | 多层防御链（CAS → atomic → done 检测 → recover）、锁分片、死锁 100 轮验证通过 |
 | **性能** | ⭐⭐⭐⭐⭐ | 单 Pool 370K/s、MultiPool 280 万/s、Map 2.95 亿/s、RateLimiter 924 万/s |
 | **Goroutine 管理** | ⭐⭐⭐⭐⭐ | Run 自动管理生命周期、WaitTimeout 超时清理、addInFlight 防 TOCTOU 竞态 |
@@ -103,6 +103,7 @@ async 基于以下核心理念构建，区别于市面上其他 Go 并发库：
 | Pool | `Close` 并发 Submit | 多层防御链交叉验证 | ✅ 无逃逸路径 |
 | Pool | `WaitTimeout` goroutine 泄漏 | 50 轮并发关闭 | ✅ 有超时兜底 |
 | Group | `AutoScale`+`Go`/`Reset` 竞态 | 30 轮 × 100 并发 | ✅ 无竞态 |
+| **Group** | **WaitContext/WaitTimeout 取消传播缺陷** | **90 用例交叉验证 + -race** | **✅ 已根治** |
 | Pool | `Resize`+`Submit` 交替 | 500 万任务 Race | ✅ 零报警 |
 | MultiPool | `Submit`+`Wait`（8 分片） | 1000 万任务 Race | ✅ 零报警 |
 
@@ -1363,11 +1364,11 @@ all := results.Snapshot()
 
 ## 极限高并发测试报告简介
 
-async 经过了 **350+ 用例、6 套测试体系、全子包 Race Detector 5 轮反复验证**，确保生产环境并发安全。
+async 经过了 **440+ 用例、7 套测试体系、全子包 Race Detector 5 轮反复验证**，确保生产环境并发安全。
 
 ### 深度交叉验证
 
-针对 4 个高风险的并发疑点（RateLimiter 锁序反转、Resize 并发竞态、Pool WaitTimeout goroutine 泄漏、Group AutoScale 竞态）进行了系统性审查与验证，**全部验证通过，核心并发路径安全可靠**。
+针对 5 项并发疑点（RateLimiter 锁序反转、Resize 并发竞态、Pool WaitTimeout goroutine 泄漏、Group AutoScale 竞态、Group WaitContext/WaitTimeout 取消传播缺陷）进行了系统性审查与验证，**4 项验证通过，1 项真实 Bug 已彻底修复，核心并发路径安全可靠**。
 
 ### 核心吞吐指标
 

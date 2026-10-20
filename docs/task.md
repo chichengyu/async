@@ -99,6 +99,7 @@ user, err := ar.Wait()  // 阻塞等待结果
 | `Ok()` | `bool` | 是否成功（无错误、无 panic） |
 | `IsPanic()` | `bool` | 是否因 panic 失败 |
 | `WaitTimeout(d)` | `(T, error, bool)` | 带超时等待，第三个返回值 `false` 表示超时 |
+| `WaitContext(ctx)` | `(T, error, bool)` | 带 Context 控制等待，`false` 表示 ctx 取消 |
 
 ```go
 ar := async.Task[string]().Context(ctx).
@@ -349,6 +350,82 @@ ar := async.Task[int]().Context(ctx).
 > **⚠️ Bounded 限制的是同时运行任务数**
 >
 > `Bounded(max)` 通过内部信号量控制最大并发 Goroutine 数。`max <= 0` 时无限制。注意：Bounded 限制的是**同时运行**的任务数，不是总任务数。一次性提交大量任务时，`*AsyncResult[T]` 对象仍会全部创建，注意内存占用。
+
+---
+
+## WaitContext（带 Context 等待）
+
+`WaitContext` 允许调用方通过外部 `context.Context` 控制等待行为：
+
+```go
+ar := async.Task[string]().Context(ctx).
+    Go(func(ctx context.Context) (string, error) {
+        time.Sleep(5 * time.Second)
+        return "done", nil
+    })
+
+// 通过 context 控制等待
+waitCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+defer cancel()
+
+val, err, ok := ar.WaitContext(waitCtx)
+if !ok {
+    fmt.Println("等待超时") // ok=false，val 为零值
+}
+```
+
+> **⚠️ AsyncResult 的 WaitContext 不受 Group 取消传播 Bug 影响**
+>
+> `AsyncResult` 是一对一消费模型（单个消费者等待单个结果），无 worker goroutine 管理层级，因此不受 `cancelAll()` 时序问题影响。
+
+### 调用者主动取消模式
+
+结合 `context.WithCancel` 外部取消 + `WaitContext` 兜底等待：
+
+```go
+// ① 调用方掌控取消
+parentCtx, cancel := context.WithCancel(context.Background())
+
+// ② 异步任务绑定 parentCtx
+ar := async.Task[int]().Context(parentCtx).
+    WithTimeout(10 * time.Second).
+    Go(func(ctx context.Context) (int, error) {
+        select {
+        case <-ctx.Done():
+            return 0, ctx.Err()     // 收到取消信号
+        case <-time.After(30 * time.Second):
+            return 42, nil
+        }
+    })
+
+// ③ 任意位置主动取消
+go func() {
+    time.Sleep(100 * time.Millisecond)
+    cancel() // ← 传播到任务 ctx
+}()
+
+// ④ WaitContext 兜底（防止取消传播异常导致永久阻塞）
+waitCtx, waitCancel := context.WithTimeout(context.Background(), 3*time.Second)
+defer waitCancel()
+val, err, ok := ar.WaitContext(waitCtx)
+// cancel() 触发 → 任务 ctx.Done() → 任务返回 → WaitContext 正常结束
+```
+
+### 超时自动取消模式
+
+通过 `WaitTimeout` 或 `WaitContext` + `context.WithTimeout` 实现超时后自动获取部分结果：
+
+```go
+// 方式一：WaitTimeout 直接传超时
+val, err, ok := ar.WaitTimeout(100 * time.Millisecond)
+
+// 方式二：WaitContext + context.WithTimeout
+ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+defer cancel()
+val, err, ok := ar.WaitContext(ctx)
+```
+
+> 两种方式等效。超时后 `ok=false`，`val` 为零值。即使任务仍在执行，调用方也不会被阻塞。
 
 ---
 

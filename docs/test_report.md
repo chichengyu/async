@@ -2,7 +2,7 @@
 
 > **测试环境**：Go 1.25 · Windows/Linux · 16 核 CPU · `-race` 全局启用
 >
-> **测试体系**：6 套测试套件 · 350+ 用例 · 深度交叉正向/反向验证
+> **测试体系**：7 套测试套件 · 440+ 用例 · 深度交叉正向/反向验证
 
 ---
 
@@ -103,6 +103,57 @@
 
 ---
 
+### 疑点五：Group WaitContext/WaitTimeout 取消传播时序缺陷 → ✅ 真实 Bug，已根治
+
+**审查对象**：`Group.WaitContext` / `Group.WaitTimeout` 在 cancel/timeout 分支中的 `cancelAll()` 调用时序
+
+**问题描述**：
+
+在 `WaitContext` 的 `ctx.Done()` 分支和 `WaitTimeout` 的 `timer.C` 分支中，`cancelAll()`（取消所有任务的 context）原本在 `closeTaskCh()` 和 `workerWg.Wait()` **之后**执行。这导致：
+1. worker goroutine 被阻塞在等待任务完成（任务在等待 ctx 取消信号）
+2. `cancelAll()` 尚未调用 → 任务收不到取消信号 → 永远阻塞
+3. `workerWg.Wait()` 永远等不到所有 worker 退出 → 死锁
+
+**修复方案**（最小化原则，两行代码顺序对调）：
+
+```go
+// 修复前（取消分支）：workerWg.Wait() 在 cancelAll() 之前 → 死锁
+case <-ctx.Done() | <-timer.C:
+    g.closeTaskCh()
+    g.workerWg.Wait()   // ← 等待 worker，但任务收不到取消信号
+    // ... g.cancelAll() 在 mu.Lock 后才调用
+
+// 修复后（取消分支）：cancelAll() 移到最前面
+case <-ctx.Done() | <-timer.C:
+    g.cancelAll()        // ← 1. 先取消所有任务
+    g.closeTaskCh()      // ← 2. 关闭任务通道
+    g.workerWg.Wait()    // ← 3. worker 立即退出（任务已取消）
+```
+
+**修复范围**：
+
+| 组件 | 受否影响 | 修复方式 |
+|------|:---:|------|
+| `Group.WaitTimeout` | ✅ 受影响 | 取消分支两行对调 |
+| `Group.WaitContext` | ✅ 受影响 | 取消分支两行对调 |
+| `NoResult` | 继承修复 | 类型转换委托 Group |
+| `MultiGroup.WaitTimeout/WaitContext` | 继承修复 | WaitTimeout→WaitContext→Group.WaitContext |
+| `ShardedGroup.WaitTimeout/WaitContext` | 继承修复 | WaitTimeout→WaitContext→Group.WaitContext |
+| `Pool.WaitTimeout/WaitContext` | ❌ 不受影响 | 委托 `core.WaitContextImpl`（单层 wg，无 workerWg） |
+| `MultiPool.WaitTimeout/WaitContext` | ❌ 不受影响 | 委托 Pool |
+| `AsyncResult.WaitTimeout/WaitContext` | ❌ 不受影响 | 单结果消费者，无 worker goroutine 管理 |
+
+**验证矩阵**（90 个测试用例）：
+
+| 测试维度 | 测试数 | 验证内容 |
+|---------|:---:|------|
+| 原有测试 | 58 | 破坏性回归验证 |
+| 修复验证测试 | 22 | 单/多 worker cancel、WaitTimeout/WaitContext 超时、deadline/主动取消/已取消 ctx、混合任务、空组、高并发、panic 安全、NoResult/MultiGroup 委托链、连续调用、GoAt、组级超时叠加、WithContext 叠加、Wait 后 WaitContext |
+| 链式调用测试 | 10 | 单/双/三重 builder 链式 + WaitContext/WaitTimeout、WithStreaming/WithResultCallback/WithContext/DefaultGroup 链式入口 |
+| **合计（含 -race）** | **90** | ✅ **全部 PASS，零竞态报警** |
+
+---
+
 ### 交叉验证汇总
 
 | 疑点编号 | 涉及组件 | 怀疑类型 | 验证方法 | 结论 |
@@ -111,8 +162,9 @@
 | 疑点二 | RateLimiter | Resize 并发竞态 | 426K 次 Race 检测 | ✅ 误判，无竞态 |
 | 疑点三 | Pool | WaitTimeout goroutine 泄漏 | 50 轮并发关闭验证 | ✅ 误判，有超时兜底 |
 | 疑点四 | Group | AutoScale 竞态 | 30 轮并发 Go + Reset | ✅ 误判，无竞态 |
+| **疑点五** | **Group** | **WaitContext/WaitTimeout 取消传播时序缺陷** | **90 用例交叉验证 + -race** | **✅ 真实 Bug，已根治** |
 
-> **以上 4 个疑点全部验证为误判，深度交叉正向/反向验证确认库的核心并发路径安全可靠。**
+> **以上 4 个疑点验证为误判，疑点五确认为真实 Bug 并已彻底修复。库的核心并发路径安全可靠。**
 
 ---
 
@@ -128,6 +180,7 @@ async 库使用 6 层测试体系，从单元测试到极限压测全覆盖：
 | **Production 测试** | 混合使用场景、极限并发、边界条件 | ~25 | `go test -run Production` | 生产环境模拟 |
 | **10M Race 压力** | 千万级任务 Race 检测 + 高并发反复验证 | ~15 | `go test -race -run 10M` | 极限压力验证 |
 | **死锁验证** | RateLimiter 关键锁序交叉验证 | 3 场景 | `go test -run Deadlock` | 锁安全性专项 |
+| **取消传播验证** | Group WaitContext/WaitTimeout 取消时序 | 90 用例 | `go test -race -run Cancel\|Timeout\|Chain` | 取消传播完整性 |
 
 ---
 
@@ -366,8 +419,8 @@ async 库使用 6 层测试体系，从单元测试到极限压测全覆盖：
 
 | 维度 | 状态 | 说明 |
 |------|------|------|
-| **Race Detector** | ✅ 全通过 | 350+ 用例、全部子包、5 轮反复验证，零报警 |
-| **死锁风险** | ✅ 排除 | 4 个疑点全部深度交叉验证为误判 |
+| **Race Detector** | ✅ 全通过 | 440+ 用例、全部子包、5 轮反复验证，零报警 |
+| **死锁风险** | ✅ 排除 | 5 个疑点全部深度交叉验证（4 项误判 + 1 项真实 Bug 已根治） |
 | **Goroutine 泄漏** | ✅ 无 | WaitTimeout 有 MaxCleanupDuration 兜底，Close 后计数归零 |
 | **内存安全** | ✅ 保障 | WithMaxResults/WithRingBuffer/WithStreaming 多级防护 |
 | **数据竞争** | ✅ 无 | 32 路分片无锁结果存储 + atomic 操作保护 |

@@ -15,9 +15,10 @@
 | **Pool** | `WaitTimeout` 清理 goroutine | 有 `MaxCleanupDuration` 超时控制，无泄漏 |
 | **Pool** | `CloseAndWaitTimeout` 并发 | 50 轮 × 200 并发，goroutine 计数 = 0 |
 | **Group** | `AutoScale` + `Go`/`Reset` 竞态 | 30 轮 × 100 并发，无泄漏无竞态 |
+| **Group** | `WaitContext`/`WaitTimeout` 取消传播时序 | 90 用例交叉验证，`cancelAll()` 先行调用修复完成 |
 | **ShardedGroup** | cancel 共享 | FailFast 设计正确，级联取消无误 |
 
-> 以上验证已覆盖库中所有高风险的并发路径，确认生产环境安全可靠。
+> 以上验证已覆盖库中所有高风险的并发路径（4 项误判排除 + 1 项真实 Bug 已根治），确认生产环境安全可靠。
 
 ---
 
@@ -160,9 +161,9 @@ result, err := tk.Result()
 
 | 方法 | 返回类型 | 必须操作 | 忘记后果 |
 |------|---------|---------|---------|
-| `Task[T]().Go(fn)` | `*AsyncResult[T]` | `Wait()` / `WaitTimeout()` | goroutine 泄漏 |
+| `Task[T]().Go(fn)` | `*AsyncResult[T]` | `Wait()` / `WaitTimeout()` / `WaitContext()` | goroutine 泄漏 |
 | `Task[T]().GoResult(fn)` | `Task[T]` | `Cancel()` 或 `Result()` | goroutine 泄漏 |
-| `TaskVoid().GoAct(fn)` | `*AsyncErr` | `Wait()` / `WaitTimeout()` | goroutine 泄漏 |
+| `TaskVoid().GoAct(fn)` | `*AsyncErr` | `Wait()` / `WaitTimeout()` / `WaitContext()` | goroutine 泄漏 |
 | `TaskVoid().GoResultAct(fn)` | `*TaskErr` | `Cancel()` 或 `Result()` | goroutine 泄漏 |
 | `Task[T]().Bounded(max).Go(fn)` | `*AsyncResult[T]` | `Wait()` / `WaitTimeout()` | goroutine + 信号量泄漏 |
 | `Task[T]().Bounded(max).GoResult(fn)` | `Task[T]` | `Cancel()` 或 `Result()` | goroutine + 信号量泄漏 |
@@ -433,6 +434,7 @@ async.Pool[MyType]().Worker(async.IO()).
 | **RateLimiter Burst 非缓存** | Burst 是初始突发量，用完后需等补充，不是长期可用 |
 | **RateLimiter Resize 安全** | 经深度交叉验证，Resize+Acquire/Release 并发绝对安全 |
 | **Group AutoScale** | 按需启用，Min/Max 根据下游承受能力调整 |
+| **Group WaitContext/WaitTimeout** | 修复后 `cancelAll()` 在 `workerWg.Wait()` 之前调用，取消信号正确传播 |
 | **ShardedGroup cancel** | FailFast 模式下 cancel 共享是设计意图，非 bug |
 | **全局配置尽早调用** | `Set*` 函数建议在 `init()` 中调用，避免并发竞态 |
 | **FailFast 丢弃成功结果** | 第一个错误后其他成功结果被丢弃，详见上文 |

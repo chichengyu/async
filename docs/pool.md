@@ -263,6 +263,8 @@
 | 方法 | 返回值 | 说明 |
 |------|--------|------|
 | `Wait()` | `[]Result[T]` | 等待所有分片完成，合并结果 |
+| `WaitTimeout(d)` | `([]Result[T], bool)` | 带超时等待，ok=false 表示超时 |
+| `WaitContext(ctx)` | `([]Result[T], bool)` | 带 context 等待，ok=false 表示 ctx 取消 |
 | `WaitAndClose()` | `[]Result[T]` | 等待完成并关闭所有分片 |
 | `Close()` | — | 关闭所有分片 |
 
@@ -304,6 +306,8 @@
 | `TotalCount()` | `int64` | 汇总所有分片任务总数 |
 | `TotalSuccessCount()` | `int64` | 汇总各分片成功数 |
 | `TotalFailCount()` | `int64` | 汇总各分片失败数 |
+
+> **💡 取消传播**：`MultiPool.WaitTimeout` → `Pool.WaitContext` → `core.WaitContextImpl` → 任务 ctx 取消。调用方主动取消模式与 Pool 一致，详见 [调用者主动取消模式](#调用者主动取消模式)。
 
 ---
 
@@ -586,6 +590,70 @@ results, ok := p.WaitTimeout(3 * time.Second)
 // 通过 context 控制
 results, ok := p.WaitContext(ctx)
 ```
+
+> **⚠️ 超时/取消后会向所有任务发送取消信号**
+>
+> `WaitTimeout` 超时和 `WaitContext` ctx 取消后，内部都会先取消所有任务的 context，再等待 worker 退出。确保任务能收到取消信号并尽早返回，不会被无限阻塞。Pool 委托 `core.WaitContextImpl`（单层 wg），实现层面与 Group 不同，但取消传播语义一致。
+
+#### 调用者主动取消模式
+
+结合 builder 链式配置和 `WaitContext`，调用方可在外部主动取消所有正在执行的任务：
+
+```go
+// ① 由调用方掌控取消时机
+parentCtx, cancel := context.WithCancel(context.Background())
+
+// ② 链式创建 Pool：绑定 parentCtx，拿到任务用的 taskCtx
+p, taskCtx := async.Pool[int]().Context(ctx).
+    Worker(6).
+    WithContext(parentCtx)        // ← 绑定父 context
+// 注意：Run 模式不需要 defer Close，Run 返回时自动 Close
+
+// ③ 在 Run 回调中用 taskCtx 提交任务
+err := p.Run(func(ctx context.Context, pool *async.Pool[int]) error {
+    for i := 0; i < 10; i++ {
+        pool.Submit(taskCtx, func(ctx context.Context) (int, error) {
+            select {
+            case <-ctx.Done():
+                return 0, ctx.Err()   // 收到取消信号，尽早返回
+            case <-time.After(10 * time.Second):
+                return 42, nil
+            }
+        })
+    }
+
+    // ④ 另一 goroutine 主动取消
+    go func() {
+        time.Sleep(100 * time.Millisecond)
+        cancel() // ← 调用者主动 cancel，取消链传播到所有 taskCtx
+    }()
+
+    // ⑤ WaitContext 兜底（防止 cancel 传播异常导致永久阻塞）
+    waitCtx, waitCancel := context.WithTimeout(context.Background(), 3*time.Second)
+    defer waitCancel()
+    results, ok := pool.WaitContext(waitCtx)
+    // cancel() 触发 → 任务 ctx.Done() → 任务返回 → WaitContext 正常结束
+    _ = results
+    _ = ok
+    return nil
+})
+```
+
+#### 超时自动取消模式
+
+通过 `WaitTimeout` 或 `context.WithTimeout` + `WaitContext` 实现超时自动停止：
+
+```go
+// 方式一：WaitTimeout 直接传超时
+results, ok := p.WaitTimeout(100 * time.Millisecond)
+
+// 方式二：WaitContext + context.WithTimeout
+ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+defer cancel()
+results, ok := p.WaitContext(ctx)
+```
+
+> 两种方式等效：超时后取消信号都会传播到所有正在执行的任务。
 
 ### Close / CloseAndWait / CloseAndWaitTimeout
 

@@ -379,6 +379,10 @@ if !ok {
 // results 包含已完成任务的结果
 ```
 
+> **⚠️ 超时后会向所有任务发送取消信号**
+>
+> `WaitTimeout` 超时后内部会先调用 `cancelAll()`（取消所有任务），再关闭 task channel，最后等待 worker 退出。这确保任务能收到取消信号并尽早返回，而不是被无限阻塞。
+
 ### WaitContext
 
 等待所有任务完成或 ctx 取消。`ok=false` 表示 ctx 提前取消：
@@ -388,6 +392,80 @@ ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 defer cancel()
 results, ok := g.WaitContext(ctx)
 ```
+
+> **⚠️ ctx 取消后会向所有任务发送取消信号**
+>
+> `WaitContext` 在 ctx 取消后内部会先调用 `cancelAll()`（取消所有任务），再关闭 task channel，最后等待 worker 退出。在一方主动取消后，所有任务会收到取消信号并尽早返回。
+
+### 调用者主动取消模式
+
+结合 `WithContext` / `WithFailFast` builder 方法和 `WaitContext`，调用方可以在外部主动取消所有任务：
+
+```go
+// ① 由调用方掌控取消时机
+parentCtx, cancel := context.WithCancel(context.Background())
+
+// ② 链式创建 Group：绑定 parentCtx，拿到任务用的 taskCtx
+g, taskCtx := async.Group[int]().Context(ctx).
+    Worker(6).
+    WithTimeout(5 * time.Second).
+    WithContext(parentCtx)      // ← 绑定父 context
+defer g.Close()
+
+// ③ 用 taskCtx 提交任务（parentCtx 的取消会传播到 taskCtx）
+for i := 0; i < 5; i++ {
+    g.Go(taskCtx, func(ctx context.Context) (int, error) {
+        select {
+        case <-ctx.Done():
+            return 0, ctx.Err()     // 收到取消信号，尽早返回
+        case <-time.After(10 * time.Second):
+            return 42, nil
+        }
+    })
+}
+
+// ④ 另一 goroutine 主动取消
+go func() {
+    time.Sleep(100 * time.Millisecond)
+    cancel()  // ← 调用者主动 cancel，取消链传播到所有 taskCtx
+}()
+
+// ⑤ WaitContext 兜底（防止 cancel 传播异常导致永久阻塞）
+waitCtx, waitCancel := context.WithTimeout(context.Background(), 3*time.Second)
+defer waitCancel()
+results, ok := g.WaitContext(waitCtx)
+// cancel() 触发 → 任务 ctx.Done() → 任务返回 → WaitContext 正常结束
+```
+
+> **⚠️ WithContext 返回 (*Group[T], context.Context)**
+>
+> `WithContext(ctx)` 返回派生的 `taskCtx` 和 `*Group[T]`，因此在纯链式调用中必须放在链末尾：
+>
+> ```go
+> // ✅ 正确：需要 ctx 的方法放在链最后
+> g, taskCtx := async.Group[int]().Worker(6).WithTimeout(5*time.Second).WithContext(parentCtx)
+>
+> // ✅ 纯链式（不需要 ctx 的 builder 方法）：可以无限链
+> g := async.Group[int]().Worker(6).WithTimeout(5*time.Second).WithStreaming(1024)
+> ```
+>
+> 不需要自定义 context 时，纯链式 builder 可一直链下去，不受影响。
+
+### 超时自动取消模式
+
+通过 `WaitTimeout` 或 `context.WithTimeout` + `WaitContext` 实现超时自动取消：
+
+```go
+// 方式一：WaitTimeout 直接传超时
+results, ok := g.WaitTimeout(100 * time.Millisecond)
+
+// 方式二：WaitContext + context.WithTimeout
+ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+defer cancel()
+results, ok := g.WaitContext(ctx)
+```
+
+> 两种方式等效：超时后取消信号都会传播到所有正在执行的任务。
 
 ### Close
 
@@ -844,6 +922,8 @@ err := async.GroupMulti[int]().Context(ctx).
 | `Go(ctx, fn)` | round-robin 分发到某个分片 |
 | `GoKeyed(key, ctx, fn)` | 按 key 哈希路由到固定分片（同一 key 的任务落到同一分片） |
 | `Wait()` | 等待所有分片完成，合并结果 |
+| `WaitTimeout(d)` | 带超时等待，返回 `(results, ok)` |
+| `WaitContext(ctx)` | 带 context 等待，返回 `(results, ok)` |
 | `Close()` | 关闭所有分片 |
 | `ShardCount()` | 返回分片数 |
 | `GetShard(idx)` | 获取指定分片的 `*Group[T]` 实例 |
@@ -863,6 +943,8 @@ err := async.GroupMulti[int]().Context(ctx).
 > **⚠️ MultiGroup 同 Group 也是"一次性"的**
 >
 > 每个分片内部预创建 Worker goroutine，Run 返回后所有分片 Close、所有 Worker 退出。海量持续性任务请使用 MultiPool。
+>
+> **💡 取消传播**：`MultiGroup.WaitTimeout` → `Group.WaitContext` → `cancelAll()` → 每个分片的 worker 任务均收到取消信号。调用方主动取消模式与 Group 一致，详见 [调用者主动取消模式](#调用者主动取消模式)。
 
 > **⚠️ Wait() 结果不保证全局顺序**
 >

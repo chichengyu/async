@@ -735,6 +735,65 @@ func processWithDeadline(ctx context.Context, items []string) error {
 }
 ```
 
+### ShardedGroup + 调用者主动取消
+
+结合 `context.WithCancel` 和 `WaitContext`，调用方可在外部主动取消所有分片中的任务：
+
+```go
+func processWithCancel(ctx context.Context, items []string) error {
+    // ① 由调用方掌控取消时机
+    parentCtx, cancel := context.WithCancel(context.Background())
+
+    // ② 另一 goroutine 主动取消
+    go func() {
+        time.Sleep(500 * time.Millisecond)
+        cancel() // ← 取消链传播到每个分片的 Group
+    }()
+
+    // ③ 所有分片任务绑定 parentCtx
+    err := async.GroupSharded[string]().Context(parentCtx).
+        Shards(4).Worker(2).
+        Run(func(ctx context.Context, sg *ShardedGroup[string]) error {
+            for _, item := range items {
+                sg.Go(ctx, func(ctx context.Context) (string, error) {
+                    select {
+                    case <-ctx.Done():
+                        return "", ctx.Err()
+                    case <-time.After(10 * time.Second):
+                        return process(item)
+                    }
+                })
+            }
+
+            // ④ WaitContext 兜底
+            waitCtx, waitCancel := context.WithTimeout(context.Background(), 3*time.Second)
+            defer waitCancel()
+            results, ok := sg.WaitContext(waitCtx)
+            // cancel() 触发 → 任务 Done → WaitContext 正常结束
+            _ = results
+            _ = ok
+            return nil
+        })
+    return err
+}
+```
+
+### ShardedGroup + 超时自动取消
+
+通过 `WaitTimeout` 或 `context.WithTimeout` + `WaitContext` 实现超时后自动停止所有分片任务：
+
+```go
+// 方式一：WaitTimeout 直接传超时
+results, ok := sg.WaitTimeout(100 * time.Millisecond)
+
+// 方式二：WaitContext + context.WithTimeout
+ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+defer cancel()
+results, ok := sg.WaitContext(ctx)
+```
+
+> 两种方式等效。超时后取消信号传播到每个分片内部的 Group.WaitContext，再由 Group 传播到各 worker 的任务。ShardedGroup 本身委托 Group，修复后取消传播链路为：`ShardedGroup.WaitTimeout → 子 Group.WaitContext → cancelAll() → 任务 ctx.Done()`。
+
 ### ShardedGroup + FailFast 快速失败
 
 ```go
