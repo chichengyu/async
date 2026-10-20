@@ -2585,3 +2585,349 @@ func TestWaitTimeout_Cancel_TwiceCall(t *testing.T) {
 	}
 	t.Logf("WaitTimeout twice-call OK: len1=%d, len2=%d", len(r1), len(r2))
 }
+
+// ==================== Builder 链式调用 + WaitContext/WaitTimeout ====================
+
+// TestChain_WithTimeout_WaitContext
+// NewGroup.WithTimeout 链式调用后，WaitContext 取消信号应正确传播。
+func TestChain_WithTimeout_WaitContext(t *testing.T) {
+	g := NewGroup[int](6).WithTimeout(5 * time.Second)
+	defer g.Close()
+	ctx := context.Background()
+
+	for i := 0; i < 5; i++ {
+		g.Go(ctx, func(taskCtx context.Context) (int, error) {
+			<-taskCtx.Done()
+			return 0, taskCtx.Err()
+		})
+	}
+
+	waitCtx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	results, ok := g.WaitContext(waitCtx)
+	elapsed := time.Since(start)
+
+	if ok {
+		t.Fatal("expected cancelled (ok=false)")
+	}
+	if elapsed > 3*time.Second {
+		t.Fatalf("chain WithTimeout+WaitContext blocked too long: %v", elapsed)
+	}
+	if len(results) != 5 {
+		t.Fatalf("expected 5 results, got %d", len(results))
+	}
+	for _, r := range results {
+		if r.Err == nil {
+			t.Error("all results should have error from cancel")
+		}
+	}
+	t.Logf("chain WithTimeout+WaitContext OK: returned in %v", elapsed)
+}
+
+// TestChain_WithTimeout_WaitTimeout
+// NewGroup.WithTimeout 链式调用后，WaitTimeout 超时应正确传播。
+func TestChain_WithTimeout_WaitTimeout(t *testing.T) {
+	g := NewGroup[int](6).WithTimeout(10 * time.Second)
+	defer g.Close()
+	ctx := context.Background()
+
+	for i := 0; i < 5; i++ {
+		g.Go(ctx, func(taskCtx context.Context) (int, error) {
+			<-taskCtx.Done()
+			return 0, taskCtx.Err()
+		})
+	}
+
+	start := time.Now()
+	results, ok := g.WaitTimeout(100 * time.Millisecond)
+	elapsed := time.Since(start)
+
+	if ok {
+		t.Fatal("expected timeout (ok=false)")
+	}
+	if elapsed > 3*time.Second {
+		t.Fatalf("chain WithTimeout+WaitTimeout blocked too long: %v", elapsed)
+	}
+	if len(results) != 5 {
+		t.Fatalf("expected 5 results, got %d", len(results))
+	}
+	t.Logf("chain WithTimeout+WaitTimeout OK: returned in %v", elapsed)
+}
+
+// TestChain_WithSubmitTimeout_WaitContext
+// NewGroup.WithSubmitTimeout 链式调用后，WaitContext 取消信号应正确传播。
+func TestChain_WithSubmitTimeout_WaitContext(t *testing.T) {
+	g := NewGroup[int](6).WithSubmitTimeout(5 * time.Second)
+	defer g.Close()
+	ctx := context.Background()
+
+	for i := 0; i < 5; i++ {
+		g.Go(ctx, func(taskCtx context.Context) (int, error) {
+			<-taskCtx.Done()
+			return 0, taskCtx.Err()
+		})
+	}
+
+	waitCtx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	results, ok := g.WaitContext(waitCtx)
+	elapsed := time.Since(start)
+
+	if ok {
+		t.Fatal("expected cancelled (ok=false)")
+	}
+	if elapsed > 3*time.Second {
+		t.Fatalf("chain WithSubmitTimeout+WaitContext blocked too long: %v", elapsed)
+	}
+	if len(results) != 5 {
+		t.Fatalf("expected 5 results, got %d", len(results))
+	}
+	t.Logf("chain WithSubmitTimeout+WaitContext OK: returned in %v", elapsed)
+}
+
+// TestChain_DoubleBuilder_WaitContext
+// NewGroup.WithTimeout.WithSubmitTimeout 双重链式调用后，WaitContext 取消信号正确传播。
+func TestChain_DoubleBuilder_WaitContext(t *testing.T) {
+	g := NewGroup[int](6).WithTimeout(5 * time.Second).WithSubmitTimeout(3 * time.Second)
+	defer g.Close()
+	ctx := context.Background()
+
+	for i := 0; i < 5; i++ {
+		g.Go(ctx, func(taskCtx context.Context) (int, error) {
+			<-taskCtx.Done()
+			return 0, taskCtx.Err()
+		})
+	}
+
+	waitCtx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	results, ok := g.WaitContext(waitCtx)
+	elapsed := time.Since(start)
+
+	if ok {
+		t.Fatal("expected cancelled (ok=false)")
+	}
+	if elapsed > 3*time.Second {
+		t.Fatalf("chain DoubleBuilder+WaitContext blocked too long: %v", elapsed)
+	}
+	if len(results) != 5 {
+		t.Fatalf("expected 5 results, got %d", len(results))
+	}
+	t.Logf("chain DoubleBuilder+WaitContext OK: returned in %v", elapsed)
+}
+
+// TestChain_DoubleBuilder_WaitTimeout
+// NewGroup.WithTimeout.WithSubmitTimeout 双重链式调用后，WaitTimeout 超时应正确传播。
+func TestChain_DoubleBuilder_WaitTimeout(t *testing.T) {
+	g := NewGroup[int](6).WithTimeout(10 * time.Second).WithSubmitTimeout(5 * time.Second)
+	defer g.Close()
+	ctx := context.Background()
+
+	for i := 0; i < 5; i++ {
+		g.Go(ctx, func(taskCtx context.Context) (int, error) {
+			<-taskCtx.Done()
+			return 0, taskCtx.Err()
+		})
+	}
+
+	start := time.Now()
+	results, ok := g.WaitTimeout(100 * time.Millisecond)
+	elapsed := time.Since(start)
+
+	if ok {
+		t.Fatal("expected timeout (ok=false)")
+	}
+	if elapsed > 3*time.Second {
+		t.Fatalf("chain DoubleBuilder+WaitTimeout blocked too long: %v", elapsed)
+	}
+	if len(results) != 5 {
+		t.Fatalf("expected 5 results, got %d", len(results))
+	}
+	t.Logf("chain DoubleBuilder+WaitTimeout OK: returned in %v", elapsed)
+}
+
+// TestChain_WithStreaming_WaitContext
+// NewGroup.WithStreaming 链式调用后，WaitContext 取消信号正确传播。
+func TestChain_WithStreaming_WaitContext(t *testing.T) {
+	g := NewGroup[int](6).WithStreaming(10)
+	defer g.Close()
+	ctx := context.Background()
+
+	for i := 0; i < 5; i++ {
+		g.Go(ctx, func(taskCtx context.Context) (int, error) {
+			<-taskCtx.Done()
+			return 0, taskCtx.Err()
+		})
+	}
+
+	waitCtx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	results, ok := g.WaitContext(waitCtx)
+	elapsed := time.Since(start)
+
+	if ok {
+		t.Fatal("expected cancelled (ok=false)")
+	}
+	if elapsed > 3*time.Second {
+		t.Fatalf("chain WithStreaming+WaitContext blocked too long: %v", elapsed)
+	}
+	if len(results) != 5 {
+		t.Fatalf("expected 5 results, got %d", len(results))
+	}
+	t.Logf("chain WithStreaming+WaitContext OK: returned in %v", elapsed)
+}
+
+// TestChain_WithResultCallback_WaitContext
+// NewGroup.WithResultCallback 链式调用后，WaitContext 取消信号正确传播，回调应触发。
+func TestChain_WithResultCallback_WaitContext(t *testing.T) {
+	var callbackResults []core.Result[int]
+	var mu sync.Mutex
+	g := NewGroup[int](6).WithResultCallback(func(r core.Result[int]) {
+		mu.Lock()
+		callbackResults = append(callbackResults, r)
+		mu.Unlock()
+	})
+	defer g.Close()
+	ctx := context.Background()
+
+	for i := 0; i < 5; i++ {
+		g.Go(ctx, func(taskCtx context.Context) (int, error) {
+			<-taskCtx.Done()
+			return 0, taskCtx.Err()
+		})
+	}
+
+	waitCtx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	results, ok := g.WaitContext(waitCtx)
+	elapsed := time.Since(start)
+
+	if ok {
+		t.Fatal("expected cancelled (ok=false)")
+	}
+	if elapsed > 3*time.Second {
+		t.Fatalf("chain WithResultCallback+WaitContext blocked too long: %v", elapsed)
+	}
+	if len(results) != 5 {
+		t.Fatalf("expected 5 results, got %d", len(results))
+	}
+	mu.Lock()
+	cbCount := len(callbackResults)
+	mu.Unlock()
+	if cbCount != 5 {
+		t.Errorf("expected 5 callback results, got %d", cbCount)
+	}
+	t.Logf("chain WithResultCallback+WaitContext OK: returned in %v, callbacks=%d", elapsed, cbCount)
+}
+
+// TestChain_WithContext_WaitContext
+// WithContext 返回 (*Group, ctx)，不能链在 NewGroup 后，但仍然是 builder 模式的一部分。
+// 验证此模式下 WaitContext 取消信号正确传播。
+func TestChain_WithContext_WaitContext(t *testing.T) {
+	g := NewGroup[int](6)
+	groupCtx, groupCancel := context.WithCancel(context.Background())
+	defer groupCancel()
+	g, _ = g.WithContext(groupCtx)
+	defer g.Close()
+
+	for i := 0; i < 5; i++ {
+		g.Go(groupCtx, func(taskCtx context.Context) (int, error) {
+			<-taskCtx.Done()
+			return 0, taskCtx.Err()
+		})
+	}
+
+	waitCtx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	results, ok := g.WaitContext(waitCtx)
+	elapsed := time.Since(start)
+
+	if ok {
+		t.Fatal("expected cancelled (ok=false)")
+	}
+	if elapsed > 3*time.Second {
+		t.Fatalf("chain WithContext+WaitContext blocked too long: %v", elapsed)
+	}
+	if len(results) != 5 {
+		t.Fatalf("expected 5 results, got %d", len(results))
+	}
+	t.Logf("chain WithContext+WaitContext OK: returned in %v", elapsed)
+}
+
+// TestChain_TripleBuilder_WaitContext
+// NewGroup.WithTimeout.WithSubmitTimeout.WithStreaming 三重链式调用后，取消信号正确传播。
+func TestChain_TripleBuilder_WaitContext(t *testing.T) {
+	g := NewGroup[int](6).WithTimeout(5 * time.Second).WithSubmitTimeout(3 * time.Second).WithStreaming(10)
+	defer g.Close()
+	ctx := context.Background()
+
+	for i := 0; i < 5; i++ {
+		g.Go(ctx, func(taskCtx context.Context) (int, error) {
+			<-taskCtx.Done()
+			return 0, taskCtx.Err()
+		})
+	}
+
+	waitCtx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	results, ok := g.WaitContext(waitCtx)
+	elapsed := time.Since(start)
+
+	if ok {
+		t.Fatal("expected cancelled (ok=false)")
+	}
+	if elapsed > 3*time.Second {
+		t.Fatalf("chain TripleBuilder+WaitContext blocked too long: %v", elapsed)
+	}
+	if len(results) != 5 {
+		t.Fatalf("expected 5 results, got %d", len(results))
+	}
+	t.Logf("chain TripleBuilder+WaitContext OK: returned in %v", elapsed)
+}
+
+// TestChain_DefaultGroup_WaitContext
+// DefaultGroup 返回已经可以链式调用的 Group，验证 WaitContext 取消信号传播。
+func TestChain_DefaultGroup_WaitContext(t *testing.T) {
+	g := DefaultGroup[int]().WithTimeout(5 * time.Second)
+	defer g.Close()
+	ctx := context.Background()
+
+	for i := 0; i < 5; i++ {
+		g.Go(ctx, func(taskCtx context.Context) (int, error) {
+			<-taskCtx.Done()
+			return 0, taskCtx.Err()
+		})
+	}
+
+	waitCtx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	results, ok := g.WaitContext(waitCtx)
+	elapsed := time.Since(start)
+
+	if ok {
+		t.Fatal("expected cancelled (ok=false)")
+	}
+	if elapsed > 3*time.Second {
+		t.Fatalf("chain DefaultGroup+WaitContext blocked too long: %v", elapsed)
+	}
+	if len(results) != 5 {
+		t.Fatalf("expected 5 results, got %d", len(results))
+	}
+	t.Logf("chain DefaultGroup+WaitContext OK: returned in %v", elapsed)
+}
