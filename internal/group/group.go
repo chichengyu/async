@@ -1173,6 +1173,7 @@ func (g *Group[T]) WaitTimeout(d time.Duration) ([]core.Result[T], bool) {
 		g.workerWg.Wait()
 	case <-timer.C:
 		ok = false
+		g.cancelAll()
 		g.closeTaskCh()
 		g.workerWg.Wait()
 	}
@@ -1224,6 +1225,7 @@ func (g *Group[T]) WaitContext(ctx context.Context) ([]core.Result[T], bool) {
 		g.workerWg.Wait()
 	case <-ctx.Done():
 		ok = false
+		g.cancelAll()
 		g.closeTaskCh()
 		g.workerWg.Wait()
 	}

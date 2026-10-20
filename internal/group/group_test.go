@@ -1782,3 +1782,806 @@ func TestMultiGroup_WaitContext_Then_WaitTimeout(t *testing.T) {
 		t.Fatalf("WaitContext→WaitTimeout: ok1=%v len1=%d ok2=%v len2=%d", ok1, len(r1), ok2, len(r2))
 	}
 }
+
+// ──────────────────────── WaitContext 取消传播修复验证 ────────────────────────
+//
+// 修复前：Group.WaitContext / WaitTimeout 在 ctx 取消后先调用 workerWg.Wait()
+//        再调用 cancelAll()，导致任务没收到取消信号，cancel 形同虚设。
+// 修复后：cancelAll() 在 workerWg.Wait() 之前调用，任务收到 ctx 取消信号后
+//        快速退出，WaitContext/WaitTimeout 不会再被未取消的任务无限阻塞。
+
+// ==================== WaitContext 取消传播 — 核心验证 ====================
+
+// TestWaitContext_CancelPropagation_SingleWorker
+// 核心验证：单个 worker 执行阻塞在 <-ctx.Done() 的任务。
+// WaitContext 超时取消后，cancelAll() 触达任务 → 任务立即返回 → WaitContext 不再永久阻塞。
+func TestWaitContext_CancelPropagation_SingleWorker(t *testing.T) {
+	g := NewGroup[int](1)
+	defer g.Close()
+	ctx := context.Background()
+
+	g.Go(ctx, func(taskCtx context.Context) (int, error) {
+		<-taskCtx.Done()
+		return 0, taskCtx.Err()
+	})
+
+	waitCtx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	results, ok := g.WaitContext(waitCtx)
+	elapsed := time.Since(start)
+
+	if ok {
+		t.Fatal("expected cancelled (ok=false)")
+	}
+	if elapsed > 3*time.Second {
+		t.Fatalf("WaitContext blocked too long: %v (cancel signal did NOT reach task)", elapsed)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].Err == nil {
+		t.Error("expected cancellation error in result")
+	}
+	t.Logf("cancel propagation OK: returned in %v, err=%v", elapsed, results[0].Err)
+}
+
+// TestWaitContext_CancelPropagation_MultiWorker
+// 核心验证：多个 worker 全部阻塞在 <-ctx.Done()，cancelAll 同时触达所有 worker。
+func TestWaitContext_CancelPropagation_MultiWorker(t *testing.T) {
+	g := NewGroup[int](8)
+	defer g.Close()
+	ctx := context.Background()
+	n := 16
+
+	for i := 0; i < n; i++ {
+		g.Go(ctx, func(taskCtx context.Context) (int, error) {
+			<-taskCtx.Done()
+			return 0, taskCtx.Err()
+		})
+	}
+
+	waitCtx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	results, ok := g.WaitContext(waitCtx)
+	elapsed := time.Since(start)
+
+	if ok {
+		t.Fatal("expected cancelled (ok=false)")
+	}
+	if elapsed > 3*time.Second {
+		t.Fatalf("WaitContext blocked too long with %d workers: %v", n, elapsed)
+	}
+	if len(results) != n {
+		t.Fatalf("expected %d results, got %d", n, len(results))
+	}
+	errCount := 0
+	for _, r := range results {
+		if r.Err != nil {
+			errCount++
+		}
+	}
+	if errCount != n {
+		t.Errorf("expected all %d results to have cancellation error, got %d with err", n, errCount)
+	}
+	t.Logf("multi-worker cancel OK: returned in %v, %d/%d results have errors", elapsed, errCount, n)
+}
+
+// ==================== WaitTimeout 取消传播 — 核心验证 ====================
+
+// TestWaitTimeout_TimeoutPropagation
+// 核心验证：WaitTimeout 超时后 cancelAll() 触达阻塞在 ctx.Done() 的任务。
+func TestWaitTimeout_TimeoutPropagation(t *testing.T) {
+	g := NewGroup[int](4)
+	defer g.Close()
+	ctx := context.Background()
+
+	for i := 0; i < 10; i++ {
+		g.Go(ctx, func(taskCtx context.Context) (int, error) {
+			<-taskCtx.Done()
+			return 0, taskCtx.Err()
+		})
+	}
+
+	start := time.Now()
+	results, ok := g.WaitTimeout(100 * time.Millisecond)
+	elapsed := time.Since(start)
+
+	if ok {
+		t.Fatal("expected timeout (ok=false)")
+	}
+	if elapsed > 3*time.Second {
+		t.Fatalf("WaitTimeout blocked too long: %v (timeout signal did NOT reach tasks)", elapsed)
+	}
+	if len(results) != 10 {
+		t.Fatalf("expected 10 results, got %d", len(results))
+	}
+	for i, r := range results {
+		if r.Err == nil {
+			t.Errorf("result[%d]: expected error, got nil", i)
+		}
+	}
+	t.Logf("WaitTimeout propagation OK: returned in %v", elapsed)
+}
+
+// ==================== WaitContext 超时场景 — Deadline 传播 ====================
+
+// TestWaitContext_WithDeadline_Propagation
+// 与 WithTimeout 相同语义，验证 deadline 到期时 cancelAll 触达任务。
+func TestWaitContext_WithDeadline_Propagation(t *testing.T) {
+	g := NewGroup[int](6)
+	defer g.Close()
+	ctx := context.Background()
+
+	for i := 0; i < 5; i++ {
+		g.Go(ctx, func(taskCtx context.Context) (int, error) {
+			<-taskCtx.Done()
+			return 0, taskCtx.Err()
+		})
+	}
+
+	deadline := time.Now().Add(100 * time.Millisecond)
+	deadlineCtx, cancel := context.WithDeadline(context.Background(), deadline)
+	defer cancel()
+
+	start := time.Now()
+	results, ok := g.WaitContext(deadlineCtx)
+	elapsed := time.Since(start)
+
+	if ok {
+		t.Fatal("expected deadline exceeded (ok=false)")
+	}
+	if elapsed > 3*time.Second {
+		t.Fatalf("WaitContext blocked too long with deadline: %v", elapsed)
+	}
+	if len(results) != 5 {
+		t.Fatalf("expected 5 results, got %d", len(results))
+	}
+	t.Logf("deadline propagation OK: returned in %v", elapsed)
+}
+
+// ==================== WaitContext 取消传播 — 外部主动取消 ====================
+
+// TestWaitContext_ExternalCancel_Propagation
+// 外部调用 cancel()（非 timeout/deadline 触发）时，cancelAll 同样触达任务。
+func TestWaitContext_ExternalCancel_Propagation(t *testing.T) {
+	g := NewGroup[int](6)
+	defer g.Close()
+	ctx := context.Background()
+
+	for i := 0; i < 5; i++ {
+		g.Go(ctx, func(taskCtx context.Context) (int, error) {
+			<-taskCtx.Done()
+			return 0, taskCtx.Err()
+		})
+	}
+
+	waitCtx, cancel := context.WithCancel(context.Background())
+
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		cancel()
+	}()
+
+	start := time.Now()
+	results, ok := g.WaitContext(waitCtx)
+	elapsed := time.Since(start)
+
+	if ok {
+		t.Fatal("expected cancelled (ok=false)")
+	}
+	if elapsed > 3*time.Second {
+		t.Fatalf("WaitContext blocked too long after external cancel: %v", elapsed)
+	}
+	if len(results) != 5 {
+		t.Fatalf("expected 5 results, got %d", len(results))
+	}
+	t.Logf("external cancel propagation OK: returned in %v", elapsed)
+}
+
+// ==================== WaitContext — 混合任务（部分响应取消 / 部分不响应） ====================
+
+// TestWaitContext_CancelPropagation_Mixed
+// 混合场景：部分任务阻塞在 ctx.Done()，部分任务使用 time.Sleep（不响应取消）。
+// 取消后所有响应取消的任务应立即退出，不响应的任务会自然结束。
+func TestWaitContext_CancelPropagation_Mixed(t *testing.T) {
+	g := NewGroup[int](4)
+	defer g.Close()
+	ctx := context.Background()
+
+	var cancelledCount atomic.Int64
+	nResponsive := 4
+	nUnresponsive := 4
+
+	// 响应取消的：阻塞在 ctx.Done()
+	for i := 0; i < nResponsive; i++ {
+		g.Go(ctx, func(taskCtx context.Context) (int, error) {
+			select {
+			case <-taskCtx.Done():
+				cancelledCount.Add(1)
+				return 0, taskCtx.Err()
+			case <-time.After(30 * time.Second):
+				return 1, nil
+			}
+		})
+	}
+
+	// 不响应取消的：纯 sleep（短时间，让测试不卡太久）
+	for i := 0; i < nUnresponsive; i++ {
+		g.Go(ctx, func(taskCtx context.Context) (int, error) {
+			time.Sleep(200 * time.Millisecond)
+			return 42, nil
+		})
+	}
+
+	waitCtx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	results, ok := g.WaitContext(waitCtx)
+	elapsed := time.Since(start)
+
+	if ok {
+		t.Fatal("expected timeout (ok=false)")
+	}
+	// 总时间：不响应任务 sleep 200ms + 调度开销
+	if elapsed > 2*time.Second {
+		t.Fatalf("WaitContext blocked too long with mixed tasks: %v", elapsed)
+	}
+	if len(results) != nResponsive+nUnresponsive {
+		t.Fatalf("expected %d results, got %d", nResponsive+nUnresponsive, len(results))
+	}
+	if cancelledCount.Load() != int64(nResponsive) {
+		t.Errorf("expected %d tasks cancelled, got %d", nResponsive, cancelledCount.Load())
+	}
+	t.Logf("mixed tasks OK: returned in %v, responsive cancelled=%d", elapsed, cancelledCount.Load())
+}
+
+// ==================== WaitContext — 部分结果完整性 ====================
+
+// TestWaitContext_ResultsIntegrity
+// 部分任务先完成，部分任务在取消后返回。验证结果完整性：已完成任务的结果 + 取消任务的结果。
+func TestWaitContext_ResultsIntegrity(t *testing.T) {
+	g := NewGroup[int](8)
+	defer g.Close()
+	ctx := context.Background()
+	nSlow := 4
+	nFast := 4
+	n := nSlow + nFast
+
+	for i := 0; i < n; i++ {
+		idx := i
+		g.Go(ctx, func(taskCtx context.Context) (int, error) {
+			if idx < nFast {
+				// 前几个快速完成
+				return idx * 100, nil
+			}
+			// 其余阻塞直到取消
+			<-taskCtx.Done()
+			return 0, taskCtx.Err()
+		})
+	}
+
+	waitCtx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	results, ok := g.WaitContext(waitCtx)
+
+	if ok {
+		t.Fatal("expected cancelled (ok=false)")
+	}
+	if len(results) != n {
+		t.Fatalf("expected %d results, got %d", n, len(results))
+	}
+
+	successCount := 0
+	cancelCount := 0
+	for _, r := range results {
+		if r.Err == nil && r.Value%100 == 0 {
+			successCount++
+		} else if r.Err != nil {
+			cancelCount++
+		}
+	}
+	if successCount != nFast {
+		t.Errorf("expected %d successful results, got %d", nFast, successCount)
+	}
+	if cancelCount != nSlow {
+		t.Errorf("expected %d cancelled results, got %d", nSlow, cancelCount)
+	}
+	t.Logf("results integrity OK: success=%d, cancelled=%d", successCount, cancelCount)
+}
+
+// ==================== WaitContext — 已取消 ctx 的边界 ====================
+
+// TestWaitContext_AlreadyCancelledCtx
+// 传入已经取消的 context，WaitContext 应立即返回而不阻塞。
+func TestWaitContext_AlreadyCancelledCtx(t *testing.T) {
+	g := NewGroup[int](6)
+	defer g.Close()
+	ctx := context.Background()
+
+	for i := 0; i < 5; i++ {
+		g.Go(ctx, func(taskCtx context.Context) (int, error) {
+			<-taskCtx.Done()
+			return 0, taskCtx.Err()
+		})
+	}
+
+	alreadyCancelledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	start := time.Now()
+	results, ok := g.WaitContext(alreadyCancelledCtx)
+	elapsed := time.Since(start)
+
+	if ok {
+		t.Fatal("expected cancelled (ok=false) with already-cancelled ctx")
+	}
+	if elapsed > 3*time.Second {
+		t.Fatalf("WaitContext blocked too long with already-cancelled ctx: %v", elapsed)
+	}
+	if len(results) != 5 {
+		t.Fatalf("expected 5 results, got %d", len(results))
+	}
+	t.Logf("already-cancelled ctx OK: returned in %v", elapsed)
+}
+
+// ==================== WaitContext — 空 Group ====================
+
+// TestWaitContext_EmptyGroup
+// 未提交任何任务时，WaitContext 应正常完成。
+func TestWaitContext_EmptyGroup(t *testing.T) {
+	g := NewGroup[int](4)
+	defer g.Close()
+
+	results, ok := g.WaitContext(context.Background())
+	if !ok {
+		t.Fatal("empty group WaitContext should return ok=true")
+	}
+	if len(results) != 0 {
+		t.Fatalf("expected 0 results, got %d", len(results))
+	}
+}
+
+// TestWaitTimeout_EmptyGroup
+// 未提交任何任务时，WaitTimeout 应正常完成。
+func TestWaitTimeout_EmptyGroup(t *testing.T) {
+	g := NewGroup[int](4)
+	defer g.Close()
+
+	results, ok := g.WaitTimeout(time.Second)
+	if !ok {
+		t.Fatal("empty group WaitTimeout should return ok=true")
+	}
+	if len(results) != 0 {
+		t.Fatalf("expected 0 results, got %d", len(results))
+	}
+}
+
+// ==================== WaitContext — 取消后不可再提交 ====================
+
+// TestWaitContext_GoAfterCancel
+// WaitContext 取消返回后，再调用 Go 应返回错误。
+func TestWaitContext_GoAfterCancel(t *testing.T) {
+	g := NewGroup[int](6)
+	defer g.Close()
+	ctx := context.Background()
+
+	for i := 0; i < 3; i++ {
+		g.Go(ctx, func(taskCtx context.Context) (int, error) {
+			<-taskCtx.Done()
+			return 0, taskCtx.Err()
+		})
+	}
+
+	waitCtx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	_, ok := g.WaitContext(waitCtx)
+	if ok {
+		t.Fatal("expected timeout (ok=false)")
+	}
+
+	err := g.Go(ctx, func(taskCtx context.Context) (int, error) {
+		return 1, nil
+	})
+	if err == nil {
+		t.Error("Go after WaitContext cancel should return error")
+	}
+	t.Logf("Go after cancel error: %v", err)
+}
+
+// ==================== WaitContext — 大并发取消压力 ====================
+
+// TestWaitContext_CancelPropagation_HighConcurrency
+// 高并发下，cancelAll 应同时取消所有阻塞任务。
+func TestWaitContext_CancelPropagation_HighConcurrency(t *testing.T) {
+	g := NewGroup[int](16)
+	defer g.Close()
+	ctx := context.Background()
+	n := 32
+
+	for i := 0; i < n; i++ {
+		g.Go(ctx, func(taskCtx context.Context) (int, error) {
+			<-taskCtx.Done()
+			return 0, taskCtx.Err()
+		})
+	}
+
+	waitCtx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	results, ok := g.WaitContext(waitCtx)
+	elapsed := time.Since(start)
+
+	if ok {
+		t.Fatal("expected cancelled (ok=false)")
+	}
+	if elapsed > 3*time.Second {
+		t.Fatalf("high-concurrency WaitContext blocked too long: %v", elapsed)
+	}
+	if len(results) != n {
+		t.Fatalf("expected %d results, got %d", n, len(results))
+	}
+	t.Logf("high-concurrency cancel OK: returned in %v, %d results", elapsed, n)
+}
+
+// ==================== WaitContext — Panic 恢复安全 ====================
+
+// TestWaitContext_PanicSafety_CancelPath
+// 取消路径中任务 panic，确保能被捕获并记录，不影响其它任务。
+func TestWaitContext_PanicSafety_CancelPath(t *testing.T) {
+	g := NewGroup[int](2)
+	defer g.Close()
+	ctx := context.Background()
+
+	g.Go(ctx, func(taskCtx context.Context) (int, error) {
+		<-taskCtx.Done()
+		panic("intentional panic in cancel path")
+	})
+
+	g.Go(ctx, func(taskCtx context.Context) (int, error) {
+		<-taskCtx.Done()
+		return 0, taskCtx.Err()
+	})
+
+	waitCtx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	results, ok := g.WaitContext(waitCtx)
+
+	if ok {
+		t.Fatal("expected cancelled (ok=false)")
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(results))
+	}
+
+	panicCount := 0
+	cancelCount := 0
+	for _, r := range results {
+		if r.Err != nil {
+			if _, isPanic := r.Err.(*core.PanicError); isPanic {
+				panicCount++
+			} else {
+				cancelCount++
+			}
+		}
+	}
+	if panicCount != 1 {
+		t.Errorf("expected 1 panic error, got %d", panicCount)
+	}
+	if cancelCount != 1 {
+		t.Errorf("expected 1 cancel error, got %d", cancelCount)
+	}
+	t.Logf("panic safety on cancel path OK: panic=%d, cancel=%d", panicCount, cancelCount)
+}
+
+// ==================== WaitContext — 无返回值 NoResult 场景 ====================
+
+// TestNoResult_WaitContext_CancelPropagation
+// NoResult.WaitContext 的取消传播（委托给 Group.WaitContext）。
+func TestNoResult_WaitContext_CancelPropagation(t *testing.T) {
+	nr := NewNoResult(6)
+	defer nr.Close()
+	ctx := context.Background()
+
+	for i := 0; i < 5; i++ {
+		nr.Go(ctx, func(taskCtx context.Context) error {
+			<-taskCtx.Done()
+			return taskCtx.Err()
+		})
+	}
+
+	waitCtx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	completed, ok := nr.WaitContext(waitCtx)
+	elapsed := time.Since(start)
+
+	if ok {
+		t.Fatal("expected cancelled (ok=false)")
+	}
+	if elapsed > 3*time.Second {
+		t.Fatalf("NoResult.WaitContext blocked too long: %v", elapsed)
+	}
+	if completed < 0 || completed > 5 {
+		t.Errorf("unexpected completed count: %d", completed)
+	}
+	t.Logf("NoResult cancel propagation OK: returned in %v, completed=%d", elapsed, completed)
+}
+
+// ==================== MultiGroup WaitContext — 跨分片取消传播 ====================
+
+// TestMultiGroup_WaitContext_CancelPropagation
+// MultiGroup 的所有分片同时收到取消信号，任务全部退出。
+func TestMultiGroup_WaitContext_CancelPropagation(t *testing.T) {
+	g := NewGroup[int](4)
+	defer g.Close()
+	mg := g.Shard(4)
+	defer mg.Close()
+	ctx := context.Background()
+
+	n := 24
+	for i := 0; i < n; i++ {
+		_ = mg.Go(ctx, func(taskCtx context.Context) (int, error) {
+			<-taskCtx.Done()
+			return 0, taskCtx.Err()
+		})
+	}
+
+	waitCtx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	results, ok := mg.WaitContext(waitCtx)
+	elapsed := time.Since(start)
+
+	if ok {
+		t.Fatal("expected cancelled (ok=false)")
+	}
+	if elapsed > 3*time.Second {
+		t.Fatalf("MultiGroup.WaitContext blocked too long: %v (cancel signal NOT propagated to all shards)", elapsed)
+	}
+	if len(results) != n {
+		t.Fatalf("expected %d results, got %d", n, len(results))
+	}
+	t.Logf("MultiGroup cancel propagation OK: returned in %v, %d/%d results", elapsed, len(results), n)
+}
+
+// TestMultiGroup_WaitTimeout_TimeoutPropagation
+// MultiGroup.WaitTimeout 超时信号同时触达所有分片。
+func TestMultiGroup_WaitTimeout_TimeoutPropagation(t *testing.T) {
+	g := NewGroup[int](4)
+	defer g.Close()
+	mg := g.Shard(4)
+	defer mg.Close()
+	ctx := context.Background()
+
+	n := 24
+	for i := 0; i < n; i++ {
+		_ = mg.Go(ctx, func(taskCtx context.Context) (int, error) {
+			<-taskCtx.Done()
+			return 0, taskCtx.Err()
+		})
+	}
+
+	start := time.Now()
+	results, ok := mg.WaitTimeout(100 * time.Millisecond)
+	elapsed := time.Since(start)
+
+	if ok {
+		t.Fatal("expected timeout (ok=false)")
+	}
+	if elapsed > 3*time.Second {
+		t.Fatalf("MultiGroup.WaitTimeout blocked too long: %v", elapsed)
+	}
+	if len(results) != n {
+		t.Fatalf("expected %d results, got %d", n, len(results))
+	}
+	t.Logf("MultiGroup timeout propagation OK: returned in %v", elapsed)
+}
+
+// ==================== WaitContext — 连续两次调用 ====================
+
+// TestWaitContext_Cancel_TwiceCall
+// WaitContext 取消返回后再次调用，返回缓存结果。
+func TestWaitContext_Cancel_TwiceCall(t *testing.T) {
+	g := NewGroup[int](6)
+	defer g.Close()
+	ctx := context.Background()
+
+	for i := 0; i < 5; i++ {
+		g.Go(ctx, func(taskCtx context.Context) (int, error) {
+			<-taskCtx.Done()
+			return 0, taskCtx.Err()
+		})
+	}
+
+	waitCtx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	r1, ok1 := g.WaitContext(waitCtx)
+	r2, ok2 := g.WaitContext(context.Background())
+
+	if ok1 || !ok2 {
+		t.Fatalf("first call ok=%v (expected false, timeout), second call ok=%v (expected true, waited)", ok1, ok2)
+	}
+	if len(r1) != 5 || len(r2) != 5 {
+		t.Fatalf("results: len1=%d, len2=%d", len(r1), len(r2))
+	}
+	t.Logf("WaitContext twice-call OK: len1=%d, len2=%d", len(r1), len(r2))
+}
+
+// ==================== WaitContext — GoAt 索引任务 ====================
+
+// TestWaitContext_CancelPropagation_GoAt
+// 使用 GoAt 提交索引位置的任务，取消传播同样生效。
+func TestWaitContext_CancelPropagation_GoAt(t *testing.T) {
+	g := NewGroup[int](4)
+	defer g.Close()
+	ctx := context.Background()
+
+	for i := 0; i < 5; i++ {
+		idx := i
+		_ = g.GoAt(idx, ctx, func(taskCtx context.Context) (int, error) {
+			<-taskCtx.Done()
+			return 0, taskCtx.Err()
+		})
+	}
+
+	waitCtx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	results, ok := g.WaitContext(waitCtx)
+	elapsed := time.Since(start)
+
+	if ok {
+		t.Fatal("expected cancelled (ok=false)")
+	}
+	if elapsed > 3*time.Second {
+		t.Fatalf("WaitContext blocked too long with GoAt: %v", elapsed)
+	}
+	if len(results) != 5 {
+		t.Fatalf("expected 5 results, got %d", len(results))
+	}
+	t.Logf("GoAt cancel propagation OK: returned in %v", elapsed)
+}
+
+// ==================== WaitContext — 组级 WithTimeout 叠加 ====================
+
+// TestWaitContext_WithGroupTimeout_And_WaitContextTimeout
+// 组级别有 WithTimeout，WaitContext 也有 timeout。两者叠加，取消信号正确传播。
+func TestWaitContext_WithGroupTimeout_And_WaitContextTimeout(t *testing.T) {
+	g := NewGroup[int](6)
+	g.WithTimeout(5 * time.Second)
+	defer g.Close()
+	ctx := context.Background()
+
+	for i := 0; i < 5; i++ {
+		g.Go(ctx, func(taskCtx context.Context) (int, error) {
+			<-taskCtx.Done()
+			return 0, taskCtx.Err()
+		})
+	}
+
+	waitCtx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	results, ok := g.WaitContext(waitCtx)
+	elapsed := time.Since(start)
+
+	if ok {
+		t.Fatal("expected cancelled (ok=false)")
+	}
+	if elapsed > 3*time.Second {
+		t.Fatalf("WaitContext blocked too long with group timeout: %v", elapsed)
+	}
+	if len(results) != 5 {
+		t.Fatalf("expected 5 results, got %d", len(results))
+	}
+	t.Logf("group+WaitContext timeout OK: returned in %v", elapsed)
+}
+
+// ==================== WaitContext — WithContext 组级 ctx ====================
+
+// TestWaitContext_WithGroupContext_AndWaitContextCancel
+// 组级别有 WithContext，WaitContext 使用独立 ctx。取消 WaitContext 的 ctx 不影响组级 ctx。
+func TestWaitContext_WithGroupContext_AndWaitContextCancel(t *testing.T) {
+	groupCtx, groupCancel := context.WithCancel(context.Background())
+	defer groupCancel()
+	g := NewGroup[int](6)
+	g.WithContext(groupCtx)
+	defer g.Close()
+
+	for i := 0; i < 5; i++ {
+		g.Go(groupCtx, func(taskCtx context.Context) (int, error) {
+			<-taskCtx.Done()
+			return 0, taskCtx.Err()
+		})
+	}
+
+	waitCtx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	results, ok := g.WaitContext(waitCtx)
+	elapsed := time.Since(start)
+
+	if ok {
+		t.Fatal("expected cancelled (ok=false)")
+	}
+	if elapsed > 3*time.Second {
+		t.Fatalf("WaitContext blocked too long with group context: %v", elapsed)
+	}
+	if len(results) != 5 {
+		t.Fatalf("expected 5 results, got %d", len(results))
+	}
+	t.Logf("group context + WaitContext cancel OK: returned in %v", elapsed)
+}
+
+// ==================== WaitContext — Wait 后 WaitContext ====================
+
+// TestWaitContext_AfterWait
+// 先正常 Wait，再 WaitContext（已 waited，第二次调用走缓存）。
+func TestWaitContext_AfterWait(t *testing.T) {
+	g := NewGroup[int](2)
+	defer g.Close()
+	ctx := context.Background()
+
+	for i := 0; i < 5; i++ {
+		g.Go(ctx, func(taskCtx context.Context) (int, error) {
+			return i, nil
+		})
+	}
+
+	results1 := g.Wait()
+	if len(results1) != 5 {
+		t.Fatalf("Wait: expected 5 results, got %d", len(results1))
+	}
+
+	results2, ok2 := g.WaitContext(context.Background())
+	if !ok2 {
+		t.Fatal("WaitContext after Wait should return ok=true (cached)")
+	}
+	if len(results2) != 5 {
+		t.Fatalf("WaitContext after Wait: expected 5 results, got %d", len(results2))
+	}
+	t.Logf("Wait then WaitContext OK: len1=%d, len2=%d", len(results1), len(results2))
+}
+
+// ==================== WaitTimeout — 连续两次调用 ====================
+
+// TestWaitTimeout_Cancel_TwiceCall
+// WaitTimeout 超时返回后再调用，返回缓存结果。
+func TestWaitTimeout_Cancel_TwiceCall(t *testing.T) {
+	g := NewGroup[int](6)
+	defer g.Close()
+	ctx := context.Background()
+
+	for i := 0; i < 5; i++ {
+		g.Go(ctx, func(taskCtx context.Context) (int, error) {
+			<-taskCtx.Done()
+			return 0, taskCtx.Err()
+		})
+	}
+
+	r1, ok1 := g.WaitTimeout(100 * time.Millisecond)
+	r2, ok2 := g.WaitTimeout(time.Second)
+
+	if ok1 || !ok2 {
+		t.Fatalf("first call ok=%v (expected false, timeout), second call ok=%v (expected true, waited)", ok1, ok2)
+	}
+	if len(r1) != 5 || len(r2) != 5 {
+		t.Fatalf("results: len1=%d, len2=%d", len(r1), len(r2))
+	}
+	t.Logf("WaitTimeout twice-call OK: len1=%d, len2=%d", len(r1), len(r2))
+}
