@@ -94,9 +94,9 @@ func BindRetryToWorker(
 			core.LogTaskFail(ctx, err, fmt.Sprintf("bind retry attempt %d/%d failed", attempt+1, maxRetries+1))
 			if backoff := computeBackoff(attempt, initialBackoff, maxBackoff); backoff > 0 {
 				timer := time.NewTimer(backoff)
-				defer timer.Stop()
 				select {
 				case <-ctx.Done():
+					timer.Stop()
 					return ctx.Err()
 				case <-timer.C:
 				}

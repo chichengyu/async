@@ -161,9 +161,9 @@ func RetryWithConfig[T any](
 
 		if backoff := computeBackoff(attempt, initialBackoff, maxBackoff); backoff > 0 {
 			timer := time.NewTimer(backoff)
-			defer timer.Stop()
 			select {
 			case <-ctx.Done():
+				timer.Stop()
 				return zero, ctx.Err()
 			case <-timer.C:
 			}
