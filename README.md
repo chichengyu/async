@@ -74,7 +74,7 @@ async 基于以下核心理念构建，区别于市面上其他 Go 并发库：
 
 | 维度 | 评分 | 验证方法 |
 |------|:--:|------|
-| **正确性** | ⭐⭐⭐⭐⭐ | 千万任务 Race Detector 零报警、5 项深度交叉验证（4 项误判排除 + 1 项 Bug 已根治） |
+| **正确性** | ⭐⭐⭐⭐⭐ | 千万任务 Race Detector 零报警、5 项深度交叉验证通过 |
 | **并发安全** | ⭐⭐⭐⭐⭐ | 多层防御链（CAS → atomic → done 检测 → recover）、锁分片、死锁 100 轮验证通过 |
 | **性能** | ⭐⭐⭐⭐⭐ | 单 Pool 370K/s、MultiPool 280 万/s、Map 2.95 亿/s、RateLimiter 924 万/s |
 | **Goroutine 管理** | ⭐⭐⭐⭐⭐ | Run 自动管理生命周期、WaitTimeout 超时清理、addInFlight 防 TOCTOU 竞态 |
