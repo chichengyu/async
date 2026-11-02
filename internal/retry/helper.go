@@ -30,8 +30,11 @@ type RetryFn func() error
 // WithRetry 执行 fn，最多执行 maxRetries+1 次，自动捕获 panic。
 //
 // 参数：
-//   - maxRetries：最大重试次数
+//   - maxRetries：最大重试次数，负数按 0 处理
 func (r RetryFn) WithRetry(maxRetries int) error {
+	if maxRetries < 0 {
+		maxRetries = 0
+	}
 	var lastErr error
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		err := r.safeCall()
@@ -64,7 +67,7 @@ type WorkerPoolBackend interface {
 //   - ctx：上下文，取消后终止重试
 //   - backend：WorkerPoolBackend 接口（Pool 实现此接口）
 //   - fn：要提交执行的任务函数
-//   - maxRetries：最大重试次数
+//   - maxRetries：最大重试次数，负数按 0 处理
 //   - initialBackoff：初始退避时间
 //   - maxBackoff：最大退避时间上限
 //
@@ -82,8 +85,14 @@ func BindRetryToWorker(
 	initialBackoff time.Duration,
 	maxBackoff time.Duration,
 ) error {
+	if maxRetries < 0 {
+		maxRetries = 0
+	}
 	var lastErr error
 	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		err := backend.Submit(ctx, fn)
 		if err == nil {
 			return nil
@@ -91,6 +100,9 @@ func BindRetryToWorker(
 
 		if errors.Is(err, core.ErrSubmitTimeout) {
 			lastErr = err
+			if attempt == maxRetries {
+				break
+			}
 			core.LogTaskFail(ctx, err, fmt.Sprintf("bind retry attempt %d/%d failed", attempt+1, maxRetries+1))
 			if backoff := computeBackoff(attempt, initialBackoff, maxBackoff); backoff > 0 {
 				timer := time.NewTimer(backoff)

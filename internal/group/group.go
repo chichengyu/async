@@ -37,26 +37,35 @@ type Group[T any] struct {
 	results       []core.Result[T]
 	freeIndices   []int
 	cancels       []context.CancelFunc
-	errCnt        int64
+	waitCanceled  bool // protected by mu
+	totalCnt      atomic.Int64
+	okCnt         atomic.Int64
+	errCnt        atomic.Int64
 	active        atomic.Int32
 	busy          atomic.Int32
 	waiting       atomic.Bool
+	cancelMu      sync.RWMutex
 	cancel        context.CancelFunc
+	failCancel    context.CancelFunc
 	timeout       time.Duration
 	submitTimeout time.Duration
 	failFast      atomic.Bool
 	waited        atomic.Bool
+	waitOnce      sync.Once
+	waitDone      chan struct{}
 	ctx           context.Context
 	done          atomic.Pointer[chan struct{}]
 	doneSignalled atomic.Bool
 
 	taskCh       chan groupTask[T]
 	workerWg     sync.WaitGroup
+	workerCount  atomic.Int32
 	shutdownCh   chan struct{}
 	shuttingDown atomic.Bool
 	taskChClosed atomic.Bool
 
 	autoScale        *core.AutoScaleConfig
+	autoScaleMu      sync.Mutex
 	autoScaleEnabled atomic.Bool
 	autoScaleStop    chan struct{}
 
@@ -108,11 +117,13 @@ func NewGroup[T any](concurrency int) *Group[T] {
 		ctx:        context.Background(),
 		taskCh:     make(chan groupTask[T], concurrency),
 		shutdownCh: make(chan struct{}),
+		waitDone:   make(chan struct{}),
 	}
 	g.concurrency.Store(int32(concurrency))
 	doneCh := make(chan struct{})
 	g.done.Store(&doneCh)
 	for i := 0; i < concurrency; i++ {
+		g.workerCount.Add(1)
 		g.workerWg.Add(1)
 		go g.worker()
 	}
@@ -139,7 +150,9 @@ func DefaultGroup[T any]() *Group[T] {
 //	g, ctx := group.DefaultGroup[string]().WithTraceID(ctx)
 func (g *Group[T]) WithTraceID(ctx context.Context) (*Group[T], context.Context) {
 	ctx = core.EnsureTraceID(ctx)
+	g.cancelMu.Lock()
 	g.ctx = ctx
+	g.cancelMu.Unlock()
 	return g, ctx
 }
 
@@ -155,8 +168,10 @@ func (g *Group[T]) WithTraceID(ctx context.Context) (*Group[T], context.Context)
 //	defer cancel() // 由调用方管理原始 ctx 的取消
 func (g *Group[T]) WithContext(ctx context.Context) (*Group[T], context.Context) {
 	ctx, cancel := context.WithCancel(ctx)
+	g.cancelMu.Lock()
 	g.cancel = core.MergeCancel(g.cancel, cancel)
 	g.ctx = ctx
+	g.cancelMu.Unlock()
 	return g, ctx
 }
 
@@ -170,9 +185,11 @@ func (g *Group[T]) WithContext(ctx context.Context) (*Group[T], context.Context)
 //	g, ctx := group.DefaultGroup[string]().WithFailFast(ctx)
 func (g *Group[T]) WithFailFast(ctx context.Context) (*Group[T], context.Context) {
 	ctx, cancel := context.WithCancel(ctx)
+	g.cancelMu.Lock()
 	g.cancel = core.MergeCancel(g.cancel, cancel)
 	g.failFast.Store(true)
 	g.ctx = ctx
+	g.cancelMu.Unlock()
 	return g, ctx
 }
 
@@ -188,8 +205,34 @@ func (g *Group[T]) WithFFCtx(ctx context.Context) (*Group[T], context.Context) {
 // 用于 ShardedGroup 等上层组件在多个 Group 间共享 failFast 取消信号，
 // 确保任一 Group 的任务失败能取消所有 Group。
 func (g *Group[T]) MergeFailFastCancel(cancel context.CancelFunc) *Group[T] {
-	g.cancel = core.MergeCancel(g.cancel, cancel)
+	g.cancelMu.Lock()
+	g.failCancel = core.MergeCancel(g.failCancel, cancel)
+	g.cancelMu.Unlock()
 	return g
+}
+
+func (g *Group[T]) taskFailCancel() context.CancelFunc {
+	g.cancelMu.RLock()
+	defer g.cancelMu.RUnlock()
+	if g.failCancel == nil {
+		return g.cancel
+	}
+	return core.MergeCancel(g.cancel, g.failCancel)
+}
+
+func (g *Group[T]) groupContext() context.Context {
+	g.cancelMu.RLock()
+	defer g.cancelMu.RUnlock()
+	return g.ctx
+}
+
+func (g *Group[T]) cancelContext() {
+	g.cancelMu.RLock()
+	cancel := g.cancel
+	g.cancelMu.RUnlock()
+	if cancel != nil {
+		cancel()
+	}
 }
 
 // ─── 组合配置方法（FF=快速失败, Ctx=Context, TO=任务超时, Sto=提交超时, TID=TraceID）───
@@ -405,7 +448,15 @@ func (g *Group[T]) recordToStream(r core.Result[T]) {
 		}
 	}
 	if g.resultCb != nil {
-		g.resultCb(r)
+		func() {
+			defer func() {
+				if recovered := recover(); recovered != nil {
+					pe := core.NewPanicError(recovered)
+					core.LogCtxError(g.groupContext(), "async group result callback panic recovered", core.Any("panic", recovered), core.Bytes("stack", pe.Stack))
+				}
+			}()
+			g.resultCb(r)
+		}()
 	}
 }
 
@@ -430,9 +481,30 @@ func (g *Group[T]) drainStreaming() {
 
 func (g *Group[T]) worker() {
 	defer g.workerWg.Done()
-	for task := range g.taskCh {
-		if task.quit {
+	retired := false
+	defer func() {
+		if !retired {
+			g.workerCount.Add(-1)
+		}
+	}()
+	for {
+		if g.workerCount.Load() > g.concurrency.Load() {
+			g.autoScaleMu.Lock()
+			if g.workerCount.Load() > g.concurrency.Load() {
+				g.workerCount.Add(-1)
+				retired = true
+			}
+			g.autoScaleMu.Unlock()
+			if retired {
+				return
+			}
+		}
+		task, ok := <-g.taskCh
+		if !ok {
 			return
+		}
+		if task.quit {
+			continue
 		}
 		g.executeTask(task)
 	}
@@ -440,22 +512,23 @@ func (g *Group[T]) worker() {
 
 func (g *Group[T]) executeTask(task groupTask[T]) {
 	if g.pool != nil {
-		err := g.pool.Submit(task.taskCtx, func(ctx context.Context) (T, error) {
+		var executed atomic.Bool
+		g.pool.SubmitWithCompletion(task.taskCtx, func(ctx context.Context) (T, error) {
+			executed.Store(true)
 			g.busy.Add(1)
 			defer g.busy.Add(-1)
-			defer g.active.Add(-1)
-			defer g.wg.Done()
 			g.runTaskImpl(ctx, task.taskCancel, task.record, task.timeout, task.failFast, task.failCancel, task.fn)
 			var zero T
 			return zero, nil
+		}, func(r core.Result[T]) {
+			defer g.wg.Done()
+			defer g.active.Add(-1)
+			defer task.taskCancel()
+			if !executed.Load() {
+				g.errCnt.Add(1)
+				task.record(core.Result[T]{Err: r.Err, Occupied: true})
+			}
 		})
-		if err != nil {
-			atomic.AddInt64(&g.errCnt, 1)
-			task.record(core.Result[T]{Err: err, Occupied: true})
-			task.taskCancel()
-			g.active.Add(-1)
-			g.wg.Done()
-		}
 		return
 	}
 	g.busy.Add(1)
@@ -469,21 +542,23 @@ func (g *Group[T]) executeTask(task groupTask[T]) {
 
 func (g *Group[T]) groupPrecheck(ctx context.Context, record GroupRecordFunc[T], index int, caller string) (context.Context, context.CancelFunc, error) {
 	g.mu.Lock()
+	g.totalCnt.Add(1)
 	if g.waited.Load() {
-		if index >= 0 {
-			for len(g.results) <= index {
-				g.results = append(g.results, core.Result[T]{})
-			}
-			g.results[index] = core.Result[T]{Err: core.ErrGroupWaited, Occupied: true}
-		} else {
-			g.results = append(g.results, core.Result[T]{Err: core.ErrGroupWaited, Occupied: true})
-		}
+		g.results = append(g.results, core.Result[T]{Err: core.ErrGroupWaited, Occupied: true})
 		g.mu.Unlock()
 		core.LogCtxError(ctx, fmt.Sprintf("async: Group.%s called after Group.Wait, task discarded", caller))
-		atomic.AddInt64(&g.errCnt, 1)
+		g.errCnt.Add(1)
 		var cancel context.CancelFunc
 		return ctx, cancel, core.ErrGroupWaited
 	}
+	if g.waiting.Load() {
+		g.results = append(g.results, core.Result[T]{Err: core.ErrGroupWaiting, Occupied: true})
+		g.mu.Unlock()
+		g.errCnt.Add(1)
+		return ctx, nil, core.ErrGroupWaiting
+	}
+	g.addInFlight.Add(1)
+	defer g.addInFlight.Add(-1)
 	if index >= 0 {
 		for len(g.results) <= index {
 			g.freeIndices = append(g.freeIndices, len(g.results))
@@ -499,26 +574,23 @@ func (g *Group[T]) groupPrecheck(ctx context.Context, record GroupRecordFunc[T],
 		} else {
 			g.addResult(core.Result[T]{Err: ctx.Err()})
 		}
-		atomic.AddInt64(&g.errCnt, 1)
+		g.errCnt.Add(1)
 		var cancel context.CancelFunc
 		return ctx, cancel, ctx.Err()
 	default:
 	}
 
-	g.addInFlight.Add(1)
-	defer g.addInFlight.Add(-1)
-
 	if g.waited.Load() {
 		core.LogCtxError(ctx, fmt.Sprintf("async: Group.%s called after Group.Wait completed, task discarded", caller))
 		record(core.Result[T]{Err: core.ErrGroupWaited, Occupied: true})
-		atomic.AddInt64(&g.errCnt, 1)
+		g.errCnt.Add(1)
 		var cancel context.CancelFunc
 		return ctx, cancel, core.ErrGroupWaited
 	}
 	if g.waiting.Load() {
 		core.LogCtxError(ctx, fmt.Sprintf("async: Group.%s called while Group.Wait is in progress, task discarded", caller))
 		record(core.Result[T]{Err: core.ErrGroupWaiting})
-		atomic.AddInt64(&g.errCnt, 1)
+		g.errCnt.Add(1)
 		var cancel context.CancelFunc
 		return ctx, cancel, core.ErrGroupWaiting
 	}
@@ -531,13 +603,18 @@ func (g *Group[T]) groupPrecheck(ctx context.Context, record GroupRecordFunc[T],
 
 func (g *Group[T]) groupRecordCancel(taskCancel context.CancelFunc) {
 	g.mu.Lock()
+	if g.waitCanceled {
+		g.mu.Unlock()
+		taskCancel()
+		return
+	}
 	g.cancels = append(g.cancels, taskCancel)
 	g.mu.Unlock()
 }
 
 func (g *Group[T]) discardTask(record GroupRecordFunc[T], taskCancel context.CancelFunc, err error) {
 	record(core.Result[T]{Err: err})
-	atomic.AddInt64(&g.errCnt, 1)
+	g.errCnt.Add(1)
 	taskCancel()
 	g.active.Add(-1)
 	g.wg.Done()
@@ -634,7 +711,7 @@ func (g *Group[T]) Go(ctx context.Context, fn func(context.Context) (T, error)) 
 		record:     g.addResult,
 		timeout:    g.timeout,
 		failFast:   g.failFast.Load(),
-		failCancel: g.cancel,
+		failCancel: g.taskFailCancel(),
 		fn:         fn,
 	}
 
@@ -668,7 +745,7 @@ func (g *Group[T]) GoWithTimeout(ctx context.Context, timeout time.Duration, fn 
 		record:     g.addResult,
 		timeout:    timeout,
 		failFast:   g.failFast.Load(),
-		failCancel: g.cancel,
+		failCancel: g.taskFailCancel(),
 		fn:         fn,
 	}
 
@@ -688,6 +765,9 @@ func (g *Group[T]) GoWithTimeout(ctx context.Context, timeout time.Duration, fn 
 //	// 第 3 个任务只需 500ms
 //	g.GoAtWithTimeout(2, ctx, 500*time.Millisecond, fn)
 func (g *Group[T]) GoAtWithTimeout(index int, ctx context.Context, timeout time.Duration, fn func(context.Context) (T, error)) error {
+	if index < 0 {
+		return core.ErrInvalidIndex
+	}
 	record := func(r core.Result[T]) { g.setResultAt(index, r) }
 	taskCtx, taskCancel, err := g.groupPrecheck(ctx, record, index, "GoAtWithTimeout")
 	if err != nil {
@@ -702,7 +782,7 @@ func (g *Group[T]) GoAtWithTimeout(index int, ctx context.Context, timeout time.
 		record:     record,
 		timeout:    timeout,
 		failFast:   g.failFast.Load(),
-		failCancel: g.cancel,
+		failCancel: g.taskFailCancel(),
 		fn:         fn,
 	}
 
@@ -719,7 +799,7 @@ func (g *Group[T]) runTaskImpl(taskCtx context.Context, taskCancel context.Cance
 				core.Bytes("stack", core.NewPanicError(r).Stack))
 			var zero T
 			record(core.Result[T]{Value: zero, Err: core.NewPanicError(r)})
-			atomic.AddInt64(&g.errCnt, 1)
+			g.errCnt.Add(1)
 			if failFast && failCancel != nil {
 				failCancel()
 			}
@@ -729,7 +809,7 @@ func (g *Group[T]) runTaskImpl(taskCtx context.Context, taskCancel context.Cance
 	select {
 	case <-taskCtx.Done():
 		record(core.Result[T]{Err: taskCtx.Err()})
-		atomic.AddInt64(&g.errCnt, 1)
+		g.errCnt.Add(1)
 		return
 	default:
 	}
@@ -744,13 +824,16 @@ func (g *Group[T]) runTaskImpl(taskCtx context.Context, taskCancel context.Cance
 	if err != nil {
 		if !(failFast && errors.Is(err, context.Canceled)) {
 			core.LogTaskFail(taskCtx, err, "async task failed")
-			atomic.AddInt64(&g.errCnt, 1)
 		}
+		g.errCnt.Add(1)
 		if failFast && failCancel != nil {
 			failCancel()
 		}
 	}
 	record(core.Result[T]{Value: val, Err: err})
+	if err == nil {
+		g.okCnt.Add(1)
+	}
 }
 
 func (g *Group[T]) addResult(r core.Result[T]) {
@@ -786,6 +869,9 @@ func (g *Group[T]) addResult(r core.Result[T]) {
 //	    })
 //	}
 func (g *Group[T]) GoAt(index int, ctx context.Context, fn func(context.Context) (T, error)) error {
+	if index < 0 {
+		return core.ErrInvalidIndex
+	}
 	record := func(r core.Result[T]) { g.setResultAt(index, r) }
 	taskCtx, taskCancel, err := g.groupPrecheck(ctx, record, index, "GoAt")
 	if err != nil {
@@ -800,7 +886,7 @@ func (g *Group[T]) GoAt(index int, ctx context.Context, fn func(context.Context)
 		record:     record,
 		timeout:    g.timeout,
 		failFast:   g.failFast.Load(),
-		failCancel: g.cancel,
+		failCancel: g.taskFailCancel(),
 		fn:         fn,
 	}
 
@@ -835,6 +921,12 @@ func (g *Group[T]) setResultAt(index int, r core.Result[T]) {
 	g.recordToStream(r)
 }
 
+func (g *Group[T]) closeTaskCh() {
+	if g.taskChClosed.CompareAndSwap(false, true) {
+		close(g.taskCh)
+	}
+}
+
 // Wait 等待所有任务完成并返回结果切片。调用后 Group 进入 waited 状态，不能再次提交任务。
 // 应先调用 WithTimeout / WithContext 等配置方法，再调用 Go/GoAt，最后调用 Wait。
 //
@@ -846,34 +938,8 @@ func (g *Group[T]) setResultAt(index int, r core.Result[T]) {
 //	        fmt.Println(r.Value)
 //	    }
 //	}
-func (g *Group[T]) closeTaskCh() {
-	if g.taskChClosed.CompareAndSwap(false, true) {
-		close(g.taskCh)
-	}
-}
-
 func (g *Group[T]) Wait() []core.Result[T] {
-	g.waiting.Store(true)
-	g.waitAddInFlight()
-	if g.shuttingDown.CompareAndSwap(false, true) {
-		close(g.shutdownCh)
-	}
-	g.wg.Wait()
-	g.closeTaskCh()
-	g.workerWg.Wait()
-	g.mu.Lock()
-	g.waited.Store(true)
-	g.waiting.Store(false)
-	g.cancelAll()
-	results := make([]core.Result[T], len(g.results))
-	copy(results, g.results)
-	cancel := g.cancel
-	g.mu.Unlock()
-	if cancel != nil {
-		cancel()
-	}
-	g.signalDone()
-	g.drainStreaming()
+	results, _ := g.waitContext(context.Background())
 	return results
 }
 
@@ -922,12 +988,12 @@ func (g *Group[T]) cancelAll() {
 
 // FailCount 返回失败任务数（线程安全，可在 Wait 前调用）。
 func (g *Group[T]) FailCount() int64 {
-	return atomic.LoadInt64(&g.errCnt)
+	return g.errCnt.Load()
 }
 
-// SuccessCount 返回成功任务数。
-func (g *Group[T]) SuccessCount() int64 {
-	return g.TotalCount() - g.FailCount()
+// OkCount 返回成功任务数。
+func (g *Group[T]) OkCount() int64 {
+	return g.okCnt.Load()
 }
 
 // HasError 检查是否有任务失败。
@@ -937,15 +1003,7 @@ func (g *Group[T]) HasError() bool {
 
 // TotalCount 返回已提交任务总数（包含成功和失败）。
 func (g *Group[T]) TotalCount() int64 {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	var n int64
-	for _, r := range g.results {
-		if r.Occupied {
-			n++
-		}
-	}
-	return n
+	return g.totalCnt.Load()
 }
 
 // Worker 返回当前最大并发数（自动扩缩容时可能动态变化）。
@@ -971,13 +1029,13 @@ type GroupStats struct {
 	FailFast    bool          // 是否启用 FailFast
 	Timeout     time.Duration // 全局任务超时时间
 	TotalTask   int64         // 历史提交任务总数
-	SuccessTask int64         // 历史成功任务数
+	OkTask      int64         // 历史成功任务数
 	FailTask    int64         // 历史失败任务数
 }
 
 func (s GroupStats) String() string {
 	return fmt.Sprintf("GroupStats{concurrency=%d, active=%d, busy=%d, failFast=%v, timeout=%v, total=%d, success=%d, fail=%d}",
-		s.Concurrency, s.Active, s.Busy, s.FailFast, s.Timeout, s.TotalTask, s.SuccessTask, s.FailTask)
+		s.Concurrency, s.Active, s.Busy, s.FailFast, s.Timeout, s.TotalTask, s.OkTask, s.FailTask)
 }
 
 // Stats 获取当前 Group 的运行时统计快照。
@@ -986,7 +1044,7 @@ func (s GroupStats) String() string {
 //
 //	stats := g.Stats()
 //	fmt.Printf("活跃: %d, 繁忙: %d, 成功: %d, 失败: %d\n",
-//	    stats.Active, stats.Busy, stats.SuccessTask, stats.FailTask)
+//	    stats.Active, stats.Busy, stats.OkTask, stats.FailTask)
 func (g *Group[T]) Stats() GroupStats {
 	return GroupStats{
 		Concurrency: int(g.concurrency.Load()),
@@ -995,7 +1053,7 @@ func (g *Group[T]) Stats() GroupStats {
 		FailFast:    g.failFast.Load(),
 		Timeout:     g.timeout,
 		TotalTask:   g.TotalCount(),
-		SuccessTask: g.SuccessCount(),
+		OkTask:      g.OkCount(),
 		FailTask:    g.FailCount(),
 	}
 }
@@ -1012,7 +1070,7 @@ func (g *Group[T]) Errors() []error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if !g.waited.Load() {
-		core.LogCtxWarn(g.ctx, "async: Group.Errors called before Wait, results may be incomplete", core.Str("type", "Group"))
+		core.LogCtxWarn(g.groupContext(), "async: Group.Errors called before Wait, results may be incomplete", core.Str("type", "Group"))
 	}
 	errs := make([]error, 0, g.FailCount())
 	for _, r := range g.results {
@@ -1028,7 +1086,7 @@ func (g *Group[T]) FirstError() error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if !g.waited.Load() {
-		core.LogCtxWarn(g.ctx, "async: Group.FirstError called before Wait, results may be incomplete", core.Str("type", "Group"))
+		core.LogCtxWarn(g.groupContext(), "async: Group.FirstError called before Wait, results may be incomplete", core.Str("type", "Group"))
 	}
 	for _, r := range g.results {
 		if r.Err != nil {
@@ -1050,11 +1108,11 @@ func (g *Group[T]) Values() []T {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if !g.waited.Load() {
-		core.LogCtxWarn(g.ctx, "async: Group.Values called before Wait, results may be incomplete", core.Str("type", "Group"))
+		core.LogCtxWarn(g.groupContext(), "async: Group.Values called before Wait, results may be incomplete", core.Str("type", "Group"))
 	}
 	vals := make([]T, 0, len(g.results))
 	for _, r := range g.results {
-		if r.Err == nil {
+		if r.Occupied && r.Err == nil {
 			vals = append(vals, r.Value)
 		}
 	}
@@ -1097,17 +1155,25 @@ func (g *Group[T]) Reset() (*Group[T], error) {
 	g.results = nil
 	g.freeIndices = nil
 	g.cancels = nil
+	g.waitCanceled = false
+	g.cancelMu.Lock()
 	g.cancel = nil
+	g.failCancel = nil
+	g.ctx = context.Background()
+	g.cancelMu.Unlock()
 	g.failFast.Store(false)
 	g.waited.Store(false)
+	g.waitOnce = sync.Once{}
+	g.waitDone = make(chan struct{})
 	savedTimeout := g.timeout
 	savedSubmitTimeout := g.submitTimeout
 	savedConcurrency := int(g.concurrency.Load())
 	savedStreamCh := g.streamCh
 	savedResultCb := g.resultCb
-	g.ctx = context.Background()
+	g.totalCnt.Store(0)
+	g.okCnt.Store(0)
 	g.mu.Unlock()
-	atomic.StoreInt64(&g.errCnt, 0)
+	g.errCnt.Store(0)
 	g.active.Store(0)
 	g.busy.Store(0)
 	g.waiting.Store(false)
@@ -1123,11 +1189,13 @@ func (g *Group[T]) Reset() (*Group[T], error) {
 	g.taskChClosed.Store(false)
 	doneCh := make(chan struct{})
 	g.done.Store(&doneCh)
-	if g.autoScaleEnabled.Load() {
-		g.autoScaleEnabled.Store(false)
+	g.autoScaleMu.Lock()
+	if g.autoScaleEnabled.Swap(false) {
 		close(g.autoScaleStop)
 	}
+	g.autoScaleMu.Unlock()
 	for i := 0; i < savedConcurrency; i++ {
+		g.workerCount.Add(1)
 		g.workerWg.Add(1)
 		go g.worker()
 	}
@@ -1139,6 +1207,7 @@ func (g *Group[T]) Reset() (*Group[T], error) {
 }
 
 // WaitTimeout 等待所有任务完成，最多等待 d 时长。返回 (结果, true) 或 (部分结果, false)。
+// On timeout cleanup continues; Wait retrieves the final results before Reset.
 //
 // 参数：
 //   - d：最长等待时间
@@ -1150,51 +1219,13 @@ func (g *Group[T]) Reset() (*Group[T], error) {
 //	    log.Println("部分任务未完成")
 //	}
 func (g *Group[T]) WaitTimeout(d time.Duration) ([]core.Result[T], bool) {
-	g.waiting.Store(true)
-	g.waitAddInFlight()
-	if g.shuttingDown.CompareAndSwap(false, true) {
-		close(g.shutdownCh)
-	}
-
-	timer := time.NewTimer(d)
-	defer timer.Stop()
-
-	done := make(chan struct{})
-	go func() {
-		g.wg.Wait()
-		close(done)
-	}()
-
-	var ok bool
-	select {
-	case <-done:
-		ok = true
-		g.closeTaskCh()
-		g.workerWg.Wait()
-	case <-timer.C:
-		ok = false
-		g.cancelAll()
-		g.closeTaskCh()
-		g.workerWg.Wait()
-	}
-
-	g.mu.Lock()
-	g.waited.Store(true)
-	g.waiting.Store(false)
-	g.cancelAll()
-	results := make([]core.Result[T], len(g.results))
-	copy(results, g.results)
-	cancel := g.cancel
-	g.mu.Unlock()
-	if cancel != nil {
-		cancel()
-	}
-	g.signalDone()
-	g.drainStreaming()
-	return results, ok
+	ctx, cancel := context.WithTimeout(context.Background(), d)
+	defer cancel()
+	return g.waitContext(ctx)
 }
 
 // WaitContext 等待所有任务完成或 ctx 取消。返回 (结果, true) 或 (部分结果, false)。
+// The result stream closes only after all accepted tasks have finished.
 //
 // 参数：
 //   - ctx：上下文，取消后立即返回部分结果
@@ -1205,44 +1236,53 @@ func (g *Group[T]) WaitTimeout(d time.Duration) ([]core.Result[T], bool) {
 //	defer cancel()
 //	results, ok := g.WaitContext(ctx)
 func (g *Group[T]) WaitContext(ctx context.Context) ([]core.Result[T], bool) {
-	g.waiting.Store(true)
-	g.waitAddInFlight()
-	if g.shuttingDown.CompareAndSwap(false, true) {
-		close(g.shutdownCh)
-	}
+	return g.waitContext(ctx)
+}
 
-	done := make(chan struct{})
-	go func() {
-		g.wg.Wait()
-		close(done)
-	}()
-
-	var ok bool
+func (g *Group[T]) waitContext(ctx context.Context) ([]core.Result[T], bool) {
+	g.waitOnce.Do(func() {
+		g.autoScaleMu.Lock()
+		g.mu.Lock()
+		g.waiting.Store(true)
+		g.mu.Unlock()
+		if g.autoScaleEnabled.Swap(false) {
+			close(g.autoScaleStop)
+		}
+		g.autoScaleMu.Unlock()
+		go func() {
+			g.waitAddInFlight()
+			if g.shuttingDown.CompareAndSwap(false, true) {
+				close(g.shutdownCh)
+			}
+			g.wg.Wait()
+			g.closeTaskCh()
+			g.workerWg.Wait()
+			g.mu.Lock()
+			defer g.mu.Unlock()
+			g.cancelAll()
+			g.cancelContext()
+			g.signalDone()
+			g.drainStreaming()
+			g.waited.Store(true)
+			g.waiting.Store(false)
+			close(g.waitDone)
+		}()
+	})
+	ok := false
 	select {
-	case <-done:
+	case <-g.waitDone:
 		ok = true
-		g.closeTaskCh()
-		g.workerWg.Wait()
 	case <-ctx.Done():
-		ok = false
-		g.cancelAll()
-		g.closeTaskCh()
-		g.workerWg.Wait()
 	}
-
 	g.mu.Lock()
-	g.waited.Store(true)
-	g.waiting.Store(false)
-	g.cancelAll()
+	if !ok {
+		g.waitCanceled = true
+		g.cancelAll()
+		g.cancelContext()
+	}
 	results := make([]core.Result[T], len(g.results))
 	copy(results, g.results)
-	cancel := g.cancel
 	g.mu.Unlock()
-	if cancel != nil {
-		cancel()
-	}
-	g.signalDone()
-	g.drainStreaming()
 	return results, ok
 }
 
@@ -1279,14 +1319,19 @@ func (g *Group[T]) EnableAutoScale(config *core.AutoScaleConfig) {
 	if config == nil {
 		config = core.DefaultAutoScaleConfig()
 	}
-	config.Normalize()
-
-	g.autoScale = config
+	cfg := *config
+	cfg.Normalize()
+	g.autoScaleMu.Lock()
+	defer g.autoScaleMu.Unlock()
+	if g.waiting.Load() || g.waited.Load() {
+		return
+	}
 	if g.autoScaleEnabled.CompareAndSwap(false, true) {
+		g.autoScale = &cfg
 		stopCh := make(chan struct{})
 		g.autoScaleStop = stopCh
 		go func() {
-			g.autoScaleLoop(config, stopCh)
+			g.autoScaleLoop(&cfg, stopCh)
 		}()
 	}
 }
@@ -1295,6 +1340,8 @@ func (g *Group[T]) EnableAutoScale(config *core.AutoScaleConfig) {
 //
 // 停止后仍可通过手动方式调整。如果自动扩缩容未启用，调用无效果。
 func (g *Group[T]) DisableAutoScale() {
+	g.autoScaleMu.Lock()
+	defer g.autoScaleMu.Unlock()
 	if g.autoScaleEnabled.CompareAndSwap(true, false) {
 		close(g.autoScaleStop)
 		if g.autoScale != nil {
@@ -1323,7 +1370,8 @@ func (g *Group[T]) resizeWorkerPool(newSize int) {
 		return
 	}
 	if newSize > cur {
-		for i := 0; i < newSize-cur; i++ {
+		for i := int(g.workerCount.Load()); i < newSize; i++ {
+			g.workerCount.Add(1)
 			g.workerWg.Add(1)
 			go g.worker()
 		}
@@ -1360,7 +1408,11 @@ func (g *Group[T]) autoScaleLoop(config *core.AutoScaleConfig, stopCh chan struc
 				default:
 				}
 			}
-			g.performAutoScaleCheck(config, &scaleUpCount, &scaleDownCount)
+			g.autoScaleMu.Lock()
+			if g.autoScaleEnabled.Load() && g.autoScaleStop == stopCh {
+				g.performAutoScaleCheck(config, &scaleUpCount, &scaleDownCount)
+			}
+			g.autoScaleMu.Unlock()
 		}
 	}
 }
@@ -1437,6 +1489,18 @@ func (g *Group[T]) Shard(shards int) *MultiGroup[T] {
 	}
 
 	templateConcurrency := g.Worker()
+	var sharedCancel context.CancelFunc
+	g.cancelMu.Lock()
+	sharedCtx := g.ctx
+	if g.cancel != nil {
+		sharedCancel = g.cancel
+		if g.failFast.Load() {
+			g.failCancel = core.MergeCancel(g.failCancel, sharedCancel)
+		}
+		g.ctx, g.cancel = context.WithCancel(g.ctx)
+	}
+	cloneCancel, cloneFailCancel := g.cancel, g.failCancel
+	g.cancelMu.Unlock()
 
 	groups := make([]*Group[T], shards)
 	groups[0] = g // 第一个分片复用当前 Group
@@ -1445,10 +1509,16 @@ func (g *Group[T]) Shard(shards int) *MultiGroup[T] {
 		clone := NewGroup[T](templateConcurrency)
 		clone.timeout = g.timeout
 		clone.submitTimeout = g.submitTimeout
-		clone.ctx = g.ctx
+		clone.ctx = sharedCtx
+		if sharedCancel != nil {
+			clone.ctx, clone.cancel = context.WithCancel(sharedCtx)
+		}
 		if g.failFast.Load() {
 			clone.failFast.Store(true)
-			clone.cancel = g.cancel
+			clone.failCancel = cloneFailCancel
+			if sharedCancel == nil {
+				clone.cancel = cloneCancel
+			}
 		}
 		if g.streamCh != nil {
 			clone.streamCh = make(chan core.Result[T], cap(g.streamCh))
@@ -1457,7 +1527,7 @@ func (g *Group[T]) Shard(shards int) *MultiGroup[T] {
 		groups[i] = clone
 	}
 
-	return &MultiGroup[T]{groups: groups}
+	return &MultiGroup[T]{groups: groups, sharedCancel: sharedCancel}
 }
 
 // DefaultShard 使用默认分片数（runtime.GOMAXPROCS(0)，最少 2）对当前 Group 进行水平分片。

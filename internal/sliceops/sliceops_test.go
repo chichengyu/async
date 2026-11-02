@@ -1,10 +1,14 @@
 package sliceops
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"math/rand"
+	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"sync"
@@ -17,7 +21,334 @@ import (
 	"github.com/chichengyu/async/test"
 )
 
+func TestLegacyFailFastTimeoutReportsDeadline(t *testing.T) {
+	results, err := MapWithFFTimeout(context.Background(), []int{42}, 1, time.Millisecond, func(ctx context.Context, item int) (int, error) {
+		<-ctx.Done()
+		return item, ctx.Err()
+	})
+	if len(results) != 1 || results[0].Value != 42 || !errors.Is(results[0].Err, context.DeadlineExceeded) || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("map results=%v err=%v", results, err)
+	}
+	total, failed, first, eachResults := ForEachWithFFTimeout(context.Background(), []int{42}, 1, time.Millisecond, func(ctx context.Context, _ int) error {
+		<-ctx.Done()
+		return ctx.Err()
+	})
+	if total != 1 || failed != 1 || !errors.Is(first, context.DeadlineExceeded) || len(eachResults) != 1 || !errors.Is(eachResults[0].Err, context.DeadlineExceeded) {
+		t.Fatalf("each total=%d failed=%d first=%v results=%v", total, failed, first, eachResults)
+	}
+}
+
+func TestLegacyMapAndForEachTimeoutResults(t *testing.T) {
+	items := []int{10, 20, 30, 40}
+	results := MapWithTimeout(context.Background(), items, 2, time.Millisecond, func(ctx context.Context, item int) (int, error) {
+		<-ctx.Done()
+		return item, ctx.Err()
+	})
+	if len(results) != len(items) {
+		t.Fatalf("map results=%v", results)
+	}
+	for i, result := range results {
+		if result.Value != items[i] || !errors.Is(result.Err, context.DeadlineExceeded) {
+			t.Fatalf("map result %d: %+v", i, result)
+		}
+	}
+	total, failed, first, eachResults := ForEachWithTimeout(context.Background(), items, 2, time.Millisecond, func(ctx context.Context, _ int) error {
+		<-ctx.Done()
+		return ctx.Err()
+	})
+	if total != int64(len(items)) || failed != int64(len(items)) || !errors.Is(first, context.DeadlineExceeded) || len(eachResults) != len(items) {
+		t.Fatalf("each total=%d failed=%d first=%v results=%v", total, failed, first, eachResults)
+	}
+	for i, result := range eachResults {
+		if !errors.Is(result.Err, context.DeadlineExceeded) {
+			t.Fatalf("each result %d: %+v", i, result)
+		}
+	}
+}
+
+func TestSliceBuilderStreamHonorsTimeout(t *testing.T) {
+	for _, failFast := range []bool{false, true} {
+		t.Run(fmt.Sprintf("failFast=%v", failFast), func(t *testing.T) {
+			b := NewSliceBuilder(context.Background(), []int{1}).Timeout(10 * time.Millisecond)
+			if failFast {
+				b.FailFast()
+			}
+			ch := b.Stream(func(ctx context.Context, n int) (int, error) {
+				select {
+				case <-ctx.Done():
+					return 0, ctx.Err()
+				case <-time.After(200 * time.Millisecond):
+					return n, nil
+				}
+			}, 1)
+			r := <-ch
+			if !errors.Is(r.Err, context.DeadlineExceeded) {
+				t.Fatalf("stream error = %v, want deadline exceeded", r.Err)
+			}
+		})
+	}
+}
+
+func TestSliceEachStreamHonorsTimeout(t *testing.T) {
+	for _, failFast := range []bool{false, true} {
+		t.Run(fmt.Sprintf("failFast=%v", failFast), func(t *testing.T) {
+			p := Par(1).TO(10 * time.Millisecond)
+			if failFast {
+				p = p.FF()
+			}
+			ch := New([]int{1}).EachStream(context.Background(), func(ctx context.Context, n int) error {
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-time.After(200 * time.Millisecond):
+					return nil
+				}
+			}, p)
+			r := <-ch
+			if !errors.Is(r.Err, context.DeadlineExceeded) {
+				t.Fatalf("stream error = %v, want deadline exceeded", r.Err)
+			}
+		})
+	}
+}
+
+func TestSliceBuilderExtremeWorkerQueries(t *testing.T) {
+	items := make([]int, 1000)
+	for i := range items {
+		items[i] = i
+	}
+	b := NewSliceBuilder(context.Background(), items).Worker(math.MaxInt)
+	if !b.Contains(func(n int) bool { return n == 999 }) {
+		t.Fatal("Contains missed the last item")
+	}
+	if !b.All(func(n int) bool { return n >= 0 }) {
+		t.Fatal("All returned false")
+	}
+	if got := b.Count(func(n int) bool { return n%2 == 0 }); got != 500 {
+		t.Fatalf("Count = %d, want 500", got)
+	}
+	if got := b.Filter(func(n int) bool { return n%2 == 0 }).Len(); got != 500 {
+		t.Fatalf("Filter length = %d, want 500", got)
+	}
+}
+
+func TestChunkExtremeSizes(t *testing.T) {
+	items := []int{1, 2, 3}
+	b := NewSliceBuilder(context.Background(), items)
+	s := New(items)
+	for _, chunks := range [][][]int{Chunk(items, math.MaxInt), ChunkN(items, math.MaxInt), b.Chunked(math.MaxInt), b.ChunkedN(math.MaxInt), s.Chunk(math.MaxInt), s.ChunkN(math.MaxInt)} {
+		var flattened []int
+		for _, chunk := range chunks {
+			flattened = append(flattened, chunk...)
+		}
+		if !slices.Equal(flattened, items) {
+			t.Fatalf("chunks=%v", chunks)
+		}
+	}
+	if got := Chunk(items, 2); len(got) != 2 || !slices.Equal(got[0], []int{1, 2}) || !slices.Equal(got[1], []int{3}) {
+		t.Fatalf("ordinary chunks=%v", got)
+	}
+}
+
 // ──────────────────────────── helpers ────────────────────────────
+
+func TestRunnerPoolReportsErrorsBeyondResultLimit(t *testing.T) {
+	for _, each := range []bool{false, true} {
+		t.Run(fmt.Sprintf("each=%v", each), func(t *testing.T) {
+			pl := pool.NewPool[int](1).WithMaxResults(1)
+			defer pl.Close()
+			want := errors.New("second item failed")
+			r := NewRunner[int, int](context.Background(), []int{1, 2}, Par(1).WithPool(pl))
+			var err error
+			if each {
+				_, _, err, _ = r.Each(func(_ context.Context, n int) error {
+					if n == 2 {
+						return want
+					}
+					return nil
+				})
+			} else {
+				_, err = r.Map(func(_ context.Context, n int) (int, error) {
+					if n == 2 {
+						return 0, want
+					}
+					return n, nil
+				})
+			}
+			if !errors.Is(err, want) {
+				t.Fatalf("error = %v, want %v", err, want)
+			}
+		})
+	}
+}
+
+func TestRunnerPoolResultsAndRejectedSubmissions(t *testing.T) {
+	for _, scenario := range []string{"success", "closed", "canceled"} {
+		for _, each := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/each=%v", scenario, each), func(t *testing.T) {
+				pl := pool.NewPool[int](1).WithMaxResults(1)
+				defer pl.Close()
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				var want error
+				switch scenario {
+				case "closed":
+					pl.Close()
+					want = core.ErrPoolClosed
+				case "canceled":
+					cancel()
+					want = context.Canceled
+				}
+				r := NewRunner[int, int](ctx, []int{1, 2}, Par(1).WithPool(pl))
+				if each {
+					total, failed, err, _ := r.Each(func(context.Context, int) error { return nil })
+					if total != 2 || !errors.Is(err, want) || (want == nil && failed != 0) || (want != nil && failed != 2) {
+						t.Fatalf("total=%d failed=%d error=%v", total, failed, err)
+					}
+				} else {
+					results, err := r.Map(func(_ context.Context, n int) (int, error) { return n, nil })
+					if len(results) != 2 || !errors.Is(err, want) {
+						t.Fatalf("results=%v error=%v", results, err)
+					}
+					for i, result := range results {
+						if !errors.Is(result.Err, want) || (want == nil && result.Value != i+1) {
+							t.Fatalf("result[%d]=%v", i, result)
+						}
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestRunnerPoolQueueOverflow(t *testing.T) {
+	for _, strategy := range []core.OverflowStrategy{core.OverflowDrop, core.OverflowError} {
+		for _, operation := range []string{"map", "each", "stream"} {
+			t.Run(fmt.Sprintf("strategy=%v/%s", strategy, operation), func(t *testing.T) {
+				pl := pool.NewPool[int](1).WithMaxPending(1).WithOverflow(strategy)
+				started, release := make(chan struct{}), make(chan struct{})
+				var releaseOnce sync.Once
+				unblock := func() { releaseOnce.Do(func() { close(release) }) }
+				defer pl.Close()
+				defer unblock()
+				if err := pl.Submit(context.Background(), func(context.Context) (int, error) { close(started); <-release; return 0, nil }); err != nil {
+					t.Fatal(err)
+				}
+				<-started
+				if err := pl.Submit(context.Background(), func(context.Context) (int, error) { return 0, nil }); err != nil {
+					t.Fatal(err)
+				}
+				r := NewRunner[int, int](context.Background(), []int{1, 2}, Par(1).WithPool(pl))
+				done := make(chan error, 1)
+				go func() {
+					fn := func(_ context.Context, n int) (int, error) { return n, nil }
+					switch operation {
+					case "map":
+						results, err := r.Map(fn)
+						if !errors.Is(err, core.ErrQueueOverflow) || len(results) != 2 || !errors.Is(results[0].Err, core.ErrQueueOverflow) || !errors.Is(results[1].Err, core.ErrQueueOverflow) {
+							done <- fmt.Errorf("results=%v error=%v", results, err)
+							return
+						}
+					case "each":
+						total, failed, err, _ := r.Each(func(context.Context, int) error { return nil })
+						if total != 2 || failed != 2 || !errors.Is(err, core.ErrQueueOverflow) {
+							done <- fmt.Errorf("total=%d failed=%d error=%v", total, failed, err)
+							return
+						}
+					case "stream":
+						count := 0
+						for result := range r.Stream(fn, 2) {
+							if !errors.Is(result.Err, core.ErrQueueOverflow) {
+								done <- fmt.Errorf("result=%v", result)
+								return
+							}
+							count++
+						}
+						if count != 2 {
+							done <- fmt.Errorf("result count=%d", count)
+							return
+						}
+					}
+					done <- nil
+				}()
+				deadline := time.After(5 * time.Second)
+				for pl.TotalCount() < 4 {
+					select {
+					case <-deadline:
+						t.Fatal("submissions did not complete")
+					default:
+						runtime.Gosched()
+					}
+				}
+				// Release the worker only after both runner submissions were rejected.
+				unblock()
+				select {
+				case err := <-done:
+					if err != nil {
+						t.Fatal(err)
+					}
+				case <-time.After(5 * time.Second):
+					t.Fatal("runner did not complete")
+				}
+			})
+		}
+	}
+}
+
+func TestFailFastStrategyCombinationsRegression(t *testing.T) {
+	policies := []Policy{Par(1).FF(), Par(1).FF().Shard(1), Par(1).FF().Chunk(1), Par(1).FF().TO(time.Second), Par(1).FF().Shard(2).TO(time.Second)}
+	for i, policy := range policies {
+		for _, panicTask := range []bool{false, true} {
+			for _, each := range []bool{false, true} {
+				var calls atomic.Int32
+				failure := errors.New("regression")
+				fn := func(context.Context, int) (int, error) {
+					calls.Add(1)
+					if panicTask {
+						panic("regression")
+					}
+					return 0, failure
+				}
+				runner := NewRunner[int, int](context.Background(), []int{1, 2, 3, 4}, policy)
+				var err error
+				if each {
+					_, _, err, _ = runner.Each(func(ctx context.Context, n int) error { _, err := fn(ctx, n); return err })
+				} else {
+					_, err = runner.Map(fn)
+				}
+				if calls.Load() != 1 || err == nil {
+					t.Fatalf("policy=%d panic=%v each=%v calls=%d err=%v", i, panicTask, each, calls.Load(), err)
+				}
+			}
+		}
+	}
+}
+
+func TestReplaceShrinkingAndAliasingRegression(t *testing.T) {
+	for _, end := range []int{1, 3, 4, 5} {
+		for _, count := range []int{0, 1, 3, 6} {
+			for _, alias := range []bool{false, true} {
+				for _, legacy := range []bool{false, true} {
+					input := []int{1, 2, 3, 4, 5}
+					vals := make([]int, count)
+					if alias {
+						vals = input[1:4]
+					}
+					want := slices.Replace(slices.Clone(input), 1, end, slices.Clone(vals)...)
+					var got []int
+					if legacy {
+						got = (&Slice[int, int]{items: input}).Replace(1, end, vals...).Values()
+					} else {
+						got = NewSliceBuilder(context.Background(), input).Replace(1, end, vals...).Values()
+					}
+					if !slices.Equal(got, want) {
+						t.Fatalf("end=%d count=%d alias=%v legacy=%v: got %v want %v", end, count, alias, legacy, got, want)
+					}
+				}
+			}
+		}
+	}
+}
 
 func genIntItems(n int) []int {
 	items := make([]int, n)
@@ -455,6 +786,27 @@ func TestSlice_Insert(t *testing.T) {
 	s2.Insert(999, 9)
 	if s2.Last_ForTest() != 9 {
 		t.Fatalf("Insert(999): last=%d want 9", s2.Last_ForTest())
+	}
+}
+
+func TestSliceBuilderInsertOverlappingValues(t *testing.T) {
+	for _, capacity := range []int{4, 8} {
+		items := make([]int, 4, capacity)
+		copy(items, []int{1, 2, 3, 4})
+		b := NewSliceBuilder(context.Background(), items)
+		b.Insert(1, b.Items()[2:]...)
+		got := b.Values()
+		want := []int{1, 3, 4, 2, 3, 4}
+		if !slices.Equal(got, want) {
+			t.Fatalf("capacity %d: got %v, want %v", capacity, got, want)
+		}
+		items = make([]int, 4, capacity)
+		copy(items, []int{1, 2, 3, 4})
+		legacy := New(items)
+		legacy.Insert(1, legacy.Items()[2:]...)
+		if got := legacy.Items(); !slices.Equal(got, want) {
+			t.Fatalf("legacy capacity %d: got %v, want %v", capacity, got, want)
+		}
 	}
 }
 
@@ -1361,6 +1713,25 @@ func TestRunner_MapBatch(t *testing.T) {
 	}
 }
 
+func TestMapBatchFailValuesMatchFailedChunks(t *testing.T) {
+	want := errors.New("failed batch")
+	items := []int{1, 2, 3, 4, 5}
+	fn := func(_ context.Context, chunk []int) (int, error) {
+		if chunk[0] == 3 {
+			return 0, want
+		}
+		return chunk[0], nil
+	}
+	for _, result := range []*SliceResult[int]{
+		NewSliceBuilder(context.Background(), items).Chunk(2).MapBatch(fn),
+		NewSliceBuilder(context.Background(), items).Parallel().Chunk(2).MapBatch(fn),
+	} {
+		if !errors.Is(result.Error(), want) || !slices.Equal(result.FailValues(), []any{3, 4}) {
+			t.Fatalf("error=%v failed inputs=%v", result.Error(), result.FailValues())
+		}
+	}
+}
+
 func TestRunner_EachBatch(t *testing.T) {
 	ctx := context.Background()
 	r := NewRunner[int, int](ctx, genIntItems(100), Par(4).Chunk(10))
@@ -1369,6 +1740,60 @@ func TestRunner_EachBatch(t *testing.T) {
 	})
 	if total != 10 || failCnt != 0 || firstErr != nil {
 		t.Fatalf("Runner.EachBatch: t=%d f=%d e=%v", total, failCnt, firstErr)
+	}
+}
+
+func TestRunnerEachBatchUsesConfiguredPool(t *testing.T) {
+	for _, owned := range []bool{false, true} {
+		t.Run(fmt.Sprintf("owned=%v", owned), func(t *testing.T) {
+			pl := pool.NewPool[int](1)
+			if !owned {
+				pl.Close()
+			} else {
+				defer pl.Close()
+			}
+			policy := Par(2).Chunk(1)
+			if owned {
+				policy = policy.WithOwnedPool(pl)
+			} else {
+				policy = policy.WithPool(pl)
+			}
+			r := NewRunner[int, int](context.Background(), []int{1, 2}, policy)
+			var calls atomic.Int32
+			_, _, err, _ := r.EachBatch(func(context.Context, []int) error { calls.Add(1); return nil })
+			if owned {
+				if err != nil || calls.Load() != 2 {
+					t.Fatalf("calls=%d err=%v", calls.Load(), err)
+				}
+				if err := pl.Submit(context.Background(), func(context.Context) (int, error) { return 0, nil }); !errors.Is(err, core.ErrPoolClosed) {
+					t.Fatalf("owned pool submit: %v", err)
+				}
+			} else if !errors.Is(err, core.ErrPoolClosed) || calls.Load() != 0 {
+				t.Fatalf("calls=%d err=%v", calls.Load(), err)
+			}
+		})
+	}
+}
+
+func TestRunnerEachDefaultPoolClosesWorkers(t *testing.T) {
+	countWorkers := func() int {
+		buf := make([]byte, 8<<20)
+		n := runtime.Stack(buf, true)
+		return bytes.Count(buf[:n], []byte("internal/pool.(*Pool[...]).worker("))
+	}
+	before := countWorkers()
+	for i := 0; i < 3; i++ {
+		r := NewRunner[int, int](context.Background(), []int{1}, Par(1).WithDefaultPool())
+		if _, _, err, _ := r.Each(func(context.Context, int) error { return nil }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for countWorkers() > before && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if after := countWorkers(); after > before {
+		t.Fatalf("pool workers before=%d after=%d", before, after)
 	}
 }
 
@@ -1467,6 +1892,352 @@ func TestSliceBuilder_PoolAuto(t *testing.T) {
 	}
 }
 
+func TestSliceBuilderPoolAutoClosesOnEmptyMap(t *testing.T) {
+	pl := pool.NewPool[int](1)
+	defer pl.Close()
+	result := NewSliceBuilder(context.Background(), []int{}).PoolAuto(pl).Map(
+		func(_ context.Context, n int) (int, error) { return n, nil })
+	if result.Err() || result.Len() != 0 {
+		t.Fatalf("unexpected result: %v", result.Error())
+	}
+	err := pl.Submit(context.Background(), func(context.Context) (int, error) { return 1, nil })
+	if !errors.Is(err, core.ErrPoolClosed) {
+		t.Fatalf("Submit after empty PoolAuto map = %v, want pool closed", err)
+	}
+}
+
+func TestExternalPoolFailFastDoesNotLeakToNextOperation(t *testing.T) {
+	pl := pool.NewPool[int](1)
+	defer pl.Close()
+	result := NewSliceBuilder(context.Background(), []int{1}).Pool(pl).FailFast().Map(
+		func(_ context.Context, n int) (int, error) { return n, nil })
+	if result.Err() {
+		t.Fatal(result.Error())
+	}
+	_, ctx := pl.WithContext(context.Background())
+	done := make(chan struct{})
+	err := pl.SubmitWithCompletion(ctx, func(context.Context) (int, error) { return 0, errors.New("failure") }, func(core.Result[int]) { close(done) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-done
+	if err := ctx.Err(); err != nil {
+		t.Fatalf("subsequent failure unexpectedly canceled pool context: %v", err)
+	}
+	pl.Wait()
+}
+
+func TestExternalPoolTimeoutDoesNotLeak(t *testing.T) {
+	pl := pool.NewPool[int](1).WithTimeout(20 * time.Millisecond)
+	defer pl.Close()
+	result := NewSliceBuilder(context.Background(), []int{1}).Pool(pl).Timeout(time.Second).Map(
+		func(ctx context.Context, n int) (int, error) {
+			select {
+			case <-time.After(60 * time.Millisecond):
+				return n, nil
+			case <-ctx.Done():
+				return 0, ctx.Err()
+			}
+		})
+	if result.Err() {
+		t.Fatal(result.Error())
+	}
+	if got := pl.Stats().Timeout; got != 20*time.Millisecond {
+		t.Fatalf("pool timeout changed: %v", got)
+	}
+}
+
+func TestExternalPoolFailFastCancelsSibling(t *testing.T) {
+	for _, shouldPanic := range []bool{false, true} {
+		t.Run(fmt.Sprintf("panic=%v", shouldPanic), func(t *testing.T) {
+			pl := pool.NewPool[int](2)
+			defer pl.Close()
+			started := make(chan struct{})
+			canceled := make(chan struct{})
+			result := NewSliceBuilder(context.Background(), []int{0, 1}).Pool(pl).FailFast().Map(
+				func(ctx context.Context, n int) (int, error) {
+					if n == 0 {
+						close(started)
+						select {
+						case <-ctx.Done():
+							close(canceled)
+							return 0, ctx.Err()
+						case <-time.After(time.Second):
+							return 0, errors.New("sibling was not canceled")
+						}
+					}
+					<-started
+					if shouldPanic {
+						panic("failure")
+					}
+					return 0, errors.New("failure")
+				})
+			if !result.Err() {
+				t.Fatal("expected error")
+			}
+			select {
+			case <-canceled:
+			default:
+				t.Fatal("sibling did not observe cancellation")
+			}
+		})
+	}
+}
+
+func TestPoolAutoSurvivesWorkerConfiguration(t *testing.T) {
+	for _, parallel := range []bool{false, true} {
+		for _, useDefault := range []bool{false, true} {
+			t.Run(fmt.Sprintf("parallel=%v/default=%v", parallel, useDefault), func(t *testing.T) {
+				pl := pool.NewPool[int](1)
+				defer pl.Close()
+				b := NewSliceBuilder(context.Background(), []int{1})
+				fn := func(_ context.Context, n int) (int, error) { return n, nil }
+				if parallel {
+					p := b.Parallel().PoolAuto(pl).FailFast()
+					if useDefault {
+						p.DefaultWorker()
+					} else {
+						p.Worker(2)
+					}
+					if !p.policy.failFast {
+						t.Error("Worker cleared FailFast")
+					}
+					p.Map(fn)
+				} else {
+					b.PoolAuto(pl).FailFast()
+					if useDefault {
+						b.DefaultWorker()
+					} else {
+						b.Worker(2)
+					}
+					if !b.policy.failFast {
+						t.Error("Worker cleared FailFast")
+					}
+					b.Map(fn)
+				}
+				err := pl.Submit(context.Background(), func(context.Context) (int, error) { return 1, nil })
+				if !errors.Is(err, core.ErrPoolClosed) {
+					t.Errorf("pool not closed: %v", err)
+				}
+			})
+		}
+	}
+}
+
+func TestSliceBuilderPoolAutoClosesAfterReduce(t *testing.T) {
+	pl := pool.NewPool[int](1)
+	defer pl.Close()
+	value, err := NewSliceBuilder(context.Background(), []int{1, 2}).PoolAuto(pl).Reduce(0,
+		func(_ context.Context, sum, n int) (int, error) { return sum + n, nil })
+	if err != nil || value != 3 {
+		t.Fatalf("Reduce = %d, %v", value, err)
+	}
+	err = pl.Submit(context.Background(), func(context.Context) (int, error) { return 1, nil })
+	if !errors.Is(err, core.ErrPoolClosed) {
+		t.Fatalf("Submit after PoolAuto Reduce = %v, want pool closed", err)
+	}
+}
+
+func TestSliceBuilderStreamUsesExternalPool(t *testing.T) {
+	for _, failFast := range []bool{false, true} {
+		t.Run(fmt.Sprintf("failFast=%v", failFast), func(t *testing.T) {
+			pl := pool.NewPool[int](1)
+			pl.Close()
+			b := NewSliceBuilder(context.Background(), []int{1}).Pool(pl)
+			if failFast {
+				b.FailFast()
+			}
+			var called atomic.Bool
+			ch := b.Stream(func(context.Context, int) (int, error) {
+				called.Store(true)
+				return 1, nil
+			}, 1)
+			r, ok := <-ch
+			if !ok || !errors.Is(r.Err, core.ErrPoolClosed) || called.Load() {
+				t.Fatalf("result = %#v, open = %v, called = %v", r, ok, called.Load())
+			}
+			for range ch {
+			}
+		})
+	}
+}
+
+func TestPoolStreamFailFastStopsSubmitting(t *testing.T) {
+	pl := pool.NewPool[int](1)
+	defer pl.Close()
+	items := make([]int, 1000)
+	boom := errors.New("failure")
+	ch := NewSliceBuilder(context.Background(), items).Pool(pl).FailFast().Stream(
+		func(context.Context, int) (int, error) { return 0, boom }, 1000)
+	count := 0
+	seenFailure := false
+	for r := range ch {
+		count++
+		seenFailure = seenFailure || errors.Is(r.Err, boom)
+	}
+	if !seenFailure || count >= len(items) {
+		t.Fatalf("failure seen = %v, results = %d; expected submission to stop", seenFailure, count)
+	}
+}
+
+func TestPoolStreamFailFastPanicStopsAndReusesPool(t *testing.T) {
+	pl := pool.NewPool[int](1)
+	defer pl.Close()
+	var calls atomic.Int32
+	ch := NewSliceBuilder(context.Background(), make([]int, 1000)).Pool(pl).FailFast().Stream(
+		func(context.Context, int) (int, error) { calls.Add(1); panic("failure") }, 1000)
+	count := 0
+	seenPanic := false
+	for result := range ch {
+		count++
+		var panicErr *core.PanicError
+		seenPanic = seenPanic || errors.As(result.Err, &panicErr)
+	}
+	if !seenPanic || count >= 1000 || calls.Load() != 1 {
+		t.Fatalf("panic = %v, results = %d, calls = %d", seenPanic, count, calls.Load())
+	}
+	if err := pl.Submit(context.Background(), func(context.Context) (int, error) { return 7, nil }); err != nil {
+		t.Fatal(err)
+	}
+	results := pl.Wait()
+	if len(results) != 1 || results[0].Err != nil || results[0].Value != 7 {
+		t.Fatalf("reused results = %#v", results)
+	}
+}
+
+func TestPoolAutoClosesAfterStreamPanic(t *testing.T) {
+	pl := pool.NewPool[int](1)
+	defer pl.Close()
+	ch := NewSliceBuilder(context.Background(), []int{1}).PoolAuto(pl).FailFast().Stream(
+		func(context.Context, int) (int, error) { panic("failure") }, 1)
+	result, ok := <-ch
+	var panicErr *core.PanicError
+	if !ok || !errors.As(result.Err, &panicErr) {
+		t.Fatalf("result = %#v, open = %v", result, ok)
+	}
+	for range ch {
+	}
+	if err := pl.Submit(context.Background(), func(context.Context) (int, error) { return 1, nil }); !errors.Is(err, core.ErrPoolClosed) {
+		t.Fatalf("submit after stream = %v", err)
+	}
+}
+
+func TestSliceBuilderPoolStreamCancelWhileBackpressured(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	pl := pool.NewPool[int](1)
+	defer pl.Close()
+	started := make(chan struct{}, 2)
+	ch := NewSliceBuilder(ctx, []int{1, 2, 3, 4}).Pool(pl).Stream(
+		func(_ context.Context, n int) (int, error) {
+			started <- struct{}{}
+			return n, nil
+		}, 1)
+	<-started
+	<-started
+	cancel()
+	done := make(chan struct{})
+	go func() {
+		for range ch {
+		}
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("stream did not close after cancellation")
+	}
+	if err := pl.Submit(context.Background(), func(context.Context) (int, error) { return 7, nil }); err != nil {
+		t.Fatal(err)
+	}
+	pl.Wait()
+}
+
+func TestSliceBuilderPoolStreamTimeoutDoesNotLeak(t *testing.T) {
+	pl := pool.NewPool[int](1).WithTimeout(20 * time.Millisecond)
+	defer pl.Close()
+	ch := NewSliceBuilder(context.Background(), []int{1}).Pool(pl).Timeout(time.Second).Stream(
+		func(ctx context.Context, n int) (int, error) {
+			select {
+			case <-time.After(60 * time.Millisecond):
+				return n, nil
+			case <-ctx.Done():
+				return 0, ctx.Err()
+			}
+		}, 1)
+	r := <-ch
+	if r.Err != nil || r.Value != 1 {
+		t.Fatalf("result = %#v", r)
+	}
+	for range ch {
+	}
+	if got := pl.Stats().Timeout; got != 20*time.Millisecond {
+		t.Fatalf("pool timeout changed: %v", got)
+	}
+}
+
+func TestSliceBuilderPoolStreamCancelsSiblingAndReusesPool(t *testing.T) {
+	pl := pool.NewPool[int](2)
+	defer pl.Close()
+	started := make(chan struct{})
+	canceled := make(chan struct{})
+	ch := NewSliceBuilder(context.Background(), []int{0, 1}).Pool(pl).FailFast().Stream(
+		func(ctx context.Context, n int) (int, error) {
+			if n == 0 {
+				close(started)
+				select {
+				case <-ctx.Done():
+					close(canceled)
+					return 0, ctx.Err()
+				case <-time.After(time.Second):
+					return 0, errors.New("sibling not canceled")
+				}
+			}
+			<-started
+			return 0, errors.New("failure")
+		}, 2)
+	for range ch {
+	}
+	select {
+	case <-canceled:
+	default:
+		t.Fatal("running sibling did not observe cancellation")
+	}
+	if err := pl.Submit(context.Background(), func(context.Context) (int, error) { return 7, nil }); err != nil {
+		t.Fatal(err)
+	}
+	results := pl.Wait()
+	if len(results) != 1 || results[0].Err != nil || results[0].Value != 7 {
+		t.Fatalf("reused pool results = %#v", results)
+	}
+}
+
+func TestSliceBuilderPoolAutoClosesAfterStream(t *testing.T) {
+	for _, failFast := range []bool{false, true} {
+		t.Run(fmt.Sprintf("failFast=%v", failFast), func(t *testing.T) {
+			pl := pool.NewPool[int](1)
+			defer pl.Close()
+			builder := NewSliceBuilder(context.Background(), []int{1, 2}).PoolAuto(pl)
+			if failFast {
+				builder.FailFast()
+			}
+			count := 0
+			for result := range builder.Stream(func(_ context.Context, n int) (int, error) { return n, nil }, 2) {
+				if result.Err != nil {
+					t.Fatal(result.Err)
+				}
+				count++
+			}
+			if count != 2 {
+				t.Fatalf("got %d stream results", count)
+			}
+			err := pl.Submit(context.Background(), func(context.Context) (int, error) { return 1, nil })
+			if !errors.Is(err, core.ErrPoolClosed) {
+				t.Fatalf("Submit after PoolAuto Stream = %v, want pool closed", err)
+			}
+		})
+	}
+}
+
 func TestSliceBuilder_DefaultPool(t *testing.T) {
 	ctx := context.Background()
 	results := NewSliceBuilder(ctx, genIntItems(50)).DefaultPool().Map(
@@ -1486,8 +2257,8 @@ func TestSliceBuilder_FailFast(t *testing.T) {
 			}
 			return n, nil
 		})
-	if results.Ok() {
-		t.Log("FailFast: all ok (may be timing-dependent)")
+	if !errors.Is(results.Error(), bomb) {
+		t.Fatalf("FailFast error=%v, want %v", results.Error(), bomb)
 	}
 }
 
@@ -1515,6 +2286,70 @@ func TestSliceBuilder_DefaultTimeout(t *testing.T) {
 		func(ctx context.Context, n int) (int, error) { return n, nil })
 	if results.Err() {
 		t.Fatal("DefaultTimeout should succeed")
+	}
+}
+
+func TestSliceUnevenShardsUseConfiguredParallelism(t *testing.T) {
+	started := make(chan struct{}, 5)
+	release := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		NewSliceBuilder(context.Background(), []int{1, 2, 3, 4, 5}).Worker(4).Shards(4).Map(
+			func(_ context.Context, v int) (int, error) {
+				started <- struct{}{}
+				<-release
+				return v, nil
+			})
+	}()
+	count := 0
+	timer := time.NewTimer(time.Second)
+wait:
+	for count < 4 {
+		select {
+		case <-started:
+			count++
+		case <-timer.C:
+			break wait
+		}
+	}
+	timer.Stop()
+	close(release)
+	<-done
+	if count != 4 {
+		t.Fatalf("started=%d, want 4", count)
+	}
+}
+
+func TestSliceForEachUnevenShardsUseConfiguredParallelism(t *testing.T) {
+	started := make(chan struct{}, 5)
+	release := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		NewSliceBuilder(context.Background(), []int{1, 2, 3, 4, 5}).Worker(4).Shards(4).ForEach(
+			func(context.Context, int) error {
+				started <- struct{}{}
+				<-release
+				return nil
+			})
+	}()
+	count := 0
+	timer := time.NewTimer(time.Second)
+wait:
+	for count < 4 {
+		select {
+		case <-started:
+			count++
+		case <-timer.C:
+			break wait
+		}
+	}
+	timer.Stop()
+	close(release)
+	<-done
+	if count != 4 {
+		t.Fatalf("started=%d, want 4", count)
 	}
 }
 
@@ -1678,6 +2513,36 @@ func TestSerialSlice_ToParallel(t *testing.T) {
 	}
 }
 
+func TestNoFailFastProcessesAllItems(t *testing.T) {
+	boom := errors.New("expected failure")
+	for _, parallel := range []bool{false, true} {
+		t.Run(fmt.Sprintf("parallel=%t", parallel), func(t *testing.T) {
+			var calls atomic.Int64
+			fn := func(_ context.Context, n int) (int, error) {
+				calls.Add(1)
+				if n == 2 {
+					return 0, boom
+				}
+				return n * 10, nil
+			}
+			builder := NewSliceBuilder(context.Background(), []int{1, 2, 3, 4})
+			var result *SliceResult[int]
+			if parallel {
+				result = builder.Parallel().Worker(2).FailFast().NoFailFast().Map(fn)
+			} else {
+				result = builder.Serial().FailFast().NoFailFast().Map(fn)
+			}
+			if calls.Load() != 4 || !errors.Is(result.Error(), boom) {
+				t.Fatalf("calls=%d error=%v", calls.Load(), result.Error())
+			}
+			values, failed := result.Values(), result.FailValues()
+			if len(values) != 3 || values[0] != 10 || values[1] != 30 || values[2] != 40 || len(failed) != 1 || failed[0] != 2 {
+				t.Fatalf("values=%v failed=%v", values, failed)
+			}
+		})
+	}
+}
+
 func TestSerialSlice_FailFast_NoFailFast(t *testing.T) {
 	ctx := context.Background()
 	bomb := errors.New("fail")
@@ -1688,8 +2553,8 @@ func TestSerialSlice_FailFast_NoFailFast(t *testing.T) {
 		}
 		return n, nil
 	})
-	if result.Ok() {
-		t.Log("FailFast: may not catch in serial mode depending on impl")
+	if !errors.Is(result.Error(), bomb) {
+		t.Fatalf("serial FailFast error=%v, want %v", result.Error(), bomb)
 	}
 	ss2 := NewSliceBuilder(ctx, []int{1, 2}).Serial().FailFast().NoFailFast()
 	if ss2 == nil {
@@ -1821,8 +2686,8 @@ func TestParallelSlice_FailFast_NoFailFast(t *testing.T) {
 		}
 		return n, nil
 	})
-	if result.Ok() {
-		t.Log("FailFast: all ok (may be timing-dependent)")
+	if !errors.Is(result.Error(), bomb) {
+		t.Fatalf("parallel FailFast error=%v, want %v", result.Error(), bomb)
 	}
 	ps2 := NewSliceBuilder(ctx, []int{1}).Parallel().FailFast().NoFailFast()
 	if ps2 == nil {
@@ -1977,6 +2842,579 @@ func TestSlice_CrossValidation_SerialVsParallel_ForEach(t *testing.T) {
 // 十六、SliceResult 完整方法测试
 // ============================================================
 
+func TestSerialEachFailFastCountsUnexecuted(t *testing.T) {
+	boom := errors.New("failure")
+	s := New([]int{1, 2, 3})
+	total, failed, first, results := s.EachFull(context.Background(), func(_ context.Context, n int) error {
+		if n == 2 {
+			return boom
+		}
+		return nil
+	}, Seq().FF())
+	if total != 3 || failed != 2 || !errors.Is(first, boom) || len(results) != 3 || !errors.Is(results[2].Err, context.Canceled) {
+		t.Fatalf("total=%d failed=%d first=%v results=%#v", total, failed, first, results)
+	}
+}
+
+func TestSerialFailFastDoesNotReportUnexecutedValues(t *testing.T) {
+	boom := errors.New("failure")
+	var calls int
+	r := NewSliceBuilder(context.Background(), []int{1, 2, 3}).Serial().FailFast().Map(
+		func(_ context.Context, n int) (int, error) {
+			calls++
+			if n == 2 {
+				return 0, boom
+			}
+			return n * 10, nil
+		})
+	if calls != 2 || !slices.Equal(r.Values(), []int{10}) {
+		t.Fatalf("calls = %d, values = %v, results = %#v", calls, r.Values(), r.Results())
+	}
+	if len(r.Results()) != 3 || !errors.Is(r.Results()[2].Err, context.Canceled) {
+		t.Fatalf("unexecuted result = %#v", r.Results())
+	}
+}
+
+func TestSliceMapPanicPreservesCompletedResults(t *testing.T) {
+	for _, failFast := range []bool{false, true} {
+		t.Run(fmt.Sprintf("failFast=%v", failFast), func(t *testing.T) {
+			b := NewSliceBuilder(context.Background(), []int{1, 2, 3}).Worker(1)
+			if failFast {
+				b.FailFast()
+			}
+			r := b.Map(func(_ context.Context, n int) (int, error) {
+				if n == 2 {
+					panic("failure")
+				}
+				return n * 10, nil
+			})
+			results := r.Results()
+			if len(results) != 3 || results[0].Err != nil || results[0].Value != 10 {
+				t.Fatalf("completed result overwritten: %#v", results)
+			}
+			if results[1].Err == nil {
+				t.Fatalf("panic missing: %#v", results)
+			}
+		})
+	}
+}
+
+func TestParallelMapContinuesAfterPanic(t *testing.T) {
+	var calls int
+	r := NewSliceBuilder(context.Background(), []int{1, 2, 3}).Worker(1).Map(
+		func(_ context.Context, n int) (int, error) {
+			calls++
+			if n == 2 {
+				panic("failure")
+			}
+			return n * 10, nil
+		})
+	results := r.Results()
+	if calls != 3 || len(results) != 3 {
+		t.Fatalf("calls = %d, results = %#v", calls, results)
+	}
+	var panicErr *core.PanicError
+	if results[0].Err != nil || results[0].Value != 10 ||
+		!errors.As(results[1].Err, &panicErr) || results[2].Err != nil || results[2].Value != 30 {
+		t.Fatalf("results = %#v", results)
+	}
+}
+
+func TestParallelFailFastMapMarksUnexecutedAfterPanicCanceled(t *testing.T) {
+	var calls int
+	r := NewSliceBuilder(context.Background(), []int{1, 2, 3}).Worker(1).FailFast().Map(
+		func(_ context.Context, n int) (int, error) {
+			calls++
+			if n == 2 {
+				panic("failure")
+			}
+			return n * 10, nil
+		})
+	results := r.Results()
+	if calls != 2 || len(results) != 3 {
+		t.Fatalf("calls = %d, results = %#v", calls, results)
+	}
+	var panicErr *core.PanicError
+	if results[0].Err != nil || results[0].Value != 10 ||
+		!errors.As(results[1].Err, &panicErr) || !errors.Is(results[2].Err, context.Canceled) {
+		t.Fatalf("results = %#v", results)
+	}
+}
+
+func TestParallelFailFastMapReportsTriggeringError(t *testing.T) {
+	boom := errors.New("trigger")
+	started := make(chan struct{})
+	r := NewSliceBuilder(context.Background(), []int{1, 2, 3, 4}).Worker(2).FailFast().Map(
+		func(ctx context.Context, n int) (int, error) {
+			switch n {
+			case 1:
+				close(started)
+				<-ctx.Done()
+				return 0, ctx.Err()
+			case 3:
+				<-started
+				return 0, boom
+			default:
+				return n, nil
+			}
+		})
+	if !errors.Is(r.Error(), boom) {
+		t.Fatalf("Error = %v, results = %#v", r.Error(), r.Results())
+	}
+}
+
+func TestFailFastCancelsRunningTasks(t *testing.T) {
+	for _, operation := range []string{"chunked", "chunked_timeout", "map_timeout", "each_timeout", "builder_chunked", "builder_chunked_timeout", "builder_each_timeout"} {
+		t.Run(operation, func(t *testing.T) {
+			started := make(chan struct{})
+			var canceled atomic.Bool
+			boom := errors.New("trigger")
+			fn := func(ctx context.Context, n int) (int, error) {
+				if n == 1 {
+					close(started)
+					select {
+					case <-ctx.Done():
+						canceled.Store(true)
+						return 0, ctx.Err()
+					case <-time.After(200 * time.Millisecond):
+						return n, nil
+					}
+				}
+				<-started
+				return 0, boom
+			}
+			switch operation {
+			case "chunked_timeout":
+				MapChunkedWithFFTimeout(context.Background(), []int{1, 2}, 2, 1, time.Second, fn)
+			case "chunked":
+				MapChunkedWithFailFast(context.Background(), []int{1, 2}, 2, 1, fn)
+			case "map_timeout":
+				MapWithFFTimeout(context.Background(), []int{1, 2}, 2, time.Second, fn)
+			case "each_timeout":
+				ForEachWithFFTimeout(context.Background(), []int{1, 2}, 2, time.Second, func(ctx context.Context, n int) error { _, err := fn(ctx, n); return err })
+			case "builder_chunked":
+				NewSliceBuilder(context.Background(), []int{1, 2}).Worker(2).Chunk(1).FailFast().Map(fn)
+			case "builder_chunked_timeout":
+				NewSliceBuilder(context.Background(), []int{1, 2}).Worker(2).Chunk(1).Timeout(time.Second).FailFast().Map(fn)
+			case "builder_each_timeout":
+				NewSliceBuilder(context.Background(), []int{1, 2}).Worker(2).Timeout(time.Second).FailFast().ForEach(func(ctx context.Context, n int) error { _, err := fn(ctx, n); return err })
+			}
+			if !canceled.Load() {
+				t.Fatal("running task did not receive fail-fast cancellation")
+			}
+		})
+	}
+}
+
+func TestPoolFailFastMapReportsTriggeringError(t *testing.T) {
+	for _, panicFailure := range []bool{false, true} {
+		t.Run(fmt.Sprintf("panic=%v", panicFailure), func(t *testing.T) {
+			p := pool.NewPool[int](2)
+			defer p.Close()
+			boom := errors.New("trigger")
+			started := make(chan struct{})
+			r := NewSliceBuilder(context.Background(), []int{1, 2}).Pool(p).FailFast().Map(
+				func(ctx context.Context, n int) (int, error) {
+					if n == 1 {
+						close(started)
+						<-ctx.Done()
+						return 0, ctx.Err()
+					}
+					<-started
+					if panicFailure {
+						panic(boom)
+					}
+					return 0, boom
+				})
+			if panicFailure {
+				var pe *core.PanicError
+				if !errors.As(r.Error(), &pe) {
+					t.Fatalf("error = %v", r.Error())
+				}
+			} else if !errors.Is(r.Error(), boom) {
+				t.Fatalf("error = %v", r.Error())
+			}
+		})
+	}
+}
+
+func TestPoolFailFastForEachReportsTriggeringError(t *testing.T) {
+	p := pool.NewPool[int](2)
+	defer p.Close()
+	boom := errors.New("trigger")
+	started := make(chan struct{})
+	r := NewSliceBuilder(context.Background(), []int{1, 2}).Pool(p).FailFast().ForEach(
+		func(ctx context.Context, n int) error {
+			if n == 1 {
+				close(started)
+				<-ctx.Done()
+				return ctx.Err()
+			}
+			<-started
+			return boom
+		})
+	if !errors.Is(r.Error(), boom) {
+		t.Fatalf("error = %v", r.Error())
+	}
+}
+
+func TestShardedFailFastMapReportsPreCanceledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var calls atomic.Int32
+	results, err := NewRunner[int, int](ctx, []int{1, 2, 3}, Par(2).Shard(2).FF()).Map(
+		func(context.Context, int) (int, error) { calls.Add(1); return 1, nil })
+	if !errors.Is(err, context.Canceled) || calls.Load() != 0 || len(results) != 3 {
+		t.Fatalf("err = %v, calls = %d, results = %#v", err, calls.Load(), results)
+	}
+	for _, result := range results {
+		if !errors.Is(result.Err, context.Canceled) {
+			t.Fatalf("results = %#v", results)
+		}
+	}
+}
+
+func TestShardedFailFastPreservesTriggeringError(t *testing.T) {
+	for _, op := range []string{"map", "each"} {
+		t.Run(op, func(t *testing.T) {
+			bomb := errors.New("trigger")
+			started := make(chan struct{}, 2)
+			release := make(chan struct{})
+			fn := func(ctx context.Context, value int) error {
+				started <- struct{}{}
+				<-release
+				if value == 0 {
+					return bomb
+				}
+				<-ctx.Done()
+				return ctx.Err()
+			}
+			go func() { <-started; <-started; close(release) }()
+			runner := NewRunner[int, int](context.Background(), []int{0, 1}, Par(2).Shard(2).FF())
+			if op == "map" {
+				results, err := runner.Map(func(ctx context.Context, v int) (int, error) { return v, fn(ctx, v) })
+				if !errors.Is(err, bomb) || !errors.Is(results[0].Err, bomb) || !errors.Is(results[1].Err, context.Canceled) {
+					t.Fatalf("err=%v results=%v", err, results)
+				}
+			} else {
+				total, failures, err, results := runner.Each(fn)
+				if total != 2 || failures != 2 || !errors.Is(err, bomb) || !errors.Is(results[0].Err, bomb) || !errors.Is(results[1].Err, context.Canceled) {
+					t.Fatalf("total=%d failures=%d err=%v results=%v", total, failures, err, results)
+				}
+			}
+		})
+	}
+}
+
+func TestManyShardsRespectWorkerLimit(t *testing.T) {
+	const n = 1024
+	for _, op := range []string{"map", "each"} {
+		t.Run(op, func(t *testing.T) {
+			items := make([]int, n)
+			for i := range items {
+				items[i] = i
+			}
+			var active, peak atomic.Int32
+			var seen [n]atomic.Int32
+			fn := func(_ context.Context, v int) error {
+				current := active.Add(1)
+				for old := peak.Load(); current > old && !peak.CompareAndSwap(old, current); old = peak.Load() {
+				}
+				seen[v].Add(1)
+				runtime.Gosched()
+				active.Add(-1)
+				return nil
+			}
+			runner := NewRunner[int, int](context.Background(), items, Par(3).Shard(n))
+			if op == "map" {
+				results, err := runner.Map(func(ctx context.Context, v int) (int, error) { return v, fn(ctx, v) })
+				if err != nil || len(results) != n {
+					t.Fatalf("results=%d err=%v", len(results), err)
+				}
+			} else {
+				total, failures, err, _ := runner.Each(fn)
+				if total != n || failures != 0 || err != nil {
+					t.Fatalf("total=%d failures=%d err=%v", total, failures, err)
+				}
+			}
+			if got := peak.Load(); got > 3 {
+				t.Errorf("peak=%d, want <= 3", got)
+			}
+			for i := range seen {
+				if got := seen[i].Load(); got != 1 {
+					t.Errorf("item %d called %d times", i, got)
+				}
+			}
+		})
+	}
+}
+
+func TestManyShardsBoundSchedulerGoroutines(t *testing.T) {
+	for _, op := range []string{"map", "each"} {
+		t.Run(op, func(t *testing.T) {
+			const n = 2048
+			items := make([]int, n)
+			started := make(chan struct{}, 2)
+			release := make(chan struct{})
+			done := make(chan struct{})
+			baseline := runtime.NumGoroutine()
+			go func() {
+				defer close(done)
+				runner := NewRunner[int, int](context.Background(), items, Par(2).Shard(n))
+				fn := func(context.Context, int) error { started <- struct{}{}; <-release; return nil }
+				if op == "map" {
+					runner.Map(func(ctx context.Context, v int) (int, error) { return v, fn(ctx, v) })
+				} else {
+					runner.Each(fn)
+				}
+			}()
+			<-started
+			<-started
+			time.Sleep(200 * time.Millisecond)
+			growth := runtime.NumGoroutine() - baseline
+			go func() {
+				for range started {
+				}
+			}()
+			close(release)
+			<-done
+			close(started)
+			if growth > 128 {
+				t.Fatalf("goroutine growth=%d with 2 workers", growth)
+			}
+		})
+	}
+}
+
+func TestShardedForEachReportsPreCanceledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var calls atomic.Int32
+	r := NewSliceBuilder(ctx, []int{1, 2, 3}).Worker(2).Shards(2).ForEach(
+		func(context.Context, int) error { calls.Add(1); return nil })
+	if r.Total() != 3 || r.FailCount() != 3 || r.Ok() || !errors.Is(r.Error(), context.Canceled) || calls.Load() != 0 {
+		t.Fatalf("total = %d, failed = %d, err = %v, calls = %d", r.Total(), r.FailCount(), r.Error(), calls.Load())
+	}
+}
+
+func TestManyShardsCancellationFillsAllResults(t *testing.T) {
+	const n = 257
+	for _, op := range []string{"map", "each"} {
+		t.Run(op, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			started := make(chan struct{}, 2)
+			release := make(chan struct{})
+			var calls atomic.Int32
+			fn := func(context.Context, int) error {
+				calls.Add(1)
+				started <- struct{}{}
+				<-release
+				return nil
+			}
+			go func() { <-started; <-started; cancel(); close(release) }()
+			r := NewRunner[int, int](ctx, make([]int, n), Par(2).Shard(n))
+			if op == "map" {
+				results, err := r.Map(func(ctx context.Context, v int) (int, error) { return v, fn(ctx, v) })
+				if err != nil || len(results) != n {
+					t.Fatalf("len=%d err=%v", len(results), err)
+				}
+				var canceled int
+				for _, result := range results {
+					if !result.Occupied {
+						t.Fatal("unfilled result")
+					}
+					if errors.Is(result.Err, context.Canceled) {
+						canceled++
+					} else if result.Err != nil {
+						t.Fatal(result.Err)
+					}
+				}
+				if canceled != n-2 {
+					t.Fatalf("canceled=%d, want %d", canceled, n-2)
+				}
+			} else {
+				total, failed, err, results := r.Each(fn)
+				if total != n || failed != n-2 || !errors.Is(err, context.Canceled) || len(results) != n {
+					t.Fatalf("total=%d failed=%d len=%d err=%v", total, failed, len(results), err)
+				}
+				for _, result := range results {
+					if !result.Occupied {
+						t.Fatal("unfilled result")
+					}
+				}
+			}
+			if got := calls.Load(); got != 2 {
+				t.Fatalf("calls=%d, want 2", got)
+			}
+		})
+	}
+}
+
+func TestShardedPanicDoesNotStopFollowingShards(t *testing.T) {
+	for _, op := range []string{"map", "each"} {
+		t.Run(op, func(t *testing.T) {
+			var calls atomic.Int32
+			fn := func(_ context.Context, value int) error {
+				calls.Add(1)
+				if value == 0 {
+					panic("failure")
+				}
+				return nil
+			}
+			runner := NewRunner[int, int](context.Background(), []int{0, 1, 2, 3, 4}, Par(1).Shard(5))
+			if op == "map" {
+				results, err := runner.Map(func(ctx context.Context, v int) (int, error) { return v, fn(ctx, v) })
+				if err != nil || len(results) != 5 || !results[0].IsPanic() {
+					t.Fatalf("err=%v results=%v", err, results)
+				}
+				for _, r := range results[1:] {
+					if r.Err != nil {
+						t.Fatal(r.Err)
+					}
+				}
+			} else {
+				total, failed, err, results := runner.Each(fn)
+				var panicErr *core.PanicError
+				if total != 5 || failed != 1 || !errors.As(err, &panicErr) || !results[0].IsPanic() {
+					t.Fatalf("total=%d failed=%d err=%v results=%v", total, failed, err, results)
+				}
+			}
+			if got := calls.Load(); got != 5 {
+				t.Fatalf("calls=%d, want 5", got)
+			}
+		})
+	}
+}
+
+func TestParallelForEachReportsPreCanceledContext(t *testing.T) {
+	for _, failFast := range []bool{false, true} {
+		t.Run(fmt.Sprintf("failFast=%v", failFast), func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			var calls atomic.Int32
+			b := NewSliceBuilder(ctx, []int{1, 2, 3}).Worker(2)
+			if failFast {
+				b.FailFast()
+			}
+			r := b.ForEach(func(context.Context, int) error { calls.Add(1); return nil })
+			if r.Total() != 3 || r.FailCount() != 3 || r.Ok() || !errors.Is(r.Error(), context.Canceled) || calls.Load() != 0 {
+				t.Fatalf("total = %d, failed = %d, err = %v, calls = %d", r.Total(), r.FailCount(), r.Error(), calls.Load())
+			}
+		})
+	}
+}
+
+func TestSerialTimeoutAppliesToEachCallback(t *testing.T) {
+	for _, operation := range []string{"map", "foreach"} {
+		t.Run(operation, func(t *testing.T) {
+			var calls, active, maxActive atomic.Int32
+			fn := func(ctx context.Context, n int) error {
+				calls.Add(1)
+				if current := active.Add(1); current > maxActive.Load() {
+					maxActive.Store(current)
+				}
+				defer active.Add(-1)
+				<-ctx.Done()
+				return ctx.Err()
+			}
+			b := NewSliceBuilder(context.Background(), []int{1, 2, 3}).Serial().Timeout(time.Millisecond)
+			if operation == "map" {
+				r := b.Map(func(ctx context.Context, n int) (int, error) { return n, fn(ctx, n) })
+				if len(r.Errors()) != 3 {
+					t.Fatalf("errors = %v", r.Errors())
+				}
+				for _, err := range r.Errors() {
+					if !errors.Is(err, context.DeadlineExceeded) {
+						t.Fatalf("error = %v", err)
+					}
+				}
+			} else {
+				r := b.ForEach(fn)
+				if r.Total() != 3 || r.FailCount() != 3 || !errors.Is(r.Error(), context.DeadlineExceeded) {
+					t.Fatalf("total = %d, failures = %d, error = %v", r.Total(), r.FailCount(), r.Error())
+				}
+			}
+			if calls.Load() != 3 || maxActive.Load() != 1 {
+				t.Fatalf("calls = %d, max active = %d", calls.Load(), maxActive.Load())
+			}
+		})
+	}
+}
+
+func TestSerialFailFastTimeoutStopsRemainingCallbacks(t *testing.T) {
+	for _, operation := range []string{"map", "foreach"} {
+		t.Run(operation, func(t *testing.T) {
+			var calls atomic.Int32
+			fn := func(ctx context.Context, _ int) error {
+				calls.Add(1)
+				<-ctx.Done()
+				return ctx.Err()
+			}
+			b := NewSliceBuilder(context.Background(), []int{1, 2, 3}).Serial().FailFast().Timeout(time.Millisecond)
+			if operation == "map" {
+				r := b.Map(func(ctx context.Context, n int) (int, error) { return n, fn(ctx, n) })
+				results := r.Results()
+				if len(results) != 3 || !errors.Is(r.Error(), context.DeadlineExceeded) ||
+					!errors.Is(results[1].Err, context.Canceled) || !errors.Is(results[2].Err, context.Canceled) {
+					t.Fatalf("error = %v, results = %#v", r.Error(), results)
+				}
+			} else {
+				r := b.ForEach(fn)
+				if r.Total() != 3 || r.FailCount() != 3 || !errors.Is(r.Error(), context.DeadlineExceeded) {
+					t.Fatalf("total = %d, failures = %d, error = %v", r.Total(), r.FailCount(), r.Error())
+				}
+			}
+			if calls.Load() != 1 {
+				t.Fatalf("calls = %d", calls.Load())
+			}
+		})
+	}
+}
+
+func TestSliceDefaultTimeoutMustBeEnabledExplicitly(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name         string
+		mapValues    func(func(context.Context, int) (int, error)) *SliceResult[int]
+		wantDeadline bool
+	}{
+		{"new builder", NewSliceBuilder(ctx, []int{1}).Map, false},
+		{"default timeout", NewSliceBuilder(ctx, []int{1}).DefaultTimeout().Map, true},
+		{"mode switch resets timeout", NewSliceBuilder(ctx, []int{1}).DefaultTimeout().Serial().Map, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := tc.mapValues(func(ctx context.Context, n int) (int, error) {
+				_, ok := ctx.Deadline()
+				if ok != tc.wantDeadline {
+					return 0, fmt.Errorf("deadline present = %v, want %v", ok, tc.wantDeadline)
+				}
+				return n, nil
+			})
+			if err := r.Error(); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestSliceResultErrorsDoNotDuplicateSummary(t *testing.T) {
+	boom := errors.New("failure")
+	r := NewSliceBuilder(context.Background(), []int{1}).Serial().FailFast().Map(
+		func(context.Context, int) (int, error) { return 0, boom })
+	if got := r.Errors(); len(got) != 1 || !errors.Is(got[0], boom) {
+		t.Fatalf("Errors = %v, want one failure", got)
+	}
+	shared := &SliceResult[int]{err: boom, errIsSummary: true, results: []core.Result[int]{{Err: boom}, {Err: boom}}}
+	if got := shared.Errors(); len(got) != 2 {
+		t.Fatalf("two failed elements returned %d errors", len(got))
+	}
+	other := errors.New("independent")
+	independent := &SliceResult[int]{err: other, results: []core.Result[int]{{Err: boom}}}
+	if got := independent.Errors(); len(got) != 2 || !errors.Is(got[0], other) || !errors.Is(got[1], boom) {
+		t.Fatalf("independent errors = %v", got)
+	}
+}
+
 func TestSliceResult_Errors(t *testing.T) {
 	ctx := context.Background()
 	bomb := errors.New("test error")
@@ -1996,7 +3434,7 @@ func TestSliceResult_Errors(t *testing.T) {
 func TestSliceResult_FailValues(t *testing.T) {
 	ctx := context.Background()
 	bomb := errors.New("fail")
-	result := NewSliceBuilder(ctx, []int{10, 20, 30}).Worker(2).FailFast().Map(
+	result := NewSliceBuilder(ctx, []int{10, 20, 30}).Worker(2).Map(
 		func(ctx context.Context, n int) (int, error) {
 			if n == 20 {
 				return 0, bomb
@@ -2004,8 +3442,8 @@ func TestSliceResult_FailValues(t *testing.T) {
 			return n, nil
 		})
 	fv := result.FailValues()
-	if len(fv) == 0 {
-		t.Log("FailValues: no fails (may complete before fail)")
+	if len(fv) != 1 || fv[0] != 20 || !errors.Is(result.Error(), bomb) {
+		t.Fatalf("FailValues=%v error=%v, want [20] and failure", fv, result.Error())
 	}
 }
 
@@ -2089,12 +3527,12 @@ func TestSliceResult_First_AllFail(t *testing.T) {
 	_ = v
 }
 
-func TestForEachResult_SuccessCount(t *testing.T) {
+func TestForEachResult_OkCount(t *testing.T) {
 	ctx := context.Background()
 	result := NewSliceBuilder(ctx, genIntItems(100)).ForEach(
 		func(ctx context.Context, n int) error { return nil })
-	if result.SuccessCount() != 100 {
-		t.Fatalf("SuccessCount: %d want 100", result.SuccessCount())
+	if result.OkCount() != 100 {
+		t.Fatalf("OkCount: %d want 100", result.OkCount())
 	}
 }
 
@@ -3099,6 +4537,181 @@ func TestSlice_Each_FailFast_ExecutionLimit(t *testing.T) {
 	ex := atomic.LoadInt64(&executed)
 	if ex >= int64(len(items)) {
 		t.Errorf("FailFast did not block redundant execution: executed=%d, total=%d", ex, len(items))
+	}
+}
+
+func TestSliceStreamSlowConsumerPreservesResults(t *testing.T) {
+	const n = 66000
+	for _, fast := range []bool{false, true} {
+		t.Run(fmt.Sprintf("fast=%v", fast), func(t *testing.T) {
+			policy := Par(8).Buf(1)
+			if fast {
+				policy = policy.FF()
+			}
+			items := genIntItems(n)
+			var completed atomic.Int32
+			done := make(chan struct{})
+			ch := NewWithResult[int, int](items).Stream(context.Background(), func(_ context.Context, v int) (int, error) {
+				if completed.Add(1) == n {
+					close(done)
+				}
+				return v, nil
+			}, policy)
+			select {
+			case <-done:
+			case <-time.After(2 * time.Second):
+			}
+			time.Sleep(100 * time.Millisecond)
+			count := 0
+			for result := range ch {
+				if result.Err != nil {
+					t.Fatal(result.Err)
+				}
+				count++
+			}
+			if count != n {
+				t.Fatalf("got %d results, want %d", count, n)
+			}
+		})
+	}
+}
+
+func TestSliceStreamsCancelConcurrentCallbacks(t *testing.T) {
+	for _, each := range []bool{false, true} {
+		for _, fast := range []bool{false, true} {
+			t.Run(fmt.Sprintf("each=%v/fast=%v", each, fast), func(t *testing.T) {
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				policy := Par(4).Buf(1)
+				if fast {
+					policy = policy.FF()
+				}
+				started := make(chan struct{}, 4)
+				release := make(chan struct{})
+				fn := func(context.Context, int) error {
+					started <- struct{}{}
+					<-release
+					return nil
+				}
+				s := NewWithResult[int, int]([]int{1, 2, 3, 4})
+				var closed <-chan struct{}
+				if each {
+					ch := s.EachStream(ctx, fn, policy)
+					done := make(chan struct{})
+					closed = done
+					go func() {
+						for range ch {
+						}
+						close(done)
+					}()
+				} else {
+					ch := s.Stream(ctx, func(ctx context.Context, v int) (int, error) { return v, fn(ctx, v) }, policy)
+					done := make(chan struct{})
+					closed = done
+					go func() {
+						for range ch {
+						}
+						close(done)
+					}()
+				}
+				for i := 0; i < 4; i++ {
+					select {
+					case <-started:
+					case <-time.After(5 * time.Second):
+						close(release)
+						t.Fatal("callbacks did not start")
+					}
+				}
+				cancel()
+				close(release)
+				select {
+				case <-closed:
+				case <-time.After(5 * time.Second):
+					t.Fatal("stream did not close after cancellation")
+				}
+			})
+		}
+	}
+}
+
+func TestSliceEachStreamPanicRespectsFailFast(t *testing.T) {
+	for _, fast := range []bool{false, true} {
+		t.Run(fmt.Sprintf("fast=%v", fast), func(t *testing.T) {
+			policy := Par(1).Buf(3)
+			if fast {
+				policy = policy.FF()
+			}
+			var calls atomic.Int32
+			s := NewWithResult[int, int]([]int{1, 2, 3})
+			ch := s.EachStream(context.Background(), func(context.Context, int) error {
+				calls.Add(1)
+				panic("failure")
+			}, policy)
+			panics := 0
+			for result := range ch {
+				if result.IsPanic() {
+					panics++
+				} else if !fast || !errors.Is(result.Err, context.Canceled) {
+					t.Fatalf("unexpected result error %v", result.Err)
+				}
+			}
+			want := 3
+			if fast {
+				want = 1
+			}
+			if panics != want || int(calls.Load()) != want {
+				t.Fatalf("got %d panic results and %d calls, want %d", panics, calls.Load(), want)
+			}
+		})
+	}
+}
+
+func TestSliceStreamsCancelWithFullBuffer(t *testing.T) {
+	for _, each := range []bool{false, true} {
+		for _, fast := range []bool{false, true} {
+			t.Run(fmt.Sprintf("each=%v/fast=%v", each, fast), func(t *testing.T) {
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				policy := Par(1).Buf(1)
+				if fast {
+					policy = policy.FF()
+				}
+				started := make(chan struct{})
+				var calls atomic.Int32
+				fn := func(context.Context, int) error {
+					if calls.Add(1) == 2 {
+						close(started)
+					}
+					return nil
+				}
+				s := NewWithResult[int, int]([]int{1, 2, 3})
+				if each {
+					ch := s.EachStream(ctx, fn, policy)
+					<-started
+					for len(ch) == 0 {
+						runtime.Gosched()
+					}
+					cancel()
+					time.Sleep(50 * time.Millisecond)
+					<-ch
+					if _, ok := <-ch; ok {
+						t.Fatal("stream sent a blocked result after cancellation")
+					}
+				} else {
+					ch := s.Stream(ctx, func(ctx context.Context, v int) (int, error) { return v, fn(ctx, v) }, policy)
+					<-started
+					for len(ch) == 0 {
+						runtime.Gosched()
+					}
+					cancel()
+					time.Sleep(50 * time.Millisecond)
+					<-ch
+					if _, ok := <-ch; ok {
+						t.Fatal("stream sent a blocked result after cancellation")
+					}
+				}
+			})
+		}
 	}
 }
 

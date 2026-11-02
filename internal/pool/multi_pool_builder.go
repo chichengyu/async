@@ -38,19 +38,19 @@ func (b *MultiPoolBuilder[T]) DefaultMultiPoolConfig() *MultiPoolBuilder[T] {
 	return b
 }
 
-// DefaultShards 使用默认分片数（GOMAXPROCS，最少 2）。
+// DefaultShards 恢复默认分片数；默认只使用一个池。
 func (b *MultiPoolBuilder[T]) DefaultShards() *MultiPoolBuilder[T] {
 	b.shards = 0
 	return b
 }
 
-// DefaultWorker 使用默认 worker 数量（GOMAXPROCS）。
+// DefaultWorker 使用默认 IO 并发度（CPU 核数的两倍）。
 func (b *MultiPoolBuilder[T]) DefaultWorker() *MultiPoolBuilder[T] {
 	b.cfg.Size = core.IO()
 	return b
 }
 
-// DefaultTimeout 使用默认任务超时（不限时）。
+// DefaultTimeout 恢复为池创建时的全局默认任务超时。
 func (b *MultiPoolBuilder[T]) DefaultTimeout() *MultiPoolBuilder[T] {
 	b.cfg.Timeout = 0
 	return b
@@ -74,13 +74,13 @@ func (b *MultiPoolBuilder[T]) DefaultMaxPending() *MultiPoolBuilder[T] {
 	return b
 }
 
-// DefaultOverflow 使用默认溢出策略（OverflowDrop）。
+// DefaultOverflow 将任务队列溢出策略设为 OverflowDrop。
 func (b *MultiPoolBuilder[T]) DefaultOverflow() *MultiPoolBuilder[T] {
 	b.cfg.Overflow = core.OverflowDrop
 	return b
 }
 
-// OverflowDrop 队列满时丢弃新任务（默认策略）。
+// OverflowDrop 达到 MaxPending 时丢弃新任务。
 func (b *MultiPoolBuilder[T]) OverflowDrop() *MultiPoolBuilder[T] {
 	b.cfg.Overflow = core.OverflowDrop
 	return b
@@ -98,7 +98,7 @@ func (b *MultiPoolBuilder[T]) OverflowError() *MultiPoolBuilder[T] {
 	return b
 }
 
-// DefaultRingBuf 使用默认环形缓冲容量（0=不启用）。
+// DefaultRingBuf 清除构建器覆盖，使用创建池时的全局默认环形缓冲配置。
 func (b *MultiPoolBuilder[T]) DefaultRingBuf() *MultiPoolBuilder[T] {
 	b.cfg.RingBufCap = 0
 	return b
@@ -110,7 +110,7 @@ func (b *MultiPoolBuilder[T]) DefaultMaxResults() *MultiPoolBuilder[T] {
 	return b
 }
 
-// DefaultStreaming 使用默认流式 buf 大小（0=无缓冲）。
+// DefaultStreaming 恢复默认设置（不启用流式结果）。
 func (b *MultiPoolBuilder[T]) DefaultStreaming() *MultiPoolBuilder[T] {
 	b.cfg.Streaming = 0
 	return b
@@ -243,7 +243,11 @@ func (b *MultiPoolBuilder[T]) Run(fn func(ctx context.Context, mp *MultiPool[T])
 			p.WithStreaming(b.cfg.Streaming)
 		}
 	}
+	ctx := b.ctx
+	if b.extP == nil && b.cfg.FailFast {
+		ctx = p.Ctx()
+	}
 	mp := p.Shard(b.shards)
 	defer mp.Close()
-	return fn(b.ctx, mp)
+	return fn(ctx, mp)
 }

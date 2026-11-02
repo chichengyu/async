@@ -3,20 +3,571 @@ package retry
 import (
 	"context"
 	"errors"
+	"fmt"
+	"math"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/chichengyu/async/internal/core"
+	"github.com/chichengyu/async/internal/ratelimit"
 	"github.com/chichengyu/async/test"
 )
 
 var errRetry = errors.New("retry test error")
 
+type permitWaitContext struct {
+	context.Context
+	registered chan struct{}
+	once       sync.Once
+}
+
+func (c *permitWaitContext) Done() <-chan struct{} {
+	c.once.Do(func() { close(c.registered) })
+	return c.Context.Done()
+}
+
+func TestWithTimeoutWaitsForFunctionThatIgnoresCancellation(t *testing.T) {
+	started, release, expired := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	type outcome struct {
+		value int
+		err   error
+	}
+	result := make(chan outcome, 1)
+	go func() {
+		value, err := WithTimeout(context.Background(), time.Millisecond, func(ctx context.Context) (int, error) {
+			close(started)
+			<-ctx.Done()
+			close(expired)
+			<-release
+			return 42, nil
+		})
+		result <- outcome{value, err}
+	}()
+	<-started
+	<-expired
+	select {
+	case <-result:
+		t.Fatal("WithTimeout returned before the function completed")
+	default:
+	}
+	close(release)
+	select {
+	case got := <-result:
+		if got.value != 42 || got.err != nil {
+			t.Fatalf("result = (%d, %v), want (42, nil)", got.value, got.err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("WithTimeout did not return after the function completed")
+	}
+}
+
+func TestTimeoutWrappersWaitForCallbackAfterDeadline(t *testing.T) {
+	for _, mode := range []string{"timeout_void", "deadline", "deadline_void"} {
+		t.Run(mode, func(t *testing.T) {
+			expired, release := make(chan struct{}), make(chan struct{})
+			want := errors.New("callback result")
+			done := make(chan error, 1)
+			go func() {
+				callback := func(ctx context.Context) error {
+					<-ctx.Done()
+					close(expired)
+					<-release
+					return want
+				}
+				switch mode {
+				case "timeout_void":
+					done <- WithTimeoutVoid(context.Background(), time.Millisecond, callback)
+				case "deadline":
+					value, err := WithDeadline(context.Background(), time.Now().Add(time.Millisecond), func(ctx context.Context) (int, error) {
+						return 42, callback(ctx)
+					})
+					if value != 42 {
+						done <- fmt.Errorf("value = %d, want 42", value)
+						return
+					}
+					done <- err
+				case "deadline_void":
+					done <- WithDeadlineVoid(context.Background(), time.Now().Add(time.Millisecond), callback)
+				}
+			}()
+			<-expired
+			select {
+			case err := <-done:
+				t.Fatalf("returned before callback finished: %v", err)
+			default:
+			}
+			close(release)
+			select {
+			case err := <-done:
+				if !errors.Is(err, want) {
+					t.Fatalf("error = %v, want callback error", err)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("wrapper did not return after callback finished")
+			}
+		})
+	}
+}
+
+func TestRetryChainReleasesLimiterAfterFailureOrPanic(t *testing.T) {
+	for _, mode := range []string{"rate", "sharded-rate", "adaptive", "sharded-adaptive"} {
+		for _, panics := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/panic=%v", mode, panics), func(t *testing.T) {
+				c := New[int](context.Background()).MaxRetries(1).Backoff(0, 0)
+				var rl *ratelimit.RateLimiter
+				var srl *ratelimit.ShardedRateLimiter
+				var al *ratelimit.AdaptiveRateLimiter
+				var sal *ratelimit.ShardedAdaptiveRateLimiter
+				switch mode {
+				case "rate":
+					rl = ratelimit.NewRateLimiter(1, time.Hour)
+					defer rl.Close()
+				case "sharded-rate":
+					srl = ratelimit.NewShardedRateLimiter(2, 2, time.Hour)
+					defer srl.Close()
+				case "adaptive":
+					al = ratelimit.NewAdaptiveRateLimiter(1, 1)
+				case "sharded-adaptive":
+					sal = ratelimit.NewShardedAdaptiveRateLimiter(2, 2, 2)
+					defer sal.Close()
+				}
+				calls := 0
+				_, err := c.executeCore(func(context.Context) (int, error) {
+					calls++
+					if panics {
+						panic("failure")
+					}
+					return 0, errRetry
+				}, srl, nil, nil, al, rl, nil, nil, sal)
+				if err == nil || calls != 2 {
+					t.Fatalf("calls=%d err=%v", calls, err)
+				}
+				if rl != nil && rl.Available() != 1 {
+					t.Fatalf("rate available=%d", rl.Available())
+				}
+				if srl != nil && srl.Available() != 2 {
+					t.Fatalf("sharded rate available=%d", srl.Available())
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+				defer cancel()
+				if al != nil {
+					if err := al.Acquire(ctx); err != nil {
+						t.Fatal(err)
+					}
+					al.Release()
+				}
+				if sal != nil {
+					for i := 0; i < 2; i++ {
+						if err := sal.Acquire(ctx); err != nil {
+							t.Fatal(err)
+						}
+					}
+					sal.Release()
+					sal.Release()
+				}
+			})
+		}
+	}
+}
+
+func TestRetryChainExhaustionWrapsLastError(t *testing.T) {
+	first, last := errors.New("first"), errors.New("last")
+	calls := 0
+	_, err := New[int](context.Background()).MaxRetries(1).Backoff(0, 0).Execute(func(context.Context) (int, error) {
+		calls++
+		if calls == 1 {
+			return 0, first
+		}
+		return 0, last
+	})
+	if calls != 2 || !errors.Is(err, last) || errors.Is(err, first) {
+		t.Fatalf("calls=%d err=%v", calls, err)
+	}
+}
+
+func TestRetryChainCancellationWhileWaitingForPermit(t *testing.T) {
+	for _, mode := range []string{"rate", "sharded-rate", "adaptive", "sharded-adaptive"} {
+		t.Run(mode, func(t *testing.T) {
+			parent, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			ctx := &permitWaitContext{Context: parent, registered: make(chan struct{})}
+			var rl *ratelimit.RateLimiter
+			var srl *ratelimit.ShardedRateLimiter
+			var al *ratelimit.AdaptiveRateLimiter
+			var sal *ratelimit.ShardedAdaptiveRateLimiter
+			var acquire func(context.Context) error
+			switch mode {
+			case "rate":
+				rl = ratelimit.NewRateLimiter(1, time.Hour)
+				defer rl.Close()
+				acquire = rl.Acquire
+			case "sharded-rate":
+				srl = ratelimit.NewShardedRateLimiter(1, 1, time.Hour)
+				defer srl.Close()
+				acquire = srl.Acquire
+			case "adaptive":
+				al = ratelimit.NewAdaptiveRateLimiter(1, 1)
+				acquire = al.Acquire
+			case "sharded-adaptive":
+				sal = ratelimit.NewShardedAdaptiveRateLimiter(1, 1, 1)
+				defer sal.Close()
+				acquire = sal.Acquire
+			}
+			if err := acquire(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			var calls atomic.Int32
+			done := make(chan error, 1)
+			go func() {
+				_, err := New[int](ctx).MaxRetries(1).Backoff(time.Hour, time.Hour).executeCore(func(context.Context) (int, error) { calls.Add(1); return 0, nil }, srl, nil, nil, al, rl, nil, nil, sal)
+				done <- err
+			}()
+			select {
+			case <-ctx.registered:
+			case <-time.After(5 * time.Second):
+				t.Fatal("permit acquisition did not begin waiting")
+			}
+			cancel()
+			select {
+			case err := <-done:
+				if !errors.Is(err, context.Canceled) || calls.Load() != 0 {
+					t.Fatalf("calls=%d err=%v", calls.Load(), err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("retry did not stop after cancellation")
+			}
+		})
+	}
+}
+
+func TestNegativeRetriesAttemptOnce(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		run  func(*int) error
+	}{
+		{"backoff", func(n *int) error {
+			_, err := RetryWithBackoff(context.Background(), func(context.Context) (int, error) { *n++; return 1, nil }, -1, 0, 0)
+			return err
+		}},
+		{"config", func(n *int) error {
+			_, err := RetryWithConfig(context.Background(), func(context.Context) (int, error) { *n++; return 1, nil }, -1, 0, 0)
+			return err
+		}},
+		{"function", func(n *int) error { return RetryFn(func() error { *n++; return nil }).WithRetry(-1) }},
+		{"worker", func(n *int) error {
+			return BindRetryToWorker(context.Background(), &mockWorkerBackend{submitFn: func(context.Context, func(context.Context) error) error { *n++; return nil }}, func(context.Context) error { return nil }, -1, 0, 0)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			if err := tc.run(&calls); err != nil || calls != 1 {
+				t.Fatalf("calls=%d err=%v, want one successful attempt", calls, err)
+			}
+		})
+	}
+}
+
+func TestNegativeRetriesPreserveFailureAndCancellation(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name string
+		run  func(context.Context, *int) error
+	}{
+		{"linear", func(ctx context.Context, calls *int) error {
+			return RetryWithLinearBackoffVoid(ctx, func(context.Context) error { *calls++; return errRetry }, -1, 0)
+		}},
+		{"config", func(ctx context.Context, calls *int) error {
+			return RetryWithConfigVoid(ctx, func(context.Context) error { *calls++; return errRetry }, -1, 0, 0)
+		}},
+		{"worker", func(ctx context.Context, calls *int) error {
+			return BindRetryToWorker(ctx, &mockWorkerBackend{submitFn: func(context.Context, func(context.Context) error) error { *calls++; return errRetry }}, func(context.Context) error { return nil }, -1, 0, 0)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			if err := tc.run(ctx, &calls); calls != 1 || !errors.Is(err, errRetry) {
+				t.Fatalf("failure: calls=%d err=%v", calls, err)
+			}
+			canceled, cancel := context.WithCancel(ctx)
+			cancel()
+			calls = 0
+			if err := tc.run(canceled, &calls); calls != 0 || !errors.Is(err, context.Canceled) {
+				t.Fatalf("canceled: calls=%d err=%v", calls, err)
+			}
+		})
+	}
+}
+
+func TestRetryChainCancellationWithoutBackoffRegression(t *testing.T) {
+	for _, mode := range []string{"none", "token", "window", "rate", "adaptive"} {
+		for _, preCanceled := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/preCanceled=%v", mode, preCanceled), func(t *testing.T) {
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				if preCanceled {
+					cancel()
+				}
+				chain := New[int](ctx).MaxRetries(3).Backoff(0, 0)
+				switch mode {
+				case "token":
+					chain.TokenBucket()
+				case "window":
+					chain.SlidingWindow()
+				case "rate":
+					chain.RateLimiter()
+				case "adaptive":
+					chain.Adaptive()
+				}
+				calls := 0
+				_, err := chain.Execute(func(context.Context) (int, error) {
+					calls++
+					cancel()
+					return 0, errRetry
+				})
+				want := 1
+				if preCanceled {
+					want = 0
+				}
+				if calls != want || !errors.Is(err, context.Canceled) {
+					t.Fatalf("calls=%d want=%d err=%v", calls, want, err)
+				}
+			})
+		}
+	}
+}
+
+func TestComputeBackoffOverflowRegression(t *testing.T) {
+	for _, tc := range []struct {
+		attempt            int
+		initial, max, want time.Duration
+	}{
+		{4, 10 * time.Second, time.Hour, 160 * time.Second},
+		{30, 10 * time.Second, time.Hour, time.Hour},
+		{30, 10 * time.Second, 0, time.Duration(math.MaxInt64)},
+		{63, time.Nanosecond, 0, time.Duration(math.MaxInt64)},
+		{1, time.Duration(math.MaxInt64 / 2), 0, time.Duration(math.MaxInt64 - 1)},
+	} {
+		if got := computeBackoff(tc.attempt, tc.initial, tc.max); got != tc.want {
+			t.Errorf("attempt=%d initial=%v max=%v got=%v want=%v", tc.attempt, tc.initial, tc.max, got, tc.want)
+		}
+	}
+}
+
+func TestRetryFinalAttemptResultAfterParentCancellation(t *testing.T) {
+	for _, mode := range []string{"backoff", "configured", "chain"} {
+		for _, succeeds := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/success=%v", mode, succeeds), func(t *testing.T) {
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				calls := 0
+				fn := func(context.Context) (int, error) {
+					calls++
+					cancel()
+					if succeeds {
+						return 42, nil
+					}
+					return 0, errRetry
+				}
+				var value int
+				var err error
+				switch mode {
+				case "backoff":
+					value, err = RetryWithBackoff(ctx, fn, 0, 0, 0)
+				case "configured":
+					value, err = RetryWithConfig(ctx, fn, 0, 0, 0, TimeoutOpt{PerCallTimeout: time.Second})
+				case "chain":
+					value, err = New[int](ctx).MaxRetries(0).Backoff(0, 0).Execute(fn)
+				}
+				if calls != 1 {
+					t.Fatalf("calls = %d, want 1", calls)
+				}
+				if succeeds && (value != 42 || err != nil) {
+					t.Fatalf("success = (%d, %v)", value, err)
+				}
+				if !succeeds && (value != 0 || !errors.Is(err, errRetry)) {
+					t.Fatalf("failure = (%d, %v)", value, err)
+				}
+			})
+		}
+	}
+}
+
+func TestRetryStopsAfterParentCancellationWithOrdinaryError(t *testing.T) {
+	for _, mode := range []string{"backoff", "configured", "chain"} {
+		for _, backoff := range []time.Duration{0, time.Hour} {
+			t.Run(fmt.Sprintf("%s/backoff=%s", mode, backoff), func(t *testing.T) {
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				calls := 0
+				fn := func(context.Context) (int, error) {
+					calls++
+					cancel()
+					return 0, errRetry
+				}
+				var err error
+				switch mode {
+				case "backoff":
+					_, err = RetryWithBackoff(ctx, fn, 3, backoff, backoff)
+				case "configured":
+					_, err = RetryWithConfig(ctx, fn, 3, backoff, backoff, TimeoutOpt{PerCallTimeout: time.Second})
+				case "chain":
+					_, err = New[int](ctx).MaxRetries(3).Backoff(backoff, backoff).Execute(fn)
+				}
+				if calls != 1 || !errors.Is(err, context.Canceled) {
+					t.Fatalf("calls=%d err=%v, want one call and cancellation", calls, err)
+				}
+			})
+		}
+	}
+}
+
+func TestRetryCancellationAfterFailedAttempt(t *testing.T) {
+	for _, mode := range []string{"backoff", "configured", "chain"} {
+		t.Run(mode, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			called := make(chan struct{})
+			var calls atomic.Int32
+			fn := func(context.Context) (int, error) {
+				if calls.Add(1) == 1 {
+					close(called)
+				}
+				return 0, errRetry
+			}
+			done := make(chan error, 1)
+			go func() {
+				var err error
+				switch mode {
+				case "backoff":
+					_, err = RetryWithBackoff(ctx, fn, 3, time.Hour, time.Hour)
+				case "configured":
+					_, err = RetryWithConfig(ctx, fn, 3, time.Hour, time.Hour)
+				case "chain":
+					_, err = New[int](ctx).MaxRetries(3).Backoff(time.Hour, time.Hour).Execute(fn)
+				}
+				done <- err
+			}()
+			<-called
+			cancel()
+			select {
+			case err := <-done:
+				if !errors.Is(err, context.Canceled) || calls.Load() != 1 {
+					t.Fatalf("calls=%d err=%v, want one call and cancellation", calls.Load(), err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("retry did not stop after cancellation")
+			}
+		})
+	}
+}
+
+func TestRetryCancellationDuringBackoff(t *testing.T) {
+	for _, mode := range []string{"backoff", "configured", "chain"} {
+		t.Run(mode, func(t *testing.T) {
+			parent, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			ctx := &permitWaitContext{Context: parent, registered: make(chan struct{})}
+			var calls atomic.Int32
+			fn := func(context.Context) (int, error) { calls.Add(1); return 0, errRetry }
+			done := make(chan error, 1)
+			go func() {
+				var err error
+				switch mode {
+				case "backoff":
+					_, err = RetryWithBackoff(ctx, fn, 3, time.Hour, time.Hour)
+				case "configured":
+					_, err = RetryWithConfig(ctx, fn, 3, time.Hour, time.Hour)
+				case "chain":
+					_, err = New[int](ctx).MaxRetries(3).Backoff(time.Hour, time.Hour).Execute(fn)
+				}
+				done <- err
+			}()
+			select {
+			case <-ctx.registered:
+				if calls.Load() != 1 {
+					t.Fatalf("Done observed after %d calls, want 1", calls.Load())
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("retry did not enter backoff")
+			}
+			cancel()
+			select {
+			case err := <-done:
+				if !errors.Is(err, context.Canceled) || calls.Load() != 1 {
+					t.Fatalf("calls=%d err=%v, want one call and cancellation", calls.Load(), err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("retry did not stop during backoff")
+			}
+		})
+	}
+}
+
+func TestRetryCancellationWithoutBackoffRegression(t *testing.T) {
+	for _, configured := range []bool{false, true} {
+		for _, alreadyCanceled := range []bool{false, true} {
+			ctx, cancel := context.WithCancel(context.Background())
+			if alreadyCanceled {
+				cancel()
+			}
+			calls := 0
+			fn := func(context.Context) (int, error) {
+				calls++
+				cancel()
+				return 0, context.Canceled
+			}
+			var err error
+			if configured {
+				_, err = RetryWithConfig(ctx, fn, 3, 0, 0)
+			} else {
+				_, err = RetryWithBackoff(ctx, fn, 3, 0, 0)
+			}
+			cancel()
+			want := 1
+			if alreadyCanceled {
+				want = 0
+			}
+			if calls != want || !errors.Is(err, context.Canceled) {
+				t.Fatalf("configured=%v alreadyCanceled=%v calls=%d err=%v", configured, alreadyCanceled, calls, err)
+			}
+		}
+	}
+}
+
+func TestBindRetryNoBackoffAfterFinalAttempt(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	calls := 0
+	backend := &mockWorkerBackend{submitFn: func(context.Context, func(context.Context) error) error {
+		calls++
+		return core.ErrSubmitTimeout
+	}}
+	err := BindRetryToWorker(ctx, backend, func(context.Context) error { return nil }, 0, time.Hour, time.Hour)
+	if calls != 1 || !errors.Is(err, core.ErrSubmitTimeout) {
+		t.Fatalf("calls=%d err=%v, want one attempt and submit timeout", calls, err)
+	}
+}
+
+func TestBindRetryCancellationWithoutBackoffRegression(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	calls := 0
+	backend := &mockWorkerBackend{submitFn: func(context.Context, func(context.Context) error) error {
+		calls++
+		cancel()
+		return core.ErrSubmitTimeout
+	}}
+	err := BindRetryToWorker(ctx, backend, func(context.Context) error { return nil }, 3, 0, 0)
+	if calls != 1 || !errors.Is(err, context.Canceled) {
+		t.Fatalf("calls=%d err=%v", calls, err)
+	}
+}
+
 // ==================== RetryWithBackoff ====================
 
-func TestRetryWithBackoff_Success(t *testing.T) {
+func TestRetryWithBackoff_Ok(t *testing.T) {
 	ctx := context.Background()
 	val, err := RetryWithBackoff(ctx, func(ctx context.Context) (int, error) {
 		return 42, nil
@@ -29,7 +580,7 @@ func TestRetryWithBackoff_Success(t *testing.T) {
 	}
 }
 
-func TestRetryWithBackoff_RetryThenSuccess(t *testing.T) {
+func TestRetryWithBackoff_RetryThenOk(t *testing.T) {
 	ctx := context.Background()
 	var attempts atomic.Int32
 	val, err := RetryWithBackoff(ctx, func(ctx context.Context) (int, error) {
@@ -74,6 +625,43 @@ func TestRetryWithBackoff_ContextCancel(t *testing.T) {
 	}
 }
 
+func TestRetryBackoffCancellationStopsFurtherAttempts(t *testing.T) {
+	for _, chain := range []bool{false, true} {
+		t.Run(fmt.Sprintf("chain=%v", chain), func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			called := make(chan struct{})
+			var calls atomic.Int32
+			done := make(chan error, 1)
+			fn := func(context.Context) (int, error) {
+				if calls.Add(1) == 1 {
+					close(called)
+				}
+				return 0, errRetry
+			}
+			go func() {
+				var err error
+				if chain {
+					_, err = New[int](ctx).MaxRetries(3).Backoff(time.Hour, time.Hour).Execute(fn)
+				} else {
+					_, err = RetryWithBackoff(ctx, fn, 3, time.Hour, time.Hour)
+				}
+				done <- err
+			}()
+			<-called
+			cancel()
+			select {
+			case err := <-done:
+				if !errors.Is(err, context.Canceled) || calls.Load() != 1 {
+					t.Fatalf("calls=%d err=%v", calls.Load(), err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("retry did not stop after cancellation")
+			}
+		})
+	}
+}
+
 func TestRetryWithBackoff_PanicRecovery(t *testing.T) {
 	ctx := context.Background()
 	_, err := RetryWithBackoff(ctx, func(ctx context.Context) (int, error) {
@@ -114,7 +702,7 @@ func TestRetryWithBackoff_MaxRetriesZero(t *testing.T) {
 
 // ==================== RetryWithBackoffVoid ====================
 
-func TestRetryWithBackoffVoid_Success(t *testing.T) {
+func TestRetryWithBackoffVoid_Ok(t *testing.T) {
 	var attempts atomic.Int32
 	ctx := context.Background()
 	err := RetryWithBackoffVoid(ctx, func(ctx context.Context) error {
@@ -151,7 +739,7 @@ func TestRetryWithBackoffVoid_Panic(t *testing.T) {
 
 // ==================== RetryWithBackoffResult ====================
 
-func TestRetryWithBackoffResult_Success(t *testing.T) {
+func TestRetryWithBackoffResult_Ok(t *testing.T) {
 	ctx := context.Background()
 	r := RetryWithBackoffResult(ctx, func(ctx context.Context) (int, error) {
 		return 42, nil
@@ -169,14 +757,33 @@ func TestRetryWithBackoffResult_Fail(t *testing.T) {
 	r := RetryWithBackoffResult(ctx, func(ctx context.Context) (int, error) {
 		return 0, errRetry
 	}, 2, 10*time.Millisecond, 50*time.Millisecond)
-	if r.Ok() {
-		t.Fatal("expected fail")
+	if r.Ok() || !errors.Is(r.Err, errRetry) {
+		t.Fatalf("result = %+v, want wrapped retry error", r)
+	}
+}
+
+func TestRetryResultPreservesPanic(t *testing.T) {
+	for _, linear := range []bool{false, true} {
+		t.Run(fmt.Sprintf("linear=%v", linear), func(t *testing.T) {
+			calls := 0
+			fn := func(context.Context) (int, error) { calls++; panic("retry panic") }
+			var result core.Result[int]
+			if linear {
+				result = RetryWithLinearBackoffResult(context.Background(), fn, 1, 0)
+			} else {
+				result = RetryWithBackoffResult(context.Background(), fn, 1, 0, 0)
+			}
+			var panicErr *core.PanicError
+			if calls != 2 || result.Ok() || !result.IsPanic() || !errors.As(result.Err, &panicErr) || panicErr.Value != "retry panic" {
+				t.Fatalf("calls=%d result=%+v panic=%v", calls, result, panicErr)
+			}
+		})
 	}
 }
 
 // ==================== RetryWithLinearBackoff ====================
 
-func TestRetryWithLinearBackoff_Success(t *testing.T) {
+func TestRetryWithLinearBackoff_Ok(t *testing.T) {
 	ctx := context.Background()
 	val, err := RetryWithLinearBackoff(ctx, func(ctx context.Context) (string, error) {
 		return "linear-ok", nil
@@ -204,7 +811,7 @@ func TestRetryWithLinearBackoff_Retries(t *testing.T) {
 	}
 }
 
-func TestRetryWithLinearBackoffVoid_Success(t *testing.T) {
+func TestRetryWithLinearBackoffVoid_Ok(t *testing.T) {
 	ctx := context.Background()
 	err := RetryWithLinearBackoffVoid(ctx, func(ctx context.Context) error {
 		return nil
@@ -224,7 +831,7 @@ func TestRetryWithLinearBackoffVoid_Panic(t *testing.T) {
 	}
 }
 
-func TestRetryWithLinearBackoffResult_Success(t *testing.T) {
+func TestRetryWithLinearBackoffResult_Ok(t *testing.T) {
 	ctx := context.Background()
 	r := RetryWithLinearBackoffResult(ctx, func(ctx context.Context) (int, error) {
 		return 88, nil
@@ -246,7 +853,7 @@ func TestRetryWithLinearBackoffResult_Fail(t *testing.T) {
 
 // ==================== RetryWithConfig ====================
 
-func TestRetryWithConfig_Success(t *testing.T) {
+func TestRetryWithConfig_Ok(t *testing.T) {
 	ctx := context.Background()
 	val, err := RetryWithConfig(ctx, func(ctx context.Context) (int, error) {
 		return 99, nil
@@ -266,6 +873,51 @@ func TestRetryWithConfig_Exhausted(t *testing.T) {
 	}, 2, 10*time.Millisecond, 50*time.Millisecond)
 	if err == nil {
 		t.Fatal("expected error")
+	}
+}
+
+func TestRetryWithConfigPerCallTimeoutRetries(t *testing.T) {
+	calls := 0
+	value, err := RetryWithConfig(context.Background(), func(ctx context.Context) (int, error) {
+		calls++
+		if calls == 1 {
+			<-ctx.Done()
+			return 0, ctx.Err()
+		}
+		return 42, nil
+	}, 1, 0, 0, TimeoutOpt{PerCallTimeout: time.Millisecond})
+	if err != nil || value != 42 || calls != 2 {
+		t.Fatalf("value=%d err=%v calls=%d", value, err, calls)
+	}
+}
+
+func TestRetryWithConfigTimeoutRequiresCooperation(t *testing.T) {
+	started, timedOut, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{}), make(chan error, 1)
+	go func() {
+		_, err := RetryWithConfig(context.Background(), func(ctx context.Context) (int, error) {
+			close(started)
+			<-ctx.Done()
+			close(timedOut)
+			<-release
+			return 42, nil
+		}, 0, 0, 0, TimeoutOpt{PerCallTimeout: time.Millisecond})
+		done <- err
+	}()
+	<-started
+	<-timedOut
+	select {
+	case err := <-done:
+		t.Fatalf("returned before callback released: %v", err)
+	default:
+	}
+	close(release)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("callback result: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("retry did not finish after callback returned")
 	}
 }
 
@@ -309,7 +961,7 @@ func TestRetryWithConfig_ContextCancel(t *testing.T) {
 	}
 }
 
-func TestRetryWithConfigVoid_Success(t *testing.T) {
+func TestRetryWithConfigVoid_Ok(t *testing.T) {
 	ctx := context.Background()
 	err := RetryWithConfigVoid(ctx, func(ctx context.Context) error {
 		return nil
@@ -364,7 +1016,7 @@ func TestRetryWithConfig_DeadlineExceeded(t *testing.T) {
 
 // ==================== WithTimeout / WithTimeoutVoid ====================
 
-func TestWithTimeout_Success(t *testing.T) {
+func TestWithTimeout_Ok(t *testing.T) {
 	ctx := context.Background()
 	val, err := WithTimeout(ctx, 5*time.Second, func(ctx context.Context) (int, error) {
 		return 7, nil
@@ -392,7 +1044,7 @@ func TestWithTimeout_Timeout(t *testing.T) {
 	}
 }
 
-func TestWithTimeoutVoid_Success(t *testing.T) {
+func TestWithTimeoutVoid_Ok(t *testing.T) {
 	ctx := context.Background()
 	err := WithTimeoutVoid(ctx, 5*time.Second, func(ctx context.Context) error {
 		return nil
@@ -415,7 +1067,7 @@ func TestWithTimeoutVoid_Timeout(t *testing.T) {
 
 // ==================== WithDeadline / WithDeadlineVoid ====================
 
-func TestWithDeadline_Success(t *testing.T) {
+func TestWithDeadline_Ok(t *testing.T) {
 	ctx := context.Background()
 	deadline := time.Now().Add(5 * time.Second)
 	val, err := WithDeadline(ctx, deadline, func(ctx context.Context) (int, error) {
@@ -445,7 +1097,7 @@ func TestWithDeadline_Exceeded(t *testing.T) {
 	}
 }
 
-func TestWithDeadlineVoid_Success(t *testing.T) {
+func TestWithDeadlineVoid_Ok(t *testing.T) {
 	ctx := context.Background()
 	err := WithDeadlineVoid(ctx, time.Now().Add(5*time.Second), func(ctx context.Context) error {
 		return nil
@@ -528,7 +1180,7 @@ func (m *mockWorkerBackend) Submit(ctx context.Context, fn func(ctx context.Cont
 	return m.submitFn(ctx, fn)
 }
 
-func TestBindRetryToWorker_Success(t *testing.T) {
+func TestBindRetryToWorker_Ok(t *testing.T) {
 	backend := &mockWorkerBackend{
 		submitFn: func(ctx context.Context, fn func(ctx context.Context) error) error {
 			return nil
@@ -575,6 +1227,31 @@ func TestBindRetryToWorker_SubmitTimeoutExhausted(t *testing.T) {
 	}, 2, 10*time.Millisecond, 50*time.Millisecond)
 	if err == nil {
 		t.Fatal("expected error")
+	}
+}
+
+func TestBindRetryToWorkerWrappedSubmitTimeout(t *testing.T) {
+	for _, succeeds := range []bool{false, true} {
+		t.Run(fmt.Sprintf("success=%v", succeeds), func(t *testing.T) {
+			calls := 0
+			backend := &mockWorkerBackend{submitFn: func(context.Context, func(context.Context) error) error {
+				calls++
+				if succeeds && calls == 3 {
+					return nil
+				}
+				return fmt.Errorf("submit attempt %d: %w", calls, core.ErrSubmitTimeout)
+			}}
+			err := BindRetryToWorker(context.Background(), backend, func(context.Context) error { return nil }, 2, 0, 0)
+			if calls != 3 {
+				t.Fatalf("calls = %d, want 3", calls)
+			}
+			if succeeds && err != nil {
+				t.Fatalf("success returned %v", err)
+			}
+			if !succeeds && !errors.Is(err, core.ErrSubmitTimeout) {
+				t.Fatalf("exhausted error = %v, want submit timeout", err)
+			}
+		})
 	}
 }
 
@@ -684,7 +1361,7 @@ func TestRetryChain_LinearExecute(t *testing.T) {
 	}
 }
 
-func TestRetryChain_RetryThenSuccess(t *testing.T) {
+func TestRetryChain_RetryThenOk(t *testing.T) {
 	ctx := context.Background()
 	var attempts atomic.Int32
 	val, err := New[int](ctx).Exponential().MaxRetries(5).Backoff(10*time.Millisecond, 100*time.Millisecond).
@@ -798,6 +1475,27 @@ func TestRetryChain_PerCallTimeout(t *testing.T) {
 		})
 	if err == nil {
 		t.Fatal("expected timeout error")
+	}
+}
+
+func TestRetryChainPerCallTimeoutRetriesWithFreshContext(t *testing.T) {
+	calls := 0
+	var first context.Context
+	value, err := New[int](context.Background()).MaxRetries(1).Backoff(0, 0).
+		PerCallTimeout(50 * time.Millisecond).Execute(func(ctx context.Context) (int, error) {
+		calls++
+		if calls == 1 {
+			first = ctx
+			<-ctx.Done()
+			return 0, ctx.Err()
+		}
+		if ctx == first || ctx.Err() != nil {
+			return 0, errors.New("retry inherited an expired context")
+		}
+		return 42, nil
+	})
+	if err != nil || value != 42 || calls != 2 {
+		t.Fatalf("value=%d err=%v calls=%d", value, err, calls)
 	}
 }
 

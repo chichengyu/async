@@ -29,6 +29,7 @@ func TestMultiPoolBuilder_Chain_Basic(t *testing.T) {
 				Shards(2).
 				Worker(16).
 				MaxPending(0).
+				MaxResults(tier.Size).
 				Run(func(ctx context.Context, mp *pool.MultiPool[int]) error {
 					for i := 0; i < tier.Size; i++ {
 						v := i
@@ -152,6 +153,7 @@ func TestMultiPoolBuilder_Chain_ConfigFunc(t *testing.T) {
 					c.Size = 16
 					return c
 				}).
+				MaxResults(tier.Size).
 				Run(func(ctx context.Context, mp *pool.MultiPool[int]) error {
 					for i := 0; i < tier.Size; i++ {
 						v := i
@@ -191,6 +193,7 @@ func TestMultiPoolBuilder_Chain_DefaultReset(t *testing.T) {
 				DefaultMultiPoolConfig().
 				Shards(2).
 				Worker(16).
+				MaxResults(tier.Size).
 				Run(func(ctx context.Context, mp *pool.MultiPool[int]) error {
 					for i := 0; i < tier.Size; i++ {
 						mp.Submit(ctx, func(ctx context.Context) (int, error) {
@@ -287,6 +290,7 @@ func TestMultiPoolBuilder_Chain_Streaming(t *testing.T) {
 				Shards(2).
 				Worker(16).
 				Streaming(256).
+				MaxResults(tier.Size).
 				Run(func(ctx context.Context, mp *pool.MultiPool[int]) error {
 					for i := 0; i < tier.Size; i++ {
 						mp.Submit(ctx, func(ctx context.Context) (int, error) {
@@ -318,6 +322,7 @@ func TestMultiPoolBuilder_Chain_RingBuf(t *testing.T) {
 				Worker(32).
 				MaxPending(0).
 				RingBuf(bufSize).
+				MaxResults(tier.Size).
 				Run(func(ctx context.Context, mp *pool.MultiPool[int]) error {
 					for i := 0; i < tier.Size; i++ {
 						v := i

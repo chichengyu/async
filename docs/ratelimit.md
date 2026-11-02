@@ -6,24 +6,25 @@ async 提供四种限流器，覆盖不同场景。所有限流器通过 `async.
 
 | 限流器 | 算法 | 适用场景 | 吞吐量(10M) |
 |--------|------|----------|-------------|
-| `RateLimiter` | 令牌桶（批量补充） | 精确 QPS 控制 | **194万/s** |
+| `RateLimiter` | 令牌桶（定时补充，可手动归还） | 令牌获取与归还 | **194万/s** |
 | `TokenBucket` | 经典令牌桶 | 简单速率限制 | **194万/s** |
 | `SlidingWindow` | 滑动窗口 | 精确窗口限制 | **159万/s** |
 | `AdaptiveRateLimiter` | 自适应 | 动态负载调整 | — |
 
-> **✅ 并发安全验证**：经过深度交叉验证，`Resize` + `Acquire`/`Release` 并发绝对安全——100轮死锁验证 + 426K次 Race 检测全部通过，`mu`/`resizeMu` 锁序设计正确，无死锁风险。
+> `Resize`、`Acquire` 和 `Release` 支持并发调用；相关并发场景有竞态和压力测试覆盖。
 >
 > **⚠️ RateLimiter 需手动 Close**
 >
 > `RateLimiter` 内部有 ticker goroutine，使用完毕后必须调用 `Close()` 或 `Stop()` 释放资源，否则 goroutine 泄漏。
 >
-> **⚠️ Wait 会阻塞**
+> **⚠️ 默认策略会阻塞**
 >
-> `Wait()` 在令牌不足时会阻塞等待，可能导致 goroutine 堆积。如果不想阻塞，使用 `Allow()` / `Acquire()`。
+> 默认 `Block` 策略下，`Wait(ctx)` 和 `Acquire(ctx)` 在令牌不足时都会等待，直到取得令牌或上下文取消。需要立即返回时，可配置 `Reject` 策略并检查返回错误。
 >
 > **⚠️ Burst 不是缓存**
 >
-> `Burst` 是瞬时突发的最大令牌数，不是长期可用量。突发后需等待令牌补充才能继续消耗。
+> `Burst` 是初始和最大令牌容量。消耗后令牌可由定时补充或 `Release` 归还，因此使用 `Release` 时不保证严格的时间窗口请求上限。需要严格限制窗口内请求次数时可考虑 `SlidingWindow`。
+> 直接构造 `NewRateLimiterWithBurst` 时，若 burst 小于有效 rate，实际容量按 rate 设置；新建时令牌桶填满该容量。
 
 ---
 
@@ -45,7 +46,7 @@ async 提供四种限流器，覆盖不同场景。所有限流器通过 `async.
   - [Allow / AllowN](#allow-1)
 - [AdaptiveRateLimiter（自适应限流）](#adaptiveratelimiter自适应限流)
   - [构建：Ratelimit().Adaptive()](#构建-adaptive)
-  - [Acquire / Release / RecordSuccess / RecordFailure](#acquire)
+  - [Acquire / Release / RecordOk / RecordFailure](#acquire)
 - [分片限流器](#分片限流器)
   - [构建：Ratelimit().Sharded()](#构建-sharded)
   - [ShardedRateLimiter / ShardedTokenBucket / ShardedSlidingWindow / ShardedAdaptive](#分片类型)
@@ -121,9 +122,11 @@ defer rl.Close()
 rl := async.Ratelimit(ctx).RateLimiter().Rate(100).Per(time.Second).Build()
 defer rl.Close()
 
-rl.Wait(ctx)      // 等待一个令牌
+if err := rl.Wait(ctx); err != nil {
+    return err
+}
+defer rl.Release()
 doRequest()
-rl.Release()      // 释放令牌（归还）
 ```
 
 #### 模式二：Token defer（最安全）
@@ -137,46 +140,56 @@ defer token.Release()
 doRequest()
 ```
 
+同一个 `*Token` 的 `Release` 可以重复或并发调用，只会归还一次令牌。不要复制 `Token` 的值；需要共享时传递指针。
+
 #### 模式三：Acquire + 策略切换
 
 ```go
 rl.WithStrategy(async.Reject) // 满时拒绝
-rl.Acquire(ctx)                // 按当前策略获取
+if err := rl.Acquire(ctx); err != nil {
+    return err
+}
+defer rl.Release()
 doRequest()
-rl.Release()
 ```
 
 ### 完整方法列表
 
 | 方法 | 语法 | 说明 |
 |------|------|------|
-| `Wait` | `func (rl *RateLimiter) Wait(ctx context.Context) error` | 阻塞等待一个令牌 |
+| `Wait` | `func (rl *RateLimiter) Wait(ctx context.Context) error` | 与 `Acquire` 相同，按当前策略获取令牌 |
 | `Token` | `func (rl *RateLimiter) Token(ctx context.Context) (*Token, error)` | 获取令牌包装器（配合 defer） |
 | `Acquire` | `func (rl *RateLimiter) Acquire(ctx context.Context) error` | 按当前策略获取令牌 |
 | `Release` | `func (rl *RateLimiter) Release()` | 释放一个令牌（归还） |
 | `WithStrategy` | `func (rl *RateLimiter) WithStrategy(s Strategy) *RateLimiter` | 切换策略 |
 | `Resize` | `func (rl *RateLimiter) Resize(newRate int)` | 调整速率 |
-| `Size` | `func (rl *RateLimiter) Size() int` | 当前令牌总数 |
+| `Size` | `func (rl *RateLimiter) Size() int` | 当前配置速率（不等同突发容量或可用令牌数） |
 | `Available` | `func (rl *RateLimiter) Available() int` | 可用令牌数 |
 | `Stop` | `func (rl *RateLimiter) Stop()` | Close 的别名，行为完全一致 |
 | `Close` | `func (rl *RateLimiter) Close()` | 停止补充并释放所有资源 |
 
 ### Wait
 
-阻塞等待一个可用令牌，在令牌可用前一直阻塞。这是最基础的限流方式，适合需要严格速率控制的场景。
+按当前策略获取一个令牌，默认策略会等待令牌或上下文取消。`Wait` 等同于 `Acquire`，因此也会受 `WithStrategy` 影响；归还令牌可能让后续请求立即通过。
 
 ```go
 rl := async.Ratelimit(ctx).RateLimiter().Rate(10).Per(time.Second).Build()
 defer rl.Close()
 
+var wg sync.WaitGroup
 for i := 0; i < 100; i++ {
     if err := rl.Wait(ctx); err != nil {
         log.Printf("等待令牌失败: %v", err)
         break
     }
-    go doRequest()
-    rl.Release() // 归还令牌
+    wg.Add(1)
+    go func() {
+        defer wg.Done()
+        defer rl.Release()
+        doRequest()
+    }()
 }
+wg.Wait()
 ```
 
 ### Acquire
@@ -213,10 +226,12 @@ doRequest()
 
 ### Release
 
-归还一个令牌，释放一个槽位供后续请求使用。与 `Wait`/`Acquire`/`Token` 配对使用。
+归还一个令牌，释放一个槽位供后续请求使用。`Wait` 或 `Acquire` 成功后使用限流器的 `Release`；`Token` 成功后则使用返回的 `token.Release()`，不要将两种释放方式混用。
 
 ```go
-rl.Wait(ctx)      // 获取令牌
+if err := rl.Wait(ctx); err != nil {
+    return err
+}
 defer rl.Release() // 确保归还
 doRequest()
 ```
@@ -292,7 +307,7 @@ doRequest()
 
 运行时动态调整令牌速率。并发安全，可在不关闭限流器的情况下调整限流强度。
 
-> **✅ 深度验证**：`Resize` 与 `Acquire`/`Release`/`refill` 并发执行绝对安全。经过 100 轮死锁验证测试（含 `Resize+Release`、`Refill+Resize`、`Acquire+Release` 三个场景）+ 426K 次 Race 检测，确认 `mu`/`resizeMu` 双锁设计无死锁风险，并发完全安全。
+> 并发调整、获取、释放和补充令牌的场景有测试覆盖；应用仍应结合自身负载和超时配置进行验证。
 
 ```go
 rl := async.Ratelimit(ctx).RateLimiter().Rate(100).Per(time.Second).Build()
@@ -338,7 +353,7 @@ go func() {
 
 ### Stop
 
-`Stop()` 是 `Close()` 的别名，行为完全一致：关闭 refill goroutine，关闭 tokens channel，broadcast 唤醒所有等待者。
+`Stop()` 是 `Close()` 的别名，行为完全一致：关闭 refill goroutine，关闭 tokens channel，broadcast 唤醒所有等待者。多个调用方并发关闭同一限流器时，每次调用都会等待关闭清理完成后返回。
 
 ```go
 rl.Stop() // 等价于 rl.Close()
@@ -346,7 +361,7 @@ rl.Stop() // 等价于 rl.Close()
 
 ### Close
 
-关闭限流器，释放所有资源。关闭后 `Wait`/`Acquire`/`Token` 均返回 `ErrRateLimitExceeded`。
+关闭限流器并停止补充令牌。关闭完成后 `Wait`、`Acquire` 和 `Token` 均返回 `ErrRateLimiterStopped`。
 
 ```go
 rl.Close() // 停止补充令牌 + 关闭 channel + 释放资源
@@ -466,34 +481,36 @@ al := async.Ratelimit(ctx).Adaptive().MinWorker(5).MaxWorker(100).Build()
 获取执行槽位。
 
 ```go
-token, err := al.Acquire(ctx)
-if err != nil {
+if err := al.Acquire(ctx); err != nil {
     return err
 }
-defer token.Release()
+defer al.Release()
 ```
 
 ### Release
 
 释放槽位。
 
-### RecordSuccess / RecordFailure
+### RecordOk / RecordFailure
 
 记录执行结果，用于自动调整并发度。
 
+> 注意：成功结果的 API 名称统一为 RecordOk()。它只记录一次已经完成的成功调用，不会获取或释放并发槽位；每次 Acquire 成功后仍必须配对调用 Release。失败、取消或超时的调用应调用 RecordFailure()。
+
 ```go
-token, err := al.Acquire(ctx)
-if err != nil {
+if err := al.Acquire(ctx); err != nil {
     return err
 }
-defer token.Release()
+defer al.Release()
 
 if err := doRequest(); err == nil {
-    al.RecordSuccess()  // 成功 → 可能自动扩容
+    al.RecordOk()  // 成功 → 可能自动扩容
 } else {
     al.RecordFailure()  // 失败 → 可能自动缩容
 }
 ```
+
+分片自适应限流器使用相同的 RecordOk() / RecordFailure() 接口；记录方法会按 round-robin 分发到具体分片。不要在同一次请求中重复记录，否则会改变自适应算法观察到的成功率。
 
 ---
 
@@ -521,7 +538,7 @@ sal := async.Ratelimit(ctx).Sharded().Adaptive().Shards(16).MinWorker(5).MaxWork
 | 构建方法 | 说明 |
 |----------|------|
 | `.Shards(n int)` | 水平分片数（<=0 使用默认） |
-| `.Rate(n)` | 总速率（平均分配到各分片） |
+| `.Rate(n)` | RateLimiter 的总速率按分片分配；TokenBucket 的速率应用于每个分片 |
 | `.Per(d)` | 时间窗口 |
 | `.Burst(n)` | 突发容量 |
 | `.Limit(n)` | 窗口限制（SlidingWindow） |
@@ -532,28 +549,26 @@ sal := async.Ratelimit(ctx).Sharded().Adaptive().Shards(16).MinWorker(5).MaxWork
 | `.DefaultShards()` | 默认分片数 = `DefaultShardCount()` |
 | `.Build()` | 构建对应分片实例 |
 
-所有分片限流器与普通限流器 API 一致（Wait/Release/Allow/AllowN/Acquire），按照 round-robin 策略分发到各分片执行。
+各分片类型提供对应普通类型的操作，获取或检查请求按 round-robin 分发到各分片。分片 TokenBucket 的 `Rate` 和 `Capacity` 均为每片的值，因此总速率和总容量分别为单片值乘以分片数；单次 `AllowN` 只检查选中的一个分片。分片 RateLimiter 和 SlidingWindow 的总配额按分片分配，目标值小于分片数时每片至少为 1。
 
 ```go
 srl := async.Ratelimit(ctx).Sharded().RateLimiter().Shards(16).Rate(10000).Per(time.Second).Build()
 defer srl.Close()
 
-srl.Wait(ctx)      // round-robin 分发到某个分片
+if err := srl.Wait(ctx); err != nil {
+    return err
+}
+defer srl.Release() // 归还一个已成功获取的分片令牌
 doRequest()
-srl.Release()      // 释放到对应分片
 ```
+
+`Release` 归还任一尚未归还的分片令牌，不保证与当前调用者获取的分片相同。每次成功的 `Wait` 或 `Acquire` 必须恰好配对一次 `Release`；需要令牌与分片一一绑定时使用 `Token` 返回的句柄。
 
 ---
 
 ## 批量补充优化
 
-v2 版本中，`RateLimiter.startRefill()` 使用自适应批量补充策略：
-
-- **高速率**（间隔 < 100ms）：100ms 批量补充，一次补充 `100ms / 间隔` 个令牌
-- **中等速率**：逐令牌补充
-- **极低速率**（间隔 > 1s）：最长 1 秒补充一次，每次补充 1 个令牌
-
-性能提升：TokenBucket 千万次 Allow 从 1.74M→1.94M ops/s（+20%）。
+`RateLimiter` 每 100ms 检查一次，根据实际经过的时间和配置速率批量补充令牌，并保留不足一个令牌的部分供下次累计。桶满时不保留超出容量的额度；低速率下，两次补充之间可能超过一秒。
 
 ---
 
@@ -581,7 +596,7 @@ v2 版本中，`RateLimiter.startRefill()` 使用自适应批量补充策略：
 
 | 场景 | 吞吐量 | 说明 |
 |------|--------|------|
-| TokenBucket Allow 10M | **194万/s** | 批量补充优化后 ↑20% |
+| TokenBucket Allow 10M | **194万/s** | 历史测量值，实际结果取决于环境 |
 | SlidingWindow Allow 10M | **159万/s** | 滑动窗口 |
 | RateLimiter Acquire/Release 1M | **924万/s** | 1M ops/s |
 
@@ -594,7 +609,7 @@ v2 版本中，`RateLimiter.startRefill()` 使用自适应批量补充策略：
 | 默认值 | 获取函数 | 修改函数 | 默认值 | 说明 |
 |--------|----------|----------|--------|------|
 | IO 并发度 | `core.IO()` | 不可修改 | **`runtime.NumCPU()×2`** | DefaultRate/DefaultLimit/DefaultMinWorker 使用 |
-| 默认分片数 | `core.DefaultShardCount()` | 不可修改 | **`runtime.GOMAXPROCS(0)`** | 分片限流器 DefaultShards 使用 |
+| 默认分片数 | `ratelimit.DefaultShardCount()`（内部） | 不可修改 | **`max(2, core.IO())`** | 分片构建器 DefaultShards 使用 |
 
 ### RateLimiter 构建器默认值
 
@@ -629,7 +644,9 @@ v2 版本中，`RateLimiter.startRefill()` 使用自适应批量补充策略：
 
 | `Default*` 方法 | 源码行为 | 默认值 |
 |-----------------|----------|--------|
-| `.DefaultShards()` | `b.shards = core.DefaultShardCount()` | `GOMAXPROCS` |
+| `.DefaultShards()` | `b.shards = ratelimit.DefaultShardCount()` | `max(2, core.IO())` |
+
+未调用 `DefaultShards()` 且分片数为非正数时，底层构造函数也使用 `core.IO()`（`runtime.NumCPU() * 2`，至少 2）。
 
 ### 默认值覆盖优先级
 
@@ -649,7 +666,7 @@ Build() 创建实例
 
 | 场景 | 推荐 | 理由 |
 |------|------|------|
-| API 网关 QPS 精确控制 | **RateLimiter** | 批量补充令牌桶，吞吐最高 |
+| API 网关窗口内请求数限制 | **SlidingWindow** | 按窗口内请求数判断 |
 | 轻量级速率检查 | **TokenBucket** | 无需 goroutine，开销最小 |
 | 窗口期内精确限制 | **SlidingWindow** | 窗口级精确计数 |
 | 依赖下游成功率自适应 | **AdaptiveRateLimiter** | 根据成功/失败率动态调整 |

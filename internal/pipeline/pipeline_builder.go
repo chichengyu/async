@@ -73,21 +73,41 @@ func (b *PipelineBuilder[T]) Flow() *FlowBuilder[T] {
 // Execute 依次执行各阶段，前一阶段输出作为后一阶段输入。
 // 保持向后兼容：直接代理到核心 Execute 函数。
 func (b *PipelineBuilder[T]) Execute(fn func(context.Context, string, T) (T, error)) ([]core.Result[T], error) {
-	return Execute(b.ctx, b.stages, b.items, fn)
+	ctx, cancel := b.applyTimeout()
+	defer cancel()
+	if b.failFast {
+		return b.execParallelNative(ctx, fn)
+	}
+	if b.resultCb != nil {
+		original := fn
+		fn = func(ctx context.Context, stage string, item T) (T, error) {
+			value, err := safeCall(ctx, original, stage, item)
+			result := core.Result[T]{Value: value, Err: err, Occupied: true}
+			invokeResultCallback(b.resultCb, stage, &result)
+			return result.Value, result.Err
+		}
+	}
+	return Execute(ctx, b.stages, b.items, fn)
 }
 
 // Run 是 Execute 的别名。
 func (b *PipelineBuilder[T]) Run(fn func(context.Context, string, T) (T, error)) ([]core.Result[T], error) {
-	return Execute(b.ctx, b.stages, b.items, fn)
+	return b.Execute(fn)
 }
 
 // ExecuteWithMeta 与 Execute 相同，但返回带阶段元信息的结果。
 func (b *PipelineBuilder[T]) ExecuteWithMeta(fn func(context.Context, string, T) (T, error)) []ResultWithMeta[T] {
+	if b.failFast || b.resultCb != nil || b.timeout > 0 {
+		return b.execParallelWithMeta(fn)
+	}
 	return ExecuteWithMeta(b.ctx, b.stages, b.items, fn)
 }
 
 // ExecutePipe 执行管道，通过 channel 返回最终阶段结果。
 func (b *PipelineBuilder[T]) ExecutePipe(fn func(context.Context, string, T) (T, error), bufSize int) <-chan core.Result[T] {
+	if b.failFast || b.resultCb != nil || b.timeout > 0 {
+		return b.execParallelPipe(fn, bufSize)
+	}
 	return ExecutePipe(b.ctx, b.stages, b.items, fn, bufSize)
 }
 
@@ -96,19 +116,16 @@ func (b *PipelineBuilder[T]) ExecutePipe(fn func(context.Context, string, T) (T,
 // Pipe 切换为管道输出模式。
 // 返回 PipelinePipeBuilder，通过 .Buf(n).Run(fn).Receive() 获取结果 channel。
 func (b *PipelineBuilder[T]) Pipe() *PipelinePipeBuilder[T] {
+	base := *b.pipelineBase
 	return &PipelinePipeBuilder[T]{
-		ctx:    b.ctx,
-		items:  b.items,
-		stages: b.stages,
+		execute: (&PipelineBuilder[T]{pipelineBase: &base}).ExecutePipe,
 	}
 }
 
 // PipelinePipeBuilder 管道输出构建器，由 PipelineBuilder.Pipe() 创建。
 type PipelinePipeBuilder[T any] struct {
-	ctx    context.Context
-	items  []T
-	stages []Stage[T]
-	buf    int
+	execute func(func(context.Context, string, T) (T, error), int) <-chan core.Result[T]
+	buf     int
 }
 
 // Buf 设置 channel 缓冲大小（<=0 使用默认值）。
@@ -137,7 +154,7 @@ func (b *PipelinePipeBuilder[T]) DefaultLogger() *PipelinePipeBuilder[T] {
 
 // Run 启动管道，返回句柄。
 func (b *PipelinePipeBuilder[T]) Run(fn func(context.Context, string, T) (T, error)) *PipelinePipe[T] {
-	ch := ExecutePipe(b.ctx, b.stages, b.items, fn, b.buf)
+	ch := b.execute(fn, b.buf)
 	return &PipelinePipe[T]{ch: ch}
 }
 

@@ -53,7 +53,7 @@ const (
 //
 //	// SlidingWindow 滑动窗口
 //	val, err := retry.New[string](ctx).
-//	    Linear().MaxRetries(5).Backoff(200*time.Millisecond).
+//	    Linear().MaxRetries(5).Backoff(200*time.Millisecond, 0).
 //	    SlidingWindow().Limit(100).Window(10*time.Second).Shards(8).
 //	    Execute(fn)
 //
@@ -116,7 +116,7 @@ func New[T any](ctx context.Context) *RetryChain[T] {
 // 示例：
 //
 //	err := retry.NewVoid(ctx).
-//	    Linear().MaxRetries(5).Backoff(200*time.Millisecond).
+//	    Linear().MaxRetries(5).Backoff(200*time.Millisecond, 0).
 //	    ExecuteVoid(myFunc)
 func NewVoid(ctx context.Context) *RetryChain[struct{}] {
 	return New[struct{}](ctx)
@@ -145,7 +145,7 @@ func (c *RetryChain[T]) Exponential() *RetryChain[T] {
 //
 // 示例：
 //
-//	retry.NewVoid(ctx).Linear().MaxRetries(5).Backoff(1*time.Second)
+//	retry.NewVoid(ctx).Linear().MaxRetries(5).Backoff(1*time.Second, 0)
 func (c *RetryChain[T]) Linear() *RetryChain[T] {
 	c.isLinear = true
 	return c
@@ -178,14 +178,15 @@ func (c *RetryChain[T]) MaxRetries(n int) *RetryChain[T] {
 //	.Backoff(100*time.Millisecond, 5*time.Second)
 //
 //	// 线性：每次等 500ms
-//	.Linear().Backoff(500*time.Millisecond)
+//	.Linear().Backoff(500*time.Millisecond, 0)
 func (c *RetryChain[T]) Backoff(initial, max time.Duration) *RetryChain[T] {
 	c.initialBackoff = initial
 	c.maxBackoff = max
 	return c
 }
 
-// PerCallTimeout 设置每次 fn 调用的超时时间。超时 != 取消，超时后会继续重试。
+// PerCallTimeout 设置每次 fn 调用的超时时间。超时会取消该次调用的 context；
+// fn 需要响应取消并返回错误，父 context 仍有效时才会继续重试。
 // 0 表示不设置每次调用超时（默认）。
 //
 // 示例：
@@ -364,7 +365,7 @@ func (c *RetryChain[T]) Capacity(n float64) *RetryChain[T] {
 //
 // 示例：
 //
-//	retry.New[string](ctx).Linear().MaxRetries(5).Backoff(200*time.Millisecond).
+//	retry.New[string](ctx).Linear().MaxRetries(5).Backoff(200*time.Millisecond, 0).
 //	    SlidingWindow().Limit(100).Window(10*time.Second).Shards(8).Execute(fn)
 func (c *RetryChain[T]) SlidingWindow() *RetryChain[T] {
 	c.mode = modeSlidingWindow
@@ -454,7 +455,7 @@ func (c *RetryChain[T]) DefaultLogger() *RetryChain[T] { core.SetLogger(nil); re
 // ── 终端方法 ──
 
 // Execute 执行重试链，返回 (T, error)。
-// 重试耗尽后返回的错误包含所有尝试的错误信息。
+// 重试耗尽后返回的错误包装最后一次尝试的错误。
 //
 // 示例：
 //
@@ -679,6 +680,9 @@ func (c *RetryChain[T]) executeCore(
 	}
 
 	for attempt := 0; attempt <= c.maxRetries; attempt++ {
+		if err := c.ctx.Err(); err != nil {
+			return zero, err
+		}
 		// ── 获取限流许可 ──
 		acquired, err := c.acquire(attempt, initialBackoff, maxBackoff, rl, srl, tb, sw, al, stb, ssw, sal)
 		if err != nil || !acquired {
@@ -706,14 +710,14 @@ func (c *RetryChain[T]) executeCore(
 		// Adaptive 记录结果
 		if al != nil {
 			if err == nil {
-				al.RecordSuccess()
+				al.RecordOk()
 			} else {
 				al.RecordFailure()
 			}
 		}
 		if sal != nil {
 			if err == nil {
-				sal.RecordSuccess()
+				sal.RecordOk()
 			} else {
 				sal.RecordFailure()
 			}

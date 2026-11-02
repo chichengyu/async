@@ -95,7 +95,8 @@ func (b *ShardPoolBuilder[T]) Distribution(d Distribution) *ShardPoolBuilder[T] 
 	return b
 }
 
-// KeyFn 设置分片 key 函数（Hash 模式下使用）
+// KeyFn 设置 Hash 模式下批量提交的元素路由函数。
+// Submit 不接收元素，Hash 模式下使用第 0 片；单项路由可使用 SubmitKeyed。
 func (b *ShardPoolBuilder[T]) KeyFn(fn func(T) uint64) *ShardPoolBuilder[T] {
 	b.cfg.KeyFn = fn
 	return b
@@ -140,6 +141,10 @@ func (b *ShardPoolBuilder[T]) DefaultLogger() *ShardPoolBuilder[T] { core.SetLog
 // Run 终端方法：创建分片池，执行 fn，fn 返回后自动 Close 所有分片。
 func (b *ShardPoolBuilder[T]) Run(fn func(ctx context.Context, sp *ShardedPool[T]) error) error {
 	return WithShardCfg[T](b.ctx, b.cfg, func(sp *ShardedPool[T]) error {
-		return fn(b.ctx, sp)
+		ctx := b.ctx
+		if b.cfg.PoolCfg.FailFast {
+			ctx = sp.Ctx()
+		}
+		return fn(ctx, sp)
 	})
 }

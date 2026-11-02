@@ -13,7 +13,7 @@ import (
 //
 // 与裸 task.Go() 的区别：
 //   - task.Go()：每次调用创建一个新 goroutine，1 千万调用 = 1 千万 goroutine
-//   - BoundedRunner.Go()：最多同时运行 max 个 goroutine，其余阻塞等待，公平调度
+//   - BoundedGo()：最多同时运行 max 个任务，其余调用阻塞等待槽位或上下文取消
 //
 // 使用示例：
 //
@@ -38,7 +38,7 @@ type BoundedRunner struct {
 //
 // 使用示例：
 //
-//	runner := async.NewBoundedRunner().Context(ctx).Max(1000).Build()
+//	runner := async.NewBoundedRunnerBuilder().Context(ctx).Max(1000).Build()
 type BoundedRunnerBuilder struct {
 	ctx context.Context
 	max int
@@ -52,7 +52,7 @@ func NewBoundedRunnerBuilder() *BoundedRunnerBuilder {
 	}
 }
 
-// Context 链式设置上下文，自动注入 trace_id。
+// Context 设置构建器上下文并注入 trace_id；Build 创建的执行器不保存该上下文。
 func (b *BoundedRunnerBuilder) Context(ctx context.Context) *BoundedRunnerBuilder {
 	b.ctx = core.EnsureTraceID(ctx)
 	return b
@@ -121,7 +121,7 @@ func BoundedGo[T any](r *BoundedRunner, ctx context.Context, fn func(context.Con
 		var zero T
 		ar := &AsyncResult[T]{ready: make(chan struct{})}
 		ar.result = core.Result[T]{Value: zero, Err: ctx.Err()}
-		close(ar.ready)
+		ar.readyOnce.Do(func() { close(ar.ready) })
 		return ar
 	}
 
@@ -139,7 +139,7 @@ func BoundedGoAct(r *BoundedRunner, ctx context.Context, fn func(context.Context
 	case <-ctx.Done():
 		ar := &AsyncResultNoResult{ready: make(chan struct{})}
 		ar.result = core.Result[NoResult]{Value: NoResult{}, Err: ctx.Err()}
-		close(ar.ready)
+		ar.readyOnce.Do(func() { close(ar.ready) })
 		return ar
 	}
 

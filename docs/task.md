@@ -9,13 +9,13 @@ Task 提供单个异步任务的执行能力。通过 `Task[T]()` / `TaskVoid()`
 | 模式 | Entry | 终端方法 | 返回值类型 | 特点 |
 |------|-------|----------|-----------|------|
 | 带返回值异步 | `Task[T]()` | `.Go(fn)` | `*AsyncResult[T]` | `Wait()` 获取值+error |
-| 无返回值异步 | `TaskVoid()` | `.GoAct(fn)` | `*AsyncResult[struct{}]` | 只关心 error |
+| 无返回值异步 | `TaskVoid()` | `.GoAct(fn)` | `*AsyncResult[NoResult]` | 只关心 error |
 | 可取消+返回值 | `Task[T]()` | `.GoResult(fn)` | `Task[T]` | 支持 `Cancel()` |
-| 可取消+无返回值 | `TaskVoid()` | `.GoResultAct(fn)` | `Task[struct{}]` | 可取消+只关心 error |
+| 可取消+无返回值 | `TaskVoid()` | `.GoResultAct(fn)` | `Task[NoResult]` | 可取消+只关心 error |
 
-> **⚠️ GoResult 必须 Wait/Cancel**
+> **GoResult 与取消**
 >
-> `GoResult` 返回 `Task[T]`（即 `*TaskHandle[T]`），内部启用了独立的 goroutine。必须调用 `Result()` 或 `Cancel()`，否则 goroutine 泄漏。
+> `GoResult` 返回 `Task[T]`。任务函数返回后，即使不调用 `Result()` 或 `Cancel()`，结果发送也不会阻塞；取消只发出 context 信号，任务函数需要配合退出。
 >
 > **⚠️ ctx 自动注入 TraceID**
 >
@@ -68,8 +68,8 @@ Task 提供单个异步任务的执行能力。通过 `Task[T]()` / `TaskVoid()`
 |------|---------|--------|------|
 | `.Go(fn)` | `func(ctx) (T, error)` | `*AsyncResult[T]` | 启动带返回值异步任务 |
 | `.GoResult(fn)` | `func(ctx) (T, error)` | `Task[T]` | 启动可取消异步任务 |
-| `.GoAct(fn)` | `func(ctx) error` | `*AsyncResult[struct{}]` | 启动无返回值异步任务 |
-| `.GoResultAct(fn)` | `func(ctx) error` | `Task[struct{}]` | 启动可取消无返回值异步任务 |
+| `.GoAct(fn)` | `func(ctx) error` | `*AsyncResult[NoResult]` | 启动无返回值异步任务 |
+| `.GoResultAct(fn)` | `func(ctx) error` | `Task[NoResult]` | 启动可取消无返回值异步任务 |
 
 ---
 
@@ -93,9 +93,9 @@ user, err := ar.Wait()  // 阻塞等待结果
 |------|------|------|
 | `Wait()` | `(T, error)` | 阻塞等待结果（幂等，多次调用返回相同值） |
 | `Values()` | `(T, error)` | `Wait()` 的别名 |
-| `Error()` | `error` | 获取错误（不阻塞） |
-| `WaitCh()` | `<-chan struct{}` | 返回完成通知 channel |
-| `Cancel()` | — | 取消任务 |
+| `Error()` | `error` | 阻塞等待并获取错误 |
+| `WaitCh()` | 只读结果 channel | 返回任务结果，可用于 select |
+| `Cancel()` | `(T, error)` | 结果已就绪时返回结果，否则返回 `context.Canceled`；不取消任务 |
 | `Ok()` | `bool` | 是否成功（无错误、无 panic） |
 | `IsPanic()` | `bool` | 是否因 panic 失败 |
 | `WaitTimeout(d)` | `(T, error, bool)` | 带超时等待，第三个返回值 `false` 表示超时 |
@@ -137,12 +137,12 @@ ae := async.TaskVoid().Context(ctx).
         return sendNotification(ctx, userID, msg)
     })
 
-err := ae.Wait()  // 阻塞等待，只返回 error
+_, err := ae.Wait()  // 阻塞等待，忽略空值
 ```
 
 > **⚠️ TaskVoid 的实质**
 >
-> `TaskVoid()` 等价于 `Task[struct{}]()`，返回值是 `*AsyncResult[struct{}]`。`Wait()` 返回 `(struct{}, error)`，通常只取第二个返回值。
+> `GoAct()` 使用命名空类型 `NoResult`，`Wait()` 返回 `(NoResult, error)`，通常只取第二个返回值。
 
 ---
 
@@ -161,18 +161,18 @@ t := async.Task[*Data]().Context(ctx).
 // 随时取消
 t.Cancel()
 
-// 获取结果（已 Cancel 则返回 context.Canceled）
+// 获取任务函数返回的结果；函数应自行响应 ctx 取消
 result, err := t.Result()
 ```
 
-`Task[T]`（即 `*TaskHandle[T]`）提供以下方法：
+`Task[T]` 提供以下字段和方法：
 
 | 方法 | 签名 | 说明 |
 |------|------|------|
-| `Cancel()` | — | 取消异步任务（关闭内部 context） |
-| `Result()` | `(T, error)` | 获取结果（幂等，内部缓存） |
-| `Ctx()` | `context.Context` | 获取内部 context |
-| `Error()` | `error` | 获取错误（不阻塞） |
+| `Cancel` | `context.CancelFunc` | 取消内部 context，调用方式为 `t.Cancel()` |
+| `Result` | `func() (T, error)` | 阻塞获取结果（幂等，内部缓存） |
+| `Ctx` | `context.Context` | 内部 context |
+| `Error()` | `error` | 阻塞等待并获取错误 |
 
 ```go
 t := async.Task[*Order]().Context(ctx).
@@ -200,7 +200,7 @@ tk := async.TaskVoid().Context(ctx).
     })
 
 tk.Cancel()
-err := tk.Result()  // 返回 error
+_, err := tk.Result()  // 忽略空值，只处理 error
 ```
 
 ---
@@ -218,7 +218,7 @@ ar := async.Task[int]().Context(ctx).
 // 三种等价值获取方式
 val, err := ar.Wait()    // 阻塞等待
 val, err = ar.Values()   // Wait 的别名
-errOnly := ar.Error()    // 仅获取 error（不阻塞）
+errOnly := ar.Error()    // 阻塞等待，仅获取 error
 ```
 
 ### WaitCh / Cancel
@@ -230,15 +230,16 @@ ar := async.Task[string]().Context(ctx).
         return "result", nil
     })
 
-// 非阻塞轮询：
+// 复用一个结果 channel，避免每次轮询都创建等待 goroutine：
+done := ar.WaitCh()
 for {
     select {
-    case <-ar.WaitCh():
+    case <-done:
         val, err := ar.Wait()
         return val, err
     case <-time.After(500 * time.Millisecond):
         if shouldAbort() {
-            ar.Cancel()
+            // 仅停止等待；如需取消任务，应取消传给任务的 context。
             return "", context.Canceled
         }
     }
@@ -289,7 +290,7 @@ t := async.Task[string]().Context(ctx).
     })
 
 // 获取内部 context（可用于日志追踪）
-innerCtx := t.Ctx()
+innerCtx := t.Ctx
 
 // 等待结果
 result, err := t.Result()
@@ -324,7 +325,7 @@ ar := async.Task[string]().Context(ctx).
 
 > **⚠️ WithTimeout 与 GoResult 配合使用**
 >
-> `WithTimeout` 设置后，`GoResult` 返回的 `Task[T]` 内部 context 会包含该超时。调用 `Cancel()` 或超时触发后，`Result()` 返回 `context.DeadlineExceeded`。
+> `WithTimeout` 设置后，`GoResult` 返回的 `Task[T]` 内部 context 会包含该超时。取消或超时会通知任务函数；`Result()` 返回函数实际返回的值和错误。
 
 ---
 
@@ -349,7 +350,7 @@ ar := async.Task[int]().Context(ctx).
 
 > **⚠️ Bounded 限制的是同时运行任务数**
 >
-> `Bounded(max)` 通过内部信号量控制最大并发 Goroutine 数。`max <= 0` 时无限制。注意：Bounded 限制的是**同时运行**的任务数，不是总任务数。一次性提交大量任务时，`*AsyncResult[T]` 对象仍会全部创建，注意内存占用。
+> `Bounded(max)` 通过内部信号量控制最大并发 goroutine 数。`max <= 0` 时使用默认 IO 并发度；`DefaultBounded()` 清除限制。Bounded 限制的是同时运行的任务数，不是总任务数。保留大量 `*AsyncResult[T]` 仍会占用内存。
 
 ---
 
@@ -374,9 +375,7 @@ if !ok {
 }
 ```
 
-> **⚠️ AsyncResult 的 WaitContext 不受 Group 取消传播 Bug 影响**
->
-> `AsyncResult` 是一对一消费模型（单个消费者等待单个结果），无 worker goroutine 管理层级，因此不受 `cancelAll()` 时序问题影响。
+> `WaitContext` 只控制本次等待，不取消任务。任务完成后仍可通过 `Wait` 获取缓存的结果。
 
 ### 调用者主动取消模式
 
@@ -411,9 +410,9 @@ val, err, ok := ar.WaitContext(waitCtx)
 // cancel() 触发 → 任务 ctx.Done() → 任务返回 → WaitContext 正常结束
 ```
 
-### 超时自动取消模式
+### 限制等待时间
 
-通过 `WaitTimeout` 或 `WaitContext` + `context.WithTimeout` 实现超时后自动获取部分结果：
+通过 `WaitTimeout` 或 `WaitContext` + `context.WithTimeout` 限制等待时间：
 
 ```go
 // 方式一：WaitTimeout 直接传超时
@@ -425,13 +424,13 @@ defer cancel()
 val, err, ok := ar.WaitContext(ctx)
 ```
 
-> 两种方式等效。超时后 `ok=false`，`val` 为零值。即使任务仍在执行，调用方也不会被阻塞。
+> 等待超时后 `ok=false`，`val` 为零值；任务不会因此自动取消，也不会返回部分结果。使用任务的取消函数或取消传入任务的 context，并确保回调响应取消。
 
 ---
 
 ## BoundedRunner（限流执行器）
 
-BoundedRunner 是独立的限流执行器，通过内部信号量控制最大并发 goroutine 数。与 `.Bounded(n)` 内联不同，它可以**提前创建并跨多个 Task 复用**，适合千万级高并发场景。
+BoundedRunner 通过内部信号量控制最大并发 goroutine 数。公开的 `TaskBuilder.Bounded(n)` 会创建执行器；复用同一个 builder 提交任务即可共享并发上限。
 
 ### 创建方式
 
@@ -439,11 +438,8 @@ BoundedRunner 是独立的限流执行器，通过内部信号量控制最大并
 // 方式一：链式构建器（推荐）
 runner := async.NewBoundedRunnerBuilder().Context(ctx).Max(1000).Build()
 
-// 方式二：直接创建
-runner := async.NewBoundedRunner(1000)
-
-// 方式三：使用默认并发度
-runner := async.NewDefaultBoundedRunner()
+// 用 TaskBuilder 创建并复用限流器
+builder := async.Task[int]().Context(ctx).Bounded(1000)
 ```
 
 ### BoundedRunnerBuilder 链式方法速查表
@@ -451,7 +447,7 @@ runner := async.NewDefaultBoundedRunner()
 | 方法 | 说明 | 默认值 |
 |------|------|--------|
 | `NewBoundedRunnerBuilder()` | 入口 | — |
-| `.Context(ctx)` | 设置上下文（自动注入 TraceID） | `context.Background()` |
+| `.Context(ctx)` | 设置构建器上下文并注入 TraceID；`Build()` 不将其传给执行器 | `context.Background()` |
 | `.Max(n)` | 最大并发 goroutine 数（≤0 使用 `IO()`） | `IO()` |
 | `.Logger(l)` | 注入自定义日志（全局生效） | 静默 |
 | `.DefaultLogger()` | 恢复默认日志 | — |
@@ -468,46 +464,18 @@ runner := async.NewDefaultBoundedRunner()
 ### 配合 Task 使用（独立复用）
 
 ```go
-// 创建后跨多个 Task 复用
-runner := async.NewBoundedRunnerBuilder().Max(1000).Build()
+// 复用同一个 builder 共享限流器
+builder := async.Task[int]().Context(ctx).Bounded(1000)
 
 for i := 0; i < 10_000_000; i++ {
     idx := i
-    async.Task[int]().Context(ctx).
-        Bounded(runner).
-        Go(func(ctx context.Context) (int, error) {
-            return process(ctx, idx)
-        })
-}
-```
-
-### 独立使用（不依赖 Task Builder）
-
-BoundedRunner 也可以独立使用，通过包级函数 `BoundedGo` / `BoundedGoAct` / `BoundedGoResult`：
-
-| 函数 | 签名 | 说明 |
-|------|------|------|
-| `BoundedGo[T](r, ctx, fn)` | `*AsyncResult[T]` | 限流后启动带返回值异步任务 |
-| `BoundedGoAct(r, ctx, fn)` | `*AsyncResult[struct{}]` | 限流后启动无返回值异步任务 |
-| `BoundedGoResult[T](r, ctx, fn)` | `Task[T]` | 限流后启动可取消异步任务 |
-
-```go
-runner := async.NewBoundedRunner(1000)
-
-results := make([]*async.AsyncResult[int], 0, 10000)
-for i := 0; i < 10000; i++ {
-    idx := i
-    ar := async.BoundedGo(runner, ctx, func(ctx context.Context) (int, error) {
-        return heavyCompute(ctx, idx)
+    builder.Go(func(ctx context.Context) (int, error) {
+        return process(ctx, idx)
     })
-    results = append(results, ar)
-}
-
-for _, ar := range results {
-    val, err := ar.Wait()
-    fmt.Println(val)
 }
 ```
+
+`NewBoundedRunnerBuilder` 构建的执行器可用于查看 `Max`、`Available` 和 `Busy`；当前公开的 TaskBuilder 接受并发数，并不接受已有执行器。
 
 > **⚠️ ctx 响应要求**
 >
@@ -590,12 +558,14 @@ ar := async.Task[string]().Context(ctx).
     WithTimeout(5 * time.Second).
     Go(longRunningWork)
 
-// 5 秒后检查是否完成
-select {
-case <-ar.WaitCh():
-    val, err := ar.Wait()
-default:
-    ar.Cancel() // 超时取消
+// 最多等待 5 秒；等待超时本身不会取消任务。上面的 WithTimeout
+// 单独控制任务 context，任务函数需要检查 context 才能响应取消。
+val, err, completed := ar.WaitTimeout(5 * time.Second)
+if !completed {
+    // 可稍后再次等待结果
+} else {
+    _ = val
+    _ = err
 }
 
 // TaskHandle: 需要随时取消的场景
@@ -649,23 +619,18 @@ go func() {
 order, err := t.Result()
 
 // ========== 千万元素批量异步：BoundedRunner ==========
-runner := async.NewBoundedRunnerBuilder().Max(1000).Build()
-var wg sync.WaitGroup
+builder := async.Task[int]().Context(ctx).Bounded(1000)
+results := make([]*async.AsyncResult[int], 0, 10_000_000)
 for i := 0; i < 10_000_000; i++ {
     idx := i
-    wg.Add(1)
-    go func() {
-        defer wg.Done()
-        ar := async.Task[int]().Context(ctx).
-            Bounded(runner).            // 全局信号量限流，最多 1000 并发
-            Go(func(ctx context.Context) (int, error) {
-                return process(ctx, idx)
-            })
-        val, err := ar.Wait()
-        _ = val; _ = err
-    }()
+    results = append(results, builder.Go(func(ctx context.Context) (int, error) {
+        return process(ctx, idx)
+    }))
 }
-wg.Wait()
+for _, ar := range results {
+    val, err := ar.Wait()
+    _ = val; _ = err
+}
 
 // ========== Fire-and-Forget：发射后不管 ==========
 async.TaskVoid().Context(ctx).
@@ -678,9 +643,9 @@ async.TaskVoid().Context(ctx).
 
 ### 常见错误
 
-- **❌ GoResult 不调用 Result/Cancel**：`GoResult` 内部启用了独立 goroutine，必须调用 `Result()` 或 `Cancel()`，否则 goroutine 泄漏
-- **❌ 无限期 Wait 不设超时**：建议始终设置 `WithTimeout` 兜底
-- **❌ WaitCh 与 Wait 混用导致竞态**：`WaitCh` 只通知完成状态，不要同时依赖 Wait 的阻塞语义
+- **❌ 任务忽略 context**：取消或超时仅通知任务，任务函数仍需检查 context 并主动退出
+- **❌ 无限期等待**：需要限制等待时间时使用 `WaitTimeout` 或 `WaitContext`；任务超时也需要函数配合处理
+- **❌ 轮询时反复创建 WaitCh**：每次调用会创建等待 goroutine，应复用同一个 channel；`WaitCh` 与 `Wait` 可以混用
 - **❌ Bounded 误解**：Bounded 限制的是**同时执行**的任务数，不是总任务数；一次性大量创建 AsyncResult 对象仍会占用内存
 
 ---

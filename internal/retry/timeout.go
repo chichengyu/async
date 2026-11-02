@@ -9,7 +9,8 @@ import (
 	"github.com/chichengyu/async/internal/core"
 )
 
-// WithTimeout 包装 fn，使其在指定超时后自动取消。
+// WithTimeout 为 fn 提供超时上下文，并同步等待 fn 返回。
+// 超时只取消上下文，fn 必须响应取消才能及时返回。
 //
 // 参数：
 //   - ctx：父上下文
@@ -18,7 +19,7 @@ import (
 //
 // 使用示例：
 //
-//	// 单个调用最多3秒
+//	// 为调用设置 3 秒的上下文超时
 //	val, err := retry.WithTimeout(ctx, 3*time.Second, func(ctx context.Context) (string, error) {
 //	    return httpGet(ctx, url)
 //	})
@@ -47,7 +48,8 @@ func WithTimeoutVoid(ctx context.Context, timeout time.Duration, fn func(ctx con
 	return fn(ctx)
 }
 
-// WithDeadline 包装 fn，使其在指定截止时间后自动取消。
+// WithDeadline 为 fn 提供截止时间上下文，并同步等待 fn 返回。
+// 截止时间只取消上下文，fn 必须响应取消才能及时返回。
 //
 // 参数：
 //   - ctx：父上下文
@@ -56,7 +58,7 @@ func WithTimeoutVoid(ctx context.Context, timeout time.Duration, fn func(ctx con
 //
 // 使用示例：
 //
-//	// 必须在 5 秒后之前完成
+//	// 为调用设置 5 秒后的截止时间
 //	deadline := time.Now().Add(5 * time.Second)
 //	val, err := retry.WithDeadline(ctx, deadline, fn)
 func WithDeadline[T any](ctx context.Context, deadline time.Time, fn func(ctx context.Context) (T, error)) (T, error) {
@@ -96,12 +98,13 @@ type TimeoutOpt struct {
 
 // RetryWithConfig 支持每次调用超时的指数退避重试。
 // 相比 RetryWithBackoff，增加了对每次 fn 调用的超时控制，
-// 并且会区分 context.DeadlineExceeded 和 context.Canceled 错误（这两种错误不重试）。
+// 父 context 取消后终止重试；单次调用超时或取消而父 context 仍有效时继续重试。
+// 超时通过 context 协作实现，fn 必须响应 context 取消才能及时返回。
 //
 // 参数：
 //   - ctx：上下文，取消后终止重试
 //   - fn：要执行的函数
-//   - maxRetries：最大重试次数
+//   - maxRetries：最大重试次数，负数按 0 处理
 //   - initialBackoff：初始退避时间
 //   - maxBackoff：最大退避时间上限
 //   - opts：可选的 TimeoutOpt{PerCallTimeout}，设置每次调用的超时
@@ -124,6 +127,9 @@ func RetryWithConfig[T any](
 	maxBackoff time.Duration,
 	opts ...TimeoutOpt,
 ) (T, error) {
+	if maxRetries < 0 {
+		maxRetries = 0
+	}
 	var zero T
 	perCallTimeout := time.Duration(0)
 	if len(opts) > 0 && opts[0].PerCallTimeout > 0 {
@@ -131,6 +137,9 @@ func RetryWithConfig[T any](
 	}
 
 	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return zero, err
+		}
 		var val T
 		var err error
 		if perCallTimeout > 0 {

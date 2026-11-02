@@ -133,7 +133,7 @@ func MapWithFFTimeout[T any, R any](ctx context.Context, items []T, concurrency 
 	g := group.NewGroup[R](concurrency)
 	ffCtx, ffCancel := context.WithCancel(ctx)
 	defer ffCancel()
-	g.WithFailFast(ffCtx)
+	_, ffCtx = g.WithFailFast(ffCtx)
 	g.WithTimeout(timeout)
 	for idx := range items {
 		g.GoAt(idx, ffCtx, func(ctx context.Context) (R, error) {
@@ -267,7 +267,7 @@ func ForEachWithFFTimeout[T any](ctx context.Context, items []T, concurrency int
 	defer ffCancel()
 
 	g := group.NewNoResult(concurrency)
-	g.WithFailFast(ffCtx)
+	_, ffCtx = g.WithFailFast(ffCtx)
 	g.WithTimeout(timeout)
 	for i := range items {
 		g.Go(ffCtx, func(ctx context.Context) error {
@@ -535,7 +535,7 @@ func MapChunkedWithFailFast[T any, R any](ctx context.Context, items []T, concur
 	ffCtx, ffCancel := context.WithCancel(ctx)
 	defer ffCancel()
 	g := group.NewGroup[R](concurrency)
-	g.WithFailFast(ffCtx)
+	_, ffCtx = g.WithFailFast(ffCtx)
 	idx := 0
 	for _, chunk := range chunks {
 		for _, item := range chunk {
@@ -612,7 +612,7 @@ func MapChunkedWithFFTimeout[T any, R any](ctx context.Context, items []T, concu
 	ffCtx, ffCancel := context.WithCancel(ctx)
 	defer ffCancel()
 	g := group.NewGroup[R](concurrency)
-	g.WithFailFast(ffCtx)
+	_, ffCtx = g.WithFailFast(ffCtx)
 	g.WithTimeout(timeout)
 	idx := 0
 	for _, chunk := range chunks {

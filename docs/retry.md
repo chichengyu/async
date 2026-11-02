@@ -140,6 +140,8 @@
 | `.Run(fn)` | `fn func() error` | `error` | 简化版（fn 无 context 参数） |
 | `.RunVoid(fn)` | `fn func(context.Context) error` | `error` | 等同于 ExecuteVoid |
 
+重试耗尽时返回的错误包装最后一次尝试的错误，可用 `errors.Is` 或 `errors.As` 检查；此前尝试的错误不会包含在返回值中。
+
 > **⚠️ `.Execute(fn)` vs `.Run(fn)`**
 >
 > - `.Execute(fn)`：fn 有 `func(context.Context) (T, error)` 签名，可获得 ctx（带 trace_id 的 ctx）
@@ -325,6 +327,7 @@ val, err := async.Retry[string](ctx).
 > **⚠️ PerCallTimeout 超时 ≠ 取消**
 >
 > `PerCallTimeout` 超时不会终止整个重试循环，只是单次调用超时。超时后仍会按退避策略进入下一次重试。要完全终止可使用 `context.WithTimeout` 包装外部 ctx。
+> 超时通过传给 `fn` 的 context 通知；`fn` 及其阻塞的 I/O 必须响应取消。若 `fn` 忽略 context，重试调用仍会等待它返回，单次超时和外部超时都无法强制中断它。
 
 ---
 
@@ -509,7 +512,7 @@ err := async.RetryVoid(ctx).
 
 ### 常见错误
 
-- **❌ 不设 PerCallTimeout**：下游 hang 住时重试循环卡死，建议总超时 = `(BackoffMax + PerCallTimeout) × (MaxRetries + 1)`
+- **❌ 忽略 context 取消**：下游调用可能使重试循环一直等待。为每次调用设置 `PerCallTimeout`，并确保下游 I/O 使用该 context；外部 context 可限制整个重试流程。
 - **❌ 重试非幂等操作**：Write/Delete 类操作重试前确认下游支持幂等
 - **❌ 指数退避上限过小**：如果 max 小于 `initial × 2^retries`，后续间隔时间相同，退避效果不明显
 - **❌ RateLimiter 和 TokenBucket 混淆**：前者阻塞等令牌，后者非阻塞跳过，根据场景选择

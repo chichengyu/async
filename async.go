@@ -100,7 +100,7 @@ var (
 	ErrPoolClosed = core.ErrPoolClosed
 	// ErrPoolWaited 在 Wait 之后调用 Submit，任务被丢弃
 	ErrPoolWaited = core.ErrPoolWaited
-	// ErrPoolWaiting 在 Wait 执行期间调用 Submit
+	// ErrPoolWaiting 在 Wait 或池调整大小期间调用 Submit
 	ErrPoolWaiting = core.ErrPoolWaiting
 	// ErrSubmitTimeout 提交超时，任务被丢弃
 	ErrSubmitTimeout = core.ErrSubmitTimeout
@@ -139,14 +139,11 @@ type RingBuffer[T any] = core.RingBuffer[T]
 // ── 全局配置函数 ──
 
 var (
-	// SetMaxCleanupDuration 设置 WaitTimeout/WaitContext 超时后清理 goroutine 的最大存活时间。
-	// 设为 0 表示无限等待。
-	//
-	// 示例：
-	//   async.SetMaxCleanupDuration(5 * time.Minute) // 超时后最多再等 5 分钟清理
+	// SetMaxCleanupDuration 设置内部等待辅助函数的清理监视时长。
+	// 当前 Pool 和 Group 的等待方法不使用此设置；它不会中断任务。
 	SetMaxCleanupDuration = core.SetMaxCleanupDuration
 
-	// GetMaxCleanupDuration 获取当前清理 goroutine 的最大存活时间。
+	// GetMaxCleanupDuration 返回设置的原始清理监视时长。
 	GetMaxCleanupDuration = core.GetMaxCleanupDuration
 
 	// SetDefaultTimeout 设置全局默认超时，影响后续创建的 Group 和 Pool。
@@ -281,9 +278,9 @@ func SafeCallVoid[T any](ctx context.Context, item T, fn func(ctx context.Contex
 // 每次 Go 新建 goroutine，任务完成后销毁。
 // 支持超时控制、FailFast、提交超时等选项。
 //
-// 通过 async.Group[T](ctx) 构造器链式创建：
+// 通过 async.Group[T]() 构造器链式创建：
 //
-//	g := async.Group[string](ctx).Concurrency(10).Timeout(5 * time.Second).Build()
+//	g := async.Group[string]().Context(ctx).Worker(10).Timeout(5 * time.Second).Build()
 //	defer g.Close()
 
 // GroupStats 任务组的统计信息。
@@ -309,7 +306,7 @@ type GroupNoResultBuilder = group.GroupNoResultBuilder
 // ──────────────────────────── Pool 协程池 ────────────────────────────
 
 // Pool[T] 泛型协程池，复用 goroutine 处理高频并发任务。
-// 生命周期：Pool[int]().Worker().Build() → Submit → Wait → Close。
+// 生命周期：Pool[int]().Worker().Run(fn) 在回调中提交任务，返回后自动关闭。
 //
 // 适用场景：需要长期运行、反复提交任务的场景。
 // 不适合一次性批量任务（用 Group 更高效）。
@@ -321,21 +318,18 @@ type GroupNoResultBuilder = group.GroupNoResultBuilder
 // 示例：
 //
 //	// 创建 4 个 worker 的协程池
-//	p := async.Pool[int]().Worker(4).Build()
-//	defer p.Close()
-//
-//	// 提交 100 个任务
-//	for i := 0; i < 100; i++ {
-//	    p.Submit(ctx, func(ctx context.Context) (int, error) {
-//	        return i * i, nil
-//	    })
-//	}
-//
-//	// 等待所有任务完成
-//	results := p.Wait()
-//	for _, r := range results {
-//	    fmt.Println(r.Value)
-//	}
+//	err := async.Pool[int]().Context(ctx).Worker(4).Run(func(ctx context.Context, p *async.PoolInstance[int]) error {
+//	    for i := 0; i < 100; i++ {
+//	        n := i
+//	        if err := p.Submit(ctx, func(context.Context) (int, error) { return n * n, nil }); err != nil {
+//	            return err
+//	        }
+//	    }
+//	    for _, r := range p.Wait() {
+//	        fmt.Println(r.Value, r.Err)
+//	    }
+//	    return nil
+//	})
 
 // NoResultPool 无返回值协程池的别名。
 type NoResultPool = pool.Pool[struct{}]
@@ -384,7 +378,7 @@ type SerialBuilder[T any, R any] = sliceops.SliceBuilder[T, R]
 //	ctx:   上下文（自动注入 TraceID）。
 //	items: 原始切片数据。
 //
-//	go async.Slice(ctx, []int{1, 2, 3}).Sort(cmp).Map(fn)
+//	results := async.Slice(ctx, []int{1, 2, 3}).Sort(cmp).Map(fn)
 func Slice[T any](ctx context.Context, items []T) *SliceBuilder[T, T] {
 	return sliceops.NewSliceBuilder[T](ctx, items)
 }
@@ -392,7 +386,7 @@ func Slice[T any](ctx context.Context, items []T) *SliceBuilder[T, T] {
 // SliceWith 创建跨类型切片构建器（T→R），显式指定输出类型 R，输入类型 T 由 items 自动推断。
 // 默认为并行模式。
 //
-//	go async.SliceWith[string](ctx, []int{1, 2, 3}).Map(func(ctx ctx, n int) (string, error) {
+//	results := async.SliceWith[string](ctx, []int{1, 2, 3}).Map(func(ctx context.Context, n int) (string, error) {
 //	    return strconv.Itoa(n), nil
 //	})
 func SliceWith[R any, T any](ctx context.Context, items []T) *SliceBuilder[T, R] {
@@ -413,6 +407,27 @@ func SliceWith[R any, T any](ctx context.Context, items []T) *SliceBuilder[T, R]
 // 详见 async_pool.go / async_group.go。
 
 // ── Pool / Group 类型别名 ──
+
+// GroupInstance 是 Group 构建器回调中的任务组类型。
+type GroupInstance[T any] = group.Group[T]
+
+// GroupNoResult 是 GroupVoid 构建器回调中的无返回值任务组类型。
+type GroupNoResult = group.NoResult
+
+// MultiGroup 是 GroupMulti 构建器回调中的分片任务组类型。
+type MultiGroup[T any] = group.MultiGroup[T]
+
+// ShardedGroup 是 GroupSharded 构建器回调中的分片任务组类型。
+type ShardedGroup[T any] = shard.ShardedGroup[T]
+
+// ShardedPool 是 PoolSharded 构建器回调中的分片协程池类型。
+type ShardedPool[T any] = shard.ShardedPool[T]
+
+// PoolInstance 是 Pool 构建器回调中的协程池实例类型。
+type PoolInstance[T any] = pool.Pool[T]
+
+// MultiPool 是 PoolMulti 构建器回调中的分片协程池类型。
+type MultiPool[T any] = pool.MultiPool[T]
 
 // MultiPoolBuilder 分片协程池构造器类型。
 type MultiPoolBuilder[T any] = pool.MultiPoolBuilder[T]
@@ -528,7 +543,7 @@ type Mu[T any] = task.Mu[T]
 type TaskBuilder[T any] = task.TaskBuilder[T]
 
 // Task 创建任务链式构建器，统一入口。
-// 通过 .Context(ctx) 设置上下文，.Run(fn) 自动管理生命周期。
+// 通过 .Context(ctx) 设置上下文，使用 .Go(fn) 或 .GoResult(fn) 启动任务。
 func Task[T any]() *TaskBuilder[T] {
 	return task.NewTaskBuilder[T]()
 }
@@ -675,7 +690,7 @@ type RetryChain[T any] = retry.RetryChain[T]
 // 无返回值（用 struct{} 或 RetryVoid）：
 //
 //	err := async.RetryVoid(ctx).
-//	    Linear().MaxRetries(5).Backoff(1*time.Second).
+//	    Linear().MaxRetries(5).Backoff(1*time.Second, 0).
 //	    Run(func() error { return doSomething() })
 func Retry[T any](ctx context.Context) *RetryChain[T] {
 	return retry.New[T](ctx)
@@ -806,9 +821,16 @@ type ParallelPipeline[T any] = pipeline.Pipeline[T]
 //	}, func(ctx context.Context, stage string, item string) (string, error) {
 //	    return processItem(ctx, stage, item)
 //	})
-//	defer fl.Close()
-//	go func() { for msg := range msgs { fl.Submit(ctx, msg) } }()
+//	done := make(chan struct{})
+//	go func() {
+//	    defer close(done)
+//	    for msg := range msgs {
+//	        if _, err := fl.Submit(ctx, msg); err != nil { break }
+//	    }
+//	    for _, r := range fl.Close() { handle(r) }
+//	}()
 //	for r := range fl.Results() { handle(r) }
+//	<-done
 type Flow[T any] = pipeline.Flow[T]
 
 // FlowConfig Flow 的配置。
@@ -861,10 +883,10 @@ func ExecuteStream[T any](
 //
 // 使用示例：
 //
-//	runner := async.NewBoundedRunnerBuilder().Max(1000).Build()
+//	builder := async.Task[int]().Context(ctx).Bounded(1000)
 //	for i := 0; i < 1000000; i++ {
 //	    idx := i
-//	    task.BoundedGo(runner, ctx, func(ctx context.Context) (int, error) {
+//	    builder.Go(func(ctx context.Context) (int, error) {
 //	        return processData(ctx, idx)
 //	    })
 //	}
@@ -941,7 +963,7 @@ func NewMapCap[K comparable, V any](capacity int) *Map[K, V] {
 	return mymaps.New[K, V](capacity)
 }
 
-// MapFrom 从原生 map 创建 Map 容器（深拷贝）。
+// MapFrom 从原生 map 创建 Map 容器，浅拷贝键值对；引用类型的值仍共享其底层数据。
 func MapFrom[K comparable, V any](m map[K]V) *Map[K, V] {
 	return mymaps.From[K, V](m)
 }
@@ -952,6 +974,7 @@ func MapFromRef[K comparable, V any](m map[K]V) *Map[K, V] {
 }
 
 // MapChain 泛型 map 并发操作链构建器，默认并行模式。
+// 构建器直接引用输入 map，不提供并发同步；执行期间不得并发修改输入 map。
 // 支持 .Serial() / .Parallel() 模式切换，.Worker(n) / .Pool(p) / .Timeout(d) / .Shards(n) / .Buf(n) 等配置，
 // 终端方法：.ForEach(fn) / .Map(fn) / .MapToFn(fn) / .Filter(fn) / .Stream(fn, buf) / .Reduce(init, fn)。
 type MapChain[K comparable, V any, R any] = mymaps.MapChain[K, V, R]

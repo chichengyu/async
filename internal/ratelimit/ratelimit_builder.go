@@ -129,7 +129,7 @@ func (b *RatelimiterSubBuilder) Build() *RateLimiter {
 	return NewRateLimiter(b.rate, b.perDuration)
 }
 
-// DefaultRate 使用默认速率（GOMAXPROCS）。
+// DefaultRate 使用默认速率（core.IO()）。
 func (b *RatelimiterSubBuilder) DefaultRate() *RatelimiterSubBuilder {
 	b.rate = core.IO()
 	return b
@@ -141,7 +141,7 @@ func (b *RatelimiterSubBuilder) DefaultPer() *RatelimiterSubBuilder {
 	return b
 }
 
-// DefaultBurst 使用默认突发容量（GOMAXPROCS × 2）。
+// DefaultBurst 使用默认突发容量（core.IO() × 2）。
 func (b *RatelimiterSubBuilder) DefaultBurst() *RatelimiterSubBuilder {
 	b.burst = core.IO() * 2
 	return b
@@ -192,13 +192,13 @@ func (b *TokenBucketSubBuilder) Build() *TokenBucket {
 	return NewTokenBucket(b.rate, b.capacity)
 }
 
-// DefaultRate 使用默认令牌生成速率（GOMAXPROCS）。
+// DefaultRate 使用默认令牌生成速率（core.IO()）。
 func (b *TokenBucketSubBuilder) DefaultRate() *TokenBucketSubBuilder {
 	b.rate = float64(core.IO())
 	return b
 }
 
-// DefaultCapacity 使用默认容量（GOMAXPROCS × 2）。
+// DefaultCapacity 使用默认容量（core.IO() × 2）。
 func (b *TokenBucketSubBuilder) DefaultCapacity() *TokenBucketSubBuilder {
 	b.capacity = float64(core.IO() * 2)
 	return b
@@ -252,7 +252,7 @@ func (b *SlidingWindowSubBuilder) Build() *SlidingWindowRateLimiter {
 	return NewSlidingWindowRateLimiter(b.limit, b.window)
 }
 
-// DefaultLimit 使用默认限制次数（GOMAXPROCS）。
+// DefaultLimit 使用默认限制次数（core.IO()）。
 func (b *SlidingWindowSubBuilder) DefaultLimit() *SlidingWindowSubBuilder {
 	b.limit = core.IO()
 	return b
@@ -306,13 +306,13 @@ func (b *AdaptiveSubBuilder) Build() *AdaptiveRateLimiter {
 	return NewAdaptiveRateLimiter(b.minRate, b.maxRate)
 }
 
-// DefaultMinWorker 使用默认最小并发度（GOMAXPROCS）。
+// DefaultMinWorker 使用默认最小并发度（core.IO()）。
 func (b *AdaptiveSubBuilder) DefaultMinWorker() *AdaptiveSubBuilder {
 	b.minRate = core.IO()
 	return b
 }
 
-// DefaultMaxWorker 使用默认最大并发度（GOMAXPROCS × 10）。
+// DefaultMaxWorker 使用默认最大并发度（core.IO() × 10）。
 func (b *AdaptiveSubBuilder) DefaultMaxWorker() *AdaptiveSubBuilder {
 	b.maxRate = core.IO() * 10
 	return b
@@ -379,7 +379,7 @@ type ShardedRatelimiterSubBuilder struct {
 	burst       int             // 突发容量
 }
 
-// Shards 设置水平分片数。<=0 时自动使用 DefaultShardCount()。
+// Shards 设置水平分片数。<=0 时构造函数使用 core.IO()。
 func (b *ShardedRatelimiterSubBuilder) Shards(n int) *ShardedRatelimiterSubBuilder {
 	b.shards = n
 	return b
@@ -429,13 +429,13 @@ func (b *ShardedRatelimiterSubBuilder) Build() *ShardedRateLimiter {
 	return NewShardedRateLimiter(b.shards, b.rate, b.perDuration)
 }
 
-// DefaultShards 使用默认分片数（GOMAXPROCS，最少 2）。
+// DefaultShards 使用默认分片数（core.IO()，最少 2）。
 func (b *ShardedRatelimiterSubBuilder) DefaultShards() *ShardedRatelimiterSubBuilder {
 	b.shards = DefaultShardCount()
 	return b
 }
 
-// DefaultRate 使用默认速率（GOMAXPROCS）。
+// DefaultRate 使用默认速率（core.IO()）。
 func (b *ShardedRatelimiterSubBuilder) DefaultRate() *ShardedRatelimiterSubBuilder {
 	b.rate = core.IO()
 	return b
@@ -447,7 +447,7 @@ func (b *ShardedRatelimiterSubBuilder) DefaultPer() *ShardedRatelimiterSubBuilde
 	return b
 }
 
-// DefaultBurst 使用默认突发容量（GOMAXPROCS × 2）。
+// DefaultBurst 使用默认突发容量（core.IO() × 2）。
 func (b *ShardedRatelimiterSubBuilder) DefaultBurst() *ShardedRatelimiterSubBuilder {
 	b.burst = core.IO() * 2
 	return b
@@ -508,19 +508,19 @@ func (b *ShardedTokenBucketSubBuilder) Build() *ShardedTokenBucket {
 	return NewShardedTokenBucket(b.shards, b.rate, b.capacity)
 }
 
-// DefaultShards 使用默认分片数（GOMAXPROCS，最少 2）。
+// DefaultShards 使用默认分片数（core.IO()，最少 2）。
 func (b *ShardedTokenBucketSubBuilder) DefaultShards() *ShardedTokenBucketSubBuilder {
 	b.shards = DefaultShardCount()
 	return b
 }
 
-// DefaultRate 使用默认令牌生成速率（GOMAXPROCS）。
+// DefaultRate 使用默认令牌生成速率（core.IO()）。
 func (b *ShardedTokenBucketSubBuilder) DefaultRate() *ShardedTokenBucketSubBuilder {
 	b.rate = float64(core.IO())
 	return b
 }
 
-// DefaultCapacity 使用默认容量（GOMAXPROCS × 2）。
+// DefaultCapacity 使用默认容量（core.IO() × 2）。
 func (b *ShardedTokenBucketSubBuilder) DefaultCapacity() *ShardedTokenBucketSubBuilder {
 	b.capacity = float64(core.IO() * 2)
 	return b
@@ -581,13 +581,13 @@ func (b *ShardedSlidingWindowSubBuilder) Build() *ShardedSlidingWindowRateLimite
 	return NewShardedSlidingWindowRateLimiter(b.shards, b.limit, b.window)
 }
 
-// DefaultShards 使用默认分片数（GOMAXPROCS，最少 2）。
+// DefaultShards 使用默认分片数（core.IO()，最少 2）。
 func (b *ShardedSlidingWindowSubBuilder) DefaultShards() *ShardedSlidingWindowSubBuilder {
 	b.shards = DefaultShardCount()
 	return b
 }
 
-// DefaultLimit 使用默认限制次数（GOMAXPROCS）。
+// DefaultLimit 使用默认限制次数（core.IO()）。
 func (b *ShardedSlidingWindowSubBuilder) DefaultLimit() *ShardedSlidingWindowSubBuilder {
 	b.limit = core.IO()
 	return b
@@ -654,19 +654,19 @@ func (b *ShardedAdaptiveSubBuilder) Build() *ShardedAdaptiveRateLimiter {
 	return NewShardedAdaptiveRateLimiter(b.shards, b.minRate, b.maxRate)
 }
 
-// DefaultShards 使用默认分片数（GOMAXPROCS，最少 2）。
+// DefaultShards 使用默认分片数（core.IO()，最少 2）。
 func (b *ShardedAdaptiveSubBuilder) DefaultShards() *ShardedAdaptiveSubBuilder {
 	b.shards = DefaultShardCount()
 	return b
 }
 
-// DefaultMinWorker 使用默认最小并发度（GOMAXPROCS）。
+// DefaultMinWorker 使用默认最小并发度（core.IO()）。
 func (b *ShardedAdaptiveSubBuilder) DefaultMinWorker() *ShardedAdaptiveSubBuilder {
 	b.minRate = core.IO()
 	return b
 }
 
-// DefaultMaxWorker 使用默认最大并发度（GOMAXPROCS × 10）。
+// DefaultMaxWorker 使用默认最大并发度（core.IO() × 10）。
 func (b *ShardedAdaptiveSubBuilder) DefaultMaxWorker() *ShardedAdaptiveSubBuilder {
 	b.maxRate = core.IO() * 10
 	return b

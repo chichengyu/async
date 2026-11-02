@@ -2,7 +2,6 @@ package group
 
 import (
 	"context"
-	"sync/atomic"
 	"time"
 
 	"github.com/chichengyu/async/internal/core"
@@ -235,9 +234,9 @@ func (nr *NoResult) FailCount() int64 {
 	return (*Group[struct{}])(nr).FailCount()
 }
 
-// SuccessCount 返回成功任务数。
-func (nr *NoResult) SuccessCount() int64 {
-	return (*Group[struct{}])(nr).SuccessCount()
+// OkCount 返回成功任务数。
+func (nr *NoResult) OkCount() int64 {
+	return (*Group[struct{}])(nr).OkCount()
 }
 
 // HasError 检查是否有任务失败。
@@ -323,8 +322,11 @@ func BuildAggregateNoResult(nr *NoResult) (total int64, failCnt int64, firstErr 
 	results = make([]core.Result[struct{}], len(g.results))
 	copy(results, g.results)
 	g.mu.Unlock()
-	total = int64(len(results))
 	for _, r := range results {
+		if !r.Occupied {
+			continue
+		}
+		total++
 		if r.Err != nil {
 			failCnt++
 			if firstErr == nil {
@@ -342,12 +344,24 @@ func BuildAggregateNoResult(nr *NoResult) (total int64, failCnt int64, firstErr 
 //   - total：期望的总任务数
 func FillNoResultSkipped(nr *NoResult, total int) {
 	g := (*Group[struct{}])(nr)
-	if need := total - len(g.results); need > 0 {
-		g.mu.Lock()
-		for i := 0; i < need; i++ {
-			g.results = append(g.results, core.Result[struct{}]{Err: core.ErrSkipped})
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if need := int64(total) - g.totalCnt.Load(); need > 0 {
+		for i := range g.results {
+			if need == 0 {
+				break
+			}
+			if !g.results[i].Occupied {
+				g.results[i] = core.Result[struct{}]{Err: core.ErrSkipped, Occupied: true}
+				need--
+				g.totalCnt.Add(1)
+				g.errCnt.Add(1)
+			}
 		}
-		g.mu.Unlock()
-		atomic.AddInt64(&g.errCnt, int64(need))
+		for ; need > 0; need-- {
+			g.results = append(g.results, core.Result[struct{}]{Err: core.ErrSkipped, Occupied: true})
+			g.totalCnt.Add(1)
+			g.errCnt.Add(1)
+		}
 	}
 }

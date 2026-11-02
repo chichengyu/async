@@ -357,10 +357,10 @@ func TestRatelimit_Chain_Adaptive_AllMethods(t *testing.T) {
 		}
 	})
 
-	t.Run("RecordSuccess", func(t *testing.T) {
+	t.Run("RecordOk", func(t *testing.T) {
 		al := Ratelimit(ctx).Adaptive().MinWorker(1).MaxWorker(100).Build()
 		al.Acquire(ctx)
-		al.RecordSuccess()
+		al.RecordOk()
 		al.Release()
 	})
 
@@ -469,7 +469,7 @@ func TestRatelimit_Chain_Sharded_AllMethods(t *testing.T) {
 		if err := sal.Acquire(ctx); err != nil {
 			t.Fatalf("Acquire failed: %v", err)
 		}
-		sal.RecordSuccess()
+		sal.RecordOk()
 		sal.Release()
 	})
 
@@ -581,8 +581,8 @@ func TestRatelimit_Chain_HighConcurrency_RateLimiter(t *testing.T) {
 			}
 			wg.Wait()
 			t.Logf("RateLimiter %s: success=%d, fail=%d", tier.Name, success.Load(), fail.Load())
-			if success.Load() < int64(rate) {
-				t.Logf("warning: only %d succeeded out of %d concurrent (rate=%d)", success.Load(), n, rate)
+			if success.Load() != int64(n) || fail.Load() != 0 {
+				t.Fatalf("Acquire: success=%d, fail=%d, want %d successes", success.Load(), fail.Load(), n)
 			}
 		})
 	}
@@ -620,6 +620,9 @@ func TestRatelimit_Chain_HighConcurrency_Token(t *testing.T) {
 			}
 			wg.Wait()
 			t.Logf("Token mode %s: success=%d", tier.Name, success.Load())
+			if success.Load() != int64(n) {
+				t.Fatalf("Token: success=%d, want %d", success.Load(), n)
+			}
 		})
 	}
 }
@@ -670,7 +673,7 @@ func TestRatelimit_Chain_HighConcurrency_SlidingWindow(t *testing.T) {
 			if limit > 500000 {
 				limit = 500000
 			}
-			sw := Ratelimit(ctx).SlidingWindow().Limit(limit).Window(time.Minute).Build()
+			sw := Ratelimit(ctx).SlidingWindow().Limit(limit).Window(time.Hour).Build()
 
 			var wg sync.WaitGroup
 			var allowed atomic.Int64
@@ -687,7 +690,7 @@ func TestRatelimit_Chain_HighConcurrency_SlidingWindow(t *testing.T) {
 			wg.Wait()
 			t.Logf("SlidingWindow %s: allowed=%d (limit=%d)", tier.Name, allowed.Load(), limit)
 			if allowed.Load() != int64(limit) {
-				t.Logf("SlidingWindow concurrency skew: %d/%d (expected close to limit under high concurrency)", allowed.Load(), limit)
+				t.Fatalf("SlidingWindow allowed %d requests, want %d", allowed.Load(), limit)
 			}
 		})
 	}
@@ -720,7 +723,7 @@ func TestRatelimit_Chain_HighConcurrency_Adaptive(t *testing.T) {
 						if idx%10 == 0 {
 							al.RecordFailure()
 						} else {
-							al.RecordSuccess()
+							al.RecordOk()
 						}
 						al.Release()
 					} else {
@@ -730,6 +733,9 @@ func TestRatelimit_Chain_HighConcurrency_Adaptive(t *testing.T) {
 			}
 			wg.Wait()
 			t.Logf("Adaptive %s: success=%d, fail=%d (maxConcurrency=%d)", tier.Name, success.Load(), fail.Load(), maxC)
+			if success.Load() != int64(n) || fail.Load() != 0 {
+				t.Fatalf("Adaptive Acquire: success=%d, fail=%d, want %d successes", success.Load(), fail.Load(), n)
+			}
 		})
 	}
 }
@@ -767,6 +773,9 @@ func TestRatelimit_Chain_HighConcurrency_ShardedRateLimiter(t *testing.T) {
 			}
 			wg.Wait()
 			t.Logf("ShardedRateLimiter %s: success=%d, fail=%d (shards=16 rate=%d)", tier.Name, success.Load(), fail.Load(), rate)
+			if success.Load() != int64(n) || fail.Load() != 0 {
+				t.Fatalf("Sharded Acquire: success=%d, fail=%d, want %d successes", success.Load(), fail.Load(), n)
+			}
 		})
 	}
 }
@@ -796,6 +805,9 @@ func TestRatelimit_Chain_HighConcurrency_ShardedTokenBucket(t *testing.T) {
 			}
 			wg.Wait()
 			t.Logf("ShardedTokenBucket %s: allowed=%d", tier.Name, allowed.Load())
+			if allowed.Load() != int64(n) {
+				t.Fatalf("ShardedTokenBucket allowed %d requests, want %d", allowed.Load(), n)
+			}
 		})
 	}
 }
@@ -947,11 +959,11 @@ func TestRatelimit_Chain_CrossScenario_ErrorHandling(t *testing.T) {
 		rl.Release()
 	})
 
-	t.Run("Adaptive_repeated_RecordSuccess", func(t *testing.T) {
+	t.Run("Adaptive_repeated_RecordOk", func(t *testing.T) {
 		al := Ratelimit(ctx).Adaptive().MinWorker(1).MaxWorker(100).Build()
 		for i := 0; i < 50; i++ {
 			al.Acquire(ctx)
-			al.RecordSuccess()
+			al.RecordOk()
 			al.Release()
 		}
 	})
@@ -1507,13 +1519,41 @@ func TestRatelimit_Chain_Race_Adaptive(t *testing.T) {
 			defer wg.Done()
 			for j := 0; j < 5; j++ {
 				if err := al.Acquire(ctx); err == nil {
-					al.RecordSuccess()
+					al.RecordOk()
 					al.Release()
 				}
 			}
 		}()
 	}
 	wg.Wait()
+}
+
+func TestRatelimitAdaptiveConcurrentRecordsIncreaseCapacity(t *testing.T) {
+	ctx := context.Background()
+	al := Ratelimit(ctx).Adaptive().MinWorker(1).MaxWorker(19).Build()
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() { defer wg.Done(); <-start; al.RecordOk() }()
+	}
+	close(start)
+	wg.Wait()
+	acquireCtx, stopAcquire := context.WithTimeout(ctx, 5*time.Second)
+	defer stopAcquire()
+	for i := 0; i < 11; i++ {
+		if err := al.Acquire(acquireCtx); err != nil {
+			t.Fatalf("Acquire(%d): %v", i, err)
+		}
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, 10*time.Millisecond)
+	defer cancel()
+	if err := al.Acquire(waitCtx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("extra Acquire = %v, want deadline exceeded", err)
+	}
+	for i := 0; i < 11; i++ {
+		al.Release()
+	}
 }
 
 func TestRatelimit_Chain_Race_ShardedRateLimiter(t *testing.T) {
@@ -1549,7 +1589,7 @@ func TestRatelimit_Chain_Race_ShardedAdaptive(t *testing.T) {
 			defer wg.Done()
 			for j := 0; j < 5; j++ {
 				if err := sal.Acquire(ctx); err == nil {
-					sal.RecordSuccess()
+					sal.RecordOk()
 					sal.Release()
 				}
 			}

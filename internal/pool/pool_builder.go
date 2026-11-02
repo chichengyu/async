@@ -33,13 +33,13 @@ func (b *PoolBuilder[T]) DefaultPoolConfig() *PoolBuilder[T] {
 	return b
 }
 
-// DefaultWorker 使用默认 worker 数量（GOMAXPROCS）。
+// DefaultWorker 使用默认 IO 并发度（CPU 核数的两倍）。
 func (b *PoolBuilder[T]) DefaultWorker() *PoolBuilder[T] {
 	b.cfg.Size = core.IO()
 	return b
 }
 
-// DefaultTimeout 使用默认任务超时（不限时）。
+// DefaultTimeout 恢复为池创建时的全局默认任务超时。
 func (b *PoolBuilder[T]) DefaultTimeout() *PoolBuilder[T] {
 	b.cfg.Timeout = 0
 	return b
@@ -63,13 +63,13 @@ func (b *PoolBuilder[T]) DefaultMaxPending() *PoolBuilder[T] {
 	return b
 }
 
-// DefaultOverflow 使用默认溢出策略（OverflowDrop）。
+// DefaultOverflow 将任务队列溢出策略设为 OverflowDrop。
 func (b *PoolBuilder[T]) DefaultOverflow() *PoolBuilder[T] {
 	b.cfg.Overflow = core.OverflowDrop
 	return b
 }
 
-// OverflowDrop 队列满时丢弃新任务（默认策略）。
+// OverflowDrop 达到 MaxPending 时丢弃新任务。
 func (b *PoolBuilder[T]) OverflowDrop() *PoolBuilder[T] {
 	b.cfg.Overflow = core.OverflowDrop
 	return b
@@ -87,7 +87,7 @@ func (b *PoolBuilder[T]) OverflowError() *PoolBuilder[T] {
 	return b
 }
 
-// DefaultRingBuf 使用默认环形缓冲容量（0=不启用）。
+// DefaultRingBuf 清除构建器覆盖，使用创建池时的全局默认环形缓冲配置。
 func (b *PoolBuilder[T]) DefaultRingBuf() *PoolBuilder[T] {
 	b.cfg.RingBufCap = 0
 	return b
@@ -99,7 +99,7 @@ func (b *PoolBuilder[T]) DefaultMaxResults() *PoolBuilder[T] {
 	return b
 }
 
-// DefaultStreaming 使用默认流式 buf 大小（0=无缓冲）。
+// DefaultStreaming 恢复默认设置（不启用流式结果）。
 func (b *PoolBuilder[T]) DefaultStreaming() *PoolBuilder[T] {
 	b.cfg.Streaming = 0
 	return b
@@ -174,6 +174,10 @@ func (b *PoolBuilder[T]) DefaultLogger() *PoolBuilder[T] { core.SetLogger(nil); 
 // Run 终端方法：创建协程池，执行 fn，fn 返回后自动 Close。
 func (b *PoolBuilder[T]) Run(fn func(ctx context.Context, p *Pool[T]) error) error {
 	return WithCfg[T](b.ctx, b.cfg, func(p *Pool[T]) error {
-		return fn(b.ctx, p)
+		ctx := b.ctx
+		if b.cfg.FailFast {
+			ctx = p.Ctx()
+		}
+		return fn(ctx, p)
 	})
 }

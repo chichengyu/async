@@ -86,7 +86,7 @@ func ExecuteStream[T any](
 		concurrency := streamConcurrency(stage.Concurrency, numItems)
 		for w := 0; w < concurrency; w++ {
 			chs[si].wg.Add(1)
-			go streamWorker(ctx, &chs[si], si, numStages, resultCh, fn, stage.Name)
+			go streamWorker(ctx, &chs[si], si, numStages, resultCh, fn, stage.Name, stage.SkipOnError)
 		}
 	}
 
@@ -107,7 +107,7 @@ func ExecuteStream[T any](
 
 	cascadeWg.Wait()
 
-	return results(), nil
+	return results(), ctx.Err()
 }
 
 func streamWorker[T any](
@@ -118,6 +118,7 @@ func streamWorker[T any](
 	resultCh chan *streamItem[T],
 	fn func(context.Context, string, T) (T, error),
 	stageName string,
+	skipOnError bool,
 ) {
 	defer ws.wg.Done()
 	for item := range ws.input {
@@ -127,15 +128,18 @@ func streamWorker[T any](
 		default:
 		}
 
-		if item.err != nil {
+		if skipOnError && item.err != nil {
 			streamForward(ctx, item, stageIdx, numStages, ws.output, resultCh)
 			continue
 		}
 
 		val, err := safeCall(ctx, fn, stageName, item.value)
 		item.value = val
-		if err != nil {
-			item.err = err
+		item.err = err
+		if err != nil && ctx.Err() != nil {
+			// Downstream workers can exit on cancellation before receiving this failure.
+			resultCh <- item
+			continue
 		}
 
 		streamForward(ctx, item, stageIdx, numStages, ws.output, resultCh)
@@ -291,7 +295,17 @@ func (w *StreamChain[T]) execStream(fn func(context.Context, string, T) (T, erro
 	defer ffCancel()
 
 	wrappedFn := func(innerCtx context.Context, stage string, item T) (T, error) {
-		val, err := fn(innerCtx, stage, item)
+		val, err := safeCall(innerCtx, fn, stage, item)
+		if w.resultCb != nil {
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						err = core.NewPanicError(r)
+					}
+				}()
+				w.resultCb(stage, core.Result[T]{Value: val, Err: err, Occupied: true})
+			}()
+		}
 		if err != nil && w.failFast {
 			ffCancel()
 		}
@@ -304,8 +318,6 @@ func (w *StreamChain[T]) execStream(fn func(context.Context, string, T) (T, erro
 		err = ffCtx.Err()
 	}
 
-	w.applyResultCallback(results)
-
 	return results, err
 }
 
@@ -313,7 +325,10 @@ func (w *StreamChain[T]) execStream(fn func(context.Context, string, T) (T, erro
 func (w *StreamChain[T]) execStreamWithMeta(fn func(context.Context, string, T) (T, error)) []ResultWithMeta[T] {
 	results, err := w.execStream(fn)
 	meta := make([]ResultWithMeta[T], len(results))
-	lastStage := w.stages[len(w.stages)-1].Name
+	lastStage := ""
+	if len(w.stages) > 0 {
+		lastStage = w.stages[len(w.stages)-1].Name
+	}
 	for i, r := range results {
 		meta[i] = ResultWithMeta[T]{
 			Result: core.Result[T]{Value: r.Value, Err: r.Err, Occupied: r.Occupied},
@@ -330,17 +345,4 @@ func (w *StreamChain[T]) prepareFailFast(ctx context.Context) (context.Context, 
 		return context.WithCancel(ctx)
 	}
 	return ctx, func() {}
-}
-
-// applyResultCallback 遍历结果调用 OnResult 回调。
-func (w *StreamChain[T]) applyResultCallback(results []core.Result[T]) {
-	if w.resultCb == nil {
-		return
-	}
-	for si := range w.stages {
-		stageName := w.stages[si].Name
-		for j := range results {
-			w.resultCb(stageName, results[j])
-		}
-	}
 }

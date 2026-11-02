@@ -11,8 +11,10 @@ import (
 )
 
 type MultiPool[T any] struct {
-	pools   []*Pool[T]
-	nextIdx atomic.Uint64
+	pools        []*Pool[T]
+	nextIdx      atomic.Uint64
+	waiting      atomic.Bool
+	sharedCancel context.CancelFunc
 }
 
 func (mp *MultiPool[T]) ShardCount() int {
@@ -27,12 +29,12 @@ func (mp *MultiPool[T]) GetShard(idx int) *Pool[T] {
 }
 
 func (mp *MultiPool[T]) Submit(ctx context.Context, fn func(context.Context) (T, error)) error {
-	idx := int(mp.nextIdx.Add(1)-1) % len(mp.pools)
+	idx := int((mp.nextIdx.Add(1) - 1) % uint64(len(mp.pools)))
 	return mp.pools[idx].Submit(ctx, fn)
 }
 
 func (mp *MultiPool[T]) TrySubmit(ctx context.Context, fn func(context.Context) (T, error)) error {
-	idx := int(mp.nextIdx.Add(1)-1) % len(mp.pools)
+	idx := int((mp.nextIdx.Add(1) - 1) % uint64(len(mp.pools)))
 	return mp.pools[idx].TrySubmit(ctx, fn)
 }
 
@@ -49,7 +51,7 @@ func (mp *MultiPool[T]) TrySubmitKeyed(key uint64, ctx context.Context, fn func(
 func (mp *MultiPool[T]) SubmitBatch(ctx context.Context, items []T, fn func(context.Context, T) (T, error)) []SubmitResult {
 	results := make([]SubmitResult, len(items))
 	for i, item := range items {
-		idx := int(mp.nextIdx.Add(1)-1) % len(mp.pools)
+		idx := int((mp.nextIdx.Add(1) - 1) % uint64(len(mp.pools)))
 		err := mp.pools[idx].Submit(ctx, func(ctx context.Context) (T, error) {
 			return fn(ctx, item)
 		})
@@ -59,6 +61,13 @@ func (mp *MultiPool[T]) SubmitBatch(ctx context.Context, items []T, fn func(cont
 }
 
 func (mp *MultiPool[T]) Wait() []core.Result[T] {
+	if !mp.waiting.CompareAndSwap(false, true) {
+		return nil
+	}
+	defer mp.waiting.Store(false)
+	if mp.sharedCancel != nil {
+		defer mp.sharedCancel()
+	}
 	var total int
 	for _, p := range mp.pools {
 		total += int(p.totalResultsCount())
@@ -71,15 +80,9 @@ func (mp *MultiPool[T]) Wait() []core.Result[T] {
 }
 
 func (mp *MultiPool[T]) WaitAndClose() []core.Result[T] {
-	var total int
-	for _, p := range mp.pools {
-		total += int(p.totalResultsCount())
-	}
-	all := make([]core.Result[T], 0, total)
-	for _, p := range mp.pools {
-		all = append(all, p.WaitAndClose()...)
-	}
-	return all
+	results := mp.Wait()
+	mp.Close()
+	return results
 }
 
 func (mp *MultiPool[T]) WaitTimeout(d time.Duration) ([]core.Result[T], bool) {
@@ -92,6 +95,15 @@ func (mp *MultiPool[T]) WaitTimeout(d time.Duration) ([]core.Result[T], bool) {
 }
 
 func (mp *MultiPool[T]) WaitContext(ctx context.Context) ([]core.Result[T], bool) {
+	if len(mp.pools) != 0 {
+		if !mp.waiting.CompareAndSwap(false, true) {
+			return nil, false
+		}
+		defer mp.waiting.Store(false)
+	}
+	if mp.sharedCancel != nil {
+		defer mp.sharedCancel()
+	}
 	if len(mp.pools) == 0 {
 		return nil, true
 	}
@@ -129,6 +141,9 @@ func (mp *MultiPool[T]) WaitContext(ctx context.Context) ([]core.Result[T], bool
 }
 
 func (mp *MultiPool[T]) Close() {
+	if mp.sharedCancel != nil {
+		defer mp.sharedCancel()
+	}
 	for _, p := range mp.pools {
 		p.Close()
 	}
@@ -155,6 +170,8 @@ func (mp *MultiPool[T]) WithStreaming(bufSize int) *MultiPool[T] {
 	return mp
 }
 
+// WithResultCallback 为所有分片设置同步结果回调。回调可能并发执行，
+// 不能同步等待或关闭所属多池及其分片，否则可能死锁。
 func (mp *MultiPool[T]) WithResultCallback(fn func(core.Result[T])) *MultiPool[T] {
 	for _, p := range mp.pools {
 		p.WithResultCallback(fn)
@@ -252,10 +269,10 @@ func (mp *MultiPool[T]) TotalFailCount() int64 {
 	return total
 }
 
-func (mp *MultiPool[T]) TotalSuccessCount() int64 {
+func (mp *MultiPool[T]) TotalOkCount() int64 {
 	var total int64
 	for _, p := range mp.pools {
-		total += p.SuccessCount()
+		total += p.OkCount()
 	}
 	return total
 }
@@ -282,6 +299,18 @@ func (p *Pool[T]) Shard(shards int) *MultiPool[T] {
 	}
 
 	templateSize := p.Size()
+	p.cancelMu.Lock()
+	sharedCtx := p.ctx
+	var sharedCancel context.CancelFunc
+	if p.cancel != nil {
+		sharedCancel = p.cancel
+		if p.failFast.Load() {
+			p.failCancel = core.MergeCancel(p.failCancel, sharedCancel)
+		}
+		p.ctx, p.cancel = context.WithCancel(sharedCtx)
+	}
+	cloneFailCancel := p.failCancel
+	p.cancelMu.Unlock()
 
 	pools := make([]*Pool[T], shards)
 	pools[0] = p
@@ -293,11 +322,14 @@ func (p *Pool[T]) Shard(shards int) *MultiPool[T] {
 		clone.maxPending = p.maxPending
 		clone.overflowStrat = p.overflowStrat
 		clone.maxResults.Store(p.maxResults.Load())
-		clone.ctx = p.ctx
+		clone.ctx = sharedCtx
+		if sharedCancel != nil {
+			clone.ctx, clone.cancel = context.WithCancel(sharedCtx)
+		}
 
 		if p.failFast.Load() {
 			clone.failFast.Store(true)
-			clone.cancel = p.cancel
+			clone.failCancel = cloneFailCancel
 		}
 
 		if p.ringBufFlag.Load() && p.ringBuf != nil {
@@ -311,15 +343,17 @@ func (p *Pool[T]) Shard(shards int) *MultiPool[T] {
 
 		clone.resultCb = p.resultCb
 
+		p.autoScaleMu.Lock()
 		if p.IsAutoScaleEnabled() && p.autoScale != nil {
 			cfgCopy := *p.autoScale
 			clone.EnableAutoScale(&cfgCopy)
 		}
+		p.autoScaleMu.Unlock()
 
 		pools[i] = clone
 	}
 
-	return &MultiPool[T]{pools: pools}
+	return &MultiPool[T]{pools: pools, sharedCancel: sharedCancel}
 }
 
 func (p *Pool[T]) DefaultShard() *MultiPool[T] {

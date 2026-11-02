@@ -59,14 +59,14 @@
 
 ---
 
-### 疑点三：Pool `WaitTimeout` 清理 goroutine 泄漏 → ✅ 无泄漏
+### 疑点三：Pool `WaitTimeout` 清理行为
 
 **审查对象**：`WaitTimeout` / `WaitContext` 超时后创建的清理 goroutine
 
 **验证过程**：
 
-- 逐行审查 `WaitTimeout` 实现：超时后 `p.doWaitDone()` 广播等待完成，但部分 goroutine 可能仍持有未完成的 task
-- 发现清理逻辑：超时后创建清理 goroutine，等待 `MaxCleanupDuration`（默认 30 分钟）后强制清理残留结果
+- 当前 Pool 的等待实现不读取 `MaxCleanupDuration`。超时返回不会强制结束仍在运行的任务。
+- 内部等待辅助函数中的监视协程在该时长后退出并记录错误，但等待任务结束的协程仍需任务自行结束。
 - 验证 `CloseAndWaitTimeout`：50 轮 × 200 并发 Submit + 30ms 超时，检查 goroutine 计数
 
 **验证结果**：
@@ -77,7 +77,7 @@
 | `TestProduction_PoolRingBufferRace` | 100轮，Flush + Submit 并发 | ✅ 无竞态 |
 | `TestProduction_PoolMixed` | 混合使用 Wait/WithFailFast/Resize/Close | ✅ goroutine 计数归零 |
 
-**结论**：**WaitTimeout 清理 goroutine 有 `MaxCleanupDuration` 超时兜底，不会永久泄漏。判定为误判。**
+**结论**：上述测试只覆盖其运行场景，不能证明忽略取消且永不返回的任务不会长期占用资源。生产任务应响应上下文取消或自行设置 I/O 超时。
 
 ---
 
@@ -139,7 +139,7 @@ case <-ctx.Done() | <-timer.C:
 | `NoResult` | 继承修复 | 类型转换委托 Group |
 | `MultiGroup.WaitTimeout/WaitContext` | 继承修复 | WaitTimeout→WaitContext→Group.WaitContext |
 | `ShardedGroup.WaitTimeout/WaitContext` | 继承修复 | WaitTimeout→WaitContext→Group.WaitContext |
-| `Pool.WaitTimeout/WaitContext` | ❌ 不受影响 | 委托 `core.WaitContextImpl`（单层 wg，无 workerWg） |
+| `Pool.WaitTimeout/WaitContext` | ❌ 不受影响 | 使用 Pool 自身的等待实现 |
 | `MultiPool.WaitTimeout/WaitContext` | ❌ 不受影响 | 委托 Pool |
 | `AsyncResult.WaitTimeout/WaitContext` | ❌ 不受影响 | 单结果消费者，无 worker goroutine 管理 |
 
@@ -315,7 +315,7 @@ async 库使用 6 层测试体系，从单元测试到极限压测全覆盖：
 | `TestRace_RateLimiter_StrategySwitch` | 100 goroutine | 策略切换 + Acquire/Release | 策略切换竞态 | ✅ 通过 |
 | `TestRace_TokenBucket_ConcurrentAllow` | 200 goroutine | 高频 Allow | 令牌计数正确 | ✅ 通过 |
 | `TestRace_SlidingWindow_ConcurrentAllow` | 200 goroutine | 高频 Allow | 窗口计数正确 | ✅ 通过 |
-| `TestRace_AdaptiveRateLimiter_ConcurrentRecord` | 100 goroutine | Acquire + RecordSuccess/Failure | 自适应调整正确 | ✅ 通过 |
+| `TestRace_AdaptiveRateLimiter_ConcurrentRecord` | 100 goroutine | Acquire + RecordOk/Failure | 自适应调整正确 | ✅ 通过 |
 | `TestRace_ShardedRateLimiter_Concurrent` | 200 goroutine | 分片 Acquire/Release | 分片独立性 | ✅ 通过 |
 | `TestRace_ShardedTokenBucket_Concurrent` | 200 goroutine | 分片 Allow | 分片正确性 | ✅ 通过 |
 | `TestRace_ShardedSlidingWindow_Concurrent` | 200 goroutine | 分片滑动窗口 | 窗口计数 | ✅ 通过 |
@@ -424,12 +424,12 @@ async 库使用 6 层测试体系，从单元测试到极限压测全覆盖：
 | **Goroutine 泄漏** | ✅ 无 | WaitTimeout 有 MaxCleanupDuration 兜底，Close 后计数归零 |
 | **内存安全** | ✅ 保障 | WithMaxResults/WithRingBuffer/WithStreaming 多级防护 |
 | **数据竞争** | ✅ 无 | 32 路分片无锁结果存储 + atomic 操作保护 |
-| **锁安全性** | ✅ 确认 | `mu`/`resizeMu` 双锁设计无死锁，channel 充当天然同步点 |
+| **锁安全性** | 已测试 | `mu`/`resizeMu` 相关并发场景通过测试，不能排除所有调度风险 |
 
 ### 生产建议
 
 1. **Pool 场景**：长期运行务必设置 `WithMaxResults` 或 `WithRingBuffer`，防止 OOM
-2. **Group 场景**：任务数 > 5 万时切换 Pool，避免 goroutine 数量爆炸
+2. **Group 场景**：Group 使用 worker 并保留结果；大量任务需评估结果内存或使用限制结果存储的 Pool
 3. **RateLimiter 场景**：`defer rl.Close()` 必须遵守，内部 ticker goroutine 需清理
 4. **Retry 场景**：生产环境始终使用退避重试（`RetryWithBackoff`/`RetryWithConfig`），不用纯 `Retry`
 5. **分片选择**：100K QPS 以下直接用 Pool，100K~500K 用 `Pool.Shard()`，需要 Key 路由用 `ShardedPool`

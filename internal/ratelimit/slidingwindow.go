@@ -65,6 +65,9 @@ func (sw *SlidingWindowRateLimiter) Allow() bool {
 // 参数：
 //   - n：请求次数（n <= 0 时始终返回 true）
 func (sw *SlidingWindowRateLimiter) AllowN(n int) bool {
+	if n <= 0 {
+		return true
+	}
 	sw.mu.Lock()
 	defer sw.mu.Unlock()
 
@@ -75,7 +78,7 @@ func (sw *SlidingWindowRateLimiter) AllowN(n int) bool {
 	})
 	sw.timestamps = sw.timestamps[cutoffIdx:]
 	sw.reclaimCapacity()
-	if len(sw.timestamps)+n <= sw.limit {
+	if len(sw.timestamps) <= sw.limit && n <= sw.limit-len(sw.timestamps) {
 		for j := 0; j < n; j++ {
 			sw.timestamps = append(sw.timestamps, now)
 		}

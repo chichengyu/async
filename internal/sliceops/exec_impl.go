@@ -10,6 +10,7 @@ import (
 	"context"
 	"runtime"
 	"sync"
+	"sync/atomic"
 
 	"github.com/chichengyu/async/internal/core"
 	"github.com/chichengyu/async/internal/group"
@@ -24,6 +25,9 @@ func execMap[T any, R any](ctx context.Context, items []T, fn func(context.Conte
 	ctx = core.EnsureTraceID(ctx)
 	n := len(items)
 	if n == 0 {
+		if pl, ok := p.Pool().(*pool.Pool[R]); ok && pl != nil && p.IsPoolOwned() {
+			pl.Close()
+		}
 		return nil, nil
 	}
 
@@ -71,26 +75,54 @@ func execMapPool[T any, R any](ctx context.Context, items []T, fn func(context.C
 		defer pl.Close()
 	}
 
-	var pCtx context.Context
+	pCtx := ctx
+	var cancel context.CancelFunc
 	if p.failFast {
-		pl, pCtx = pl.WithFailFast(ctx)
-	} else {
-		pCtx = ctx
+		pCtx, cancel = context.WithCancel(ctx)
+		defer cancel()
 	}
-	if p.timeout > 0 {
-		pl.WithTimeout(p.timeout)
+	results := make([]core.Result[R], len(items))
+	var resultsMu sync.Mutex
+	var triggerErr error
+	var triggerOnce sync.Once
+	for i, item := range items {
+		i, it := i, item
+		err := pl.SubmitWithCompletionTimeout(pCtx, func(ctx context.Context) (R, error) {
+			if !p.failFast {
+				return fn(ctx, it)
+			}
+			value, err := core.SafeCall(ctx, it, fn)
+			if err != nil {
+				triggerOnce.Do(func() { triggerErr = err; cancel() })
+			}
+			return value, err
+		}, func(r core.Result[R]) {
+			resultsMu.Lock()
+			results[i] = r
+			results[i].Occupied = true
+			resultsMu.Unlock()
+		}, p.timeout)
+		if err != nil {
+			resultsMu.Lock()
+			results[i] = core.Result[R]{Err: err, Occupied: true}
+			resultsMu.Unlock()
+		}
 	}
-	for _, item := range items {
-		it := item
-		pl.Submit(pCtx, func(ctx context.Context) (R, error) {
-			return fn(ctx, it)
-		})
-	}
-	results := pl.Wait()
+	pl.Wait()
 	if !owned {
 		pl.ResetWait()
 	}
+	resultsMu.Lock()
+	defer resultsMu.Unlock()
 	var firstErr error
+	if p.failFast {
+		firstErr = triggerErr
+	}
+	for i := range results {
+		if !results[i].Occupied {
+			results[i] = core.Result[R]{Err: core.ErrQueueOverflow, Occupied: true}
+		}
+	}
 	for _, r := range results {
 		if r.Err != nil && firstErr == nil {
 			firstErr = r.Err
@@ -102,43 +134,12 @@ func execMapPool[T any, R any](ctx context.Context, items []T, fn func(context.C
 // execEachPool 使用外部协程池（或自动创建的默认池）执行 ForEach 操作。
 // 用户池（非 Owned）使用后自动 Reset 以便复用。
 func execEachPool[T any, R any](ctx context.Context, items []T, fn func(context.Context, T) error, p Policy) (total int64, failCnt int64, firstErr error) {
-	var pl *pool.Pool[R]
-	if pp := p.Pool(); pp != nil {
-		pl, _ = pp.(*pool.Pool[R])
-	}
-	if pl == nil && p.IsPoolOwned() {
-		pl = pool.DefaultPool[R]()
-	}
-	if pl == nil {
-		t, f, fe, _ := execEach(ctx, items, fn, Policy{concurrency: p.concurrency, timeout: p.timeout, failFast: p.failFast})
-		return t, f, fe
-	}
-	owned := p.IsPoolOwned()
-	if owned {
-		defer pl.Close()
-	}
-
-	var pCtx context.Context
-	if p.failFast {
-		pl, pCtx = pl.WithFailFast(ctx)
-	} else {
-		pCtx = ctx
-	}
-	if p.timeout > 0 {
-		pl.WithTimeout(p.timeout)
-	}
-	var zero R
-	for _, item := range items {
-		it := item
-		pl.Submit(pCtx, func(ctx context.Context) (R, error) {
-			return zero, fn(ctx, it)
-		})
-	}
-	results := pl.Wait()
-	if !owned {
-		pl.ResetWait()
-	}
+	results, summaryErr := execMapPool(ctx, items, func(ctx context.Context, item T) (R, error) {
+		var zero R
+		return zero, fn(ctx, item)
+	}, p)
 	total = int64(len(results))
+	firstErr = summaryErr
 	for _, r := range results {
 		if r.Err != nil {
 			failCnt++
@@ -186,6 +187,9 @@ func execEach[T any](ctx context.Context, items []T, fn func(context.Context, T)
 // execStream 根据 Policy 策略执行流式 Map 操作。
 func execStream[T any, R any](ctx context.Context, items []T, fn func(context.Context, T) (R, error), p Policy) <-chan core.Result[R] {
 	ctx = core.EnsureTraceID(ctx)
+	if p.Pool() != nil || p.IsPoolOwned() {
+		return streamPool(ctx, items, fn, p)
+	}
 	if p.isZero() {
 		p = DefPar()
 	}
@@ -196,9 +200,86 @@ func execStream[T any, R any](ctx context.Context, items []T, fn func(context.Co
 	return stream[T, R](ctx, items, fn, p)
 }
 
+func streamPool[T any, R any](ctx context.Context, items []T, fn func(context.Context, T) (R, error), p Policy) <-chan core.Result[R] {
+	pl, _ := p.Pool().(*pool.Pool[R])
+	if pl == nil && p.IsPoolOwned() {
+		pl = pool.DefaultPool[R]()
+	}
+	if pl == nil {
+		p.pool, p.poolOwned = nil, false
+		return execStream(ctx, items, fn, p)
+	}
+	bufSize := p.bufSize
+	if bufSize <= 0 {
+		bufSize = len(items)
+		if bufSize > 16384 {
+			bufSize = 16384
+		}
+	}
+	out := make(chan core.Result[R], bufSize)
+	go func() {
+		defer close(out)
+		if p.IsPoolOwned() {
+			defer pl.Close()
+		}
+		taskCtx := ctx
+		var cancel context.CancelFunc
+		if p.failFast {
+			taskCtx, cancel = context.WithCancel(ctx)
+			defer cancel()
+		}
+		for _, item := range items {
+			if taskCtx.Err() != nil {
+				break
+			}
+			it := item
+			pl.SubmitWithCompletionTimeout(taskCtx, func(taskCtx context.Context) (R, error) {
+				if !p.failFast {
+					return fn(taskCtx, it)
+				}
+				defer func() {
+					if recovered := recover(); recovered != nil {
+						cancel()
+						panic(recovered)
+					}
+				}()
+				value, err := fn(taskCtx, it)
+				if err != nil {
+					cancel()
+				}
+				return value, err
+			}, func(r core.Result[R]) {
+				select {
+				case out <- r:
+				case <-ctx.Done():
+				}
+			}, p.timeout)
+		}
+		pl.Wait()
+		if !p.IsPoolOwned() {
+			pl.ResetWait()
+		}
+	}()
+	return out
+}
+
 // ──────────────────────────── 内部实现：Map 路径 ────────────────────────────
 
-// mapSharded 水平分片：将 items 均分到 shards 个 goroutine，每片独立执行。
+func invokeShardTask[R any](ctx context.Context, p Policy, fn func(context.Context) (R, error)) (val R, err error) {
+	defer func() {
+		if v := recover(); v != nil {
+			err = core.NewPanicError(v)
+		}
+	}()
+	if p.timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, p.timeout)
+		defer cancel()
+	}
+	return fn(ctx)
+}
+
+// mapSharded 水平分片：将 items 均分，每片顺序执行，由固定数量的 worker 调度。
 func mapSharded[T any, R any](ctx context.Context, items []T, fn func(context.Context, T) (R, error), p Policy) ([]core.Result[R], error) {
 	n := len(items)
 	shards := p.shards
@@ -208,7 +289,7 @@ func mapSharded[T any, R any](ctx context.Context, items []T, fn func(context.Co
 	if shards <= 0 {
 		shards = 1
 	}
-	chunkSize := (n + shards - 1) / shards
+	base, extra := n/shards, n%shards
 	conc := p.concurrency
 	if conc <= 0 {
 		conc = shards
@@ -222,57 +303,57 @@ func mapSharded[T any, R any](ctx context.Context, items []T, fn func(context.Co
 	var mu sync.Mutex
 	var firstErr error
 	var once sync.Once
-	sem := make(chan struct{}, conc)
+	var next atomic.Int64
 
+	ffCancel := func() {}
 	if p.failFast {
-		ffCtx, ffCancel := context.WithCancel(ctx)
+		ctx, ffCancel = context.WithCancel(ctx)
 		defer ffCancel()
-		ctx = ffCtx
 	}
 
-	for shard := 0; shard < shards; shard++ {
-		start := shard * chunkSize
-		end := start + chunkSize
-		if start >= n {
-			break
-		}
-		if end > n {
-			end = n
-		}
+	for worker := 0; worker < conc; worker++ {
 		wg.Add(1)
-		go func(start, end int) {
+		go func() {
 			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-			defer func() {
-				if r := recover(); r != nil {
-					mu.Lock()
-					for j := start; j < end; j++ {
-						results[j] = core.Result[R]{Err: core.NewPanicError(r)}
+			for {
+				shard := int(next.Add(1) - 1)
+				if shard >= shards {
+					return
+				}
+				start := shard*base + min(shard, extra)
+				end := start + base
+				if shard < extra {
+					end++
+				}
+				for j := start; j < end; j++ {
+					select {
+					case <-ctx.Done():
+						mu.Lock()
+						results[j] = core.Result[R]{Err: ctx.Err(), Occupied: true}
+						mu.Unlock()
+						continue
+					default:
 					}
-					mu.Unlock()
-				}
-			}()
-			for j := start; j < end; j++ {
-				select {
-				case <-ctx.Done():
+					val, err := invokeShardTask(ctx, p, func(ctx context.Context) (R, error) { return fn(ctx, items[j]) })
 					mu.Lock()
-					results[j] = core.Result[R]{Err: ctx.Err(), Occupied: true}
+					results[j] = core.Result[R]{Value: val, Err: err, Occupied: true}
 					mu.Unlock()
-					continue
-				default:
-				}
-				val, err := fn(ctx, items[j])
-				mu.Lock()
-				results[j] = core.Result[R]{Value: val, Err: err}
-				mu.Unlock()
-				if err != nil && p.failFast {
-					once.Do(func() { firstErr = err })
+					if err != nil && p.failFast {
+						once.Do(func() { firstErr = err; ffCancel() })
+					}
 				}
 			}
-		}(start, end)
+		}()
 	}
 	wg.Wait()
+	if p.failFast && firstErr == nil {
+		for _, result := range results {
+			if result.Err != nil {
+				firstErr = result.Err
+				break
+			}
+		}
+	}
 	return results, firstErr
 }
 
@@ -284,9 +365,7 @@ func mapChunked[T any, R any](ctx context.Context, items []T, fn func(context.Co
 		g.WithTimeout(p.timeout)
 	}
 	if p.failFast {
-		ffCtx, ffCancel := context.WithCancel(ctx)
-		defer ffCancel()
-		g.WithFailFast(ffCtx)
+		_, ctx = g.WithFailFast(ctx)
 	}
 	idx := 0
 	for _, chunk := range chunks {
@@ -318,7 +397,7 @@ func mapTOFF[T any, R any](ctx context.Context, items []T, fn func(context.Conte
 	g := group.NewGroup[R](conc)
 	ffCtx, ffCancel := context.WithCancel(ctx)
 	defer ffCancel()
-	g.WithFailFast(ffCtx)
+	_, ffCtx = g.WithFailFast(ffCtx)
 	g.WithTimeout(p.timeout)
 	for idx := range items {
 		g.GoAt(idx, ffCtx, func(ctx context.Context) (R, error) {
@@ -361,7 +440,7 @@ func eachSharded[T any](ctx context.Context, items []T, fn func(context.Context,
 	if shards <= 0 {
 		shards = 1
 	}
-	chunkSize := (n + shards - 1) / shards
+	base, extra := n/shards, n%shards
 	conc := p.concurrency
 	if conc <= 0 {
 		conc = shards
@@ -373,63 +452,65 @@ func eachSharded[T any](ctx context.Context, items []T, fn func(context.Context,
 	var wg sync.WaitGroup
 	results = make([]core.Result[struct{}], n)
 	var mu sync.Mutex
-	sem := make(chan struct{}, conc)
+	var next atomic.Int64
 	total = int64(n)
 
+	ffCancel := func() {}
 	if p.failFast {
-		ffCtx, ffCancel := context.WithCancel(ctx)
+		ctx, ffCancel = context.WithCancel(ctx)
 		defer ffCancel()
-		ctx = ffCtx
 	}
 
-	for shard := 0; shard < shards; shard++ {
-		start := shard * chunkSize
-		end := start + chunkSize
-		if start >= n {
-			break
-		}
-		if end > n {
-			end = n
-		}
+	for worker := 0; worker < conc; worker++ {
 		wg.Add(1)
-		go func(start, end int) {
+		go func() {
 			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-			defer func() {
-				if r := recover(); r != nil {
-					mu.Lock()
-					for j := start; j < end; j++ {
-						results[j] = core.Result[struct{}]{Err: core.NewPanicError(r)}
+			for {
+				shard := int(next.Add(1) - 1)
+				if shard >= shards {
+					return
+				}
+				start := shard*base + min(shard, extra)
+				end := start + base
+				if shard < extra {
+					end++
+				}
+				for j := start; j < end; j++ {
+					select {
+					case <-ctx.Done():
+						mu.Lock()
+						results[j] = core.Result[struct{}]{Err: ctx.Err(), Occupied: true}
 						failCnt++
+						mu.Unlock()
+						continue
+					default:
 					}
-					mu.Unlock()
-				}
-			}()
-			for j := start; j < end; j++ {
-				select {
-				case <-ctx.Done():
+					_, err := invokeShardTask(ctx, p, func(ctx context.Context) (struct{}, error) { return struct{}{}, fn(ctx, items[j]) })
 					mu.Lock()
-					results[j] = core.Result[struct{}]{Err: ctx.Err(), Occupied: true}
-					failCnt++
-					mu.Unlock()
-					continue
-				default:
-				}
-				err := fn(ctx, items[j])
-				mu.Lock()
-				results[j] = core.Result[struct{}]{Err: err}
-				if err != nil {
-					failCnt++
-					if firstErr == nil {
-						firstErr = err
+					results[j] = core.Result[struct{}]{Err: err, Occupied: true}
+					if err != nil {
+						failCnt++
+						if firstErr == nil {
+							firstErr = err
+						}
+						if p.failFast {
+							ffCancel()
+						}
 					}
+					mu.Unlock()
 				}
-				mu.Unlock()
 			}
-		}(start, end)
+		}()
 	}
 	wg.Wait()
+	if firstErr == nil {
+		for _, result := range results {
+			if result.Err != nil {
+				firstErr = result.Err
+				break
+			}
+		}
+	}
 	return
 }
 
@@ -444,7 +525,7 @@ func eachTOFF[T any](ctx context.Context, items []T, fn func(context.Context, T)
 	defer ffCancel()
 
 	g := group.NewNoResult(conc)
-	g.WithFailFast(ffCtx)
+	_, ffCtx = g.WithFailFast(ffCtx)
 	g.WithTimeout(p.timeout)
 	for i := range items {
 		g.Go(ffCtx, func(ctx context.Context) error {
@@ -488,7 +569,7 @@ func eachParFF[T any](ctx context.Context, items []T, fn func(context.Context, T
 	}
 
 	g := group.NewNoResult(conc)
-	g.WithFailFast(ffCtx)
+	_, ffCtx = g.WithFailFast(ffCtx)
 	for i := range items {
 		g.Go(ffCtx, func(ctx context.Context) error {
 			err := fn(ctx, items[i])
@@ -571,25 +652,17 @@ func stream[T any, R any](ctx context.Context, items []T, fn func(context.Contex
 		}
 	}
 
-	streamBuf := n
-	const maxStreamBuf = 65536
-	if streamBuf > maxStreamBuf {
-		streamBuf = maxStreamBuf
-	}
-	if streamBuf < bufSize {
-		streamBuf = bufSize
-	}
-
 	outCh := make(chan core.Result[R], bufSize)
 	g := group.NewGroup[R](conc)
-	g.WithStreaming(streamBuf)
-
-	go func() {
-		for r := range g.StreamResults() {
-			outCh <- r
+	if p.timeout > 0 {
+		g.WithTimeout(p.timeout)
+	}
+	g.WithResultCallback(func(r core.Result[R]) {
+		select {
+		case outCh <- r:
+		case <-ctx.Done():
 		}
-		close(outCh)
-	}()
+	})
 
 	go func() {
 		for i := range items {
@@ -601,6 +674,10 @@ func stream[T any, R any](ctx context.Context, items []T, fn func(context.Contex
 			}
 		}
 		g.Wait()
+		if pl, ok := p.Pool().(*pool.Pool[R]); ok && pl != nil && p.IsPoolOwned() {
+			pl.Close()
+		}
+		close(outCh)
 	}()
 
 	return outCh
@@ -629,25 +706,17 @@ func streamFF[T any, R any](ctx context.Context, items []T, fn func(context.Cont
 	}
 
 	ffCtx, ffCancel := context.WithCancel(ctx)
-	streamBuf := n
-	const maxStreamBuf = 65536
-	if streamBuf > maxStreamBuf {
-		streamBuf = maxStreamBuf
-	}
-	if streamBuf < bufSize {
-		streamBuf = bufSize
-	}
-
 	outCh := make(chan core.Result[R], bufSize)
 	g := group.NewGroup[R](conc)
-	g.WithStreaming(streamBuf)
-
-	go func() {
-		for r := range g.StreamResults() {
-			outCh <- r
+	if p.timeout > 0 {
+		g.WithTimeout(p.timeout)
+	}
+	g.WithResultCallback(func(r core.Result[R]) {
+		select {
+		case outCh <- r:
+		case <-ctx.Done():
 		}
-		close(outCh)
-	}()
+	})
 
 	go func() {
 		for i := range items {
@@ -670,6 +739,10 @@ func streamFF[T any, R any](ctx context.Context, items []T, fn func(context.Cont
 		}
 		g.Wait()
 		ffCancel()
+		if pl, ok := p.Pool().(*pool.Pool[R]); ok && pl != nil && p.IsPoolOwned() {
+			pl.Close()
+		}
+		close(outCh)
 	}()
 
 	return outCh
@@ -714,8 +787,14 @@ func eachStream[T any](ctx context.Context, items []T, fn func(context.Context, 
 
 	outCh := make(chan core.Result[struct{}], bufSize)
 	nr := group.NewNoResult(conc)
+	if p.timeout > 0 {
+		nr.WithTimeout(p.timeout)
+	}
 	nr.WithResultCallback(func(r core.Result[struct{}]) {
-		outCh <- r
+		select {
+		case outCh <- r:
+		case <-ctx.Done():
+		}
 	})
 
 	go func() {
@@ -759,14 +838,26 @@ func eachStreamFF[T any](ctx context.Context, items []T, fn func(context.Context
 	ffCtx, ffCancel := context.WithCancel(ctx)
 	outCh := make(chan core.Result[struct{}], bufSize)
 	nr := group.NewNoResult(conc)
+	if p.timeout > 0 {
+		nr.WithTimeout(p.timeout)
+	}
 	nr.WithResultCallback(func(r core.Result[struct{}]) {
-		outCh <- r
+		select {
+		case outCh <- r:
+		case <-ctx.Done():
+		}
 	})
 
 	go func() {
 		for i := range items {
 			idx := i
 			if err := nr.Go(ffCtx, func(ctx context.Context) error {
+				defer func() {
+					if r := recover(); r != nil {
+						ffCancel()
+						panic(r)
+					}
+				}()
 				err := fn(ctx, items[idx])
 				if err != nil {
 					ffCancel()
@@ -821,12 +912,14 @@ func mapImpl[T any, R any](ctx context.Context, items []T, fn func(context.Conte
 	chunkSize := (n + concurrency - 1) / concurrency
 
 	var cancel context.CancelFunc
+	var firstErr error
+	var firstErrOnce sync.Once
 	if failFast {
 		ctx, cancel = context.WithCancel(ctx)
 	}
 
 	if failFast {
-		mapParallelFF(ctx, cancel, items, fn, results, concurrency, chunkSize, &wg)
+		mapParallelFF(ctx, cancel, items, fn, results, concurrency, chunkSize, &wg, &firstErrOnce, &firstErr)
 	} else {
 		mapParallel(ctx, items, fn, results, concurrency, chunkSize, &wg)
 	}
@@ -837,6 +930,9 @@ func mapImpl[T any, R any](ctx context.Context, items []T, fn func(context.Conte
 	}
 
 	if failFast {
+		if firstErr != nil {
+			return results, firstErr
+		}
 		for _, r := range results {
 			if r.Err != nil {
 				return results, r.Err
@@ -859,22 +955,15 @@ func mapParallel[T any, R any](ctx context.Context, items []T, fn func(context.C
 		w.Add(1)
 		go func(start, end int) {
 			defer w.Done()
-			defer func() {
-				if r := recover(); r != nil {
-					for j := start; j < end; j++ {
-						results[j] = core.Result[R]{Err: core.NewPanicError(r)}
-					}
-				}
-			}()
 			for j := start; j < end; j++ {
-				val, err := fn(ctx, items[j])
+				val, err := core.SafeCall(ctx, items[j], fn)
 				results[j] = core.Result[R]{Value: val, Err: err}
 			}
 		}(start, end)
 	}
 }
 
-func mapParallelFF[T any, R any](ctx context.Context, cancel context.CancelFunc, items []T, fn func(context.Context, T) (R, error), results []core.Result[R], concurrency int, chunkSize int, w *sync.WaitGroup) {
+func mapParallelFF[T any, R any](ctx context.Context, cancel context.CancelFunc, items []T, fn func(context.Context, T) (R, error), results []core.Result[R], concurrency int, chunkSize int, w *sync.WaitGroup, firstErrOnce *sync.Once, firstErr *error) {
 	for i := 0; i < concurrency; i++ {
 		start := i * chunkSize
 		end := start + chunkSize
@@ -887,14 +976,6 @@ func mapParallelFF[T any, R any](ctx context.Context, cancel context.CancelFunc,
 		w.Add(1)
 		go func(start, end int) {
 			defer w.Done()
-			defer func() {
-				if r := recover(); r != nil {
-					for j := start; j < end; j++ {
-						results[j] = core.Result[R]{Err: core.NewPanicError(r)}
-					}
-					cancel()
-				}
-			}()
 			for j := start; j < end; j++ {
 				select {
 				case <-ctx.Done():
@@ -902,10 +983,10 @@ func mapParallelFF[T any, R any](ctx context.Context, cancel context.CancelFunc,
 					continue
 				default:
 				}
-				val, err := fn(ctx, items[j])
+				val, err := core.SafeCall(ctx, items[j], fn)
 				results[j] = core.Result[R]{Value: val, Err: err}
 				if err != nil {
-					cancel()
+					firstErrOnce.Do(func() { *firstErr = err; cancel() })
 				}
 			}
 		}(start, end)
@@ -924,6 +1005,9 @@ func mapSerialExec[T any, R any](ctx context.Context, items []T, fn func(context
 			val, err := core.SafeCall(ctx2, item, fn)
 			results[i] = core.Result[R]{Value: val, Err: err}
 			if err != nil {
+				for j := i + 1; j < n; j++ {
+					results[j] = core.Result[R]{Err: context.Canceled, Occupied: true}
+				}
 				return results, err
 			}
 		}
@@ -950,6 +1034,10 @@ func eachSerialImpl[T any](ctx context.Context, items []T, fn func(context.Conte
 				results[i] = core.Result[struct{}]{Err: err}
 				failCnt++
 				firstErr = err
+				for j := i + 1; j < len(items); j++ {
+					results[j] = core.Result[struct{}]{Err: context.Canceled, Occupied: true}
+					failCnt++
+				}
 				return
 			}
 			results[i] = core.Result[struct{}]{}
@@ -977,13 +1065,15 @@ func Chunk[T any](items []T, chunkSize int) [][]T {
 	if chunkSize <= 0 || len(items) == 0 {
 		return nil
 	}
-	chunks := make([][]T, 0, (len(items)+chunkSize-1)/chunkSize)
-	for i := 0; i < len(items); i += chunkSize {
-		end := i + chunkSize
-		if end > len(items) {
-			end = len(items)
+	count := 1 + (len(items)-1)/chunkSize
+	chunks := make([][]T, 0, count)
+	for i := 0; i < len(items); {
+		end := len(items)
+		if chunkSize < len(items)-i {
+			end = i + chunkSize
 		}
 		chunks = append(chunks, items[i:end])
+		i = end
 	}
 	return chunks
 }
@@ -998,7 +1088,7 @@ func ChunkN[T any](items []T, n int) [][]T {
 	if n <= 0 || len(items) == 0 {
 		return nil
 	}
-	chunkSize := (len(items) + n - 1) / n
+	chunkSize := 1 + (len(items)-1)/n
 	return Chunk(items, chunkSize)
 }
 

@@ -36,9 +36,8 @@ func (s *SerialChain[T]) ExecutePipe(fn func(context.Context, string, T) (T, err
 
 // Pipe 切换为管道输出模式（串行版）。
 func (s *SerialChain[T]) Pipe() *PipelinePipeBuilder[T] {
+	base := *s.pipelineBase
 	return &PipelinePipeBuilder[T]{
-		ctx:    s.ctx,
-		items:  s.items,
-		stages: s.stages,
+		execute: (&SerialChain[T]{pipelineBase: &base}).ExecutePipe,
 	}
 }

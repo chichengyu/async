@@ -206,5 +206,9 @@ func (b *GroupBuilder[T]) Build() *Group[T] {
 func (b *GroupBuilder[T]) Run(fn func(ctx context.Context, g *Group[T]) error) error {
 	g := b.Build()
 	defer g.Close()
-	return fn(b.ctx, g)
+	ctx := b.ctx
+	if b.failFast {
+		ctx = g.ctx
+	}
+	return fn(ctx, g)
 }

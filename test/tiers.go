@@ -15,7 +15,17 @@ var AllTiers = []Tier{
 	{Name: "万级_10K", Size: 10_000, Burst: 10_000},
 	{Name: "十万级_100K", Size: 100_000, Burst: 100_000},
 	{Name: "百万级_1M", Size: 1_000_000, Burst: 1_000_000},
-	{Name: "千万级_10M", Size: 10_000_000, Burst: 5_000_000_000},
+	{Name: "千万级_10M", Size: 10_000_000, Burst: maxTierBurst()},
+}
+
+func maxTierBurst() int {
+	const desired int64 = 5_000_000_000
+	maxInt := int(^uint(0) >> 1)
+	if int64(maxInt) < desired {
+		return maxInt
+	}
+	value := desired
+	return int(value)
 }
 
 // SmallAllTiers 轻量四档：百/千/万/十万（用于外部 Group 等耗资源较大的场景）。

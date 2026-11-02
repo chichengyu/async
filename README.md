@@ -99,7 +99,7 @@ async 基于以下核心理念构建，区别于市面上其他 Go 并发库：
 | 组件 | 验证项 | 验证方法 | 结论 |
 |------|--------|----------|:--:|
 | RateLimiter | `Resize`+`Acquire`/`Release` 并发 | 426K 次 Race Detector | ✅ 零竞态 |
-| RateLimiter | 锁序反转死锁 | 100 轮死锁专项 | ✅ 无死锁 |
+| RateLimiter | 锁序反转死锁 | 100 轮死锁专项 | ✅ 测试通过 |
 | Pool | `Close` 并发 Submit | 多层防御链交叉验证 | ✅ 无逃逸路径 |
 | Pool | `WaitTimeout` goroutine 泄漏 | 50 轮并发关闭 | ✅ 有超时兜底 |
 | Group | `AutoScale`+`Go`/`Reset` 竞态 | 30 轮 × 100 并发 | ✅ 无竞态 |
@@ -220,9 +220,6 @@ func init() {
     // 设置提交超时（worker 满时最多等多久才返回 ErrSubmitTimeout）
     async.SetSubmitTimeout(5 * time.Second)
 
-    // 设置 WaitTimeout/WaitContext 超时后清理 goroutine 的最大存活时间
-    async.SetMaxCleanupDuration(30 * time.Minute)
-
     // 设置任务失败日志级别（Debug / Info / Warn / Error / Silent）
     async.SetTaskFailLogLevel(async.LogLevelWarn)
 
@@ -235,7 +232,7 @@ func init() {
 |--------|------|--------|------|
 | 默认超时 | `SetDefaultTimeout(d)` | 30s | Group/Pool 未单独设置超时时的默认值 |
 | 提交超时 | `SetSubmitTimeout(d)` | 5s | Submit 等待空闲 worker 的最大时长 |
-| 清理超时 | `SetMaxCleanupDuration(d)` | 30min | WaitTimeout 后清理 goroutine 的最大存活时间 |
+| 清理监视 | `SetMaxCleanupDuration(d)` | 30min | 内部辅助函数使用；当前 Pool/Group 等待方法不读取此设置 |
 | 失败日志级别 | `SetTaskFailLogLevel(lvl)` | Error | 任务失败时的日志级别 |
 | Trace 日志 | `SetTraceLogEnabled(bool)` | 开 | 是否输出 Trace 级别日志 |
 | 自定义 Logger | `SetLogger(logger)` | 静默 | 注入自定义日志实现（模块级，非 Context 感知） |
@@ -361,7 +358,7 @@ async.Group[int]().Context(ctx).
     })
 ```
 
-> **⚠️ Go 后必须 Wait**：每次 `Go()` 启动一个 goroutine，必须调用 `Wait()` 等待完成并收集结果。Group 是一次性的，`Wait()` 后不可再 `Go()`。不适合超过 5 万任务的海量场景（每任务新建 goroutine），海量任务请用 Pool。
+> **⚠️ Go 后必须 Wait**：调用 `Wait()` 等待已提交任务并收集结果。Group 使用 worker 执行任务，并保留结果；`Wait()` 后不可再 `Go()`，可在完全结束后调用 `Reset()` 复用。大量任务应评估结果存储的内存需求，或使用可限制结果存储的 Pool。
 
 **Group 自动扩缩容：**
 
@@ -468,7 +465,7 @@ tk := async.TaskVoid().Context(ctx).
         return uploadFile(ctx, data)
     })
 tk.Cancel()
-err = tk.Result()
+_, err = tk.Result()
 ```
 
 ### BoundedRunner - 限流执行器
@@ -477,15 +474,13 @@ err = tk.Result()
 
 ```go
 // 创建限流执行器：限制最多 1000 个并发 goroutine
-runner := async.NewBoundedRunnerBuilder().Max(1000).Build()
+builder := async.Task[int]().Context(ctx).Bounded(1000)
 
 for i := 0; i < 10_000_000; i++ {
     idx := i
-    async.Task[int]().Context(ctx).
-        Bounded(runner).
-        Go(func(ctx context.Context) (int, error) {
-            return process(ctx, idx)
-        })
+    builder.Go(func(ctx context.Context) (int, error) {
+        return process(ctx, idx)
+    })
 }
 ```
 
@@ -536,7 +531,7 @@ r := async.Slice(ctx, records).
 if r.Err() {
     log.Printf("存在失败: %v", r.Error())
 }
-fmt.Printf("成功: %d, 失败: %d\n", r.SuccessCount(), r.FailCount())
+fmt.Printf("成功: %d, 失败: %d\n", r.OkCount(), r.FailCount())
 ```
 
 ### Reduce - 并发聚合
@@ -629,7 +624,7 @@ vals = r.Must()           // 提取值，有错误则 panic
 | `r.Err()` | `bool` | 是否有错误 |
 | `r.Values()` | `[]R` | 提取所有成功的值 |
 | `r.Errors()` | `[]error` | 提取所有错误 |
-| `r.Results()` | `[]core.Result[R]` | 获取所有原始结果 |
+| `r.Results()` | `[]async.Result[R]` | 获取所有原始结果 |
 | `r.First()` | `(R, bool)` | 获取第一个成功的值 |
 | `r.Unwrap()` | `([]R, error)` | 值与错误元组 |
 | `r.Must()` | `[]R` | 提取值，有错误则 panic |
@@ -645,7 +640,7 @@ if r.Err() {
     log.Printf("存在失败: %v", r.Error())
 }
 total := r.Total()
-success := r.SuccessCount()
+success := r.OkCount()
 fail := r.FailCount()
 ```
 
@@ -654,8 +649,10 @@ fail := r.FailCount()
 | `r.Error()` | `error` | 第一个错误 |
 | `r.Ok()` | `bool` | 是否全部成功 |
 | `r.Total()` | `int64` | 总任务数 |
-| `r.SuccessCount()` | `int64` | 成功数量 |
+| `r.OkCount()` | `int64` | 成功数量 |
 | `r.FailCount()` | `int64` | 失败数量 |
+
+> **注意**：`OkCount()` 只统计已完成且成功的任务；运行中、失败、取消、拒绝和 panic 不计入。批量统计建议在 `ForEach` 返回后读取。
 
 ---
 
@@ -736,9 +733,11 @@ if tb.Allow() {
 // 自适应限流：根据成功率自动调整并发度 5~100
 al := async.Ratelimit(ctx).Adaptive().
     MinWorker(5).MaxWorker(100).Build()
-al.Acquire(ctx)
+if err := al.Acquire(ctx); err != nil {
+    return
+}
 if err := doRequest(); err == nil {
-    al.RecordSuccess()
+    al.RecordOk()
 } else {
     al.RecordFailure()
 }
@@ -748,6 +747,8 @@ al.Release()
 srl := async.Ratelimit(ctx).Sharded().RateLimiter().
     Shards(4).Rate(10000).Per(time.Second).Build()
 ```
+
+自适应限流的成功记录方法统一命名为 RecordOk()；它只上报结果，不代替 Release()。失败、取消或超时应调用 RecordFailure()，并确保每次成功 Acquire 都只释放一次。
 
 ### 管道处理
 
@@ -854,7 +855,7 @@ func main() {
 | 6 | ✅ RateLimiter | 用完必须 `defer rl.Close()`，内部有 ticker goroutine |
 | 7 | ✅ Retry 退避 | 生产用 `Exponential().Backoff(initial, max)`，不用纯 Retry |
 | 8 | ✅ Group 上限 | 任务数 > 5 万切换到 Pool，避免 goroutine 爆炸 |
-| 9 | ✅ FailFast 取舍 | FailFast 丢弃成功结果，需要部分结果用普通模式 + 业务层处理 |
+| 9 | ✅ FailFast 取舍 | 失败后取消其余工作；检查各项结果以保留已完成的成功值 |
 | 10 | ✅ Streaming 消费 | 启用 Streaming 必须有消费者 goroutine，避免 worker 阻塞 |
 
 > 详细说明见：[生产注意事项](docs/production.md) | [常见错误汇总](docs/pool.md#常见错误)
@@ -901,8 +902,8 @@ async.IOMulti(n)  // 自定义倍数 = runtime.NumCPU() * n
 | 常量 | 触发场景 | 说明 |
 |------|----------|------|
 | `ErrPoolClosed` | Pool 已关闭后 Submit | 池生命周期已结束 |
-| `ErrPoolWaiting` | Wait 期间调用 Submit | 禁止在等待期间提交新任务 |
-| `ErrPoolWaited` | Wait 后调用 Submit | 别名，与 ErrPoolWaiting 等价 |
+| `ErrPoolWaiting` | Wait 或调整大小期间调用 Submit | 禁止在保护期间提交新任务 |
+| `ErrPoolWaited` | Wait 后调用 Submit | 与 ErrPoolWaiting 是不同的错误值 |
 | `ErrSubmitTimeout` | Submit 等待空闲 worker 超时 | 所有 worker 都在忙且队列满 |
 | `ErrGroupWaited` | Group Wait 后调用 Go | Group 是一次性的 |
 | `ErrGroupWaiting` | Group Wait 期间调用 Go | 禁止在等待期间提交新任务 |
@@ -937,10 +938,10 @@ async.IOMulti(n)  // 自定义倍数 = runtime.NumCPU() * n
 | `NewBoundedRunnerBuilder()` | 创建 BoundedRunner Builder |
 | `NewMap[K,V]()` | 创建空泛型 K-V 容器 |
 | `NewMapCap[K,V](n)` | 创建预分配容量的 K-V 容器 |
-| `MapFrom[K,V](m)` | 从原生 map 创建（深拷贝） |
+| `MapFrom[K,V](m)` | 从原生 map 创建（浅拷贝键值对，引用类型的值仍共享底层数据） |
 | `MapFromRef[K,V](m)` | 从原生 map 创建（直接引用） |
 | `NewMapChain[K,V](ctx, data)` | 创建 MapChain（输出类型=V） |
-| `NewMapChainWith[K,V,R](ctx, data)` | 创建 MapChain（指定输出类型）
+| `NewMapChainWith[K,V,R](ctx, data)` | 创建 MapChain（指定输出类型） |
 | `ForEachPool[T](ctx, items, fn, n)` | 切片元素协程池并发 |
 | `ExecuteStream[T](ctx, stages, items, fn)` | 一次性流水线执行 |
 
@@ -1011,7 +1012,7 @@ async.IOMulti(n)  // 自定义倍数 = runtime.NumCPU() * n
 |------|------|
 | `.Context(ctx)` | 设置上下文 |
 | `.WithTimeout(d)` | 设置超时 |
-| `.Bounded(runner)` | 设置 BoundedRunner |
+| `.Bounded(max)` | 创建并使用最多 `max` 个并发任务的限流器 |
 | `.DefaultBounded()` | 使用默认 BoundedRunner |
 | `.Go(fn)` → `*AsyncResult[T]` | 启动带返回值异步任务 |
 | `.GoResult(fn)` → `*TaskHandle[T]` | 启动可取消异步任务 |
@@ -1062,7 +1063,7 @@ async.IOMulti(n)  // 自定义倍数 = runtime.NumCPU() * n
 | `GetDefaultTimeout()` | 获取默认超时 |
 | `SetSubmitTimeout(d)` | 全局提交超时 |
 | `GetSubmitTimeout()` | 获取提交超时 |
-| `SetMaxCleanupDuration(d)` | 清理 goroutine 最大存活时间 |
+| `SetMaxCleanupDuration(d)` | 内部等待辅助函数的清理监视时长；不控制 Pool/Group 等待 |
 | `SetTaskFailLogLevel(lvl)` | 任务失败日志级别 |
 | `SetTraceLogEnabled(bool)` | 启用/禁用 Trace 日志 |
 | `SetLogger(logger)` | 注入自定义 Logger |
@@ -1207,12 +1208,17 @@ defer token.Release()
 doRequest()
 
 // Acquire/Release 模式
-rl.Acquire(ctx)
+if err := rl.Acquire(ctx); err != nil {
+    return
+}
 doRequest()
 rl.Release()
 
 // 阻塞等待令牌
-err := rl.Wait(ctx)
+if err := rl.Wait(ctx); err != nil {
+    return
+}
+rl.Release()
 
 // 动态调整速率
 rl.Resize(200)
@@ -1264,9 +1270,11 @@ tb.AllowN(50)
 al := async.Ratelimit(ctx).Adaptive().
     MinWorker(5).MaxWorker(100).Build()
 
-al.Acquire(ctx)
+if err := al.Acquire(ctx); err != nil {
+    return
+}
 if err := doRequest(); err == nil {
-    al.RecordSuccess()
+    al.RecordOk()
 } else {
     al.RecordFailure()
 }
@@ -1318,7 +1326,7 @@ ae := async.TaskVoid().Context(ctx).
     GoAct(func(ctx context.Context) error {
         return sendNotification(ctx, userID)
     })
-err := ae.Wait()
+_, err := ae.Wait()
 ```
 
 ### TaskErr
@@ -1329,7 +1337,7 @@ tk := async.TaskVoid().Context(ctx).
         return uploadFile(ctx, data)
     })
 tk.Cancel()
-err := tk.Result()
+_, err := tk.Result()
 ```
 
 ---

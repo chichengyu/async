@@ -17,13 +17,15 @@ import (
 // 示例：
 //
 //	// 带返回值
-//	g := async.Group[int]().Context(ctx).Concurrency(10).Build()
+//	g := async.Group[int]().Context(ctx).Worker(10).Build()
 //
 //	// 无返回值
-//	nr := async.GroupVoid().Context(ctx).Concurrency(10).Build()
+//	nr := async.GroupVoid().Context(ctx).Worker(10).Build()
 //
 //	// 分片
-//	sh := async.GroupSharded[int]().Context(ctx).Shards(8).Build()
+//	err := async.GroupSharded[int]().Context(ctx).Shards(8).Run(func(ctx context.Context, sh *async.ShardedGroup[int]) error {
+//	    return nil
+//	})
 
 // Group 创建带返回值的任务组构造器。
 // 通过 .Context(ctx) 设置上下文，.Run(fn) 自动管理生命周期。

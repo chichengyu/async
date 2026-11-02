@@ -2,6 +2,7 @@ package ratelimit
 
 import (
 	"context"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -22,10 +23,43 @@ import (
 //	doRequest()
 //	rl.Release()
 type ShardedRateLimiter struct {
-	limiters   []*RateLimiter
-	nextIdx    atomic.Uint64
-	releaseIdx atomic.Uint64
-	total      int32
+	limiters []*RateLimiter
+	nextIdx  atomic.Uint64
+	permits  shardPermits
+	mu       sync.Mutex
+	closed   bool
+}
+
+// shardPermits tracks successful acquisitions. Release has no handle or context,
+// so it returns any outstanding shard permit without assuming completion order.
+type shardPermits struct {
+	inFlight    []atomic.Uint64
+	nextRelease atomic.Uint64
+}
+
+func newShardPermits(shards int) shardPermits {
+	return shardPermits{inFlight: make([]atomic.Uint64, shards)}
+}
+
+func (p *shardPermits) acquired(idx int) {
+	p.inFlight[idx].Add(1)
+}
+
+func (p *shardPermits) releaseShard() (int, bool) {
+	start := int((p.nextRelease.Add(1) - 1) % uint64(len(p.inFlight)))
+	for offset := range p.inFlight {
+		idx := (start + offset) % len(p.inFlight)
+		for {
+			n := p.inFlight[idx].Load()
+			if n == 0 {
+				break
+			}
+			if p.inFlight[idx].CompareAndSwap(n, n-1) {
+				return idx, true
+			}
+		}
+	}
+	return 0, false
 }
 
 // distributeTotal 将总数余数优先分配到各分片，保证各分片之和精确等于 total（total>=shards时）。
@@ -50,7 +84,7 @@ func distributeTotal(total, shards int) []int {
 }
 
 // NewShardedRateLimiter 创建分片限流器。
-// shards<=0 时默认使用 runtime.GOMAXPROCS(0)，最少 2 片。
+// shards<=0 时使用 core.IO()（runtime.NumCPU()*2），最少 2 片。
 // 总速率 = rate，余数优先分配到前几个分片。
 //
 // 参数：
@@ -71,7 +105,7 @@ func NewShardedRateLimiter(shards int, rate int, perDuration time.Duration) *Sha
 	}
 	return &ShardedRateLimiter{
 		limiters: limiters,
-		total:    int32(rate),
+		permits:  newShardPermits(shards),
 	}
 }
 
@@ -96,7 +130,7 @@ func NewShardedRateLimiterWithBurst(shards int, rate int, perDuration time.Durat
 	}
 	return &ShardedRateLimiter{
 		limiters: limiters,
-		total:    int32(rate),
+		permits:  newShardPermits(shards),
 	}
 }
 
@@ -105,9 +139,9 @@ func (sl *ShardedRateLimiter) ShardCount() int {
 	return len(sl.limiters)
 }
 
-// TotalRate 返回所有分片的总速率（精确等于创建时的 rate）。
+// TotalRate 返回所有分片当前速率之和。目标速率小于分片数时，每片至少为 1。
 func (sl *ShardedRateLimiter) TotalRate() int {
-	return int(atomic.LoadInt32(&sl.total))
+	return sl.Size()
 }
 
 // GetShard 获取指定分片的 RateLimiter 实例。
@@ -126,18 +160,29 @@ func (sl *ShardedRateLimiter) Wait(ctx context.Context) error {
 
 // Acquire 获取令牌，round-robin 分发。
 func (sl *ShardedRateLimiter) Acquire(ctx context.Context) error {
-	idx := int(sl.nextIdx.Add(1)-1) % len(sl.limiters)
-	return sl.limiters[idx].Acquire(ctx)
+	idx := int((sl.nextIdx.Add(1) - 1) % uint64(len(sl.limiters)))
+	if err := sl.limiters[idx].Acquire(ctx); err != nil {
+		return err
+	}
+	sl.permits.acquired(idx)
+	return nil
 }
 
-// Release 归还令牌，round-robin 分发。
+// Release 归还一个成功获取的令牌；多余的 Release 不增加容量。
 func (sl *ShardedRateLimiter) Release() {
-	idx := int(sl.releaseIdx.Add(1)-1) % len(sl.limiters)
-	sl.limiters[idx].Release()
+	if idx, ok := sl.permits.releaseShard(); ok {
+		sl.limiters[idx].Release()
+	}
 }
 
 // Close 关闭所有分片的限流器。
 func (sl *ShardedRateLimiter) Close() {
+	sl.mu.Lock()
+	defer sl.mu.Unlock()
+	if sl.closed {
+		return
+	}
+	sl.closed = true
 	for _, l := range sl.limiters {
 		l.Close()
 	}
@@ -169,20 +214,27 @@ func (sl *ShardedRateLimiter) WithStrategy(s Strategy) *ShardedRateLimiter {
 	return sl
 }
 
-// Resize 调整总速率，余数优先分配到各分片。
+// Resize 调整总速率，余数优先分配到各分片。非正数会被忽略。
 // 注意：应在无活跃 Acquire/Release 时调用，否则可能短暂超发或欠发。
 func (sl *ShardedRateLimiter) Resize(newTotalRate int) {
+	if newTotalRate <= 0 {
+		return
+	}
+	sl.mu.Lock()
+	defer sl.mu.Unlock()
+	if sl.closed {
+		return
+	}
 	shards := len(sl.limiters)
 	rates := distributeTotal(newTotalRate, shards)
 	for i, l := range sl.limiters {
 		l.Resize(rates[i])
 	}
-	atomic.StoreInt32(&sl.total, int32(newTotalRate))
 }
 
 // Token 获取一个带 Release 的令牌句柄，round-robin 分发。
 func (sl *ShardedRateLimiter) Token(ctx context.Context) (*Token, error) {
-	idx := int(sl.nextIdx.Add(1)-1) % len(sl.limiters)
+	idx := int((sl.nextIdx.Add(1) - 1) % uint64(len(sl.limiters)))
 	return sl.limiters[idx].Token(ctx)
 }
 
@@ -204,7 +256,7 @@ type ShardedTokenBucket struct {
 }
 
 // NewShardedTokenBucket 创建分片令牌桶。
-// shards<=0 时默认 runtime.GOMAXPROCS(0)，最少 2 片。
+// shards<=0 时使用 core.IO()（runtime.NumCPU()*2），最少 2 片。
 func NewShardedTokenBucket(shards int, rate float64, capacity float64) *ShardedTokenBucket {
 	if shards <= 0 {
 		shards = core.IO()
@@ -221,13 +273,13 @@ func NewShardedTokenBucket(shards int, rate float64, capacity float64) *ShardedT
 
 // Allow 获取一个令牌，round-robin 分发。
 func (st *ShardedTokenBucket) Allow() bool {
-	idx := int(st.nextIdx.Add(1)-1) % len(st.buckets)
+	idx := int((st.nextIdx.Add(1) - 1) % uint64(len(st.buckets)))
 	return st.buckets[idx].Allow()
 }
 
 // AllowN 获取 n 个令牌，round-robin 分发。
 func (st *ShardedTokenBucket) AllowN(n float64) bool {
-	idx := int(st.nextIdx.Add(1)-1) % len(st.buckets)
+	idx := int((st.nextIdx.Add(1) - 1) % uint64(len(st.buckets)))
 	return st.buckets[idx].AllowN(n)
 }
 
@@ -266,7 +318,7 @@ type ShardedSlidingWindowRateLimiter struct {
 }
 
 // NewShardedSlidingWindowRateLimiter 创建分片滑动窗口限流器。
-// shards<=0 时默认 runtime.GOMAXPROCS(0)，最少 2 片。
+// shards<=0 时使用 core.IO()（runtime.NumCPU()*2），最少 2 片。
 // limit 按余数优先分配，总 limit 精确等于传入值（limit>=shards时）。
 func NewShardedSlidingWindowRateLimiter(shards int, limit int, window time.Duration) *ShardedSlidingWindowRateLimiter {
 	if shards <= 0 {
@@ -277,24 +329,26 @@ func NewShardedSlidingWindowRateLimiter(shards int, limit int, window time.Durat
 	}
 	limits := distributeTotal(limit, shards)
 	limiters := make([]*SlidingWindowRateLimiter, shards)
+	total := 0
 	for i := 0; i < shards; i++ {
 		limiters[i] = NewSlidingWindowRateLimiter(limits[i], window)
+		total += limits[i]
 	}
 	return &ShardedSlidingWindowRateLimiter{
 		limiters: limiters,
-		total:    limit,
+		total:    total,
 	}
 }
 
 // Allow round-robin 分发到一个分片检查。
 func (sw *ShardedSlidingWindowRateLimiter) Allow() bool {
-	idx := int(sw.nextIdx.Add(1)-1) % len(sw.limiters)
+	idx := int((sw.nextIdx.Add(1) - 1) % uint64(len(sw.limiters)))
 	return sw.limiters[idx].Allow()
 }
 
 // AllowN round-robin 分发。
 func (sw *ShardedSlidingWindowRateLimiter) AllowN(n int) bool {
-	idx := int(sw.nextIdx.Add(1)-1) % len(sw.limiters)
+	idx := int((sw.nextIdx.Add(1) - 1) % uint64(len(sw.limiters)))
 	return sw.limiters[idx].AllowN(n)
 }
 
@@ -303,7 +357,7 @@ func (sw *ShardedSlidingWindowRateLimiter) ShardCount() int {
 	return len(sw.limiters)
 }
 
-// TotalLimit 返回所有分片总 limit（精确等于创建时传入的 limit）。
+// TotalLimit 返回各分片限额之和；目标小于分片数时每片至少为 1。
 func (sw *ShardedSlidingWindowRateLimiter) TotalLimit() int {
 	return sw.total
 }
@@ -327,20 +381,20 @@ func (sw *ShardedSlidingWindowRateLimiter) GetShard(idx int) *SlidingWindowRateL
 //	al := ratelimit.NewShardedAdaptiveRateLimiter(16, 32, 800)
 //	al.Acquire(ctx)
 //	if err := doRequest(); err == nil {
-//	    al.RecordSuccess()
+//	    al.RecordOk()
 //	} else {
 //	    al.RecordFailure()
 //	}
 //	al.Release()
 type ShardedAdaptiveRateLimiter struct {
-	limiters   []*AdaptiveRateLimiter
-	nextIdx    atomic.Uint64
-	releaseIdx atomic.Uint64
-	recordIdx  atomic.Uint64
+	limiters  []*AdaptiveRateLimiter
+	nextIdx   atomic.Uint64
+	permits   shardPermits
+	recordIdx atomic.Uint64
 }
 
 // NewShardedAdaptiveRateLimiter 创建分片自适应限流器。
-// shards<=0 时默认 runtime.GOMAXPROCS(0)，最少 2 片。
+// shards<=0 时使用 core.IO()（runtime.NumCPU()*2），最少 2 片。
 // minRate 和 maxRate 各自按余数优先分配，保证每个分片 max >= min。
 func NewShardedAdaptiveRateLimiter(shards int, minRate int, maxRate int) *ShardedAdaptiveRateLimiter {
 	if shards <= 0 {
@@ -359,30 +413,35 @@ func NewShardedAdaptiveRateLimiter(shards int, minRate int, maxRate int) *Sharde
 		}
 		limiters[i] = NewAdaptiveRateLimiter(mins[i], shardMax)
 	}
-	return &ShardedAdaptiveRateLimiter{limiters: limiters}
+	return &ShardedAdaptiveRateLimiter{limiters: limiters, permits: newShardPermits(shards)}
 }
 
 // Acquire round-robin 分发获取令牌。
 func (sa *ShardedAdaptiveRateLimiter) Acquire(ctx context.Context) error {
-	idx := int(sa.nextIdx.Add(1)-1) % len(sa.limiters)
-	return sa.limiters[idx].Acquire(ctx)
+	idx := int((sa.nextIdx.Add(1) - 1) % uint64(len(sa.limiters)))
+	if err := sa.limiters[idx].Acquire(ctx); err != nil {
+		return err
+	}
+	sa.permits.acquired(idx)
+	return nil
 }
 
-// Release round-robin 分发释放令牌。
+// Release 释放一个成功获取的槽位；多余的 Release 不增加容量。
 func (sa *ShardedAdaptiveRateLimiter) Release() {
-	idx := int(sa.releaseIdx.Add(1)-1) % len(sa.limiters)
-	sa.limiters[idx].Release()
+	if idx, ok := sa.permits.releaseShard(); ok {
+		sa.limiters[idx].Release()
+	}
 }
 
-// RecordSuccess round-robin 分发记录成功。
-func (sa *ShardedAdaptiveRateLimiter) RecordSuccess() {
-	idx := int(sa.recordIdx.Add(1)-1) % len(sa.limiters)
-	sa.limiters[idx].RecordSuccess()
+// RecordOk round-robin 分发记录成功。
+func (sa *ShardedAdaptiveRateLimiter) RecordOk() {
+	idx := int((sa.recordIdx.Add(1) - 1) % uint64(len(sa.limiters)))
+	sa.limiters[idx].RecordOk()
 }
 
 // RecordFailure round-robin 分发记录失败。
 func (sa *ShardedAdaptiveRateLimiter) RecordFailure() {
-	idx := int(sa.recordIdx.Add(1)-1) % len(sa.limiters)
+	idx := int((sa.recordIdx.Add(1) - 1) % uint64(len(sa.limiters)))
 	sa.limiters[idx].RecordFailure()
 }
 

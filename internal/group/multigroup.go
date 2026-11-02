@@ -21,8 +21,9 @@ import (
 //	g.Go(ctx, fn)
 //	results := g.Wait()
 type MultiGroup[T any] struct {
-	groups  []*Group[T]
-	nextIdx atomic.Uint64
+	groups       []*Group[T]
+	nextIdx      atomic.Uint64
+	sharedCancel context.CancelFunc
 }
 
 // ── 基础查询 ──
@@ -45,7 +46,7 @@ func (mg *MultiGroup[T]) GetShard(idx int) *Group[T] {
 
 // Go 将任务以 round-robin 方式分发到某个分片执行。
 func (mg *MultiGroup[T]) Go(ctx context.Context, fn func(context.Context) (T, error)) error {
-	idx := int(mg.nextIdx.Add(1)-1) % len(mg.groups)
+	idx := int((mg.nextIdx.Add(1) - 1) % uint64(len(mg.groups)))
 	return mg.groups[idx].Go(ctx, fn)
 }
 
@@ -59,6 +60,9 @@ func (mg *MultiGroup[T]) GoKeyed(key uint64, ctx context.Context, fn func(contex
 
 // Wait 等待所有分片完成，合并结果（保持各分片内部顺序，分片间不保证全局顺序）。
 func (mg *MultiGroup[T]) Wait() []core.Result[T] {
+	if mg.sharedCancel != nil {
+		defer mg.sharedCancel()
+	}
 	var all []core.Result[T]
 	for _, g := range mg.groups {
 		all = append(all, g.Wait()...)
@@ -78,6 +82,9 @@ func (mg *MultiGroup[T]) WaitTimeout(d time.Duration) ([]core.Result[T], bool) {
 
 // WaitContext 等待所有分片完成或 ctx 取消，所有分片并行等待共享同一个 ctx。
 func (mg *MultiGroup[T]) WaitContext(ctx context.Context) ([]core.Result[T], bool) {
+	if mg.sharedCancel != nil {
+		defer mg.sharedCancel()
+	}
 	if len(mg.groups) == 0 {
 		return nil, true
 	}
@@ -116,6 +123,9 @@ func (mg *MultiGroup[T]) WaitContext(ctx context.Context) ([]core.Result[T], boo
 
 // Close 关闭所有分片，释放资源。
 func (mg *MultiGroup[T]) Close() {
+	if mg.sharedCancel != nil {
+		defer mg.sharedCancel()
+	}
 	for _, g := range mg.groups {
 		g.Close()
 	}
@@ -168,9 +178,13 @@ func (mg *MultiGroup[T]) TotalFailCount() int64 {
 	return total
 }
 
-// TotalSuccessCount 汇总所有分片成功任务数。
-func (mg *MultiGroup[T]) TotalSuccessCount() int64 {
-	return mg.TotalTaskCount() - mg.TotalFailCount()
+// TotalOkCount 汇总所有分片成功任务数。
+func (mg *MultiGroup[T]) TotalOkCount() int64 {
+	var total int64
+	for _, g := range mg.groups {
+		total += g.OkCount()
+	}
+	return total
 }
 
 // Errors 返回所有分片所有任务的错误切片。
@@ -246,19 +260,19 @@ func (mg *MultiGroup[T]) StreamResults() <-chan core.Result[T] {
 // WithMultiGroup 创建分片任务组并执行 fn，fn 返回后自动 Close 所有分片释放资源。
 // 内部先创建并发度为 concurrency 的 Group，再水平分片为 shards 份。
 // concurrency <= 0 时默认 1，shards <= 1 时等同于单 Group。
-// 注意：Group 本身没有 Close()，仅分片后的 MultiGroup 有后台资源需要释放。
+// Group 和 MultiGroup 均提供 Close；本函数会在 fn 返回后关闭 MultiGroup。
 //
 // 示例：
 //
 //	err := group.WithMultiGroup(64, 16, func(mg *MultiGroup[string]) error {
 //	    for _, item := range items {
-//	        mg.Go(ctx, func(ctx context.Context) (string, error) {
+//	        if err := mg.Go(ctx, func(ctx context.Context) (string, error) {
 //	            return process(item)
-//	        })
+//	        }); err != nil { return err }
 //	    }
-//	    results, firstErr := mg.Wait()
-//	    if firstErr != nil { return firstErr }
-//	    _ = results
+//	    for _, result := range mg.Wait() {
+//	        if result.Err != nil { return result.Err }
+//	    }
 //	    return nil
 //	})
 func WithMultiGroup[T any](concurrency int, shards int, fn func(mg *MultiGroup[T]) error) error {

@@ -97,9 +97,8 @@ func (b *ParallelChain[T]) ExecutePipe(fn func(context.Context, string, T) (T, e
 
 // Pipe 切换为管道输出模式。
 func (b *ParallelChain[T]) Pipe() *PipelinePipeBuilder[T] {
+	base := *b.pipelineBase
 	return &PipelinePipeBuilder[T]{
-		ctx:    b.ctx,
-		items:  b.items,
-		stages: b.stages,
+		execute: (&ParallelChain[T]{pipelineBase: &base}).ExecutePipe,
 	}
 }

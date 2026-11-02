@@ -20,12 +20,12 @@ func (b *ParallelSlice[T, R]) ToSerial() *SerialSlice[T, R] {
 }
 
 func (b *ParallelSlice[T, R]) Worker(n int) *ParallelSlice[T, R] {
-	b.policy = Par(n)
+	b.policy = b.policy.Worker(n)
 	return b
 }
 
 func (b *ParallelSlice[T, R]) DefaultWorker() *ParallelSlice[T, R] {
-	b.policy = DefPar()
+	b.policy = b.policy.Worker(0)
 	return b
 }
 
@@ -95,12 +95,12 @@ func (b *ParallelSlice[T, R]) Logger(l core.Logger) *ParallelSlice[T, R] {
 
 func (b *ParallelSlice[T, R]) Map(fn func(context.Context, T) (R, error)) *SliceResult[R] {
 	results, err := NewRunner[T, R](b.ctx, b.items, b.policy).Map(fn)
-	return &SliceResult[R]{results: results, err: err, failValues: collectFailValues(b.items, results)}
+	return &SliceResult[R]{results: results, err: err, errIsSummary: true, failValues: collectFailValues(b.items, results)}
 }
 
 func (b *ParallelSlice[T, R]) MapBatch(fn func(context.Context, []T) (R, error)) *SliceResult[R] {
 	results, err := NewRunner[T, R](b.ctx, b.items, b.policy).MapBatch(fn)
-	return &SliceResult[R]{results: results, err: err, failValues: collectFailValues(b.items, results)}
+	return &SliceResult[R]{results: results, err: err, errIsSummary: true, failValues: collectBatchFailValues(b.items, b.policy.chunkSize, results)}
 }
 
 func (b *ParallelSlice[T, R]) ForEach(fn func(context.Context, T) error) *ForEachResult {

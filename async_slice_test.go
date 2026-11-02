@@ -900,8 +900,8 @@ func TestSlice_Chain_ForEach_SliceBuilder(t *testing.T) {
 				if r.Err() {
 					t.Fatalf("ForEach error: %v", r.Error())
 				}
-				if r.SuccessCount() != int64(tier.Size) {
-					t.Fatalf("ForEach SuccessCount: expected %d, got %d", tier.Size, r.SuccessCount())
+				if r.OkCount() != int64(tier.Size) {
+					t.Fatalf("ForEach OkCount: expected %d, got %d", tier.Size, r.OkCount())
 				}
 			})
 		}
@@ -927,8 +927,8 @@ func TestSlice_Chain_ForEach_ParallelSlice(t *testing.T) {
 				if r.Err() {
 					t.Fatalf("ForEach error: %v", r.Error())
 				}
-				if r.SuccessCount() != int64(tier.Size) {
-					t.Fatalf("ForEach SuccessCount: expected %d, got %d", tier.Size, r.SuccessCount())
+				if r.OkCount() != int64(tier.Size) {
+					t.Fatalf("ForEach OkCount: expected %d, got %d", tier.Size, r.OkCount())
 				}
 			})
 		}
@@ -948,8 +948,8 @@ func TestSlice_Chain_ForEach_SerialSlice(t *testing.T) {
 			if r.Err() {
 				t.Fatalf("ForEach error: %v", r.Error())
 			}
-			if r.SuccessCount() != int64(tier.Size) {
-				t.Fatalf("ForEach SuccessCount: expected %d, got %d", tier.Size, r.SuccessCount())
+			if r.OkCount() != int64(tier.Size) {
+				t.Fatalf("ForEach OkCount: expected %d, got %d", tier.Size, r.OkCount())
 			}
 		})
 	}
@@ -969,8 +969,8 @@ func TestSlice_Chain_ForEach_SerialSlice_FailFast(t *testing.T) {
 			if r.Err() {
 				t.Fatalf("ForEach Serial FF: unexpected error: %v", r.Error())
 			}
-			if r.SuccessCount() != int64(tier.Size) {
-				t.Fatalf("ForEach Serial FF: expected %d, got %d", tier.Size, r.SuccessCount())
+			if r.OkCount() != int64(tier.Size) {
+				t.Fatalf("ForEach Serial FF: expected %d, got %d", tier.Size, r.OkCount())
 			}
 			// 失败路径：FailFast 模式下首个错误立即返回
 			r2 := Slice(freshCtx(), data).Serial().FailFast().ForEach(func(ctx context.Context, v int) error {
@@ -1341,15 +1341,15 @@ func TestSlice_Chain_ForEachResult_FailCount(t *testing.T) {
 	}
 }
 
-func TestSlice_Chain_ForEachResult_SuccessCount(t *testing.T) {
+func TestSlice_Chain_ForEachResult_OkCount(t *testing.T) {
 	r := Slice(freshCtx(), []int{1, 2, 3}).ForEach(func(ctx context.Context, v int) error {
 		if v == 2 {
 			return errTestSentinel
 		}
 		return nil
 	})
-	if r.SuccessCount() != 2 {
-		t.Fatalf("SuccessCount: expected 2, got %d", r.SuccessCount())
+	if r.OkCount() != 2 {
+		t.Fatalf("OkCount: expected 2, got %d", r.OkCount())
 	}
 }
 
@@ -1943,8 +1943,8 @@ func TestSlice_Chain_HighConcurrency_ForEach_Stress(t *testing.T) {
 				if counter != int64(tier.Size) {
 					t.Fatalf("ForEach: expected %d calls, got %d", tier.Size, counter)
 				}
-				if r.SuccessCount() != int64(tier.Size) {
-					t.Fatalf("SuccessCount: expected %d, got %d", tier.Size, r.SuccessCount())
+				if r.OkCount() != int64(tier.Size) {
+					t.Fatalf("OkCount: expected %d, got %d", tier.Size, r.OkCount())
 				}
 			})
 		}
@@ -1969,8 +1969,8 @@ func TestSlice_Chain_HighConcurrency_ForEach_Stress(t *testing.T) {
 				if counter != int64(tier.Size) {
 					t.Fatalf("ForEach: expected %d calls, got %d", tier.Size, counter)
 				}
-				if r.SuccessCount() != int64(tier.Size) {
-					t.Fatalf("SuccessCount: expected %d, got %d", tier.Size, r.SuccessCount())
+				if r.OkCount() != int64(tier.Size) {
+					t.Fatalf("OkCount: expected %d, got %d", tier.Size, r.OkCount())
 				}
 			})
 		}
@@ -1992,8 +1992,8 @@ func TestSlice_Chain_HighConcurrency_ForEach_Stress(t *testing.T) {
 				if counter != int64(tier.Size) {
 					t.Fatalf("ForEach: expected %d calls, got %d", tier.Size, counter)
 				}
-				if r.SuccessCount() != int64(tier.Size) {
-					t.Fatalf("SuccessCount: expected %d, got %d", tier.Size, r.SuccessCount())
+				if r.OkCount() != int64(tier.Size) {
+					t.Fatalf("OkCount: expected %d, got %d", tier.Size, r.OkCount())
 				}
 			})
 		}
@@ -2694,7 +2694,7 @@ func TestSlice_Chain_ConcurrentMapCalls(t *testing.T) {
 			t.Parallel()
 			var wg sync.WaitGroup
 			workers := 16
-			var successCount int64
+			var okCount int64
 			for i := 0; i < workers; i++ {
 				wg.Add(1)
 				go func() {
@@ -2710,12 +2710,12 @@ func TestSlice_Chain_ConcurrentMapCalls(t *testing.T) {
 						t.Errorf("concurrent Map error: %v", r.Error())
 						return
 					}
-					atomic.AddInt64(&successCount, 1)
+					atomic.AddInt64(&okCount, 1)
 				}()
 			}
 			wg.Wait()
-			if successCount != int64(workers) {
-				t.Fatalf("concurrent Map: expected %d successes, got %d", workers, successCount)
+			if okCount != int64(workers) {
+				t.Fatalf("concurrent Map: expected %d successes, got %d", workers, okCount)
 			}
 		})
 	}
@@ -3010,8 +3010,8 @@ func TestSlice_Chain_Race_ForEach_Shards(t *testing.T) {
 			if r.Err() {
 				t.Fatalf("Race ForEach Shards: %v", r.Error())
 			}
-			if r.SuccessCount() != int64(tier.Size) {
-				t.Fatalf("Race ForEach Shards: expected %d, got %d", tier.Size, r.SuccessCount())
+			if r.OkCount() != int64(tier.Size) {
+				t.Fatalf("Race ForEach Shards: expected %d, got %d", tier.Size, r.OkCount())
 			}
 		})
 	}
@@ -3034,8 +3034,8 @@ func TestSlice_Chain_Race_ForEach_TOFF(t *testing.T) {
 			if r.Err() {
 				t.Fatalf("Race ForEach TOFF: %v", r.Error())
 			}
-			if r.SuccessCount() != int64(tier.Size) {
-				t.Fatalf("Race ForEach TOFF: expected %d, got %d", tier.Size, r.SuccessCount())
+			if r.OkCount() != int64(tier.Size) {
+				t.Fatalf("Race ForEach TOFF: expected %d, got %d", tier.Size, r.OkCount())
 			}
 		})
 	}

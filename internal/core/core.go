@@ -10,7 +10,7 @@
 // 全局配置：
 //   - SetDefaultTimeout / GetDefaultTimeout：全局默认超时
 //   - SetSubmitTimeout / GetSubmitTimeout：提交超时
-//   - SetMaxCleanupDuration / GetMaxCleanupDuration：清理 goroutine 最大存活时间
+//   - SetMaxCleanupDuration / GetMaxCleanupDuration：内部等待辅助函数的清理监视时长
 //   - SetTaskFailLogLevel / GetTaskFailLogLevel：任务失败日志级别
 //   - SetTraceLogEnabled / GetTraceLogEnabled：Trace 日志开关
 //   - SetLogger / GetLogger：自定义日志实现
@@ -49,6 +49,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"reflect"
 	"runtime"
 	"runtime/debug"
 	"sync"
@@ -84,29 +85,29 @@ var (
 
 	// defaultMaxResults 全局默认最大结果数（默认100_000，防止长期运行Pool的OOM风险）。
 	// 通过 SetDefaultMaxResults 设置，设为 0 可恢复无限制（向后兼容）。
-	defaultMaxResults int32 = 100_000
+	defaultMaxResults int64 = 100_000
 	// defaultRingBufCap 全局默认环形缓冲区容量（0=不启用，保持向后兼容）。
 	defaultRingBufCap int32
 	// defaultOverflowStrategy 全局默认环形缓冲区溢出策略。
 	defaultOverflowStrategy int32 = int32(OverflowDrop)
 )
 
-// SetMaxCleanupDuration 设置 WaitTimeout/WaitContext 超时后清理 goroutine 的最大存活时间。
-// 超时后，清理 goroutine 会在经过此时间后强制退出，避免 goroutine 泄漏。
-// 设为 0 表示无限等待。
+// SetMaxCleanupDuration 设置内部等待辅助函数的清理监视时长。
+// 非正值在这些辅助函数中按 WaitContextCleanupError 处理；该设置不终止任务。
+// 当前 Pool 和 Group 的等待方法不使用这些辅助函数。
 //
 // 参数：
-//   - d：最大存活时间，0 表示无限等待
+//   - d：监视时长，非正值使用 30 分钟
 //
 // 使用示例：
 //
-//	// 设置清理 goroutine 最多存活 5 分钟
+//	// 设置内部等待辅助函数的监视时长为 5 分钟，不终止任务
 //	core.SetMaxCleanupDuration(5 * time.Minute)
 func SetMaxCleanupDuration(d time.Duration) {
 	atomic.StoreInt64(&maxCleanupDuration, int64(d))
 }
 
-// GetMaxCleanupDuration 返回当前清理 goroutine 的最大存活时间，0 表示无限等待。
+// GetMaxCleanupDuration 返回设置的原始值；非正值由辅助函数按 30 分钟处理。
 func GetMaxCleanupDuration() time.Duration {
 	return time.Duration(atomic.LoadInt64(&maxCleanupDuration))
 }
@@ -176,13 +177,13 @@ func GetSubmitTimeout() time.Duration {
 //	p := pool.NewPool[int](8).WithMaxResults(0)  // 覆盖回无限
 func SetDefaultMaxResults(n int) {
 	if n >= 0 {
-		atomic.StoreInt32(&defaultMaxResults, int32(n))
+		atomic.StoreInt64(&defaultMaxResults, int64(n))
 	}
 }
 
 // GetDefaultMaxResults 返回当前全局默认最大结果数，默认 100_000，0 表示无限制。
 func GetDefaultMaxResults() int {
-	return int(atomic.LoadInt32(&defaultMaxResults))
+	return int(atomic.LoadInt64(&defaultMaxResults))
 }
 
 // SetDefaultRingBuffer 设置全局默认环形缓冲区配置，影响后续创建的 Pool。
@@ -244,7 +245,7 @@ var (
 	// ErrTimeout 表示操作超时。
 	ErrTimeout = errors.New("async: operation timed out")
 
-	// ErrPoolWaiting 表示 Pool.Submit 在 Wait 之后调用。
+	// ErrPoolWaiting 表示 Pool.Submit 在 Wait 或调整大小期间调用。
 	ErrPoolWaiting = errors.New("async: Pool.Submit called after Wait, task discarded")
 
 	// ErrInvalidIndex 表示 SubmitAt 的 index 参数超出允许范围。
@@ -363,7 +364,7 @@ type PoolRecordFunc[T any] func(Result[T], int)
 //	    }
 //	}
 type Result[T any] struct {
-	Value    T     // 任务返回值（失败时为零值）
+	Value    T     // 任务返回值；发生错误时也可能为非零值
 	Err      error // 任务错误（成功时为 nil）
 	Occupied bool  // 是否已被占用（内部用于结果槽位管理）
 }
@@ -458,6 +459,7 @@ func MergeCancel(oldCancel, newCancel context.CancelFunc) context.CancelFunc {
 //     Pool 用它禁止 Wait 期间的新 Submit；Group 传 nil（自己在外部管理）。
 //   - cancelAll 和 copyResults 必须由调用方保证线程安全。
 //     Pool 内部使用分片锁，无需外部互斥；Group 应在闭包内自行加锁。
+//   - onDone runs after all task producers finish, even if the wait timed out.
 func WaitTimeoutImpl[T any](
 	d time.Duration,
 	wg *sync.WaitGroup,
@@ -467,6 +469,7 @@ func WaitTimeoutImpl[T any](
 	cancelAll func(),
 	copyResults func() []Result[T],
 	logCtx context.Context,
+	onDone ...func(),
 ) ([]Result[T], bool) {
 	timeoutCtx, timeoutCancel := context.WithTimeout(context.Background(), d)
 	defer timeoutCancel()
@@ -489,6 +492,9 @@ func WaitTimeoutImpl[T any](
 	done := make(chan struct{})
 	go func() {
 		wg.Wait()
+		for _, finish := range onDone {
+			finish()
+		}
 		close(done)
 	}()
 
@@ -560,6 +566,7 @@ func WaitTimeoutImpl[T any](
 //     Pool 用它禁止 Wait 期间的新 Submit；Group 传 nil（自己在外部管理）。
 //   - cancelAll 和 copyResults 必须由调用方保证线程安全。
 //     Pool 内部使用分片锁，无需外部互斥；Group 应在闭包内自行加锁。
+//   - onDone runs after all task producers finish, even if ctx was canceled.
 func WaitContextImpl[T any](
 	ctx context.Context,
 	wg *sync.WaitGroup,
@@ -570,10 +577,14 @@ func WaitContextImpl[T any](
 	copyResults func() []Result[T],
 	logCtx context.Context,
 	callerType string,
+	onDone ...func(),
 ) ([]Result[T], bool) {
 	done := make(chan struct{})
 	go func() {
 		wg.Wait()
+		for _, finish := range onDone {
+			finish()
+		}
 		close(done)
 	}()
 
@@ -711,13 +722,15 @@ var traceIDFallbackCounter atomic.Int64
 // traceIDKeyStore 存储用户自定义的 trace_id context key。
 var traceIDKeyStore atomic.Value
 
+type traceIDKeyHolder struct{ key interface{} }
+
 func init() {
-	traceIDKeyStore.Store(TraceIDKey)
+	traceIDKeyStore.Store(traceIDKeyHolder{TraceIDKey})
 }
 
 // getTraceIDKey 返回当前生效的 trace_id context key。
 func getTraceIDKey() interface{} {
-	return traceIDKeyStore.Load()
+	return traceIDKeyStore.Load().(traceIDKeyHolder).key
 }
 
 // SetTraceIDKey 自定义 trace_id 的 context key。
@@ -742,12 +755,15 @@ func getTraceIDKey() interface{} {
 //
 // 注意：请在最早期（init 或 main 开头）调用，避免并发读写导致的瞬时不一致。
 func SetTraceIDKey(key interface{}) {
-	traceIDKeyStore.Store(key)
+	if key == nil || !reflect.TypeOf(key).Comparable() {
+		panic("async: trace ID context key must be non-nil and comparable")
+	}
+	traceIDKeyStore.Store(traceIDKeyHolder{key})
 }
 
 // GetTraceIDKey 返回当前生效的 trace_id context key。
 func GetTraceIDKey() interface{} {
-	return traceIDKeyStore.Load()
+	return getTraceIDKey()
 }
 
 // EnsureTraceID 确保 ctx 中有 trace_id，没有则自动生成并注入。

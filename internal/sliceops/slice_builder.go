@@ -71,7 +71,7 @@ type SliceBuilder[T any, R any] struct {
 //	ctx:   上下文（自动注入 TraceID）。
 //	items: 原始切片数据。
 //
-//	go sb := NewSliceBuilder(ctx, []int{1, 2, 3}).Sort(cmp).Map(fn)
+//	sb := NewSliceBuilder(ctx, []int{1, 2, 3}).Sort(cmp).Map(fn)
 func NewSliceBuilder[T any](ctx context.Context, items []T) *SliceBuilder[T, T] {
 	sb := &SliceBuilder[T, T]{}
 	sb.sliceBase = newSliceBase(core.EnsureTraceID(ctx), items, DefPar(), sb)
@@ -84,7 +84,7 @@ func NewSliceBuilder[T any](ctx context.Context, items []T) *SliceBuilder[T, T] 
 //	ctx:   上下文（自动注入 TraceID）。
 //	items: 原始切片数据（类型 T）。
 //
-//	go sb := NewSliceWithBuilder[string](ctx, []int{1, 2, 3}).Map(func(ctx ctx, n int) (string, error) {
+//	sb := NewSliceWithBuilder[string](ctx, []int{1, 2, 3}).Map(func(ctx context.Context, n int) (string, error) {
 //	    return strconv.Itoa(n), nil
 //	})
 func NewSliceWithBuilder[R any, T any](ctx context.Context, items []T) *SliceBuilder[T, R] {
@@ -98,7 +98,7 @@ func NewSliceWithBuilder[R any, T any](ctx context.Context, items []T) *SliceBui
 // Serial 切换为串行模式，返回 SerialSlice。
 // 串行模式下仅暴露串行安全的方法，不暴露 Concurrency/Pool/Shards/Chunk/Buf 等并行配置。
 //
-//	go sb.Serial().Sort(cmp).Filter(pred).Map(fn).Values()
+//	sb.Serial().Sort(cmp).Filter(pred).Map(fn).Values()
 func (b *SliceBuilder[T, R]) Serial() *SerialSlice[T, R] {
 	ss := &SerialSlice[T, R]{}
 	ss.sliceBase = newSliceBase(b.ctx, b.items, Seq(), ss)
@@ -108,7 +108,7 @@ func (b *SliceBuilder[T, R]) Serial() *SerialSlice[T, R] {
 // Parallel 切换为并行模式，返回 ParallelSlice。
 // 并行模式下暴露所有并行配置方法及数据操作。
 //
-//	go sb.Parallel().Worker(8).FailFast().Map(fn).Values()
+//	sb.Parallel().Worker(8).FailFast().Map(fn).Values()
 func (b *SliceBuilder[T, R]) Parallel() *ParallelSlice[T, R] {
 	ps := &ParallelSlice[T, R]{}
 	ps.sliceBase = newSliceBase(b.ctx, b.items, DefPar(), ps)
@@ -127,7 +127,7 @@ func (b *SliceBuilder[T, R]) Context(ctx context.Context) *SliceBuilder[T, R] {
 //
 //	l: core.Logger 接口实现。
 //
-//	go sb.Logger(&MyLogger{}).Map(fn)
+//	sb.Logger(&MyLogger{}).Map(fn)
 func (b *SliceBuilder[T, R]) Logger(l core.Logger) *SliceBuilder[T, R] {
 	core.SetLogger(l)
 	return b
@@ -135,7 +135,7 @@ func (b *SliceBuilder[T, R]) Logger(l core.Logger) *SliceBuilder[T, R] {
 
 // DefaultLogger 重置为默认日志实现（静默模式）。
 //
-//	go sb.DefaultLogger().Map(fn)
+//	sb.DefaultLogger().Map(fn)
 func (b *SliceBuilder[T, R]) DefaultLogger() *SliceBuilder[T, R] {
 	core.SetLogger(nil)
 	return b
@@ -145,24 +145,24 @@ func (b *SliceBuilder[T, R]) DefaultLogger() *SliceBuilder[T, R] {
 //
 //	n: 并发 goroutine 数量。
 //
-//	go sb.Worker(32).Map(fn)
+//	sb.Worker(32).Map(fn)
 func (b *SliceBuilder[T, R]) Worker(n int) *SliceBuilder[T, R] {
-	b.policy = Par(n)
+	b.policy = b.policy.Worker(n)
 	return b
 }
 
 // DefaultWorker 使用默认 IO 并发度（推荐，语义更清晰）。
 //
-//	go sb.DefaultWorker().Map(fn)
+//	sb.DefaultWorker().Map(fn)
 func (b *SliceBuilder[T, R]) DefaultWorker() *SliceBuilder[T, R] {
-	b.policy = DefPar()
+	b.policy = b.policy.Worker(0)
 	return b
 }
 
 // DefaultPool 创建默认并发度的协程池并注入。
 // 池由内部自动管理生命周期，终端方法执行完毕后自动 Close。
 //
-//	go sb.DefaultPool().Map(fn)
+//	sb.DefaultPool().Map(fn)
 func (b *SliceBuilder[T, R]) DefaultPool() *SliceBuilder[T, R] {
 	b.policy = b.policy.WithDefaultPool()
 	return b
@@ -173,7 +173,7 @@ func (b *SliceBuilder[T, R]) DefaultPool() *SliceBuilder[T, R] {
 //
 //	p: 外部创建的协程池。
 //
-//	go p := pool.New(16); defer p.Close()
+//	p := pool.NewPool[int](16); defer p.Close()
 //	r := sb.Pool(p).Map(fn)
 func (b *SliceBuilder[T, R]) Pool(p *pool.Pool[R]) *SliceBuilder[T, R] {
 	b.policy = b.policy.WithPool(p)
@@ -185,7 +185,7 @@ func (b *SliceBuilder[T, R]) Pool(p *pool.Pool[R]) *SliceBuilder[T, R] {
 //
 //	p: 外部创建的协程池。
 //
-//	go r := sb.PoolAuto(pool.New(16)).Map(fn)
+//	r := sb.PoolAuto(pool.NewPool[int](16)).Map(fn)
 func (b *SliceBuilder[T, R]) PoolAuto(p *pool.Pool[R]) *SliceBuilder[T, R] {
 	b.policy = b.policy.WithOwnedPool(p)
 	return b
@@ -195,15 +195,15 @@ func (b *SliceBuilder[T, R]) PoolAuto(p *pool.Pool[R]) *SliceBuilder[T, R] {
 //
 //	d: 每个任务的最大执行时间。
 //
-//	go sb.Timeout(5*time.Second).Map(fn)
+//	sb.Timeout(5*time.Second).Map(fn)
 func (b *SliceBuilder[T, R]) Timeout(d time.Duration) *SliceBuilder[T, R] {
 	b.policy = b.policy.TO(d)
 	return b
 }
 
-// DefaultTimeout 使用全局默认超时（30s）。
+// DefaultTimeout 将单任务超时设置为固定的 30 秒，不受全局默认超时配置影响。
 //
-//	go sb.DefaultTimeout().Map(fn)
+//	sb.DefaultTimeout().Map(fn)
 func (b *SliceBuilder[T, R]) DefaultTimeout() *SliceBuilder[T, R] {
 	b.policy = b.policy.TO(defaultTimeout)
 	return b
@@ -211,7 +211,7 @@ func (b *SliceBuilder[T, R]) DefaultTimeout() *SliceBuilder[T, R] {
 
 // FailFast 启用 FailFast 模式：任一任务失败立即终止其余任务。
 //
-//	go sb.FailFast().Map(fn)
+//	sb.FailFast().Map(fn)
 func (b *SliceBuilder[T, R]) FailFast() *SliceBuilder[T, R] {
 	b.policy = b.policy.FF()
 	return b
@@ -219,7 +219,7 @@ func (b *SliceBuilder[T, R]) FailFast() *SliceBuilder[T, R] {
 
 // DefaultFailFast 关闭 FailFast（默认行为：失败不中断其他任务）。
 //
-//	go sb.DefaultFailFast().Map(fn)
+//	sb.DefaultFailFast().Map(fn)
 func (b *SliceBuilder[T, R]) DefaultFailFast() *SliceBuilder[T, R] {
 	b.policy = b.policy.NoFF()
 	return b
@@ -230,7 +230,7 @@ func (b *SliceBuilder[T, R]) DefaultFailFast() *SliceBuilder[T, R] {
 //
 //	n: 分片数量。
 //
-//	go sb.Shards(8).Map(fn)
+//	sb.Shards(8).Map(fn)
 func (b *SliceBuilder[T, R]) Shards(n int) *SliceBuilder[T, R] {
 	b.policy = b.policy.Shard(n)
 	return b
@@ -238,7 +238,7 @@ func (b *SliceBuilder[T, R]) Shards(n int) *SliceBuilder[T, R] {
 
 // DefaultShard 使用默认水平分片数（GOMAXPROCS，最少 2）。
 //
-//	go sb.DefaultShard().Map(fn)
+//	sb.DefaultShard().Map(fn)
 func (b *SliceBuilder[T, R]) DefaultShard() *SliceBuilder[T, R] {
 	n := runtime.GOMAXPROCS(0)
 	if n < 2 {
@@ -253,7 +253,7 @@ func (b *SliceBuilder[T, R]) DefaultShard() *SliceBuilder[T, R] {
 //
 //	size: 每块元素数量，如 100 表示每次处理 100 个元素。
 //
-//	go sb.Chunk(100).Map(fn)
+//	sb.Chunk(100).Map(fn)
 func (b *SliceBuilder[T, R]) Chunk(size int) *SliceBuilder[T, R] {
 	b.policy = b.policy.Chunk(size)
 	return b
@@ -261,7 +261,7 @@ func (b *SliceBuilder[T, R]) Chunk(size int) *SliceBuilder[T, R] {
 
 // DefaultChunk 使用默认分块大小（100）。
 //
-//	go sb.DefaultChunk().Map(fn)
+//	sb.DefaultChunk().Map(fn)
 func (b *SliceBuilder[T, R]) DefaultChunk() *SliceBuilder[T, R] {
 	b.policy = b.policy.Chunk(defaultBatchSize)
 	return b
@@ -271,7 +271,7 @@ func (b *SliceBuilder[T, R]) DefaultChunk() *SliceBuilder[T, R] {
 //
 //	size: 通道缓冲区大小。
 //
-//	go ch := sb.Buf(2048).Stream(fn, 0)
+//	ch := sb.Buf(2048).Stream(fn, 0)
 func (b *SliceBuilder[T, R]) Buf(size int) *SliceBuilder[T, R] {
 	b.policy = b.policy.Buf(size)
 	return b
@@ -279,7 +279,7 @@ func (b *SliceBuilder[T, R]) Buf(size int) *SliceBuilder[T, R] {
 
 // DefaultBuf 使用默认流式缓冲（自适应）。
 //
-//	go ch := sb.DefaultBuf().Stream(fn, 0)
+//	ch := sb.DefaultBuf().Stream(fn, 0)
 func (b *SliceBuilder[T, R]) DefaultBuf() *SliceBuilder[T, R] {
 	b.policy = b.policy.Buf(defaultStreamingBuf)
 	return b
@@ -292,7 +292,7 @@ func (b *SliceBuilder[T, R]) DefaultBuf() *SliceBuilder[T, R] {
 //	i: 起始索引（含）。
 //	j: 结束索引（不含）。
 //
-//	go sb.Slice(1, 3).Values() // [2, 3]
+//	sb.Slice(1, 3).Values() // [2, 3]
 func (b *SliceBuilder[T, R]) Slice(i, j int) *SliceBuilder[T, R] {
 	return b.SliceRange(i, j)
 }
@@ -304,35 +304,35 @@ func (b *SliceBuilder[T, R]) Slice(i, j int) *SliceBuilder[T, R] {
 //
 //	fn: 转换函数 func(context.Context, T) (R, error)。
 //
-//	go r := sb.Worker(16).Map(func(ctx context.Context, v int) (string, error) {
+//	r := sb.Worker(16).Map(func(ctx context.Context, v int) (string, error) {
 //	    return strconv.Itoa(v), nil
 //	})
 //	if r.Err() { return r.Error() }
 //	vals := r.Values()
 func (b *SliceBuilder[T, R]) Map(fn func(context.Context, T) (R, error)) *SliceResult[R] {
 	results, err := NewRunner[T, R](b.ctx, b.items, b.policy).Map(fn)
-	return &SliceResult[R]{results: results, err: err, failValues: collectFailValues(b.items, results)}
+	return &SliceResult[R]{results: results, err: err, errIsSummary: true, failValues: collectFailValues(b.items, results)}
 }
 
 // MapBatch 分块映射，fn 接收整个 chunk []T。需配合 Chunk(size) 使用。
 //
 //	fn: 转换函数 func(context.Context, []T) (R, error)，接收整个分块。
 //
-//	go r := sb.Chunk(100).MapBatch(func(ctx context.Context, chunk []int) (int, error) {
+//	r := sb.Chunk(100).MapBatch(func(ctx context.Context, chunk []int) (int, error) {
 //	    sum := 0
 //	    for _, v := range chunk { sum += v }
 //	    return sum, nil
 //	})
 func (b *SliceBuilder[T, R]) MapBatch(fn func(context.Context, []T) (R, error)) *SliceResult[R] {
 	results, err := NewRunner[T, R](b.ctx, b.items, b.policy).MapBatch(fn)
-	return &SliceResult[R]{results: results, err: err, failValues: collectFailValues(b.items, results)}
+	return &SliceResult[R]{results: results, err: err, errIsSummary: true, failValues: collectBatchFailValues(b.items, b.policy.chunkSize, results)}
 }
 
 // ForEach 根据已配置的策略执行 ForEach 操作，返回 ForEachResult。
 //
 //	fn: 回调函数 func(context.Context, T) error。
 //
-//	go r := sb.ForEach(func(ctx context.Context, v int) error {
+//	r := sb.ForEach(func(ctx context.Context, v int) error {
 //	    log.Printf("processing %d", v)
 //	    return nil
 //	})
@@ -346,7 +346,7 @@ func (b *SliceBuilder[T, R]) ForEach(fn func(context.Context, T) error) *ForEach
 //
 //	fn: 回调函数 func(context.Context, []T) error，接收整个分块。
 //
-//	go r := sb.Chunk(100).ForEachBatch(func(ctx context.Context, chunk []int) error {
+//	r := sb.Chunk(100).ForEachBatch(func(ctx context.Context, chunk []int) error {
 //	    return batchInsert(ctx, chunk)
 //	})
 func (b *SliceBuilder[T, R]) ForEachBatch(fn func(context.Context, []T) error) *ForEachResult {
@@ -359,11 +359,11 @@ func (b *SliceBuilder[T, R]) ForEachBatch(fn func(context.Context, []T) error) *
 //	initial: 初始聚合值。
 //	fn:      聚合函数 func(context.Context, R, T) (R, error)，R 为累积值，T 为当前元素。
 //
-//	go sum, err := sb.Reduce(0, func(ctx context.Context, acc int, v int) (int, error) {
+//	sum, err := sb.Reduce(0, func(ctx context.Context, acc int, v int) (int, error) {
 //	    return acc + v, nil
 //	})
 func (b *SliceBuilder[T, R]) Reduce(initial R, fn func(context.Context, R, T) (R, error)) (R, error) {
-	return Reduce(b.ctx, b.items, initial, fn)
+	return NewRunner[T, R](b.ctx, b.items, b.policy).Fold(initial, fn)
 }
 
 // Stream 流式 Map，通过 channel 边执行边返回。
@@ -371,7 +371,7 @@ func (b *SliceBuilder[T, R]) Reduce(initial R, fn func(context.Context, R, T) (R
 //	fn:      转换函数 func(context.Context, T) (R, error)。
 //	bufSize: 通道缓冲区大小，<= 0 时使用 Buf() 设置的值。
 //
-//	go ch := sb.Worker(16).Stream(func(ctx context.Context, v int) (int, error) {
+//	ch := sb.Worker(16).Stream(func(ctx context.Context, v int) (int, error) {
 //	    return v * 2, nil
 //	}, 1024)
 //	for res := range ch {

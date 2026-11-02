@@ -1,8 +1,10 @@
 package task
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -25,7 +27,7 @@ func genItems(n int) []int {
 // 一、Go 基础测试
 // ============================================================
 
-func TestGo_Success(t *testing.T) {
+func TestGo_Ok(t *testing.T) {
 	ar := Go(context.Background(), func(ctx context.Context) (int, error) {
 		return 42, nil
 	})
@@ -71,7 +73,7 @@ func TestGo_ErrorViaError(t *testing.T) {
 	}
 }
 
-func TestGo_ErrorViaError_Success(t *testing.T) {
+func TestGo_ErrorViaError_Ok(t *testing.T) {
 	ar := Go(context.Background(), func(ctx context.Context) (int, error) {
 		return 10, nil
 	})
@@ -105,7 +107,7 @@ func TestGo_WaitTimeout(t *testing.T) {
 	}
 }
 
-func TestGo_WaitTimeout_Success(t *testing.T) {
+func TestGo_WaitTimeout_Ok(t *testing.T) {
 	ar := Go(context.Background(), func(ctx context.Context) (int, error) {
 		return 99, nil
 	})
@@ -137,7 +139,7 @@ func TestGo_WaitContext(t *testing.T) {
 	}
 }
 
-func TestGo_WaitContext_Success(t *testing.T) {
+func TestGo_WaitContext_Ok(t *testing.T) {
 	ar := Go(context.Background(), func(ctx context.Context) (int, error) {
 		return 99, nil
 	})
@@ -232,12 +234,39 @@ func TestGo_Cancel_Completed(t *testing.T) {
 	ar := Go(context.Background(), func(ctx context.Context) (int, error) {
 		return 88, nil
 	})
+	if val, err := ar.Wait(); err != nil || val != 88 {
+		t.Fatalf("Wait = (%d, %v), want (88, nil)", val, err)
+	}
 	val, err := ar.Cancel()
 	if err != nil {
 		t.Fatalf("Cancel on completed task should return result, got: %v", err)
 	}
 	if val != 88 {
 		t.Fatalf("expected 88, got %d", val)
+	}
+}
+
+func TestGoWaitAfterCanceledWaitPreservesValueAndError(t *testing.T) {
+	release := make(chan struct{})
+	want := errors.New("task error")
+	ar := Go(context.Background(), func(context.Context) (int, error) {
+		<-release
+		return 42, want
+	})
+	if value, err := ar.Cancel(); value != 0 || !errors.Is(err, context.Canceled) {
+		t.Fatalf("Cancel = (%d, %v), want (0, canceled)", value, err)
+	}
+	close(release)
+	value, err := ar.Wait()
+	if value != 42 || !errors.Is(err, want) {
+		t.Fatalf("Wait = (%d, %v), want (42, %v)", value, err, want)
+	}
+	result := <-ar.WaitCh()
+	if result.Value != 42 || !errors.Is(result.Err, want) {
+		t.Fatalf("WaitCh = (%d, %v), want (42, %v)", result.Value, result.Err, want)
+	}
+	if value, err, ok := ar.WaitTimeout(0); !ok || value != 42 || !errors.Is(err, want) {
+		t.Fatalf("WaitTimeout = (%d, %v, %v)", value, err, ok)
 	}
 }
 
@@ -263,7 +292,7 @@ func TestGo_MultipleWait(t *testing.T) {
 // 二、GoResult 基础测试
 // ============================================================
 
-func TestGoResult_Success(t *testing.T) {
+func TestGoResult_Ok(t *testing.T) {
 	tk := GoResult(context.Background(), func(ctx context.Context) (string, error) {
 		return "hello", nil
 	})
@@ -347,7 +376,7 @@ func TestGoResult_ResultMultiple(t *testing.T) {
 // 三、GoAct 基础测试
 // ============================================================
 
-func TestGoAct_Success(t *testing.T) {
+func TestGoAct_Ok(t *testing.T) {
 	var called atomic.Bool
 	ar := GoAct(context.Background(), func(ctx context.Context) error {
 		called.Store(true)
@@ -411,7 +440,7 @@ func TestGoAct_WaitTimeout(t *testing.T) {
 	}
 }
 
-func TestGoAct_WaitTimeout_Success(t *testing.T) {
+func TestGoAct_WaitTimeout_Ok(t *testing.T) {
 	ar := GoAct(context.Background(), func(ctx context.Context) error {
 		return nil
 	})
@@ -440,7 +469,7 @@ func TestGoAct_WaitContext(t *testing.T) {
 	}
 }
 
-func TestGoAct_WaitContext_Success(t *testing.T) {
+func TestGoAct_WaitContext_Ok(t *testing.T) {
 	ar := GoAct(context.Background(), func(ctx context.Context) error {
 		return nil
 	})
@@ -483,7 +512,7 @@ func TestGoAct_IsPanic(t *testing.T) {
 // 四、GoResultAct 基础测试
 // ============================================================
 
-func TestGoResultAct_Success(t *testing.T) {
+func TestGoResultAct_Ok(t *testing.T) {
 	var done atomic.Bool
 	tk := GoResultAct(context.Background(), func(ctx context.Context) error {
 		done.Store(true)
@@ -689,7 +718,7 @@ func TestBoundedRunner_Available_Busy(t *testing.T) {
 	}
 }
 
-func TestBoundedGo_Success(t *testing.T) {
+func TestBoundedGo_Ok(t *testing.T) {
 	r := NewBoundedRunner(10)
 	n := 100
 	var success atomic.Int64
@@ -734,6 +763,151 @@ func TestBoundedGo_Panic(t *testing.T) {
 	}
 }
 
+func TestBoundedRunnerReusesSlotAfterPanic(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		run  func(*BoundedRunner) error
+	}{
+		{"Go", func(r *BoundedRunner) error {
+			_, err := BoundedGo(r, context.Background(), func(context.Context) (int, error) { panic("failure") }).Wait()
+			return err
+		}},
+		{"GoAct", func(r *BoundedRunner) error {
+			_, err := BoundedGoAct(r, context.Background(), func(context.Context) error { panic("failure") }).Wait()
+			return err
+		}},
+		{"GoResult", func(r *BoundedRunner) error {
+			_, err := BoundedGoResult(r, context.Background(), func(context.Context) (int, error) { panic("failure") }).Result()
+			return err
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := NewBoundedRunner(1)
+			if err := tc.run(r); err == nil {
+				t.Fatal("panic did not produce an error")
+			}
+			if got := r.Available(); got != 1 {
+				t.Fatalf("available after panic = %d, want 1", got)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			value, err := BoundedGo(r, ctx, func(context.Context) (int, error) { return 42, nil }).Wait()
+			if err != nil || value != 42 {
+				t.Fatalf("reused slot: value=%d err=%v", value, err)
+			}
+		})
+	}
+}
+
+type boundedWaitContext struct {
+	context.Context
+	registered chan struct{}
+	once       sync.Once
+}
+
+func (c *boundedWaitContext) Done() <-chan struct{} {
+	c.once.Do(func() { close(c.registered) })
+	return c.Context.Done()
+}
+
+func TestBoundedRunnerCanceledWaiterDoesNotConsumeSlot(t *testing.T) {
+	for _, mode := range []string{"Go", "GoAct", "GoResult", "GoResultAct"} {
+		t.Run(mode, func(t *testing.T) {
+			r := NewBoundedRunner(1)
+			started := make(chan struct{})
+			release := make(chan struct{})
+			first := BoundedGo(r, context.Background(), func(context.Context) (int, error) {
+				close(started)
+				<-release
+				return 1, nil
+			})
+			defer func() {
+				select {
+				case <-release:
+				default:
+					close(release)
+				}
+				first.Wait()
+			}()
+			<-started
+			parent, cancel := context.WithCancel(context.Background())
+			ctx := &boundedWaitContext{Context: parent, registered: make(chan struct{})}
+			defer cancel()
+			var called atomic.Bool
+			done := make(chan error, 1)
+			go func() {
+				switch mode {
+				case "Go":
+					_, err := BoundedGo(r, ctx, func(context.Context) (int, error) { called.Store(true); return 0, nil }).Wait()
+					done <- err
+				case "GoAct":
+					_, err := BoundedGoAct(r, ctx, func(context.Context) error { called.Store(true); return nil }).Wait()
+					done <- err
+				case "GoResult":
+					task := BoundedGoResult(r, ctx, func(context.Context) (int, error) { called.Store(true); return 0, nil })
+					defer task.Cancel()
+					_, err := task.Result()
+					done <- err
+				case "GoResultAct":
+					task := boundedGoResultAct(r, ctx, func(context.Context) error { called.Store(true); return nil })
+					defer task.Cancel()
+					_, err := task.Result()
+					done <- err
+				}
+			}()
+			select {
+			case <-ctx.registered:
+			case <-time.After(5 * time.Second):
+				t.Fatal("waiter did not reach slot acquisition")
+			}
+			cancel()
+			select {
+			case err := <-done:
+				if !errors.Is(err, context.Canceled) || called.Load() || r.Busy() != 1 {
+					t.Fatalf("err=%v called=%v busy=%d", err, called.Load(), r.Busy())
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("canceled waiter did not return")
+			}
+			close(release)
+			if _, err := first.Wait(); err != nil {
+				t.Fatal(err)
+			}
+			value, err := BoundedGo(r, context.Background(), func(context.Context) (int, error) { return 42, nil }).Wait()
+			if err != nil || value != 42 || r.Available() != 1 {
+				t.Fatalf("reused slot: value=%d err=%v available=%d", value, err, r.Available())
+			}
+		})
+	}
+}
+
+func TestTaskBuilderGoActTimeoutAndSlotReuse(t *testing.T) {
+	for _, resultTask := range []bool{false, true} {
+		t.Run(map[bool]string{false: "GoAct", true: "GoResultAct"}[resultTask], func(t *testing.T) {
+			b := NewTaskBuilder[int]().Bounded(1).WithTimeout(10 * time.Millisecond)
+			fn := func(ctx context.Context) error { <-ctx.Done(); return ctx.Err() }
+			var err error
+			if resultTask {
+				task := b.GoResultAct(fn)
+				defer task.Cancel()
+				_, err = task.Result()
+			} else {
+				_, err = b.GoAct(fn).Wait()
+			}
+			if !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("timeout error = %v", err)
+			}
+			if b.bounded.Available() != 1 {
+				t.Fatalf("available slots = %d, want 1", b.bounded.Available())
+			}
+			_, err = b.GoAct(func(context.Context) error { return nil }).Wait()
+			if err != nil {
+				t.Fatalf("reuse slot: %v", err)
+			}
+		})
+	}
+}
+
 func TestBoundedGo_ContextCancel(t *testing.T) {
 	r := NewBoundedRunner(1)
 	blockCh := make(chan struct{})
@@ -757,7 +931,7 @@ func TestBoundedGo_ContextCancel(t *testing.T) {
 	close(blockCh)
 }
 
-func TestBoundedGoAct_Success(t *testing.T) {
+func TestBoundedGoAct_Ok(t *testing.T) {
 	r := NewBoundedRunner(10)
 	var called atomic.Bool
 	ar := BoundedGoAct(r, context.Background(), func(ctx context.Context) error {
@@ -807,7 +981,7 @@ func TestBoundedGoAct_ContextCancel(t *testing.T) {
 	close(blockCh)
 }
 
-func TestBoundedGoResult_Success(t *testing.T) {
+func TestBoundedGoResult_Ok(t *testing.T) {
 	r := NewBoundedRunner(10)
 	tk := BoundedGoResult(r, context.Background(), func(ctx context.Context) (string, error) {
 		return "done", nil
@@ -2017,4 +2191,175 @@ func TestBoundedRunnerBuilder_Zero(t *testing.T) {
 		t.Fatal("BoundedRunnerBuilder.Max(0) should fallback to default")
 	}
 	t.Logf("BoundedRunnerBuilder.Max(0) Max=%d", r.Max())
+}
+
+func TestReviewRepeatedTimeoutDoesNotAccumulateWaiters(t *testing.T) {
+	countWaiters := func() int {
+		buf := make([]byte, 4<<20)
+		n := runtime.Stack(buf, true)
+		return bytes.Count(buf[:n], []byte("github.com/chichengyu/async/internal/task.(*AsyncResult[...]).getResult"))
+	}
+	before := countWaiters()
+	release := make(chan struct{})
+	ar := GoAct(context.Background(), func(context.Context) error { <-release; return nil })
+	defer close(release)
+	for i := 0; i < 100; i++ {
+		ar.WaitTimeout(0)
+	}
+	time.Sleep(30 * time.Millisecond)
+	if after := countWaiters(); after > before+3 {
+		t.Fatalf("blocked result waiters before=%d after=%d", before, after)
+	}
+}
+
+func TestMixedWaitersPreserveValueAndError(t *testing.T) {
+	want := errors.New("partial result")
+	release := make(chan struct{})
+	ar := Go(context.Background(), func(context.Context) (int, error) {
+		<-release
+		return 42, want
+	})
+	var wg sync.WaitGroup
+	for i := 0; i < 80; i++ {
+		wg.Add(1)
+		go func(mode int) {
+			defer wg.Done()
+			var value int
+			var err error
+			completed := true
+			switch mode {
+			case 0:
+				value, err = ar.Wait()
+			case 1:
+				value, err, completed = ar.WaitContext(context.Background())
+			case 2:
+				value, err, completed = ar.WaitTimeout(5 * time.Second)
+			case 3:
+				result := <-ar.WaitCh()
+				value, err = result.Value, result.Err
+			}
+			if !completed || value != 42 || !errors.Is(err, want) {
+				t.Errorf("mode=%d value=%d err=%v completed=%v", mode, value, err, completed)
+			}
+		}(i % 4)
+	}
+	close(release)
+	wg.Wait()
+}
+
+func TestTaskConcurrentResultPreservesValueAndError(t *testing.T) {
+	want := errors.New("partial result")
+	release := make(chan struct{})
+	task := GoResult(context.Background(), func(context.Context) (int, error) {
+		<-release
+		return 42, want
+	})
+	defer task.Cancel()
+	var wg sync.WaitGroup
+	for i := 0; i < 100; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			value, err := task.Result()
+			if value != 42 || !errors.Is(err, want) {
+				t.Errorf("Result = (%d, %v), want (42, %v)", value, err, want)
+			}
+		}()
+	}
+	close(release)
+	wg.Wait()
+	if err := task.Error(); !errors.Is(err, want) {
+		t.Fatalf("Error = %v, want %v", err, want)
+	}
+}
+
+func TestReviewMixedConcurrentWaiters(t *testing.T) {
+	want := errors.New("task failure")
+	for i := 0; i < 1000; i++ {
+		release := make(chan struct{})
+		ar := GoAct(context.Background(), func(context.Context) error { <-release; return want })
+		var wg sync.WaitGroup
+		wg.Add(3)
+		go func() {
+			defer wg.Done()
+			_, err := ar.Wait()
+			if !errors.Is(err, want) {
+				t.Errorf("Wait: %v", err)
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			_, err, ok := ar.WaitTimeout(time.Second)
+			if !ok || !errors.Is(err, want) {
+				t.Errorf("WaitTimeout: %v %v", ok, err)
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			_, err, ok := ar.WaitContext(context.Background())
+			if !ok || !errors.Is(err, want) {
+				t.Errorf("WaitContext: %v %v", ok, err)
+			}
+		}()
+		close(release)
+		wg.Wait()
+	}
+}
+
+func TestAsyncResultWaitAfterTimeoutAndCancellation(t *testing.T) {
+	want := errors.New("task failure")
+	for _, start := range []struct {
+		name string
+		run  func(<-chan struct{}) *AsyncResult[NoResult]
+	}{
+		{"GoAct", func(release <-chan struct{}) *AsyncResult[NoResult] {
+			return GoAct(context.Background(), func(context.Context) error { <-release; return want })
+		}},
+		{"BoundedGoAct", func(release <-chan struct{}) *AsyncResult[NoResult] {
+			return BoundedGoAct(NewBoundedRunner(1), context.Background(), func(context.Context) error { <-release; return want })
+		}},
+	} {
+		t.Run(start.name, func(t *testing.T) {
+			release := make(chan struct{})
+			ar := start.run(release)
+			if _, err, ok := ar.WaitTimeout(0); ok || err == nil {
+				t.Fatalf("WaitTimeout: ok=%v err=%v", ok, err)
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			if _, err, ok := ar.WaitContext(ctx); ok || !errors.Is(err, context.Canceled) {
+				t.Fatalf("WaitContext: ok=%v err=%v", ok, err)
+			}
+			if _, err := ar.Cancel(); !errors.Is(err, context.Canceled) {
+				t.Fatalf("Cancel: %v", err)
+			}
+			close(release)
+			if _, err := ar.Wait(); !errors.Is(err, want) {
+				t.Fatalf("Wait: %v", err)
+			}
+			if result := <-ar.WaitCh(); !errors.Is(result.Err, want) {
+				t.Fatalf("WaitCh: %v", result.Err)
+			}
+			if _, err, ok := ar.WaitContext(context.Background()); !ok || !errors.Is(err, want) {
+				t.Fatalf("completed WaitContext: ok=%v err=%v", ok, err)
+			}
+		})
+	}
+}
+
+func TestReviewCanceledBoundedWait(t *testing.T) {
+	runner := NewBoundedRunner(1)
+	started, release := make(chan struct{}), make(chan struct{})
+	first := BoundedGo(runner, context.Background(), func(context.Context) (int, error) { close(started); <-release; return 1, nil })
+	<-started
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	second := BoundedGo(runner, ctx, func(context.Context) (int, error) { t.Error("unexpected callback"); return 0, nil })
+	if _, err := second.Wait(); !errors.Is(err, context.Canceled) {
+		t.Fatalf("err=%v", err)
+	}
+	close(release)
+	if value, err := first.Wait(); err != nil || value != 1 {
+		t.Fatalf("value=%d err=%v", value, err)
+	}
 }

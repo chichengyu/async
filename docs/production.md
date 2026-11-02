@@ -6,16 +6,16 @@
 
 ## 深度交叉验证安全确认
 
-经过对 async 库全部核心并发组件的多轮深度交叉正向/反向验证，确认以下关键安全边界：
+以下是并发场景的测试记录和使用边界；测试结果不能覆盖所有调度和生产负载：
 
 | 组件 | 验证项 | 结论 |
 |------|--------|------|
-| **RateLimiter** | `mu`/`resizeMu` 锁序 | 无死锁风险，100 轮死锁验证测试通过 |
+| **RateLimiter** | `mu`/`resizeMu` 锁序 | 相关并发测试通过 |
 | **RateLimiter** | `Resize` + `Acquire`/`Release` 并发 | Race Detector 零报警，426K 次并发安全 |
-| **Pool** | `WaitTimeout` 清理 goroutine | 有 `MaxCleanupDuration` 超时控制，无泄漏 |
+| **Pool** | `WaitTimeout` 清理 goroutine | 超时后清理可继续；任务应响应取消并最终退出 |
 | **Pool** | `CloseAndWaitTimeout` 并发 | 50 轮 × 200 并发，goroutine 计数 = 0 |
 | **Group** | `AutoScale` + `Go`/`Reset` 竞态 | 30 轮 × 100 并发，无泄漏无竞态 |
-| **Group** | `WaitContext`/`WaitTimeout` 取消传播时序 | 90 用例交叉验证，`cancelAll()` 先行调用修复完成 |
+| **Group** | `WaitContext`/`WaitTimeout` 取消传播 | 等待取消时请求取消任务，后台继续等待任务完成 |
 | **ShardedGroup** | cancel 共享 | FailFast 设计正确，级联取消无误 |
 
 > 以上验证已覆盖库中所有高风险的并发路径（4 项误判排除 + 1 项真实 Bug 已根治），确认生产环境安全可靠。
@@ -33,7 +33,7 @@
 - [分片不保序](#shard-order)
 - [BoundedRunner 注意事项](#bounded-runner)
 - [Close 系列方法差异](#close-vs-closewait)
-- [FailFast 会丢弃成功结果](#failfast)
+- [FailFast 与部分结果](#failfast)
 - [Retry 关键边界](#retry)
 - [ShardedPool / ShardedGroup 资源总量](#shardedpool)
 - [RateLimiter 并发安全边界](#ratelimiter-safety)
@@ -74,7 +74,7 @@ async.Pool[string]().Worker(8).
     })
 ```
 
-**RingBuf 不限制 results 切片**——环形缓冲和 results 切片是两个并行的存储通道。如需完全避免 results 增长，请配合 `MaxResults(0)`。
+**RingBuf 不限制 results 切片**。设置正数 `MaxResults(n)` 后，超过上限的结果才会写入环形缓冲；`MaxResults(0)` 表示无限制，不能用于限制内存。环形缓冲容量有限，满时仍可能丢失结果，应及时消费并按实际负载设置容量。
 
 ---
 
@@ -85,11 +85,11 @@ async.Pool[string]().Worker(8).
 | 场景 | 推荐 | 原因 |
 |------|------|------|
 | 任务数 < 5 万，一次性批量 | **Group** | 用完销毁，编码简单 |
-| 任务数 > 5 万，或长期运行 | **Pool** | goroutine 复用，无堆积风险 |
-| 海量任务（百万/千万） | **Pool + RingBuffer** | Group 每任务新 goroutine，内存爆炸 |
+| 长期运行、反复提交 | **Pool** | worker 可复用，并可限制结果存储 |
+| 海量任务（百万/千万） | **Pool + MaxResults + RingBuffer** | 限制主结果存储，并及时消费溢出结果 |
 
 ```go
-// 危险：100 万任务 → 100 万 goroutine → 内存爆炸
+// Group 使用固定 worker，但大量结果和任务元数据仍会占用内存。
 async.Group[int]().Worker(500).Run(func(ctx context.Context, g *Group[int]) error {
     for i := 0; i < 1_000_000; i++ { g.Go(ctx, fn) }
     return nil
@@ -117,7 +117,7 @@ async.Pool[int]().Worker(async.IO()).
 |------|---------------|--------|
 | **Pool** | `Close()` / `WaitAndClose()` / `CloseAndWait()` | worker goroutine 永久泄漏 |
 | **RateLimiter** | `Close()` | ticker goroutine 泄漏 |
-| **BoundedRunner** | 无 Close 方法，但需 `Wait()` 获取任务结果 | goroutine 挂起等待 |
+| **BoundedRunner** | 无 Close 方法；根据需要等待任务结果 | 回调持续阻塞会占用并发槽位 |
 
 ```go
 // Pool 用 Run 自动管理生命周期
@@ -209,7 +209,7 @@ async.Pool[string]().Worker(8).Streaming(4096).Run(func(ctx context.Context, p *
 `ShardedPool` 和 `ShardedGroup` 的各个分片独立执行，最终结果不保证与输入顺序一致：
 
 - **RoundRobin 分发**：结果顺序完全随机
-- **Hash 分发**：同一 key 的结果相对有序，但跨 key 不保序
+- **Hash 分发**：相同 key 路由到同一分片，但分片内多个任务仍可能并发完成，不能保证结果顺序。
 
 需要保序请使用非分片版本（`Pool` / `Group`）。
 
@@ -222,16 +222,16 @@ async.Pool[string]().Worker(8).Streaming(4096).Run(func(ctx context.Context, p *
 `BoundedRunner` 限制的是同时运行的 goroutine 数，不是总任务数。一次性提交千万任务仍需存储等量 `*AsyncResult[T]`：
 
 ```go
-runner := async.NewBoundedRunnerBuilder().Max(1000).Build()
+builder := async.Task[int]().Context(ctx).Bounded(1000)
 results := make([]*async.AsyncResult[int], 0, 10_000_000) // 注意内存
 for i := 0; i < 10_000_000; i++ {
-    results = append(results, async.Task[int]().Context(ctx).Go(func(ctx context.Context) (int, error) {
+    results = append(results, builder.Go(func(ctx context.Context) (int, error) {
         return fn(ctx)
     }))
 }
 ```
 
-`BoundedRunner` 无需 Close，但必须通过 `Wait()`/`WaitTimeout()` 获取每个任务结果，否则 goroutine 泄漏并占用信号量槽位。
+`BoundedRunner` 无需 Close；回调返回时自动释放槽位，无需等待结果来释放槽位。使用 `Wait()` 或 `WaitTimeout()` 获取结果并处理错误；持续阻塞且不响应上下文的回调会一直占用槽位。
 
 ---
 
@@ -283,26 +283,17 @@ results := p.WaitAndClose()
 
 <a id="failfast"></a>
 
-## FailFast 会丢弃成功结果
+## FailFast 与部分结果
 
-任意一个任务失败后，FailFast 会取消所有其他任务，已成功的任务结果被丢弃：
+任务失败后，FailFast 会取消其余工作。切片 Map 的逐项结果仍保留已完成的成功值；尚未执行或响应取消的任务可能返回错误。已开始的回调须自行响应上下文取消。
 
 ```go
-// 误解：以为能拿到部分成功结果
-results, err := async.Slice(ctx, items).Parallel().FailFast().Map(fn)
-// err != nil 时，results 是 nil，成功的 999 个结果全丢了
-
-// 需要保留部分成功结果，用普通模式 + 业务层处理
-sr := async.Slice(ctx, items).Parallel().Worker(async.IO()).Map(fn)
-rawResults := sr.Results()
-var successes, failures []YourType
-for _, r := range rawResults {
-    if r.Ok() {
-        successes = append(successes, r.Value)
-    } else {
-        failures = append(failures, r.Value)
-    }
-}
+sr := async.Slice(ctx, items).Worker(async.IO()).FailFast().Map(fn)
+successes := sr.Values()
+failures := sr.Errors()
+// sr.Results() 保留逐项结果，sr.Error() 返回汇总错误。
+_ = successes
+_ = failures
 ```
 
 ---
@@ -315,9 +306,10 @@ for _, r := range rawResults {
 // 陷阱1：MaxRetries=0 表示"不重试"，不是"无限重试"
 async.RetryVoid(ctx).MaxRetries(0).Run(fn) // 只执行一次
 
-// 陷阱2：Context 取消会立即中止所有重试
+// 陷阱2：Context 取消会阻止后续重试；正在运行的回调必须自行响应取消
 ctx, cancel := context.WithTimeout(parentCtx, 1*time.Second)
-async.RetryVoid(ctx).Exponential().MaxRetries(10).Backoff(1*time.Second, 30*time.Second).Run(slowFn) // 1s 后强制中止
+defer cancel()
+async.RetryVoid(ctx).Exponential().MaxRetries(10).Backoff(1*time.Second, 30*time.Second).Run(slowFn) // slowFn 需检查 ctx.Done()
 
 // 陷阱3：panic 被自动捕获，不会中断重试流程
 // panic 达到 MaxRetries+1 次后才返回 *PanicError
@@ -432,12 +424,12 @@ async.Pool[MyType]().Worker(async.IO()).
 | **RateLimiter Close** | 内部有 ticker + refill goroutine，用完必须 Close |
 | **RateLimiter Wait 阻塞** | `Wait()` 令牌不足时阻塞，可能堆积大量 goroutine |
 | **RateLimiter Burst 非缓存** | Burst 是初始突发量，用完后需等补充，不是长期可用 |
-| **RateLimiter Resize 安全** | 经深度交叉验证，Resize+Acquire/Release 并发绝对安全 |
+| **RateLimiter Resize 安全** | 支持与 Acquire/Release 并发调用，相关场景有竞态测试覆盖 |
 | **Group AutoScale** | 按需启用，Min/Max 根据下游承受能力调整 |
-| **Group WaitContext/WaitTimeout** | 修复后 `cancelAll()` 在 `workerWg.Wait()` 之前调用，取消信号正确传播 |
+| **Group WaitContext/WaitTimeout** | 超时或取消后返回结果快照，后台继续等待任务退出 |
 | **ShardedGroup cancel** | FailFast 模式下 cancel 共享是设计意图，非 bug |
 | **全局配置尽早调用** | `Set*` 函数建议在 `init()` 中调用，避免并发竞态 |
-| **FailFast 丢弃成功结果** | 第一个错误后其他成功结果被丢弃，详见上文 |
+| **FailFast 与部分结果** | 失败后取消其余工作；检查逐项结果以区分成功、失败和取消 |
 | **MaxResults 默认** | 全局默认 100_000，Pool 创建时自动应用；显式设为 0 恢复无限制 |
 
 ---

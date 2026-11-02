@@ -20,6 +20,7 @@ import stdmaps "maps"
 // Map 泛型 key-value 容器。
 // K：键类型，必须为 comparable。
 // V：值类型，任意类型。
+// 容器不提供并发同步；并发访问中有写入时，调用方必须同步所有访问。
 type Map[K comparable, V any] struct {
 	data map[K]V
 }
@@ -34,7 +35,7 @@ func NewMap[K comparable, V any]() *Map[K, V] {
 	return &Map[K, V]{data: make(map[K]V)}
 }
 
-// From 从原生 map 创建 Map，会深拷贝数据。
+// From 从原生 map 创建 Map，浅拷贝键值对；引用类型的值仍共享其底层数据。
 func From[K comparable, V any](m map[K]V) *Map[K, V] {
 	if m == nil {
 		return &Map[K, V]{data: make(map[K]V)}

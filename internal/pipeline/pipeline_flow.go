@@ -67,6 +67,7 @@ type Flow[T any] struct {
 	submitGuard atomic.Bool
 	addInFlight atomic.Int64
 	submitIdx   atomic.Int64
+	submitCount atomic.Int64
 	errCnt      int64
 	resultCnt   atomic.Int64 // 成功写入 resultCh 的结果总数
 }
@@ -81,6 +82,7 @@ type FlowConfig[T any] struct {
 type flowStage[T any] struct {
 	name        string
 	concurrency int
+	skipOnError bool
 	inputCh     chan *flowItem[T] // 接收上游数据（阶段 0 的 inputCh 由 Submit 写入）
 	outputCh    chan *flowItem[T] // 发送给下游（最终阶段为 nil，直接写 resultCh）
 	wg          sync.WaitGroup
@@ -139,6 +141,7 @@ func NewFlow[T any](
 		fs := &flowStage[T]{
 			name:        stage.Name,
 			concurrency: concurrency,
+			skipOnError: stage.SkipOnError,
 		}
 		if i < numStages-1 {
 			fs.outputCh = make(chan *flowItem[T], bufSize)
@@ -171,10 +174,11 @@ func NewFlow[T any](
 // ──────────────────────────── 公共方法 ────────────────────────────
 
 // Submit 向管道提交一个元素，返回提交序号和可能的错误。
-// 序号按提交顺序单调递增，可用于结果排序。
+// 序号在尝试入队前分配；失败可能留下间隔。并发提交时，序号不保证与入队顺序一致。
+// Result 不包含该序号；如需关联结果或排序，应在 item 中携带业务标识。
 //
 // 参数：
-//   - ctx：上下文（per-item 取消信号，不影响管道生命周期）
+//   - ctx：控制等待入队；提交成功后不用于取消该元素的处理。阶段回调接收管道上下文。
 //   - item：待处理的元素
 //
 // 返回值：
@@ -193,11 +197,15 @@ func (fl *Flow[T]) Submit(ctx context.Context, item T) (int, error) {
 
 	select {
 	case fl.stages[0].inputCh <- pi:
+		fl.submitCount.Add(1)
 		fl.addInFlight.Add(-1)
 		return int(idx), nil
 	case <-ctx.Done():
 		fl.addInFlight.Add(-1)
 		return -1, ctx.Err()
+	case <-fl.ctx.Done():
+		fl.addInFlight.Add(-1)
+		return -1, fl.ctx.Err()
 	}
 }
 
@@ -234,7 +242,8 @@ func (fl *Flow[T]) Results() <-chan core.Result[T] {
 // 返回值：resultCh 中未被读取的残留结果。
 // 若调用方已通过 Results() 实时消费，返回值通常为空或少量元素。
 //
-// Close 可以安全地多次调用（幂等）。
+// Close 可以安全地多次调用（幂等）。只有首次调用等待关闭完成并返回残留结果；
+// 并发的后续调用立即返回 nil，不表示首次关闭已完成。
 func (fl *Flow[T]) Close() []core.Result[T] {
 	if !fl.closed.CompareAndSwap(false, true) {
 		return nil
@@ -243,42 +252,29 @@ func (fl *Flow[T]) Close() []core.Result[T] {
 	// 禁止新提交
 	fl.submitGuard.Store(true)
 
-	// 等待所有正在 Submit 的 goroutine 完成 channel 写入
-	fl.waitAddInFlight()
-
-	// 关闭阶段 0 的输入 channel，触发级联排空
-	close(fl.stages[0].inputCh)
-
-	// 逐阶段等待 worker 退出，关闭下一阶段的输入
-	for i := 0; i < len(fl.stages); i++ {
-		fl.stages[i].wg.Wait()
-		if i < len(fl.stages)-1 {
-			close(fl.stages[i].outputCh)
-		}
-	}
-
-	// 排空结果 channel 中未被消费的数据
-	var remaining []core.Result[T]
-	for {
-		select {
-		case r, ok := <-fl.resultCh:
-			if !ok {
-				goto done
+	// Drain concurrently with shutdown so downstream backpressure cannot block it.
+	go func() {
+		fl.waitAddInFlight()
+		close(fl.stages[0].inputCh)
+		for i := range fl.stages {
+			fl.stages[i].wg.Wait()
+			if i < len(fl.stages)-1 {
+				close(fl.stages[i].outputCh)
 			}
-			remaining = append(remaining, r)
-		default:
-			goto done
 		}
+		close(fl.resultCh)
+	}()
+	var remaining []core.Result[T]
+	for r := range fl.resultCh {
+		remaining = append(remaining, r)
 	}
-done:
-	close(fl.resultCh)
 	fl.cancel()
 	return remaining
 }
 
 // SubmitCount 返回已提交的元素数量。
 func (fl *Flow[T]) SubmitCount() int64 {
-	return fl.submitIdx.Load()
+	return fl.submitCount.Load()
 }
 
 // ErrCount 返回处理过程中出错的数量。
@@ -311,27 +307,30 @@ func (fl *Flow[T]) processStageItem(
 	fn func(context.Context, string, T) (T, error),
 	stageName string,
 ) {
-	defer func() {
-		if r := recover(); r != nil {
-			item.err = core.NewPanicError(r)
-			atomic.AddInt64(&fl.errCnt, 1)
-		}
-	}()
-
-	val, err := fn(fl.ctx, stageName, item.value)
-	item.value = val
-	if err != nil {
-		item.err = err
-		atomic.AddInt64(&fl.errCnt, 1)
+	if !fs.skipOnError || item.err == nil {
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					item.err = core.NewPanicError(r)
+					atomic.AddInt64(&fl.errCnt, 1)
+				}
+			}()
+			val, err := fn(fl.ctx, stageName, item.value)
+			item.value = val
+			item.err = err
+			if err != nil {
+				atomic.AddInt64(&fl.errCnt, 1)
+			}
+		}()
 	}
 
 	if fs.outputCh != nil {
 		// 非最终阶段：转发到下一阶段
-		// 若 ctx 已取消（Close 过程中），使用非阻塞发送防止死锁
+		// 外部取消管道 context 时允许停止转发，避免下游不再消费时阻塞。
 		select {
 		case fs.outputCh <- item:
 		case <-fl.ctx.Done():
-			// 管道关闭中，丢弃该元素
+			// 管道 context 已取消，丢弃该元素。
 		}
 	} else {
 		// 最终阶段：发送到结果 channel
@@ -340,7 +339,7 @@ func (fl *Flow[T]) processStageItem(
 		case fl.resultCh <- r:
 			fl.resultCnt.Add(1)
 		case <-fl.ctx.Done():
-			// 管道关闭中，丢弃该结果
+			// 管道 context 已取消，丢弃该结果。
 		}
 	}
 }
@@ -395,7 +394,7 @@ type FlowStats struct {
 func (fl *Flow[T]) Stats() FlowStats {
 	s := FlowStats{
 		ResultBuf:   len(fl.resultCh),
-		TotalSubmit: fl.submitIdx.Load(),
+		TotalSubmit: fl.submitCount.Load(),
 		TotalError:  atomic.LoadInt64(&fl.errCnt),
 		TotalResult: fl.resultCnt.Load(),
 		Closed:      fl.closed.Load(),

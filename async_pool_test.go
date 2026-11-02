@@ -31,6 +31,7 @@ func TestPoolBuilder_Chain_Basic(t *testing.T) {
 			err := Pool[int]().Context(freshCtx()).
 				Worker(32).
 				MaxPending(0).
+				MaxResults(tier.Size).
 				Run(func(ctx context.Context, p *pool.Pool[int]) error {
 					for i := 0; i < tier.Size; i++ {
 						v := i
@@ -187,6 +188,7 @@ func TestPoolBuilder_Chain_ConfigFunc(t *testing.T) {
 				}).
 				Worker(32). // override
 				MaxPending(0).
+				MaxResults(tier.Size).
 				Run(func(ctx context.Context, p *pool.Pool[int]) error {
 					for i := 0; i < tier.Size; i++ {
 						v := i
@@ -224,6 +226,7 @@ func TestPoolBuilder_Chain_DefaultReset(t *testing.T) {
 				Worker(200).
 				DefaultPoolConfig().
 				Worker(32).
+				MaxResults(tier.Size).
 				Run(func(ctx context.Context, p *pool.Pool[int]) error {
 					for i := 0; i < tier.Size; i++ {
 						p.Submit(ctx, func(ctx context.Context) (int, error) {
@@ -290,6 +293,7 @@ func TestPoolBuilder_Chain_Streaming(t *testing.T) {
 			err := Pool[int]().Context(freshCtx()).
 				Worker(16).
 				Streaming(256).
+				MaxResults(tier.Size).
 				Run(func(ctx context.Context, p *pool.Pool[int]) error {
 					for i := 0; i < tier.Size; i++ {
 						p.Submit(ctx, func(ctx context.Context) (int, error) {
@@ -351,6 +355,7 @@ func TestPoolBuilder_Chain_RingBuf(t *testing.T) {
 				Worker(32).
 				MaxPending(0).
 				RingBuf(bufSize).
+				MaxResults(tier.Size).
 				Run(func(ctx context.Context, p *pool.Pool[int]) error {
 					for i := 0; i < tier.Size; i++ {
 						v := i
@@ -400,7 +405,7 @@ func TestPoolBuilder_Chain_EmptyRun(t *testing.T) {
 
 // ==================== Must ====================
 
-func TestMust_Success(t *testing.T) {
+func TestMust_Ok(t *testing.T) {
 	val := Must(42, nil)
 	if val != 42 {
 		t.Fatalf("Must(42, nil) = %d, want 42", val)
@@ -474,6 +479,22 @@ func TestForEachPool_Basic(t *testing.T) {
 	}
 	if sum.Load() != 55 {
 		t.Fatalf("sum = %d, want 55", sum.Load())
+	}
+}
+
+func TestForEachPoolCanceledContextReportsRejectedTasks(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var calls atomic.Int32
+	p, err := ForEachPool(ctx, []int{1, 2, 3}, func(context.Context, int) error {
+		calls.Add(1)
+		return nil
+	}, 2)
+	if p == nil || !errors.Is(err, context.Canceled) || !errors.Is(p.FirstError(), context.Canceled) {
+		t.Fatalf("pool=%v err=%v", p, err)
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("callback called %d times", calls.Load())
 	}
 }
 

@@ -221,6 +221,18 @@ func (b *pipelineBase[T, S]) applyTimeout() (context.Context, context.CancelFunc
 
 // ── 执行：Serial 串行模式 ──
 
+func invokeResultCallback[T any](cb func(string, core.Result[T]), stage string, result *core.Result[T]) {
+	if cb == nil {
+		return
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			result.Err = core.NewPanicError(r)
+		}
+	}()
+	cb(stage, *result)
+}
+
 func (b *pipelineBase[T, S]) execSerial(
 	fn func(context.Context, string, T) (T, error),
 ) ([]core.Result[T], error) {
@@ -242,8 +254,7 @@ func (b *pipelineBase[T, S]) execSerial(
 					for k := j; k < len(resultsList); k++ {
 						nextResults[k] = resultsList[k]
 					}
-					resultsList = nextResults
-					goto stageDone
+					return nextResults, nil
 				default:
 				}
 			}
@@ -256,24 +267,21 @@ func (b *pipelineBase[T, S]) execSerial(
 				itemCtx, itemCancel = ctx, func() {}
 			}
 
-			val, err := fn(itemCtx, stage.Name, resultsList[j].Value)
+			val, err := safeCall(itemCtx, fn, stage.Name, resultsList[j].Value)
 			itemCancel()
 
 			nextResults[j] = core.Result[T]{Value: val, Err: err}
 
-			if b.resultCb != nil {
-				b.resultCb(stage.Name, nextResults[j])
-			}
+			invokeResultCallback(b.resultCb, stage.Name, &nextResults[j])
+			err = nextResults[j].Err
 
 			if b.failFast && err != nil {
 				for k := j + 1; k < len(resultsList); k++ {
 					nextResults[k] = resultsList[k]
 				}
-				resultsList = nextResults
-				goto stageDone
+				return nextResults, nil
 			}
 		}
-	stageDone:
 		resultsList = nextResults
 	}
 
@@ -330,17 +338,23 @@ func (b *pipelineBase[T, S]) execSerialPipe(
 					itemCtx, itemCancel = ctx, func() {}
 				}
 
-				val, err := fn(itemCtx, stage.Name, item)
+				val, err := safeCall(itemCtx, fn, stage.Name, item)
 				itemCancel()
 
 				result := core.Result[T]{Value: val, Err: err}
 
-				if b.resultCb != nil {
-					b.resultCb(stage.Name, result)
-				}
+				invokeResultCallback(b.resultCb, stage.Name, &result)
+				err = result.Err
 
 				if isFinal {
-					outCh <- result
+					if ctx.Err() != nil {
+						return
+					}
+					select {
+					case outCh <- result:
+					case <-ctx.Done():
+						return
+					}
 				}
 				nextItems = append(nextItems, val)
 
@@ -363,7 +377,7 @@ func (b *pipelineBase[T, S]) execParallel(
 	ctx, cancel := b.applyTimeout()
 	defer cancel()
 
-	if b.pool != nil {
+	if b.pool != nil || b.poolAuto {
 		return b.execParallelPooled(ctx, fn)
 	}
 	if b.shards > 1 {
@@ -413,14 +427,6 @@ func (b *pipelineBase[T, S]) execParallelNative(
 			wg.Add(1)
 			go func(start, end int) {
 				defer wg.Done()
-				defer func() {
-					if r := recover(); r != nil {
-						for j := start; j < end; j++ {
-							var zero T
-							nextResults[j] = core.Result[T]{Value: zero, Err: core.NewPanicError(r)}
-						}
-					}
-				}()
 				for j := start; j < end; j++ {
 					if b.failFast && cancelled.Load() {
 						nextResults[j] = resultsList[j]
@@ -444,13 +450,21 @@ func (b *pipelineBase[T, S]) execParallelNative(
 						itemCtx, itemCancel = ffCtx, func() {}
 					}
 
-					val, err := fn(itemCtx, stage.Name, resultsList[j].Value)
+					val, err := safeCall(itemCtx, fn, stage.Name, resultsList[j].Value)
 					itemCancel()
 
 					nextResults[j] = core.Result[T]{Value: val, Err: err}
 
 					if b.resultCb != nil {
-						b.resultCb(stage.Name, nextResults[j])
+						func() {
+							defer func() {
+								if r := recover(); r != nil {
+									err = core.NewPanicError(r)
+									nextResults[j].Err = err
+								}
+							}()
+							b.resultCb(stage.Name, nextResults[j])
+						}()
 					}
 
 					if b.failFast && err != nil {
@@ -488,32 +502,39 @@ func (b *pipelineBase[T, S]) execParallelSharded(
 	for _, stage := range b.stages {
 		concurrency := b.resolveConcurrency(stage.Concurrency, len(resultsList))
 		g := group.NewGroup[T](concurrency)
+		stageCtx := ffCtx
 		if b.failFast {
-			g.WithFailFast(ffCtx)
+			_, stageCtx = g.WithFailFast(ffCtx)
 		} else {
 			g.WithContext(ffCtx)
 		}
-		if b.resultCb != nil {
-			stageName := stage.Name
-			cb := b.resultCb
-			g.WithResultCallback(func(r core.Result[T]) {
-				cb(stageName, r)
-			})
-		}
-
 		mg := g.Shard(b.shards)
 
 		for _, r := range resultsList {
 			item := r.Value
 			stageName := stage.Name
-			mg.Go(ffCtx, func(ctx context.Context) (T, error) {
-				return fn(ctx, stageName, item)
+			mg.Go(stageCtx, func(ctx context.Context) (T, error) {
+				value, err := safeCall(ctx, fn, stageName, item)
+				result := core.Result[T]{Value: value, Err: err, Occupied: true}
+				invokeResultCallback(b.resultCb, stageName, &result)
+				return result.Value, result.Err
 			})
 		}
 
 		stageResults := mg.Wait()
 		mg.Close()
 		resultsList = stageResults
+		if b.failFast {
+			for _, result := range stageResults {
+				if result.Err != nil {
+					ffCancel()
+					break
+				}
+			}
+			if ffCtx.Err() != nil {
+				break
+			}
+		}
 	}
 	return resultsList, nil
 }
@@ -523,6 +544,9 @@ func (b *pipelineBase[T, S]) execParallelPooled(
 	ctx context.Context,
 	fn func(context.Context, string, T) (T, error),
 ) ([]core.Result[T], error) {
+	if b.pool != nil && b.poolAuto {
+		defer b.pool.Close()
+	}
 	resultsList := make([]core.Result[T], len(b.items))
 	for i, item := range b.items {
 		resultsList[i] = core.Result[T]{Value: item}
@@ -537,12 +561,12 @@ func (b *pipelineBase[T, S]) execParallelPooled(
 		ffCtx = ctx
 	}
 
-	for _, stage := range b.stages {
+	for stageIndex, stage := range b.stages {
 		concurrency := b.resolveConcurrency(stage.Concurrency, len(resultsList))
 
 		usePool := b.pool
 		ownPool := false
-		if b.poolAuto || usePool == nil {
+		if usePool == nil {
 			usePool = pool.NewPool[T](concurrency)
 			if b.maxResults >= 0 {
 				usePool.WithMaxResults(b.maxResults)
@@ -550,30 +574,66 @@ func (b *pipelineBase[T, S]) execParallelPooled(
 			ownPool = true
 		}
 
+		callbackDone := make([]atomic.Bool, len(resultsList))
 		for j := range resultsList {
 			item := resultsList[j].Value
 			stageName := stage.Name
 			idx := j
-			usePool.SubmitAt(idx, ffCtx, func(ctx context.Context) (T, error) {
-				return fn(ctx, stageName, item)
-			})
+			task := func(ctx context.Context) (T, error) {
+				value, err := safeCall(ctx, fn, stageName, item)
+				if err != nil && b.failFast {
+					ffCancel()
+				}
+				if b.failFast && b.resultCb != nil {
+					result := core.Result[T]{Value: value, Err: err, Occupied: true}
+					callbackDone[idx].Store(true)
+					invokeResultCallback(b.resultCb, stageName, &result)
+					value, err = result.Value, result.Err
+				}
+				if err != nil && b.failFast {
+					ffCancel()
+				}
+				return value, err
+			}
+			var err error
+			if b.failFast && b.resultCb != nil {
+				err = usePool.SubmitAtWithResultTransform(idx, ffCtx, task, func(result core.Result[T]) core.Result[T] {
+					if !callbackDone[idx].Swap(true) {
+						invokeResultCallback(b.resultCb, stageName, &result)
+						if result.Err != nil {
+							ffCancel()
+						}
+					}
+					return result
+				})
+			} else {
+				err = usePool.SubmitAt(idx, ffCtx, task)
+			}
+			if err != nil && b.failFast {
+				ffCancel()
+			}
 		}
 
 		stageResults := usePool.Wait()
 		if ownPool {
 			usePool.Close()
+		} else if !b.poolAuto || stageIndex < len(b.stages)-1 {
+			usePool.ResetWait()
 		}
 
-		for _, r := range stageResults {
-			if r.Err != nil && b.failFast {
-				ffCancel()
+		for i := range stageResults {
+			if !b.failFast {
+				invokeResultCallback(b.resultCb, stage.Name, &stageResults[i])
 			}
-			if b.resultCb != nil {
-				b.resultCb(stage.Name, r)
+			if stageResults[i].Err != nil && b.failFast {
+				ffCancel()
 			}
 		}
 
 		resultsList = stageResults
+		if b.failFast && ffCtx.Err() != nil {
+			break
+		}
 	}
 	return resultsList, nil
 }
@@ -603,29 +663,36 @@ func (b *pipelineBase[T, S]) execParallelAutoScale(
 		if b.autoScaleCfg != nil {
 			g.EnableAutoScale(b.autoScaleCfg)
 		}
+		stageCtx := ffCtx
 		if b.failFast {
-			g.WithFailFast(ffCtx)
+			_, stageCtx = g.WithFailFast(ffCtx)
 		} else {
 			g.WithContext(ffCtx)
 		}
-		if b.resultCb != nil {
-			stageName := stage.Name
-			cb := b.resultCb
-			g.WithResultCallback(func(r core.Result[T]) {
-				cb(stageName, r)
-			})
-		}
-
 		for _, r := range resultsList {
 			item := r.Value
 			stageName := stage.Name
-			g.Go(ffCtx, func(ctx context.Context) (T, error) {
-				return fn(ctx, stageName, item)
+			g.Go(stageCtx, func(ctx context.Context) (T, error) {
+				value, err := safeCall(ctx, fn, stageName, item)
+				result := core.Result[T]{Value: value, Err: err, Occupied: true}
+				invokeResultCallback(b.resultCb, stageName, &result)
+				return result.Value, result.Err
 			})
 		}
 
 		stageResults := g.Wait()
 		resultsList = stageResults
+		if b.failFast {
+			for _, result := range stageResults {
+				if result.Err != nil {
+					ffCancel()
+					break
+				}
+			}
+			if ffCtx.Err() != nil {
+				break
+			}
+		}
 	}
 	return resultsList, nil
 }
@@ -665,6 +732,7 @@ func (b *pipelineBase[T, S]) execParallelPipe(
 		chunkSize := (len(resultsList) + concurrency - 1) / concurrency
 		var wg sync.WaitGroup
 		var cancelled atomic.Bool
+		processed := make([]bool, len(resultsList))
 
 		for c := 0; c < concurrency; c++ {
 			start := c * chunkSize
@@ -678,14 +746,6 @@ func (b *pipelineBase[T, S]) execParallelPipe(
 			wg.Add(1)
 			go func(start, end int) {
 				defer wg.Done()
-				defer func() {
-					if r := recover(); r != nil {
-						for j := start; j < end; j++ {
-							var zero T
-							nextResults[j] = core.Result[T]{Value: zero, Err: core.NewPanicError(r)}
-						}
-					}
-				}()
 				for j := start; j < end; j++ {
 					if b.failFast && cancelled.Load() {
 						nextResults[j] = resultsList[j]
@@ -700,11 +760,11 @@ func (b *pipelineBase[T, S]) execParallelPipe(
 						default:
 						}
 					}
-					val, err := fn(ffCtx, stage.Name, resultsList[j].Value)
+					processed[j] = true
+					val, err := safeCall(ffCtx, fn, stage.Name, resultsList[j].Value)
 					nextResults[j] = core.Result[T]{Value: val, Err: err}
-					if b.resultCb != nil {
-						b.resultCb(stage.Name, nextResults[j])
-					}
+					invokeResultCallback(b.resultCb, stage.Name, &nextResults[j])
+					err = nextResults[j].Err
 					if b.failFast && err != nil {
 						cancelled.Store(true)
 						ffCancel()
@@ -714,6 +774,28 @@ func (b *pipelineBase[T, S]) execParallelPipe(
 		}
 		wg.Wait()
 		resultsList = nextResults
+		if b.failFast && ffCtx.Err() != nil {
+			if bufSize <= 0 {
+				bufSize = min(len(resultsList), 16384)
+			}
+			outCh := make(chan core.Result[T], bufSize)
+			go func() {
+				defer close(outCh)
+				defer cancel()
+				defer ffCancel()
+				for i, r := range resultsList {
+					if !processed[i] || ctx.Err() != nil {
+						continue
+					}
+					select {
+					case outCh <- r:
+					case <-ctx.Done():
+						return
+					}
+				}
+			}()
+			return outCh
+		}
 	}
 
 	// 最终阶段：流式输出
@@ -730,13 +812,20 @@ func (b *pipelineBase[T, S]) execParallelPipe(
 	outCh := make(chan core.Result[T], bufSize)
 
 	g := group.NewGroup[T](finalConcurrency)
+	stageCtx := ffCtx
 	if b.failFast {
-		g.WithFailFast(ffCtx)
+		_, stageCtx = g.WithFailFast(ffCtx)
 	} else {
 		g.WithContext(ffCtx)
 	}
 	g.WithResultCallback(func(r core.Result[T]) {
-		outCh <- r
+		if ctx.Err() != nil {
+			return
+		}
+		select {
+		case outCh <- r:
+		case <-ctx.Done():
+		}
 	})
 
 	go func() {
@@ -746,8 +835,11 @@ func (b *pipelineBase[T, S]) execParallelPipe(
 		for _, r := range resultsList {
 			item := r.Value
 			stageName := finalStage.Name
-			g.Go(ffCtx, func(ctx context.Context) (T, error) {
-				return fn(ctx, stageName, item)
+			g.Go(stageCtx, func(ctx context.Context) (T, error) {
+				value, err := safeCall(ctx, fn, stageName, item)
+				result := core.Result[T]{Value: value, Err: err, Occupied: true}
+				invokeResultCallback(b.resultCb, stageName, &result)
+				return result.Value, result.Err
 			})
 		}
 		g.Wait()
@@ -773,7 +865,7 @@ func (b *pipelineBase[T, S]) execSerialWithMeta(
 			if b.failFast {
 				select {
 				case <-ctx.Done():
-					goto serialMetaDone
+					return results
 				default:
 				}
 			}
@@ -786,21 +878,18 @@ func (b *pipelineBase[T, S]) execSerialWithMeta(
 				itemCtx, itemCancel = ctx, func() {}
 			}
 
-			val, err := fn(itemCtx, stage.Name, item)
+			val, err := safeCall(itemCtx, fn, stage.Name, item)
 			itemCancel()
 
 			r := ResultWithMeta[T]{Result: core.Result[T]{Value: val, Err: err}, Stage: stage.Name}
+			invokeResultCallback(b.resultCb, stage.Name, &r.Result)
+			err = r.Err
 			results = append(results, r)
 			nextItems = append(nextItems, val)
-
-			if b.resultCb != nil {
-				b.resultCb(stage.Name, r.Result)
-			}
 			if b.failFast && err != nil {
-				goto serialMetaDone
+				return results
 			}
 		}
-	serialMetaDone:
 		elems = nextItems
 	}
 	return results
@@ -815,6 +904,7 @@ func (b *pipelineBase[T, S]) execParallelWithMeta(
 
 	elems := make([]T, len(b.items))
 	copy(elems, b.items)
+	previous := make([]core.Result[T], len(elems))
 	results := make([]ResultWithMeta[T], 0)
 
 	var ffCtx context.Context
@@ -829,6 +919,7 @@ func (b *pipelineBase[T, S]) execParallelWithMeta(
 	for _, stage := range b.stages {
 		concurrency := b.resolveConcurrency(stage.Concurrency, len(elems))
 		stageResults := make([]core.Result[T], len(elems))
+		produced := make([]bool, len(elems))
 		chunkSize := (len(elems) + concurrency - 1) / concurrency
 		var wg sync.WaitGroup
 		var cancelled atomic.Bool
@@ -845,14 +936,6 @@ func (b *pipelineBase[T, S]) execParallelWithMeta(
 			wg.Add(1)
 			go func(start, end int) {
 				defer wg.Done()
-				defer func() {
-					if r := recover(); r != nil {
-						for j := start; j < end; j++ {
-							var zero T
-							stageResults[j] = core.Result[T]{Value: zero, Err: core.NewPanicError(r)}
-						}
-					}
-				}()
 				for j := start; j < end; j++ {
 					if b.failFast && cancelled.Load() {
 						stageResults[j] = core.Result[T]{Value: elems[j]}
@@ -867,6 +950,11 @@ func (b *pipelineBase[T, S]) execParallelWithMeta(
 						default:
 						}
 					}
+					if stage.SkipOnError && previous[j].Err != nil {
+						stageResults[j] = previous[j]
+						produced[j] = true
+						continue
+					}
 
 					var itemCtx context.Context
 					var itemCancel context.CancelFunc
@@ -876,14 +964,14 @@ func (b *pipelineBase[T, S]) execParallelWithMeta(
 						itemCtx, itemCancel = ffCtx, func() {}
 					}
 
-					val, err := fn(itemCtx, stage.Name, elems[j])
+					produced[j] = true
+					val, err := safeCall(itemCtx, fn, stage.Name, elems[j])
 					itemCancel()
 
 					stageResults[j] = core.Result[T]{Value: val, Err: err}
 
-					if b.resultCb != nil {
-						b.resultCb(stage.Name, stageResults[j])
-					}
+					invokeResultCallback(b.resultCb, stage.Name, &stageResults[j])
+					err = stageResults[j].Err
 
 					if b.failFast && err != nil {
 						cancelled.Store(true)
@@ -894,11 +982,20 @@ func (b *pipelineBase[T, S]) execParallelWithMeta(
 		}
 		wg.Wait()
 		nextItems := make([]T, 0, len(stageResults))
-		for _, r := range stageResults {
+		nextPrevious := make([]core.Result[T], 0, len(stageResults))
+		for i, r := range stageResults {
+			if !produced[i] {
+				continue
+			}
 			results = append(results, ResultWithMeta[T]{Result: r, Stage: stage.Name})
 			nextItems = append(nextItems, r.Value)
+			nextPrevious = append(nextPrevious, r)
+		}
+		if b.failFast && ffCtx.Err() != nil {
+			return results
 		}
 		elems = nextItems
+		previous = nextPrevious
 	}
 	return results
 }

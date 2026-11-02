@@ -25,7 +25,7 @@
 //	al := ratelimit.NewAdaptiveRateLimiter(5, 100)
 //	al.Acquire(ctx)
 //	if err := doRequest(); err == nil {
-//	    al.RecordSuccess()
+//	    al.RecordOk()
 //	} else {
 //	    al.RecordFailure()
 //	}
@@ -34,6 +34,7 @@ package ratelimit
 
 import (
 	"context"
+	"math/bits"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -52,18 +53,22 @@ const (
 
 // RateLimiter controls the concurrency rate.
 type RateLimiter struct {
-	tokens   chan struct{} // 令牌 channel（缓冲大小=并发度）
-	size     int32         // 并发度（atomic 原子操作，动态调整后同步）
-	strat    atomic.Value  // 令牌耗尽时的处理策略（Strategy）
-	closed   atomic.Bool   // 是否已关闭
-	mu       sync.Mutex    // 保护以下字段的互斥锁
-	resizeMu sync.RWMutex  // 保护 Resize 期间禁止并发的 Acquire/Release
-	ctx      context.Context
+	tokens     chan struct{} // 令牌 channel（缓冲大小=并发度）
+	size       int32         // 并发度（atomic 原子操作，动态调整后同步）
+	strat      atomic.Value  // 令牌耗尽时的处理策略（Strategy）
+	closed     atomic.Bool   // 是否已关闭
+	mu         sync.Mutex    // 保护以下字段的互斥锁
+	closeDone  chan struct{} // 关闭清理完成信号，由 mu 保护
+	resizeMu   sync.RWMutex  // 保护 Resize 期间禁止并发的 Acquire/Release
+	shrinkDebt atomic.Int64  // outstanding permits above the reduced concurrency limit
+	ctx        context.Context
 
-	rate        atomic.Int32  // 每 perDuration 补充的令牌数（atomic，支持 Resize 动态更新）
-	perDuration time.Duration // 令牌补充周期
-	refillStop  chan struct{} // 停止令牌补充 goroutine 的信号
-	refillDone  chan struct{} // 令牌补充 goroutine 已退出的信号
+	rate         atomic.Int32  // 每 perDuration 补充的令牌数（atomic，支持 Resize 动态更新）
+	perDuration  time.Duration // 令牌补充周期
+	refillStop   chan struct{} // 停止令牌补充 goroutine 的信号
+	refillDone   chan struct{} // 令牌补充 goroutine 已退出的信号
+	refillLast   time.Time     // Protected by resizeMu
+	refillCredit uint64        // Fractional numerator modulo perDuration
 
 	cond *sync.Cond // BlockForce 策略下用于高效阻塞等待令牌，替代 busy-wait
 }
@@ -108,7 +113,7 @@ func NewRateLimiter(rate int, perDuration time.Duration) *RateLimiter {
 // 参数：
 //   - rate：每 perDuration 内允许的操作次数
 //   - perDuration：时间窗口大小
-//   - burst：突发容量，允许短时间内超过 rate 速率的请求数
+//   - burst：突发容量，低于 rate 时按 rate 处理，初始令牌数等于实际容量
 //
 // 使用示例：
 //
@@ -133,7 +138,7 @@ func NewRateLimiterWithBurst(rate int, perDuration time.Duration, burst int) *Ra
 	rl.rate.Store(int32(rate))
 	rl.cond = sync.NewCond(&rl.mu)
 	rl.strat.Store(Block)
-	for i := 0; i < burst; i++ {
+	for i := 0; i < cap; i++ {
 		rl.tokens <- struct{}{}
 	}
 	rl.startRefill()
@@ -157,56 +162,9 @@ func newRateLimiterSimple(rate int) *RateLimiter {
 	return rl
 }
 
-// batchSizeForRate 根据给定速率计算每次批量补充的令牌数量。
-// tickInterval 由调用方根据速率区间决定，本方法只负责计算该速率下
-// 每次补充操作应填充的令牌数。
-func (rl *RateLimiter) batchSizeForRate(rate int) int {
-	interval := rl.perDuration / time.Duration(rate)
-	if interval <= 0 {
-		interval = time.Nanosecond
-	}
-	const minBatchInterval = 100 * time.Millisecond
-	const maxBatchInterval = time.Second
-	if interval < minBatchInterval {
-		bs := int(minBatchInterval / interval)
-		if bs < 1 {
-			return 1
-		}
-		return bs
-	}
-	if interval > maxBatchInterval {
-		bs := int(float64(rate) * maxBatchInterval.Seconds() / rl.perDuration.Seconds())
-		if bs < 1 {
-			return 1
-		}
-		return bs
-	}
-	return 1
-}
-
 func (rl *RateLimiter) startRefill() {
-	rate := int(rl.rate.Load())
-	if rate <= 0 {
-		rate = 1
-	}
-	interval := rl.perDuration / time.Duration(rate)
-	if interval <= 0 {
-		interval = time.Nanosecond
-	}
-
-	const minBatchInterval = 100 * time.Millisecond
-	const maxBatchInterval = time.Second
-
-	var tickInterval time.Duration
-	if interval < minBatchInterval {
-		tickInterval = minBatchInterval
-	} else if interval > maxBatchInterval {
-		tickInterval = maxBatchInterval
-	} else {
-		tickInterval = interval
-	}
-
-	ticker := time.NewTicker(tickInterval)
+	rl.refillLast = time.Now()
+	ticker := time.NewTicker(100 * time.Millisecond)
 	go func() {
 		defer ticker.Stop()
 		for {
@@ -215,24 +173,9 @@ func (rl *RateLimiter) startRefill() {
 				close(rl.refillDone)
 				return
 			case <-ticker.C:
-				// 动态读取最新 rate 以支持 Resize 后速率实时生效
-				r := int(rl.rate.Load())
-				if r <= 0 {
-					r = 1
-				}
-				curBatch := rl.batchSizeForRate(r)
-				rl.resizeMu.RLock()
-				added := 0
-			refill:
-				for i := 0; i < curBatch; i++ {
-					select {
-					case rl.tokens <- struct{}{}:
-						added++
-					default:
-						break refill
-					}
-				}
-				rl.resizeMu.RUnlock()
+				rl.resizeMu.Lock()
+				added := rl.refillLocked(time.Now())
+				rl.resizeMu.Unlock()
 				if added > 0 {
 					rl.mu.Lock()
 					for i := 0; i < added; i++ {
@@ -243,6 +186,39 @@ func (rl *RateLimiter) startRefill() {
 			}
 		}
 	}()
+}
+
+// Accumulate fractional tokens; a full bucket cannot bank future bursts.
+// The caller holds resizeMu exclusively, including across a rate change.
+func (rl *RateLimiter) refillLocked(now time.Time) int {
+	if rl.refillLast.IsZero() || !now.After(rl.refillLast) {
+		return 0
+	}
+	elapsed := now.Sub(rl.refillLast)
+	rl.refillLast = now
+	space := cap(rl.tokens) - len(rl.tokens)
+	added := space
+	if rl.perDuration > 0 {
+		// Use a wide product so long pauses and high rates cannot overflow.
+		hi, lo := bits.Mul64(uint64(elapsed), uint64(rl.rate.Load()))
+		lo, carry := bits.Add64(lo, rl.refillCredit, 0)
+		hi += carry
+		period := uint64(rl.perDuration)
+		if hi < period {
+			whole, remainder := bits.Div64(hi, lo, period)
+			rl.refillCredit = remainder
+			if whole < uint64(space) {
+				added = int(whole)
+			}
+		}
+	}
+	for i := 0; i < added; i++ {
+		rl.tokens <- struct{}{}
+	}
+	if added == space {
+		rl.refillCredit = 0
+	}
+	return added
 }
 
 // Wait 获取令牌（等同 Acquire），阻塞直到获取成功或 ctx 取消。
@@ -288,7 +264,9 @@ func (rl *RateLimiter) WithStrategy(s Strategy) *RateLimiter {
 //	rl, ctx := ratelimit.NewRateLimiter(100, time.Second).WithTraceID(ctx)
 func (rl *RateLimiter) WithTraceID(ctx context.Context) (*RateLimiter, context.Context) {
 	ctx = core.EnsureTraceID(ctx)
+	rl.mu.Lock()
 	rl.ctx = ctx
+	rl.mu.Unlock()
 	return rl, ctx
 }
 
@@ -338,6 +316,9 @@ func (rl *RateLimiter) Acquire(ctx context.Context) error {
 				if ok {
 					return nil
 				}
+				if rl.closed.Load() {
+					return core.ErrRateLimiterStopped
+				}
 				continue
 			default:
 			}
@@ -360,6 +341,9 @@ func (rl *RateLimiter) Acquire(ctx context.Context) error {
 			case _, ok := <-rl.tokens:
 				if ok {
 					return nil
+				}
+				if rl.closed.Load() {
+					return core.ErrRateLimiterStopped
 				}
 				continue
 			default:
@@ -392,6 +376,16 @@ func (rl *RateLimiter) Release() {
 		rl.resizeMu.RUnlock()
 		return
 	}
+	for {
+		debt := rl.shrinkDebt.Load()
+		if debt == 0 {
+			break
+		}
+		if rl.shrinkDebt.CompareAndSwap(debt, debt-1) {
+			rl.resizeMu.RUnlock()
+			return
+		}
+	}
 
 	sent := false
 	select {
@@ -408,7 +402,7 @@ func (rl *RateLimiter) Release() {
 	}
 }
 
-// Close 停止限流器的令牌补充 goroutine 并关闭令牌通道。多次调用安全。
+// Close 停止限流器的令牌补充 goroutine 并关闭令牌通道。并发调用均等待关闭完成。
 //
 // 使用示例：
 //
@@ -417,9 +411,15 @@ func (rl *RateLimiter) Release() {
 func (rl *RateLimiter) Close() {
 	rl.mu.Lock()
 	if !rl.closed.CompareAndSwap(false, true) {
+		done := rl.closeDone
 		rl.mu.Unlock()
+		if done != nil {
+			<-done
+		}
 		return
 	}
+	rl.closeDone = make(chan struct{})
+	done := rl.closeDone
 	if rl.refillStop != nil {
 		close(rl.refillStop)
 	}
@@ -433,6 +433,7 @@ func (rl *RateLimiter) Close() {
 	rl.resizeMu.Lock()
 	close(rl.tokens)
 	rl.resizeMu.Unlock()
+	close(done)
 }
 
 // Resize 动态调整限流速率。newRate <= 0 或等于当前值时忽略。
@@ -456,16 +457,17 @@ func (rl *RateLimiter) Resize(newRate int) {
 		return
 	}
 
-	current := int(rl.size)
+	current := int(atomic.LoadInt32(&rl.size))
 	if newRate == current {
 		return
 	}
 
 	rl.resizeMu.Lock()
 	defer rl.resizeMu.Unlock()
+	rl.refillLocked(time.Now())
 
 	oldTokens := rl.tokens
-	inFlight := cap(oldTokens) - len(oldTokens)
+	inFlight := cap(oldTokens) - len(oldTokens) + int(rl.shrinkDebt.Load())
 	newTokens := make(chan struct{}, newRate)
 	for i := 0; i < cap(oldTokens); i++ {
 		select {
@@ -475,11 +477,16 @@ func (rl *RateLimiter) Resize(newRate int) {
 	}
 
 	rl.tokens = newTokens
-	rl.size = int32(newRate)
+	atomic.StoreInt32(&rl.size, int32(newRate))
 	rl.rate.Store(int32(newRate))
 	fill := newRate - inFlight
 	if fill < 0 {
+		if rl.refillStop == nil {
+			rl.shrinkDebt.Store(int64(-fill))
+		}
 		fill = 0
+	} else {
+		rl.shrinkDebt.Store(0)
 	}
 	for i := 0; i < fill; i++ {
 		newTokens <- struct{}{}
@@ -512,14 +519,17 @@ func (rl *RateLimiter) Available() int {
 //	doRequest()
 type Token struct {
 	limiter *RateLimiter // 关联的限流器（Release 时归还令牌）
+	once    sync.Once
 }
 
-// Release 归还令牌。
+// Release 归还令牌；重复或并发调用只归还一次。
 func (t *Token) Release() {
-	if t.limiter != nil {
-		t.limiter.Release()
-		t.limiter = nil
-	}
+	t.once.Do(func() {
+		if t.limiter != nil {
+			t.limiter.Release()
+			t.limiter = nil
+		}
+	})
 }
 
 // Token 获取一个自动释放的令牌包装器，配合 defer 使用更安全。

@@ -16,7 +16,7 @@ import (
 //	al := ratelimit.NewAdaptiveRateLimiter(5, 100) // 并发度范围 5-100
 //	al.Acquire(ctx)
 //	if err := callAPI(ctx); err == nil {
-//	    al.RecordSuccess()
+//	    al.RecordOk()
 //	} else {
 //	    al.RecordFailure()
 //	}
@@ -83,8 +83,8 @@ func (a *AdaptiveRateLimiter) Release() {
 	base.Release()
 }
 
-// RecordSuccess 记录一次成功调用，用于自适应调整算法。
-func (a *AdaptiveRateLimiter) RecordSuccess() {
+// RecordOk 记录一次成功调用，用于自适应调整算法。
+func (a *AdaptiveRateLimiter) RecordOk() {
 	atomic.AddInt64(&a.success, 1)
 	a.maybeAdjust()
 }
@@ -96,6 +96,9 @@ func (a *AdaptiveRateLimiter) RecordFailure() {
 }
 
 func (a *AdaptiveRateLimiter) maybeAdjust() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
 	s := atomic.SwapInt64(&a.success, 0)
 	f := atomic.SwapInt64(&a.failure, 0)
 	if s == 0 && f == 0 {
@@ -111,9 +114,6 @@ func (a *AdaptiveRateLimiter) maybeAdjust() {
 	failRate := float64(f) / float64(total)
 	current := int(atomic.LoadInt32(&a.current))
 
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
 	if failRate > a.adjustUp {
 		newRate := int(float64(current) * (1 - a.adjustDown))
 		if newRate < a.minRate {
@@ -122,7 +122,11 @@ func (a *AdaptiveRateLimiter) maybeAdjust() {
 		a.base.Resize(newRate)
 		atomic.StoreInt32(&a.current, int32(newRate))
 	} else if failRate < a.adjustUp/2 && current < a.maxRate {
-		newRate := current + int(float64(a.maxRate-current)*a.adjustUp)
+		increase := int(float64(a.maxRate-current) * a.adjustUp)
+		if increase < 1 {
+			increase = 1
+		}
+		newRate := current + increase
 		if newRate > a.maxRate {
 			newRate = a.maxRate
 		}

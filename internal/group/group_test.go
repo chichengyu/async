@@ -3,6 +3,8 @@ package group
 import (
 	"context"
 	"errors"
+	"fmt"
+	"math"
 	"runtime"
 	"sort"
 	"sync"
@@ -18,7 +20,719 @@ func init() {
 	core.SetDefaultMaxResults(100000)
 }
 
+func TestMultiGroupTimeoutThenWaitForUncooperativeTasks(t *testing.T) {
+	mg := NewGroup[int](1).Shard(2)
+	release := make(chan struct{})
+	var once sync.Once
+	unblock := func() { once.Do(func() { close(release) }) }
+	t.Cleanup(func() { unblock(); mg.Close() })
+	started := make(chan int, 2)
+	for shard := 0; shard < 2; shard++ {
+		value := shard
+		if err := mg.GoKeyed(uint64(shard), context.Background(), func(context.Context) (int, error) {
+			started <- value
+			<-release
+			return value, nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	<-started
+	<-started
+	results, ok := mg.WaitTimeout(10 * time.Millisecond)
+	if ok || len(results) != 0 {
+		t.Fatalf("timeout results = %v, ok = %v", results, ok)
+	}
+	done := make(chan []core.Result[int], 1)
+	go func() { done <- mg.Wait() }()
+	select {
+	case got := <-done:
+		t.Fatalf("Wait returned before task release: %v", got)
+	default:
+	}
+	unblock()
+	select {
+	case got := <-done:
+		if len(got) != 2 || got[0].Value != 0 || got[1].Value != 1 || got[0].Err != nil || got[1].Err != nil {
+			t.Fatalf("final results = %v", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Wait did not finish after task release")
+	}
+}
+
+func TestMultiGroupConcurrentWaitersReceiveResults(t *testing.T) {
+	mg := NewGroup[int](1).Shard(2)
+	started, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	unblock := func() { once.Do(func() { close(release) }) }
+	t.Cleanup(func() { unblock(); mg.Close() })
+	if err := mg.GoKeyed(0, context.Background(), func(context.Context) (int, error) {
+		close(started)
+		<-release
+		return 1, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := mg.GoKeyed(1, context.Background(), func(context.Context) (int, error) { return 2, nil }); err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	results := make(chan []core.Result[int], 2)
+	go func() { results <- mg.Wait() }()
+	go func() { results <- mg.Wait() }()
+	deadline := time.Now().Add(5 * time.Second)
+	for !mg.groups[0].waiting.Load() && time.Now().Before(deadline) {
+		runtime.Gosched()
+	}
+	if !mg.groups[0].waiting.Load() {
+		t.Fatal("wait did not begin")
+	}
+	unblock()
+	for i := 0; i < 2; i++ {
+		select {
+		case got := <-results:
+			if len(got) != 2 || got[0].Value != 1 || got[1].Value != 2 {
+				t.Fatalf("waiter %d results = %v", i, got)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("waiter did not finish")
+		}
+	}
+}
+
+func TestMultiGroupStreamingAndCallback(t *testing.T) {
+	const shards, tasks = 4, 80
+	var callbacks atomic.Int64
+	mg := NewGroup[int](2).Shard(shards).WithStreaming(tasks).WithResultCallback(func(r core.Result[int]) {
+		callbacks.Add(1)
+	})
+	defer mg.Close()
+	stream := mg.StreamResults()
+	collected := make(chan []int, 1)
+	go func() {
+		var values []int
+		for r := range stream {
+			values = append(values, r.Value)
+		}
+		collected <- values
+	}()
+	for i := 0; i < tasks; i++ {
+		value := i
+		if err := mg.GoKeyed(uint64(i%shards), context.Background(), func(context.Context) (int, error) { return value, nil }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := mg.Wait(); len(got) != tasks {
+		t.Fatalf("Wait returned %d results, want %d", len(got), tasks)
+	}
+	select {
+	case values := <-collected:
+		sort.Ints(values)
+		if len(values) != tasks {
+			t.Fatalf("stream returned %d results, want %d", len(values), tasks)
+		}
+		for i, value := range values {
+			if value != i {
+				t.Fatalf("stream value[%d] = %d", i, value)
+			}
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("merged stream did not close")
+	}
+	if got := callbacks.Load(); got != tasks {
+		t.Fatalf("callback count = %d, want %d", got, tasks)
+	}
+}
+
+func TestGroupShardConcurrentWait(t *testing.T) {
+	for i := 0; i < 100; i++ {
+		g, _ := NewGroup[int](1).WithContext(context.Background())
+		start := make(chan struct{})
+		done := make(chan struct{})
+		go func() {
+			<-start
+			g.Wait()
+			close(done)
+		}()
+		close(start)
+		mg := g.Shard(2)
+		<-done
+		mg.Close()
+	}
+}
+
+func TestGroupShardConcurrentSubmit(t *testing.T) {
+	for i := 0; i < 100; i++ {
+		g, ctx := NewGroup[int](1).WithFailFast(context.Background())
+		start := make(chan struct{})
+		done := make(chan error, 1)
+		go func() {
+			<-start
+			done <- g.Go(ctx, func(context.Context) (int, error) { return 1, nil })
+		}()
+		close(start)
+		mg := g.Shard(2)
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+		mg.Close()
+	}
+}
+
+func TestMultiBuilderWaitKeepsOtherShardRunning(t *testing.T) {
+	err := NewMultiBuilder[int]().Worker(1).Shards(2).FailFast().Run(func(ctx context.Context, mg *MultiGroup[int]) error {
+		started, release := make(chan struct{}), make(chan struct{})
+		if err := mg.GetShard(1).Go(ctx, func(ctx context.Context) (int, error) {
+			close(started)
+			select {
+			case <-ctx.Done():
+				return 0, ctx.Err()
+			case <-release:
+				return 42, nil
+			}
+		}); err != nil {
+			return err
+		}
+		<-started
+		done := make(chan []core.Result[int], 1)
+		go func() { done <- mg.Wait() }()
+		select {
+		case <-ctx.Done():
+			close(release)
+			<-done
+			return errors.New("normal wait canceled builder context")
+		case results := <-done:
+			close(release)
+			return fmt.Errorf("wait returned before release: %v", results)
+		case <-time.After(30 * time.Millisecond):
+		}
+		close(release)
+		results := <-done
+		if len(results) != 1 || results[0].Err != nil || results[0].Value != 42 {
+			return fmt.Errorf("unexpected results: %v", results)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMultiGroupCloseCancelsSharedContext(t *testing.T) {
+	for _, failFast := range []bool{false, true} {
+		t.Run(fmt.Sprint("failFast=", failFast), func(t *testing.T) {
+			g := NewGroup[int](1)
+			var ctx context.Context
+			if failFast {
+				g, ctx = g.WithFailFast(context.Background())
+			} else {
+				g, ctx = g.WithContext(context.Background())
+			}
+			mg := g.Shard(2)
+			mg.Close()
+			if ctx.Err() == nil {
+				t.Fatal("shared context remains active after close")
+			}
+		})
+	}
+}
+
+func TestMultiGroupWaitWithContextKeepsOtherShardRunning(t *testing.T) {
+	g, ctx := NewGroup[int](1).WithContext(context.Background())
+	mg := g.Shard(2)
+	defer mg.Close()
+	started, release := make(chan struct{}), make(chan struct{})
+	if err := mg.GetShard(1).Go(ctx, func(ctx context.Context) (int, error) {
+		close(started)
+		select {
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		case <-release:
+			return 42, nil
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	done := make(chan []core.Result[int], 1)
+	go func() { done <- mg.Wait() }()
+	select {
+	case <-ctx.Done():
+		close(release)
+		<-done
+		t.Fatal("normal completion canceled the shared context")
+	case results := <-done:
+		close(release)
+		t.Fatalf("wait returned before release: %v", results)
+	case <-time.After(30 * time.Millisecond):
+	}
+	close(release)
+	results := <-done
+	if len(results) != 1 || results[0].Err != nil || results[0].Value != 42 {
+		t.Fatalf("unexpected results: %v", results)
+	}
+}
+
+func TestMultiGroupWaitKeepsOtherShardRunning(t *testing.T) {
+	g, ctx := NewGroup[int](1).WithFailFast(context.Background())
+	mg := g.Shard(2)
+	defer mg.Close()
+	started, release := make(chan struct{}), make(chan struct{})
+	if err := mg.GetShard(1).Go(ctx, func(ctx context.Context) (int, error) {
+		close(started)
+		select {
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		case <-release:
+			return 42, nil
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	done := make(chan []core.Result[int], 1)
+	go func() { done <- mg.Wait() }()
+	select {
+	case results := <-done:
+		close(release)
+		t.Fatalf("wait returned before the other shard was released: %v", results)
+	case <-ctx.Done():
+		close(release)
+		<-done
+		t.Fatal("normal completion canceled the shared context")
+	case <-time.After(30 * time.Millisecond):
+	}
+	close(release)
+	results := <-done
+	if len(results) != 1 || results[0].Err != nil || results[0].Value != 42 {
+		t.Fatalf("unexpected results: %v", results)
+	}
+}
+
+func TestWaitContextCancellationDuringInFlightSubmission(t *testing.T) {
+	g := NewGroup[int](1)
+	g.addInFlight.Add(1)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	returned := make(chan bool, 1)
+	go func() {
+		_, ok := g.WaitContext(ctx)
+		returned <- ok
+	}()
+	select {
+	case ok := <-returned:
+		if ok {
+			g.addInFlight.Add(-1)
+			g.Wait()
+			t.Fatal("canceled wait unexpectedly completed")
+		}
+		g.addInFlight.Add(-1)
+		g.Wait()
+	case <-time.After(250 * time.Millisecond):
+		g.addInFlight.Add(-1)
+		<-returned
+		g.Wait()
+		t.Fatal("canceled wait blocked on in-flight submission")
+	}
+}
+
+func TestWaitContextCancelsLateRegisteredTask(t *testing.T) {
+	g := NewGroup[int](1)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	g.addInFlight.Add(1)
+	_, ok := g.WaitContext(ctx)
+	if ok {
+		g.addInFlight.Add(-1)
+		g.Wait()
+		t.Fatal("canceled wait unexpectedly completed")
+	}
+	taskCtx, taskCancel := context.WithCancel(context.Background())
+	g.groupRecordCancel(taskCancel)
+	g.addInFlight.Add(-1)
+	g.Wait()
+	if taskCtx.Err() == nil {
+		taskCancel()
+		t.Fatal("late registered task was not canceled")
+	}
+}
+
+func TestWaitContextCancelsTaskAfterPrecheck(t *testing.T) {
+	g := NewGroup[int](1)
+	taskCtx, taskCancel, err := g.groupPrecheck(context.Background(), g.addResult, -1, "Go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, ok := g.WaitContext(ctx); ok {
+		t.Fatal("canceled wait unexpectedly completed")
+	}
+	g.groupRecordCancel(taskCancel)
+	task := groupTask[int]{taskCtx: taskCtx, taskCancel: taskCancel, record: g.addResult, fn: func(context.Context) (int, error) { return 1, nil }}
+	if err := g.groupSendTask(context.Background(), task, g.addResult, taskCancel); !errors.Is(err, context.Canceled) && !errors.Is(err, core.ErrGroupWaited) {
+		t.Fatalf("late task submission returned %v", err)
+	}
+	results := g.Wait()
+	if len(results) != 1 || results[0].Err == nil {
+		t.Fatalf("expected one discarded task result, got %+v", results)
+	}
+}
+
+func TestAutoScaleCheckThresholdsAndBounds(t *testing.T) {
+	g := NewGroup[int](2)
+	defer g.Wait()
+	cfg := &core.AutoScaleConfig{MinWorkers: 1, MaxWorkers: 3, ScaleUpThreshold: 0.75, ScaleDownThreshold: 0.25, ScaleUpChecks: 2, ScaleDownChecks: 2, ScaleUpFactor: 2, ScaleDownFactor: 0.5}
+	up, down := 0, 0
+	g.busy.Store(2)
+	g.autoScaleMu.Lock()
+	g.performAutoScaleCheck(cfg, &up, &down)
+	if got := g.Worker(); got != 2 || up != 1 {
+		g.autoScaleMu.Unlock()
+		t.Fatalf("first high-load check: workers=%d up=%d", got, up)
+	}
+	g.performAutoScaleCheck(cfg, &up, &down)
+	if got := g.Worker(); got != 3 || up != 0 {
+		g.autoScaleMu.Unlock()
+		t.Fatalf("scale up: workers=%d up=%d", got, up)
+	}
+	g.busy.Store(0)
+	g.performAutoScaleCheck(cfg, &up, &down)
+	g.performAutoScaleCheck(cfg, &up, &down)
+	got := g.Worker()
+	g.autoScaleMu.Unlock()
+	if got != 1 {
+		t.Fatalf("scale down: workers=%d, want 1", got)
+	}
+}
+
+func TestBuilderFailFastCancelsRunContext(t *testing.T) {
+	boom := errors.New("task failed")
+	t.Run("group", func(t *testing.T) {
+		err := NewGroupBuilder[int]().Worker(1).FailFast().Run(func(ctx context.Context, g *Group[int]) error {
+			if err := g.Go(ctx, func(context.Context) (int, error) { return 0, boom }); err != nil {
+				return err
+			}
+			g.Wait()
+			return ctx.Err()
+		})
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Run context error = %v, want canceled", err)
+		}
+	})
+	t.Run("no result", func(t *testing.T) {
+		err := NewGroupNoResultBuilder().Worker(1).FailFast().Run(func(ctx context.Context, g *NoResult) error {
+			if err := g.Go(ctx, func(context.Context) error { return boom }); err != nil {
+				return err
+			}
+			g.Wait()
+			return ctx.Err()
+		})
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Run context error = %v, want canceled", err)
+		}
+	})
+	t.Run("multi", func(t *testing.T) {
+		err := NewMultiBuilder[int]().Worker(1).Shards(2).FailFast().Run(func(ctx context.Context, g *MultiGroup[int]) error {
+			if err := g.GetShard(1).Go(ctx, func(context.Context) (int, error) { return 0, boom }); err != nil {
+				return err
+			}
+			g.Wait()
+			return ctx.Err()
+		})
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Run context error = %v, want canceled", err)
+		}
+	})
+}
+
+func TestBuilderFailFastCancelsRunningSibling(t *testing.T) {
+	for _, external := range []bool{false, true} {
+		t.Run(fmt.Sprintf("external=%v", external), func(t *testing.T) {
+			b := NewGroupBuilder[int]().Worker(2).FailFast()
+			if external {
+				p := pool.NewPool[int](2)
+				defer p.Close()
+				b.Pool(p)
+			}
+			started := make(chan struct{})
+			observed := make(chan error, 1)
+			err := b.Run(func(ctx context.Context, g *Group[int]) error {
+				if err := g.Go(ctx, func(ctx context.Context) (int, error) {
+					close(started)
+					select {
+					case <-ctx.Done():
+						observed <- ctx.Err()
+					case <-time.After(5 * time.Second):
+						observed <- errors.New("cancellation timed out")
+					}
+					return 0, nil
+				}); err != nil {
+					return err
+				}
+				<-started
+				if err := g.Go(ctx, func(context.Context) (int, error) { return 0, errors.New("failure") }); err != nil {
+					return err
+				}
+				return <-observed
+			})
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("sibling error=%v", err)
+			}
+		})
+	}
+}
+
+func TestMultiBuilderFailFastCancelsOtherShard(t *testing.T) {
+	started := make(chan struct{})
+	observed := make(chan error, 1)
+	err := NewMultiBuilder[int]().Worker(1).Shards(2).FailFast().Run(func(ctx context.Context, mg *MultiGroup[int]) error {
+		if err := mg.GetShard(0).Go(ctx, func(ctx context.Context) (int, error) {
+			close(started)
+			select {
+			case <-ctx.Done():
+				observed <- ctx.Err()
+			case <-time.After(5 * time.Second):
+				observed <- errors.New("cancellation timed out")
+			}
+			return 0, nil
+		}); err != nil {
+			return err
+		}
+		<-started
+		if err := mg.GetShard(1).Go(ctx, func(context.Context) (int, error) { return 0, errors.New("failure") }); err != nil {
+			return err
+		}
+		return <-observed
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("sibling error=%v", err)
+	}
+}
+
+func TestBuilderWithoutFailFastDoesNotCancelContext(t *testing.T) {
+	err := NewGroupBuilder[int]().Worker(1).Run(func(ctx context.Context, g *Group[int]) error {
+		if err := g.Go(ctx, func(context.Context) (int, error) { return 0, errors.New("failure") }); err != nil {
+			return err
+		}
+		g.Wait()
+		return ctx.Err()
+	})
+	if err != nil {
+		t.Fatalf("context canceled without FailFast: %v", err)
+	}
+}
+
+func TestMultiGroupRoundRobinCounterOverflow(t *testing.T) {
+	mg := &MultiGroup[int]{groups: []*Group[int]{NewGroup[int](1), NewGroup[int](1), NewGroup[int](1)}}
+	defer mg.Close()
+	mg.nextIdx.Store(uint64(math.MaxInt) + 1)
+	if err := mg.Go(context.Background(), func(context.Context) (int, error) { return 1, nil }); err != nil {
+		t.Fatal(err)
+	}
+	if got := mg.Wait(); len(got) != 1 || got[0].Value != 1 {
+		t.Fatalf("results=%v", got)
+	}
+}
+
 // ==================== NewGroup / DefaultGroup ====================
+
+func TestGroupExternalPoolTerminalPathsRegression(t *testing.T) {
+	for _, mode := range []string{"canceled", "drop", "reject", "closed"} {
+		t.Run(mode, func(t *testing.T) {
+			p := pool.NewPool[int](1).WithTimeout(0)
+			defer p.Close()
+			started, release := make(chan struct{}), make(chan struct{})
+			if err := p.Submit(context.Background(), func(context.Context) (int, error) {
+				close(started)
+				<-release
+				return 1, nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			<-started
+			if mode == "drop" || mode == "reject" {
+				p.WithMaxPending(1)
+				if mode == "drop" {
+					p.WithOverflow(core.OverflowDrop)
+				} else {
+					p.WithOverflow(core.OverflowError)
+				}
+				if err := p.Submit(context.Background(), func(context.Context) (int, error) { return 2, nil }); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if mode == "closed" {
+				close(release)
+				p.Close()
+			}
+			var callbacks atomic.Int32
+			g := NewGroup[int](1).WithPool(p).WithResultCallback(func(core.Result[int]) {
+				callbacks.Add(1)
+				panic("callback failure")
+			})
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			var calls atomic.Int32
+			if err := g.Go(ctx, func(context.Context) (int, error) { calls.Add(1); return 3, nil }); err != nil {
+				t.Fatal(err)
+			}
+			if mode == "canceled" {
+				if err := g.Go(context.Background(), func(context.Context) (int, error) { return 4, nil }); err != nil {
+					t.Fatal(err)
+				}
+				deadline := time.Now().Add(time.Second)
+				for p.TotalCount() < 3 && time.Now().Before(deadline) {
+					runtime.Gosched()
+				}
+				if p.TotalCount() != 3 {
+					close(release)
+					t.Fatal("group tasks did not reach external pool")
+				}
+				cancel()
+				close(release)
+			}
+			results, ok := g.WaitTimeout(time.Second)
+			if mode == "drop" || mode == "reject" {
+				close(release)
+			}
+			want := 1
+			if mode == "canceled" {
+				want = 2
+			}
+			var failures int64
+			for _, result := range results {
+				if result.Err != nil {
+					failures++
+				}
+			}
+			if !ok || len(results) != want || calls.Load() != 0 || int(callbacks.Load()) != want || g.Active() != 0 || failures != 1 || g.FailCount() != failures {
+				t.Fatalf("mode=%s complete=%v results=%v calls=%d callbacks=%d active=%d failures=%d", mode, ok, results, calls.Load(), callbacks.Load(), g.Active(), g.FailCount())
+			}
+			if g.FirstError() == nil {
+				t.Fatal("terminal error not recorded")
+			}
+			g.Close()
+		})
+	}
+}
+
+func TestFailFastExternalPoolRejectionDoesNotCancelContext(t *testing.T) {
+	for _, mode := range []string{"closed", "drop", "reject"} {
+		t.Run(mode, func(t *testing.T) {
+			p := pool.NewPool[int](1).WithTimeout(0)
+			defer p.Close()
+			if mode == "closed" {
+				p.Close()
+			} else {
+				started, release := make(chan struct{}), make(chan struct{})
+				defer close(release)
+				if err := p.Submit(context.Background(), func(context.Context) (int, error) { close(started); <-release; return 0, nil }); err != nil {
+					t.Fatal(err)
+				}
+				<-started
+				p.WithMaxPending(1)
+				if mode == "drop" {
+					p.WithOverflow(core.OverflowDrop)
+				} else {
+					p.WithOverflow(core.OverflowError)
+				}
+				if err := p.Submit(context.Background(), func(context.Context) (int, error) { return 0, nil }); err != nil {
+					t.Fatal(err)
+				}
+			}
+			recorded := make(chan struct{})
+			g, ctx := NewGroup[int](1).WithPool(p).WithResultCallback(func(core.Result[int]) { close(recorded) }).WithFailFast(context.Background())
+			defer g.Close()
+			var ran atomic.Bool
+			if err := g.Go(ctx, func(context.Context) (int, error) { ran.Store(true); return 0, nil }); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case <-recorded:
+			case <-time.After(5 * time.Second):
+				t.Fatal("rejection not recorded")
+			}
+			contextErr := ctx.Err()
+			results, ok := g.WaitTimeout(5 * time.Second)
+			if !ok || len(results) != 1 || results[0].Err == nil || g.FailCount() != 1 || g.Active() != 0 || ran.Load() || contextErr != nil {
+				t.Fatalf("complete=%v results=%v failures=%d active=%d ran=%v context before wait=%v", ok, results, g.FailCount(), g.Active(), ran.Load(), contextErr)
+			}
+		})
+	}
+}
+
+func TestGroupBoundedWaitAndLateStreamRegression(t *testing.T) {
+	for _, variant := range []string{"timeout", "context"} {
+		t.Run(variant, func(t *testing.T) {
+			g := NewGroup[int](1).WithTimeout(0).WithStreaming(4)
+			started, release := make(chan struct{}), make(chan struct{})
+			if err := g.Go(context.Background(), func(ctx context.Context) (int, error) {
+				close(started)
+				<-release
+				return 5, ctx.Err()
+			}); err != nil {
+				t.Fatal(err)
+			}
+			<-started
+			done := make(chan bool, 1)
+			go func() {
+				var ok bool
+				if variant == "timeout" {
+					_, ok = g.WaitTimeout(time.Millisecond)
+				} else {
+					ctx, cancel := context.WithCancel(context.Background())
+					cancel()
+					_, ok = g.WaitContext(ctx)
+				}
+				done <- ok
+			}()
+			select {
+			case ok := <-done:
+				if ok {
+					t.Error("unfinished task reported complete")
+				}
+			case <-time.After(time.Second):
+				close(release)
+				<-done
+				g.Close()
+				t.Fatal("bounded wait blocked on a running callback")
+			}
+			if _, err := g.Reset(); err == nil {
+				t.Error("reset permitted while old task is running")
+			}
+			close(release)
+			results := g.Wait()
+			if len(results) != 1 || results[0].Value != 5 {
+				t.Fatalf("late result lost: %v", results)
+			}
+			oldStream := g.StreamResults()
+			if r, ok := <-oldStream; !ok || r.Value != 5 {
+				t.Fatalf("late stream result lost: %+v, open=%v", r, ok)
+			}
+			if _, ok := <-oldStream; ok {
+				t.Fatal("old stream has extra results")
+			}
+			if _, err := g.Reset(); err != nil {
+				t.Fatal(err)
+			}
+			if err := g.Go(context.Background(), func(context.Context) (int, error) { return 6, nil }); err != nil {
+				t.Fatal(err)
+			}
+			if got := g.Wait(); len(got) != 1 || got[0].Value != 6 {
+				t.Fatalf("reset result=%v", got)
+			}
+			newStream := g.StreamResults()
+			if r, ok := <-newStream; !ok || r.Value != 6 || r.Err != nil {
+				t.Fatalf("reset stream result=%+v, open=%v", r, ok)
+			}
+			if _, ok := <-newStream; ok {
+				t.Fatal("reset stream has extra results")
+			}
+		})
+	}
+}
 
 func TestNewGroup_Defaults(t *testing.T) {
 	g := NewGroup[int](5)
@@ -163,8 +877,8 @@ func TestGo_NonDefaultResults(t *testing.T) {
 	if g.TotalCount() != 50 {
 		t.Errorf("TotalCount = %d, want 50", g.TotalCount())
 	}
-	if g.SuccessCount() != 50 {
-		t.Errorf("SuccessCount = %d, want 50", g.SuccessCount())
+	if g.OkCount() != 50 {
+		t.Errorf("OkCount = %d, want 50", g.OkCount())
 	}
 	if g.FailCount() != 0 {
 		t.Errorf("FailCount = %d, want 0", g.FailCount())
@@ -486,8 +1200,8 @@ func TestStats(t *testing.T) {
 	if stats.TotalTask != 2 {
 		t.Errorf("TotalTask = %d, want 2", stats.TotalTask)
 	}
-	if stats.SuccessTask != 1 {
-		t.Errorf("SuccessTask = %d, want 1", stats.SuccessTask)
+	if stats.OkTask != 1 {
+		t.Errorf("OkTask = %d, want 1", stats.OkTask)
 	}
 	if stats.FailTask != 1 {
 		t.Errorf("FailTask = %d, want 1", stats.FailTask)
@@ -583,6 +1297,77 @@ func TestValues(t *testing.T) {
 }
 
 // ==================== Reset ====================
+
+func TestResetRetainsResultCallback(t *testing.T) {
+	callbackResults := make(chan core.Result[int], 2)
+	g := NewGroup[int](1).WithResultCallback(func(result core.Result[int]) { callbackResults <- result })
+	defer g.Close()
+	for cycle := 1; cycle <= 2; cycle++ {
+		value := cycle
+		if err := g.Go(context.Background(), func(context.Context) (int, error) { return value, nil }); err != nil {
+			t.Fatal(err)
+		}
+		results := g.Wait()
+		if len(results) != 1 || results[0].Value != value || results[0].Err != nil {
+			t.Fatalf("cycle %d results=%v", cycle, results)
+		}
+		select {
+		case got := <-callbackResults:
+			if got.Value != value || got.Err != nil {
+				t.Fatalf("cycle %d callback=%+v", cycle, got)
+			}
+		default:
+			t.Fatalf("cycle %d missing callback", cycle)
+		}
+		select {
+		case got := <-callbackResults:
+			t.Fatalf("cycle %d extra callback=%+v", cycle, got)
+		default:
+		}
+		if cycle == 1 {
+			if _, err := g.Reset(); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+}
+
+func TestResetRecreatesStreamWithoutOldResults(t *testing.T) {
+	g := NewGroup[int](1).WithStreaming(2)
+	defer g.Close()
+	oldStream := g.StreamResults()
+	if err := g.Go(context.Background(), func(context.Context) (int, error) { return 1, nil }); err != nil {
+		t.Fatal(err)
+	}
+	if results := g.Wait(); len(results) != 1 || results[0].Value != 1 {
+		t.Fatalf("first results=%v", results)
+	}
+	if _, err := g.Reset(); err != nil {
+		t.Fatal(err)
+	}
+	newStream := g.StreamResults()
+	if oldStream == newStream {
+		t.Fatal("Reset reused old stream")
+	}
+	if result, ok := <-oldStream; !ok || result.Value != 1 || result.Err != nil {
+		t.Fatalf("old stream result=%+v open=%v", result, ok)
+	}
+	if _, ok := <-oldStream; ok {
+		t.Fatal("old stream was not closed")
+	}
+	if err := g.Go(context.Background(), func(context.Context) (int, error) { return 2, nil }); err != nil {
+		t.Fatal(err)
+	}
+	if results := g.Wait(); len(results) != 1 || results[0].Value != 2 {
+		t.Fatalf("second results=%v", results)
+	}
+	if result, ok := <-newStream; !ok || result.Value != 2 || result.Err != nil {
+		t.Fatalf("new stream result=%+v open=%v", result, ok)
+	}
+	if _, ok := <-newStream; ok {
+		t.Fatal("new stream has extra results")
+	}
+}
 
 func TestReset(t *testing.T) {
 	g := NewGroup[int](4)
@@ -717,6 +1502,301 @@ func TestMultiGroup_GoKeyed(t *testing.T) {
 
 // ==================== StreamResults ====================
 
+type gatedDoneContext struct {
+	context.Context
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (c *gatedDoneContext) Done() <-chan struct{} {
+	close(c.entered)
+	<-c.release
+	return c.Context.Done()
+}
+
+func TestFailFastCountsCascadedCancellation(t *testing.T) {
+	g, ctx := NewGroup[int](4).WithFailFast(context.Background())
+	started := make(chan struct{}, 4)
+	release := make(chan struct{})
+	bomb := errors.New("failure")
+	for i := 0; i < 4; i++ {
+		i := i
+		if err := g.Go(ctx, func(ctx context.Context) (int, error) {
+			started <- struct{}{}
+			<-release
+			if i == 0 {
+				return 0, bomb
+			}
+			<-ctx.Done()
+			return 0, ctx.Err()
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i < 4; i++ {
+		<-started
+	}
+	close(release)
+	results := g.Wait()
+	if len(results) != 4 || len(g.Errors()) != 4 || g.FailCount() != 4 || g.OkCount() != 0 {
+		t.Fatalf("results=%v failures=%d successes=%d", results, g.FailCount(), g.OkCount())
+	}
+}
+
+func TestFailFastCountsCanceledCallback(t *testing.T) {
+	g, ctx := NewGroup[int](1).WithFailFast(context.Background())
+	if err := g.Go(ctx, func(context.Context) (int, error) { return 0, context.Canceled }); err != nil {
+		t.Fatal(err)
+	}
+	results := g.Wait()
+	if len(results) != 1 || !errors.Is(results[0].Err, context.Canceled) || g.FailCount() != 1 || g.OkCount() != 0 || !g.HasError() {
+		t.Fatalf("results=%v failures=%d successes=%d hasError=%v", results, g.FailCount(), g.OkCount(), g.HasError())
+	}
+}
+
+func TestCanceledSubmissionConcurrentWithWait(t *testing.T) {
+	for _, indexed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("indexed=%v", indexed), func(t *testing.T) {
+			base, cancel := context.WithCancel(context.Background())
+			cancel()
+			ctx := &gatedDoneContext{Context: base, entered: make(chan struct{}), release: make(chan struct{})}
+			g := NewGroup[int](1).WithStreaming(1)
+			result := make(chan any, 1)
+			go func() {
+				defer func() { result <- recover() }()
+				fn := func(context.Context) (int, error) { return 1, nil }
+				if indexed {
+					_ = g.GoAt(0, ctx, fn)
+				} else {
+					_ = g.Go(ctx, fn)
+				}
+			}()
+			<-ctx.entered
+			waitDone := make(chan struct{})
+			go func() { g.Wait(); close(waitDone) }()
+			deadline := time.After(5 * time.Second)
+			for !g.waiting.Load() {
+				select {
+				case <-waitDone:
+					t.Fatal("Wait returned while submission precheck was in progress")
+				case <-deadline:
+					t.Fatal("Wait did not start")
+				default:
+					runtime.Gosched()
+				}
+			}
+			close(ctx.release)
+			if recovered := <-result; recovered != nil {
+				t.Fatalf("submission panicked: %v", recovered)
+			}
+			<-waitDone
+			results := g.Wait()
+			if len(results) != 1 || !errors.Is(results[0].Err, context.Canceled) || g.FailCount() != 1 {
+				t.Fatalf("results=%v failures=%d", results, g.FailCount())
+			}
+		})
+	}
+}
+
+func TestGoAtAfterWaitPreservesExistingResult(t *testing.T) {
+	g := NewGroup[int](1)
+	if err := g.GoAt(0, context.Background(), func(context.Context) (int, error) { return 42, nil }); err != nil {
+		t.Fatal(err)
+	}
+	g.Wait()
+	if err := g.GoAt(0, context.Background(), func(context.Context) (int, error) { return 99, nil }); !errors.Is(err, core.ErrGroupWaited) {
+		t.Fatalf("got error %v", err)
+	}
+	results := g.Wait()
+	if len(results) != 2 || results[0].Value != 42 || results[0].Err != nil || !errors.Is(results[1].Err, core.ErrGroupWaited) {
+		t.Fatalf("completed result changed: %v", results)
+	}
+}
+
+func TestGoAtReverseCompletionWithGo(t *testing.T) {
+	g := NewGroup[int](4)
+	releases := []chan struct{}{make(chan struct{}), make(chan struct{}), make(chan struct{})}
+	for i := 0; i < 3; i++ {
+		i := i
+		if err := g.GoAt(i, context.Background(), func(context.Context) (int, error) {
+			<-releases[i]
+			return 10 + i, nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := g.Go(context.Background(), func(context.Context) (int, error) { return 99, nil }); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for want := int64(1); want <= 3; want++ {
+		for g.OkCount() < want {
+			if time.Now().After(deadline) {
+				for i := 0; i < 3; i++ {
+					select {
+					case <-releases[i]:
+					default:
+						close(releases[i])
+					}
+				}
+				g.Wait()
+				t.Fatal("task did not finish")
+			}
+			runtime.Gosched()
+		}
+		close(releases[3-int(want)])
+	}
+	results := g.Wait()
+	if len(results) != 4 {
+		t.Fatalf("results=%v", results)
+	}
+	for i := 0; i < 3; i++ {
+		if !results[i].Occupied || results[i].Value != 10+i {
+			t.Fatalf("results=%v", results)
+		}
+	}
+	if results[3].Value != 99 {
+		t.Fatalf("results=%v", results)
+	}
+}
+
+func TestGoAtMixedWithGoPreservesResults(t *testing.T) {
+	g := NewGroup[int](2)
+	release := make(chan struct{})
+	started := make(chan struct{})
+	if err := g.GoAt(2, context.Background(), func(context.Context) (int, error) {
+		close(started)
+		<-release
+		return 42, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	if err := g.Go(context.Background(), func(context.Context) (int, error) {
+		return 7, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for g.OkCount() == 0 {
+		if time.Now().After(deadline) {
+			close(release)
+			g.Wait()
+			t.Fatal("ordinary task did not complete")
+		}
+		runtime.Gosched()
+	}
+	close(release)
+	results := g.Wait()
+	if len(results) < 3 || results[2].Value != 42 || !results[2].Occupied {
+		t.Fatalf("indexed result missing: %v", results)
+	}
+	values := g.Values()
+	sort.Ints(values)
+	if len(values) != 2 || values[0] != 7 || values[1] != 42 {
+		t.Fatalf("values=%v", values)
+	}
+}
+
+func TestGoAtDuplicateIndexKeepsBothResults(t *testing.T) {
+	g := NewGroup[int](1)
+	for _, value := range []int{1, 2} {
+		value := value
+		if err := g.GoAt(0, context.Background(), func(context.Context) (int, error) { return value, nil }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	results := g.Wait()
+	if len(results) != 2 || results[0].Value != 2 || results[1].Value != 1 || g.TotalCount() != 2 {
+		t.Fatalf("results=%v total=%d", results, g.TotalCount())
+	}
+}
+
+func TestGoAtConcurrentDuplicateIndexPreservesAllResults(t *testing.T) {
+	const tasks = 128
+	g := NewGroup[int](16)
+	var submitted sync.WaitGroup
+	submitted.Add(tasks)
+	for i := 0; i < tasks; i++ {
+		go func(value int) {
+			defer submitted.Done()
+			if err := g.GoAt(7, context.Background(), func(context.Context) (int, error) {
+				return value, nil
+			}); err != nil {
+				t.Errorf("submit %d: %v", value, err)
+			}
+		}(i)
+	}
+	submitted.Wait()
+	results := g.Wait()
+	seen := make([]bool, tasks)
+	count := 0
+	for _, result := range results {
+		if !result.Occupied {
+			continue
+		}
+		if result.Err != nil || result.Value < 0 || result.Value >= tasks || seen[result.Value] {
+			t.Fatalf("invalid or duplicate result: %+v", result)
+		}
+		seen[result.Value] = true
+		count++
+	}
+	if count != tasks || g.TotalCount() != tasks || g.OkCount() != tasks || g.FailCount() != 0 {
+		t.Fatalf("results=%d total=%d ok=%d failed=%d", count, g.TotalCount(), g.OkCount(), g.FailCount())
+	}
+}
+
+func TestGoAtRejectsNegativeIndex(t *testing.T) {
+	g := NewGroup[int](1)
+	defer g.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("GoAt panicked: %v", r)
+		}
+	}()
+	if err := g.GoAt(-1, ctx, func(context.Context) (int, error) { return 0, nil }); !errors.Is(err, core.ErrInvalidIndex) {
+		t.Fatalf("error=%v, want ErrInvalidIndex", err)
+	}
+	if err := g.GoAt(-1, context.Background(), func(context.Context) (int, error) { return 0, nil }); !errors.Is(err, core.ErrInvalidIndex) {
+		t.Fatalf("error=%v, want ErrInvalidIndex", err)
+	}
+}
+
+func TestValuesExcludeUnoccupiedGoAtSlots(t *testing.T) {
+	g := NewGroup[int](1)
+	if err := g.GoAt(3, context.Background(), func(context.Context) (int, error) { return 42, nil }); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.GoAt(5, context.Background(), func(context.Context) (int, error) { return 0, nil }); err != nil {
+		t.Fatal(err)
+	}
+	g.Wait()
+	values := g.Values()
+	if len(values) != 2 || values[0] != 42 || values[1] != 0 || g.TotalCount() != 2 {
+		t.Fatalf("values=%v total=%d", values, g.TotalCount())
+	}
+}
+
+func TestStreamResultsAfterWaitWithOverflow(t *testing.T) {
+	g := NewGroup[int](1).WithStreaming(1)
+	defer g.Close()
+	for i := 0; i < 3; i++ {
+		if err := g.Go(context.Background(), func(context.Context) (int, error) { return 1, nil }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	results := g.Wait()
+	count := 0
+	for range g.StreamResults() {
+		count++
+	}
+	if count != 1 || len(results) != 3 {
+		t.Fatalf("stream=%d results=%d", count, len(results))
+	}
+}
+
 func TestStreamResults(t *testing.T) {
 	g := NewGroup[int](4)
 	g.WithStreaming(200)
@@ -751,6 +1831,52 @@ func TestStreamResults(t *testing.T) {
 	sort.Ints(collected)
 	if len(collected) != n {
 		t.Errorf("StreamResults collected = %d, want %d", len(collected), n)
+	}
+}
+
+func TestExternalPoolResultCallbackPanic(t *testing.T) {
+	for _, closed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("closed=%v", closed), func(t *testing.T) {
+			p := pool.NewPool[int](1).WithTimeout(0)
+			defer p.Close()
+			if closed {
+				p.Close()
+			}
+			var calls atomic.Int32
+			g := NewGroup[int](1).WithPool(p).WithResultCallback(func(core.Result[int]) {
+				calls.Add(1)
+				panic("callback failure")
+			})
+			if err := g.Go(context.Background(), func(context.Context) (int, error) { return 42, nil }); err != nil {
+				t.Fatal(err)
+			}
+			results, ok := g.WaitTimeout(5 * time.Second)
+			if !ok || len(results) != 1 || calls.Load() != 1 || g.Active() != 0 {
+				t.Fatalf("complete=%v results=%v callbacks=%d active=%d", ok, results, calls.Load(), g.Active())
+			}
+			if closed {
+				if results[0].Err == nil || g.FailCount() != 1 {
+					t.Fatalf("results=%v failures=%d", results, g.FailCount())
+				}
+			} else if results[0].Err != nil || results[0].Value != 42 || g.FailCount() != 0 {
+				t.Fatalf("results=%v failures=%d", results, g.FailCount())
+			}
+		})
+	}
+}
+
+func TestResultCallbackPanicDoesNotDuplicateTask(t *testing.T) {
+	var calls atomic.Int32
+	g := NewGroup[int](1).WithResultCallback(func(core.Result[int]) {
+		calls.Add(1)
+		panic("callback failure")
+	})
+	if err := g.Go(context.Background(), func(context.Context) (int, error) { return 42, nil }); err != nil {
+		t.Fatal(err)
+	}
+	results := g.Wait()
+	if len(results) != 1 || results[0].Value != 42 || results[0].Err != nil || calls.Load() != 1 || g.FailCount() != 0 {
+		t.Fatalf("results=%v callbacks=%d failures=%d", results, calls.Load(), g.FailCount())
 	}
 }
 
@@ -1052,26 +2178,375 @@ func TestAutoScale(t *testing.T) {
 func TestWithSubmitTimeout(t *testing.T) {
 	g := NewGroup[int](1)
 	g.WithSubmitTimeout(10 * time.Millisecond)
-	defer g.Close()
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	unblock := func() { once.Do(func() { close(release) }) }
+	t.Cleanup(func() { unblock(); g.Close() })
 	ctx := context.Background()
-
-	// Fill the only worker
-	g.Go(ctx, func(ctx context.Context) (int, error) {
-		time.Sleep(100 * time.Millisecond)
+	if err := g.Go(ctx, func(ctx context.Context) (int, error) {
+		close(started)
+		<-release
 		return 1, nil
-	})
-
-	// Second task should timeout waiting for slot
+	}); err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	for i := 0; i < cap(g.taskCh); i++ {
+		if err := g.Go(ctx, func(context.Context) (int, error) { return 2, nil }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var rejectedRan atomic.Bool
 	err := g.Go(ctx, func(ctx context.Context) (int, error) {
-		return 2, nil
+		rejectedRan.Store(true)
+		return 3, nil
 	})
-	if err != nil {
-		t.Logf("submit timeout expected: %v", err)
+	if !errors.Is(err, core.ErrSubmitTimeout) {
+		t.Fatalf("Go error = %v, want ErrSubmitTimeout", err)
+	}
+	unblock()
+	results := g.Wait()
+	if rejectedRan.Load() {
+		t.Fatal("timed-out task executed")
+	}
+	if g.TotalCount() != 3 || g.OkCount() != 2 || g.FailCount() != 1 {
+		t.Fatalf("counts: total=%d ok=%d fail=%d, want 3, 2, 1", g.TotalCount(), g.OkCount(), g.FailCount())
+	}
+	if len(results) != 3 {
+		t.Fatalf("got %d results, want 3", len(results))
+	}
+	var timeoutResults int
+	for _, result := range results {
+		if errors.Is(result.Err, core.ErrSubmitTimeout) {
+			timeoutResults++
+		} else if result.Err != nil {
+			t.Fatalf("unexpected result error: %v", result.Err)
+		}
+	}
+	if timeoutResults != 1 {
+		t.Fatalf("got %d timeout results, want 1", timeoutResults)
+	}
+}
+
+func TestBlockedSubmitCanceled(t *testing.T) {
+	g := NewGroup[int](1).WithSubmitTimeout(time.Hour)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	unblock := func() { once.Do(func() { close(release) }) }
+	t.Cleanup(func() { unblock(); g.Close() })
+	if err := g.Go(context.Background(), func(context.Context) (int, error) {
+		close(started)
+		<-release
+		return 1, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	if err := g.Go(context.Background(), func(context.Context) (int, error) { return 2, nil }); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var ran atomic.Bool
+	submitted := make(chan error, 1)
+	go func() {
+		submitted <- g.Go(ctx, func(context.Context) (int, error) { ran.Store(true); return 3, nil })
+	}()
+	deadline := time.NewTimer(5 * time.Second)
+	defer deadline.Stop()
+	for g.active.Load() != 3 {
+		select {
+		case err := <-submitted:
+			t.Fatalf("submit returned before cancellation: %v", err)
+		case <-deadline.C:
+			t.Fatal("submit did not reach the full queue")
+		default:
+			runtime.Gosched()
+		}
+	}
+	cancel()
+	select {
+	case err := <-submitted:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("submit error = %v, want context.Canceled", err)
+		}
+	case <-deadline.C:
+		t.Fatal("canceled submit did not return")
+	}
+	unblock()
+	results := g.Wait()
+	if ran.Load() || g.TotalCount() != 3 || g.OkCount() != 2 || g.FailCount() != 1 {
+		t.Fatalf("ran=%t total=%d ok=%d fail=%d", ran.Load(), g.TotalCount(), g.OkCount(), g.FailCount())
+	}
+	var canceled int
+	for _, result := range results {
+		if errors.Is(result.Err, context.Canceled) {
+			canceled++
+		} else if result.Err != nil {
+			t.Fatalf("unexpected result error: %v", result.Err)
+		}
+	}
+	if len(results) != 3 || canceled != 1 {
+		t.Fatalf("results=%d canceled=%d, want 3 and 1", len(results), canceled)
+	}
+}
+
+// ==================== GoAtWithTimeout ====================
+
+func TestAutoScaleShrinkWithFullQueue(t *testing.T) {
+	g := NewGroup[int](2)
+	g.EnableAutoScale(&core.AutoScaleConfig{MinWorkers: 1, MaxWorkers: 2, CheckInterval: time.Hour})
+	started := make(chan struct{}, 2)
+	release := make(chan struct{})
+	for i := 0; i < 2; i++ {
+		if err := g.Go(context.Background(), func(context.Context) (int, error) { started <- struct{}{}; <-release; return 0, nil }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	<-started
+	<-started
+	queued := make(chan struct{}, 2)
+	finish := make(chan struct{})
+	for i := 0; i < 2; i++ {
+		if err := g.Go(context.Background(), func(context.Context) (int, error) { queued <- struct{}{}; <-finish; return 0, nil }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	g.DisableAutoScale()
+	close(release)
+	<-queued
+	var exceeded bool
+	select {
+	case <-queued:
+		exceeded = true
+	case <-time.After(200 * time.Millisecond):
+	}
+	close(finish)
+	g.Wait()
+	if exceeded {
+		t.Fatal("actual concurrency exceeds Worker() after shrink")
+	}
+}
+
+func TestAutoScaleShrinkThenGrowWithBusyWorkers(t *testing.T) {
+	g := NewGroup[int](2)
+	started := make(chan struct{}, 2)
+	release := make(chan struct{})
+	for i := 0; i < 2; i++ {
+		if err := g.Go(context.Background(), func(context.Context) (int, error) { started <- struct{}{}; <-release; return 0, nil }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	<-started
+	<-started
+	g.autoScaleMu.Lock()
+	g.resizeWorkerPool(1)
+	g.resizeWorkerPool(2)
+	g.autoScaleMu.Unlock()
+	close(release)
+	g.Wait()
+	if got := g.workerCount.Load(); got != 0 {
+		t.Fatalf("remaining workers=%d", got)
+	}
+	if _, err := g.Reset(); err != nil {
+		t.Fatal(err)
+	}
+	if got := g.workerCount.Load(); got != 2 {
+		t.Fatalf("workers after Reset=%d, want 2", got)
 	}
 	g.Wait()
 }
 
-// ==================== GoAtWithTimeout ====================
+func TestAutoScaleStopsAfterWait(t *testing.T) {
+	g := NewGroup[int](1)
+	g.EnableAutoScale(nil)
+	if !g.IsAutoScaleEnabled() {
+		t.Fatal("autoscale not enabled")
+	}
+	g.Wait()
+	if g.IsAutoScaleEnabled() {
+		t.Fatal("autoscale remains enabled after Wait")
+	}
+}
+
+func TestAutoScaleConcurrentLifecycle(t *testing.T) {
+	for i := 0; i < 100; i++ {
+		g := NewGroup[int](1)
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		for j := 0; j < 4; j++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-start
+				g.EnableAutoScale(nil)
+				g.DisableAutoScale()
+			}()
+		}
+		close(start)
+		g.Wait()
+		wg.Wait()
+		if g.IsAutoScaleEnabled() {
+			t.Fatal("autoscale enabled after Wait")
+		}
+	}
+}
+
+func TestAutoScaleRepeatedEnableKeepsFirstConfig(t *testing.T) {
+	g := NewGroup[int](2)
+	defer g.Close()
+	first := &core.AutoScaleConfig{MinWorkers: 1, MaxWorkers: 3, CheckInterval: time.Hour}
+	second := &core.AutoScaleConfig{MinWorkers: 3, MaxWorkers: 4, CheckInterval: time.Hour}
+	g.EnableAutoScale(first)
+	g.EnableAutoScale(second)
+	first.MinWorkers = 3
+	g.DisableAutoScale()
+	if got := g.Worker(); got != 1 {
+		t.Fatalf("workers=%d, want 1", got)
+	}
+}
+
+func TestBuildAggregateNoResultSparseIndex(t *testing.T) {
+	nr := NewNoResult(1)
+	if err := nr.GoAt(3, context.Background(), func(context.Context) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	nr.Wait()
+	total, failures, _, results := BuildAggregateNoResult(nr)
+	if total != 1 || failures != 0 || len(results) != 4 {
+		t.Fatalf("total=%d failures=%d results=%v", total, failures, results)
+	}
+}
+
+func TestFillNoResultSkippedCounts(t *testing.T) {
+	nr := NewNoResult(1)
+	if err := nr.Go(context.Background(), func(context.Context) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	nr.Wait()
+	FillNoResultSkipped(nr, 3)
+	FillNoResultSkipped(nr, 3)
+	total, failures, _, results := BuildAggregateNoResult(nr)
+	if nr.TotalCount() != 3 || nr.OkCount() != 1 || nr.FailCount() != 2 || total != 3 || failures != 2 || len(results) != 3 {
+		t.Fatalf("counts: total=%d success=%d failed=%d aggregate=%d/%d results=%v", nr.TotalCount(), nr.OkCount(), nr.FailCount(), total, failures, results)
+	}
+}
+
+func TestFillNoResultSkippedSparseIndices(t *testing.T) {
+	nr := NewNoResult(1)
+	if err := nr.GoAt(3, context.Background(), func(context.Context) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	nr.Wait()
+	FillNoResultSkipped(nr, 4)
+	FillNoResultSkipped(nr, 2)
+	FillNoResultSkipped(nr, 4)
+	total, failures, _, results := BuildAggregateNoResult(nr)
+	if nr.TotalCount() != 4 || nr.OkCount() != 1 || nr.FailCount() != 3 || total != 4 || failures != 3 || len(results) != 4 {
+		t.Fatalf("counts: total=%d success=%d failed=%d aggregate=%d/%d results=%v", nr.TotalCount(), nr.OkCount(), nr.FailCount(), total, failures, results)
+	}
+}
+
+func TestGroupCountsWhileTaskRunning(t *testing.T) {
+	g := NewGroup[int](1)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	if err := g.Go(context.Background(), func(context.Context) (int, error) {
+		close(started)
+		<-release
+		return 42, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	total, success, failed := g.TotalCount(), g.OkCount(), g.FailCount()
+	close(release)
+	g.Wait()
+	if total != 1 || success != 0 || failed != 0 {
+		t.Fatalf("running: total=%d success=%d failed=%d", total, success, failed)
+	}
+	if g.TotalCount() != 1 || g.OkCount() != 1 || g.FailCount() != 0 {
+		t.Fatalf("completed: total=%d success=%d failed=%d", g.TotalCount(), g.OkCount(), g.FailCount())
+	}
+	if _, err := g.Reset(); err != nil {
+		t.Fatal(err)
+	}
+	defer g.Close()
+	if g.TotalCount() != 0 || g.OkCount() != 0 || g.FailCount() != 0 {
+		t.Fatalf("reset: total=%d success=%d failed=%d", g.TotalCount(), g.OkCount(), g.FailCount())
+	}
+}
+
+func TestMultiGroupCountsWhileTaskRunning(t *testing.T) {
+	g := NewGroup[int](1)
+	mg := g.Shard(2)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	if err := mg.Go(context.Background(), func(context.Context) (int, error) {
+		close(started)
+		<-release
+		return 1, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	total, success, failed := mg.TotalTaskCount(), mg.TotalOkCount(), mg.TotalFailCount()
+	close(release)
+	mg.Wait()
+	if total != 1 || success != 0 || failed != 0 {
+		t.Fatalf("running: total=%d success=%d failed=%d", total, success, failed)
+	}
+	if mg.TotalTaskCount() != 1 || mg.TotalOkCount() != 1 || mg.TotalFailCount() != 0 {
+		t.Fatalf("completed: total=%d success=%d failed=%d", mg.TotalTaskCount(), mg.TotalOkCount(), mg.TotalFailCount())
+	}
+}
+
+func TestGroupCountsRejectedAndRepeatedIndex(t *testing.T) {
+	g := NewGroup[int](1)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	fn := func(context.Context) (int, error) { return 1, nil }
+	if err := g.Go(ctx, fn); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled submission: %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		if err := g.GoAt(3, context.Background(), fn); err != nil {
+			t.Fatal(err)
+		}
+	}
+	g.Wait()
+	if err := g.Go(context.Background(), fn); !errors.Is(err, core.ErrGroupWaited) {
+		t.Fatalf("after wait: %v", err)
+	}
+	if g.TotalCount() != 4 || g.OkCount() != 2 || g.FailCount() != 2 {
+		t.Fatalf("total=%d success=%d failed=%d", g.TotalCount(), g.OkCount(), g.FailCount())
+	}
+}
+
+func TestGoAtWithTimeoutNegativeIndex(t *testing.T) {
+	g := NewGroup[int](1)
+	defer g.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := g.GoAtWithTimeout(-1, ctx, time.Second, func(context.Context) (int, error) { return 1, nil })
+	if !errors.Is(err, core.ErrInvalidIndex) {
+		t.Fatalf("error = %v, want ErrInvalidIndex", err)
+	}
+	err = g.GoAtWithTimeout(-1, context.Background(), time.Second, func(context.Context) (int, error) { return 1, nil })
+	if !errors.Is(err, core.ErrInvalidIndex) {
+		t.Fatalf("background context: error = %v, want ErrInvalidIndex", err)
+	}
+	if got := g.TotalCount(); got != 0 {
+		t.Fatalf("TotalCount = %d, want 0", got)
+	}
+	nr := NewNoResult(1)
+	defer nr.Close()
+	if err := nr.GoAtWithTimeout(-1, context.Background(), time.Second, func(context.Context) error { return nil }); !errors.Is(err, core.ErrInvalidIndex) {
+		t.Fatalf("NoResult: error = %v, want ErrInvalidIndex", err)
+	}
+}
 
 func TestGoAtWithTimeout(t *testing.T) {
 	g := NewGroup[int](4)
@@ -1105,7 +2580,7 @@ func TestProduction_MixedResults(t *testing.T) {
 	defer g.Close()
 	ctx := context.Background()
 
-	var successCount, errorCount, panicCount atomic.Int64
+	var okCount, errorCount, panicCount atomic.Int64
 	n := 1000
 
 	for i := 0; i < n; i++ {
@@ -1113,7 +2588,7 @@ func TestProduction_MixedResults(t *testing.T) {
 		err := g.Go(ctx, func(ctx context.Context) (int, error) {
 			switch mod {
 			case 0, 1, 2:
-				successCount.Add(1)
+				okCount.Add(1)
 				return i, nil
 			case 3:
 				errorCount.Add(1)
@@ -1132,8 +2607,8 @@ func TestProduction_MixedResults(t *testing.T) {
 	if len(results) != n {
 		t.Errorf("results len = %d, want %d", len(results), n)
 	}
-	if g.SuccessCount() != successCount.Load() {
-		t.Errorf("SuccessCount = %d, want %d", g.SuccessCount(), successCount.Load())
+	if g.OkCount() != okCount.Load() {
+		t.Errorf("OkCount = %d, want %d", g.OkCount(), okCount.Load())
 	}
 	if g.FailCount() != errorCount.Load()+panicCount.Load() {
 		t.Errorf("FailCount = %d, want %d (err+panic)", g.FailCount(), errorCount.Load()+panicCount.Load())
@@ -1215,8 +2690,8 @@ func TestProduction_NoResultHighConcurrency(t *testing.T) {
 	if counter.Load() != int64(n) {
 		t.Errorf("counter = %d, want %d", counter.Load(), n)
 	}
-	if g.SuccessCount() != int64(n) {
-		t.Errorf("SuccessCount = %d, want %d", g.SuccessCount(), n)
+	if g.OkCount() != int64(n) {
+		t.Errorf("OkCount = %d, want %d", g.OkCount(), n)
 	}
 }
 
@@ -1785,10 +3260,8 @@ func TestMultiGroup_WaitContext_Then_WaitTimeout(t *testing.T) {
 
 // ──────────────────────── WaitContext 取消传播修复验证 ────────────────────────
 //
-// 修复前：Group.WaitContext / WaitTimeout 在 ctx 取消后先调用 workerWg.Wait()
-//        再调用 cancelAll()，导致任务没收到取消信号，cancel 形同虚设。
-// 修复后：cancelAll() 在 workerWg.Wait() 之前调用，任务收到 ctx 取消信号后
-//        快速退出，WaitContext/WaitTimeout 不会再被未取消的任务无限阻塞。
+// Timed waits propagate cancellation and return a partial snapshot promptly.
+// Wait joins background cleanup before final result and callback assertions.
 
 // ==================== WaitContext 取消传播 — 核心验证 ====================
 
@@ -1818,6 +3291,8 @@ func TestWaitContext_CancelPropagation_SingleWorker(t *testing.T) {
 	if elapsed > 3*time.Second {
 		t.Fatalf("WaitContext blocked too long: %v (cancel signal did NOT reach task)", elapsed)
 	}
+	// A timed wait returns a snapshot; join before asserting final completeness.
+	results = g.Wait()
 	if len(results) != 1 {
 		t.Fatalf("expected 1 result, got %d", len(results))
 	}
@@ -1855,6 +3330,8 @@ func TestWaitContext_CancelPropagation_MultiWorker(t *testing.T) {
 	if elapsed > 3*time.Second {
 		t.Fatalf("WaitContext blocked too long with %d workers: %v", n, elapsed)
 	}
+	// A timed wait returns a snapshot; join before asserting final completeness.
+	results = g.Wait()
 	if len(results) != n {
 		t.Fatalf("expected %d results, got %d", n, len(results))
 	}
@@ -1896,6 +3373,8 @@ func TestWaitTimeout_TimeoutPropagation(t *testing.T) {
 	if elapsed > 3*time.Second {
 		t.Fatalf("WaitTimeout blocked too long: %v (timeout signal did NOT reach tasks)", elapsed)
 	}
+	// A timed wait returns a snapshot; join before asserting final completeness.
+	results = g.Wait()
 	if len(results) != 10 {
 		t.Fatalf("expected 10 results, got %d", len(results))
 	}
@@ -1937,6 +3416,8 @@ func TestWaitContext_WithDeadline_Propagation(t *testing.T) {
 	if elapsed > 3*time.Second {
 		t.Fatalf("WaitContext blocked too long with deadline: %v", elapsed)
 	}
+	// A timed wait returns a snapshot; join before asserting final completeness.
+	results = g.Wait()
 	if len(results) != 5 {
 		t.Fatalf("expected 5 results, got %d", len(results))
 	}
@@ -1976,6 +3457,8 @@ func TestWaitContext_ExternalCancel_Propagation(t *testing.T) {
 	if elapsed > 3*time.Second {
 		t.Fatalf("WaitContext blocked too long after external cancel: %v", elapsed)
 	}
+	// A timed wait returns a snapshot; join before asserting final completeness.
+	results = g.Wait()
 	if len(results) != 5 {
 		t.Fatalf("expected 5 results, got %d", len(results))
 	}
@@ -2031,6 +3514,8 @@ func TestWaitContext_CancelPropagation_Mixed(t *testing.T) {
 	if elapsed > 2*time.Second {
 		t.Fatalf("WaitContext blocked too long with mixed tasks: %v", elapsed)
 	}
+	// A timed wait returns a snapshot; join before asserting final completeness.
+	results = g.Wait()
 	if len(results) != nResponsive+nUnresponsive {
 		t.Fatalf("expected %d results, got %d", nResponsive+nUnresponsive, len(results))
 	}
@@ -2073,26 +3558,28 @@ func TestWaitContext_ResultsIntegrity(t *testing.T) {
 	if ok {
 		t.Fatal("expected cancelled (ok=false)")
 	}
+	// A timed wait returns a snapshot; join before asserting final completeness.
+	results = g.Wait()
 	if len(results) != n {
 		t.Fatalf("expected %d results, got %d", n, len(results))
 	}
 
-	successCount := 0
+	okCount := 0
 	cancelCount := 0
 	for _, r := range results {
 		if r.Err == nil && r.Value%100 == 0 {
-			successCount++
+			okCount++
 		} else if r.Err != nil {
 			cancelCount++
 		}
 	}
-	if successCount != nFast {
-		t.Errorf("expected %d successful results, got %d", nFast, successCount)
+	if okCount != nFast {
+		t.Errorf("expected %d successful results, got %d", nFast, okCount)
 	}
 	if cancelCount != nSlow {
 		t.Errorf("expected %d cancelled results, got %d", nSlow, cancelCount)
 	}
-	t.Logf("results integrity OK: success=%d, cancelled=%d", successCount, cancelCount)
+	t.Logf("results integrity OK: success=%d, cancelled=%d", okCount, cancelCount)
 }
 
 // ==================== WaitContext — 已取消 ctx 的边界 ====================
@@ -2124,6 +3611,8 @@ func TestWaitContext_AlreadyCancelledCtx(t *testing.T) {
 	if elapsed > 3*time.Second {
 		t.Fatalf("WaitContext blocked too long with already-cancelled ctx: %v", elapsed)
 	}
+	// A timed wait returns a snapshot; join before asserting final completeness.
+	results = g.Wait()
 	if len(results) != 5 {
 		t.Fatalf("expected 5 results, got %d", len(results))
 	}
@@ -2225,6 +3714,8 @@ func TestWaitContext_CancelPropagation_HighConcurrency(t *testing.T) {
 	if elapsed > 3*time.Second {
 		t.Fatalf("high-concurrency WaitContext blocked too long: %v", elapsed)
 	}
+	// A timed wait returns a snapshot; join before asserting final completeness.
+	results = g.Wait()
 	if len(results) != n {
 		t.Fatalf("expected %d results, got %d", n, len(results))
 	}
@@ -2258,6 +3749,8 @@ func TestWaitContext_PanicSafety_CancelPath(t *testing.T) {
 	if ok {
 		t.Fatal("expected cancelled (ok=false)")
 	}
+	// A timed wait returns a snapshot; join before asserting final completeness.
+	results = g.Wait()
 	if len(results) != 2 {
 		t.Fatalf("expected 2 results, got %d", len(results))
 	}
@@ -2349,6 +3842,8 @@ func TestMultiGroup_WaitContext_CancelPropagation(t *testing.T) {
 	if elapsed > 3*time.Second {
 		t.Fatalf("MultiGroup.WaitContext blocked too long: %v (cancel signal NOT propagated to all shards)", elapsed)
 	}
+	// A timed wait returns a snapshot; join before asserting final completeness.
+	results = mg.Wait()
 	if len(results) != n {
 		t.Fatalf("expected %d results, got %d", n, len(results))
 	}
@@ -2382,6 +3877,8 @@ func TestMultiGroup_WaitTimeout_TimeoutPropagation(t *testing.T) {
 	if elapsed > 3*time.Second {
 		t.Fatalf("MultiGroup.WaitTimeout blocked too long: %v", elapsed)
 	}
+	// A timed wait returns a snapshot; join before asserting final completeness.
+	results = mg.Wait()
 	if len(results) != n {
 		t.Fatalf("expected %d results, got %d", n, len(results))
 	}
@@ -2413,7 +3910,7 @@ func TestWaitContext_Cancel_TwiceCall(t *testing.T) {
 	if ok1 || !ok2 {
 		t.Fatalf("first call ok=%v (expected false, timeout), second call ok=%v (expected true, waited)", ok1, ok2)
 	}
-	if len(r1) != 5 || len(r2) != 5 {
+	if len(r1) > 5 || len(r2) != 5 {
 		t.Fatalf("results: len1=%d, len2=%d", len(r1), len(r2))
 	}
 	t.Logf("WaitContext twice-call OK: len1=%d, len2=%d", len(r1), len(r2))
@@ -2485,6 +3982,8 @@ func TestWaitContext_WithGroupTimeout_And_WaitContextTimeout(t *testing.T) {
 	if elapsed > 3*time.Second {
 		t.Fatalf("WaitContext blocked too long with group timeout: %v", elapsed)
 	}
+	// A timed wait returns a snapshot; join before asserting final completeness.
+	results = g.Wait()
 	if len(results) != 5 {
 		t.Fatalf("expected 5 results, got %d", len(results))
 	}
@@ -2522,6 +4021,8 @@ func TestWaitContext_WithGroupContext_AndWaitContextCancel(t *testing.T) {
 	if elapsed > 3*time.Second {
 		t.Fatalf("WaitContext blocked too long with group context: %v", elapsed)
 	}
+	// A timed wait returns a snapshot; join before asserting final completeness.
+	results = g.Wait()
 	if len(results) != 5 {
 		t.Fatalf("expected 5 results, got %d", len(results))
 	}
@@ -2580,7 +4081,7 @@ func TestWaitTimeout_Cancel_TwiceCall(t *testing.T) {
 	if ok1 || !ok2 {
 		t.Fatalf("first call ok=%v (expected false, timeout), second call ok=%v (expected true, waited)", ok1, ok2)
 	}
-	if len(r1) != 5 || len(r2) != 5 {
+	if len(r1) > 5 || len(r2) != 5 {
 		t.Fatalf("results: len1=%d, len2=%d", len(r1), len(r2))
 	}
 	t.Logf("WaitTimeout twice-call OK: len1=%d, len2=%d", len(r1), len(r2))
@@ -2615,6 +4116,8 @@ func TestChain_WithTimeout_WaitContext(t *testing.T) {
 	if elapsed > 3*time.Second {
 		t.Fatalf("chain WithTimeout+WaitContext blocked too long: %v", elapsed)
 	}
+	// A timed wait returns a snapshot; join before asserting final completeness.
+	results = g.Wait()
 	if len(results) != 5 {
 		t.Fatalf("expected 5 results, got %d", len(results))
 	}
@@ -2650,6 +4153,8 @@ func TestChain_WithTimeout_WaitTimeout(t *testing.T) {
 	if elapsed > 3*time.Second {
 		t.Fatalf("chain WithTimeout+WaitTimeout blocked too long: %v", elapsed)
 	}
+	// A timed wait returns a snapshot; join before asserting final completeness.
+	results = g.Wait()
 	if len(results) != 5 {
 		t.Fatalf("expected 5 results, got %d", len(results))
 	}
@@ -2683,6 +4188,8 @@ func TestChain_WithSubmitTimeout_WaitContext(t *testing.T) {
 	if elapsed > 3*time.Second {
 		t.Fatalf("chain WithSubmitTimeout+WaitContext blocked too long: %v", elapsed)
 	}
+	// A timed wait returns a snapshot; join before asserting final completeness.
+	results = g.Wait()
 	if len(results) != 5 {
 		t.Fatalf("expected 5 results, got %d", len(results))
 	}
@@ -2716,6 +4223,8 @@ func TestChain_DoubleBuilder_WaitContext(t *testing.T) {
 	if elapsed > 3*time.Second {
 		t.Fatalf("chain DoubleBuilder+WaitContext blocked too long: %v", elapsed)
 	}
+	// A timed wait returns a snapshot; join before asserting final completeness.
+	results = g.Wait()
 	if len(results) != 5 {
 		t.Fatalf("expected 5 results, got %d", len(results))
 	}
@@ -2746,6 +4255,8 @@ func TestChain_DoubleBuilder_WaitTimeout(t *testing.T) {
 	if elapsed > 3*time.Second {
 		t.Fatalf("chain DoubleBuilder+WaitTimeout blocked too long: %v", elapsed)
 	}
+	// A timed wait returns a snapshot; join before asserting final completeness.
+	results = g.Wait()
 	if len(results) != 5 {
 		t.Fatalf("expected 5 results, got %d", len(results))
 	}
@@ -2779,6 +4290,8 @@ func TestChain_WithStreaming_WaitContext(t *testing.T) {
 	if elapsed > 3*time.Second {
 		t.Fatalf("chain WithStreaming+WaitContext blocked too long: %v", elapsed)
 	}
+	// A timed wait returns a snapshot; join before asserting final completeness.
+	results = g.Wait()
 	if len(results) != 5 {
 		t.Fatalf("expected 5 results, got %d", len(results))
 	}
@@ -2818,6 +4331,8 @@ func TestChain_WithResultCallback_WaitContext(t *testing.T) {
 	if elapsed > 3*time.Second {
 		t.Fatalf("chain WithResultCallback+WaitContext blocked too long: %v", elapsed)
 	}
+	// A timed wait returns a snapshot; join before asserting final completeness.
+	results = g.Wait()
 	if len(results) != 5 {
 		t.Fatalf("expected 5 results, got %d", len(results))
 	}
@@ -2860,6 +4375,8 @@ func TestChain_WithContext_WaitContext(t *testing.T) {
 	if elapsed > 3*time.Second {
 		t.Fatalf("chain WithContext+WaitContext blocked too long: %v", elapsed)
 	}
+	// A timed wait returns a snapshot; join before asserting final completeness.
+	results = g.Wait()
 	if len(results) != 5 {
 		t.Fatalf("expected 5 results, got %d", len(results))
 	}
@@ -2893,6 +4410,8 @@ func TestChain_TripleBuilder_WaitContext(t *testing.T) {
 	if elapsed > 3*time.Second {
 		t.Fatalf("chain TripleBuilder+WaitContext blocked too long: %v", elapsed)
 	}
+	// A timed wait returns a snapshot; join before asserting final completeness.
+	results = g.Wait()
 	if len(results) != 5 {
 		t.Fatalf("expected 5 results, got %d", len(results))
 	}
@@ -2926,6 +4445,8 @@ func TestChain_DefaultGroup_WaitContext(t *testing.T) {
 	if elapsed > 3*time.Second {
 		t.Fatalf("chain DefaultGroup+WaitContext blocked too long: %v", elapsed)
 	}
+	// A timed wait returns a snapshot; join before asserting final completeness.
+	results = g.Wait()
 	if len(results) != 5 {
 		t.Fatalf("expected 5 results, got %d", len(results))
 	}

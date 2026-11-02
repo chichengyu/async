@@ -14,6 +14,8 @@ const defaultMapTimeout = 30 * time.Second
 
 // MapChain is the generic map concurrent operation chain builder.
 // Default: parallel mode (DefPar concurrency). Use Serial() for serial.
+// The builder retains data by reference and is not safe for concurrent mutation.
+// Do not mutate the input map while an operation is reading it.
 type MapChain[K comparable, V any, R any] struct {
 	*MapBase[K, V, *MapChain[K, V, R]]
 }
@@ -49,9 +51,9 @@ func (b *MapChain[K, V, R]) Parallel() *MapParallel[K, V, R] {
 
 func (b *MapChain[K, V, R]) Logger(l core.Logger) *MapChain[K, V, R] { core.SetLogger(l); return b }
 func (b *MapChain[K, V, R]) DefaultLogger() *MapChain[K, V, R]       { core.SetLogger(nil); return b }
-func (b *MapChain[K, V, R]) Worker(n int) *MapChain[K, V, R]         { b.policy = sliceops.Par(n); return b }
+func (b *MapChain[K, V, R]) Worker(n int) *MapChain[K, V, R]         { b.policy = b.policy.Worker(n); return b }
 func (b *MapChain[K, V, R]) DefaultWorker() *MapChain[K, V, R] {
-	b.policy = sliceops.DefPar()
+	b.policy = b.policy.Worker(0)
 	return b
 }
 func (b *MapChain[K, V, R]) DefaultPool() *MapChain[K, V, R] {
@@ -110,7 +112,7 @@ func (b *MapChain[K, V, R]) Map(fn func(context.Context, K, V) (R, error)) *MapR
 	return NewMapRunner[K, V, R](b.ctx, b.data, b.policy).Map(fn)
 }
 
-// MapToFn transforms values, returning (*MapResult, error) separately. Backward compatible.
+// MapToFn transforms values and returns a MapResult containing any error.
 func (b *MapChain[K, V, R]) MapToFn(fn func(context.Context, K, V) (R, error)) *MapResult[K, R] {
 	return NewMapRunner[K, V, R](b.ctx, b.data, b.policy).Map(fn)
 }

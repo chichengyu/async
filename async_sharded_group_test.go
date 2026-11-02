@@ -11,6 +11,46 @@ import (
 	"github.com/chichengyu/async/test"
 )
 
+func TestShardedGroupBuilderKeyedProductionExample(t *testing.T) {
+	err := GroupSharded[int]().Context(context.Background()).Shards(4).Worker(2).
+		Run(func(ctx context.Context, sg *ShardedGroup[int]) error {
+			sg.WithTimeout(time.Second)
+			_, ffCtx := sg.WithFailFast(ctx)
+			for i := 0; i < 8; i++ {
+				value := i
+				if err := sg.GoKeyed("same-user", ffCtx, func(context.Context) (int, error) {
+					return value, nil
+				}); err != nil {
+					return err
+				}
+			}
+			results := sg.Wait()
+			if len(results) != 8 {
+				t.Fatalf("got %d results, want 8", len(results))
+			}
+			seen := make(map[int]bool)
+			for _, result := range results {
+				if result.Err != nil || result.Value < 0 || result.Value >= 8 || seen[result.Value] {
+					t.Fatalf("unexpected result: %+v", result)
+				}
+				seen[result.Value] = true
+			}
+			nonempty := 0
+			for i := 0; i < sg.ShardCount(); i++ {
+				if len(sg.GetShard(i).Wait()) != 0 {
+					nonempty++
+				}
+			}
+			if nonempty != 1 {
+				t.Fatalf("same key reached %d shards, want 1", nonempty)
+			}
+			return nil
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 // ============================================================
 // ShardedGroupBuilder 四档链式测试（万/十万/百万/千万）
 //

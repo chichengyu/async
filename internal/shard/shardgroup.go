@@ -91,17 +91,18 @@ func (sg *ShardedGroup[T]) GoAt(shardIdx, index int, ctx context.Context, fn fun
 func (sg *ShardedGroup[T]) GoKeyed(key string, ctx context.Context, fn func(context.Context) (T, error)) error {
 	h := fnv.New32a()
 	h.Write([]byte(key))
-	idx := int(h.Sum32()) % len(sg.groups)
+	idx := int(uint64(h.Sum32()) % uint64(len(sg.groups)))
 	return sg.groups[idx].Go(ctx, fn)
 }
 
-// GoBatch 批量分发，每个 item 随机分配到不同分片。
+// GoBatchResult 描述批量提交中一个元素的分片、原始索引及提交错误。
 type GoBatchResult struct {
 	ShardIdx int
 	Index    int
 	Err      error
 }
 
+// GoBatch 按轮询顺序将元素分发到各分片，并返回每项的提交结果。
 func (sg *ShardedGroup[T]) GoBatch(ctx context.Context, items []T, fn func(context.Context, T) (T, error)) ([]GoBatchResult, error) {
 	results := make([]GoBatchResult, len(items))
 	var firstErr error
@@ -183,6 +184,7 @@ func (sg *ShardedGroup[T]) Close() {
 }
 
 // Reset 重置所有分片（需在 Wait 后无活跃任务时调用）。
+// Reset 会清除 FailFast 配置；复用时需重新调用 WithFailFast 并使用其返回的 context。
 func (sg *ShardedGroup[T]) Reset() error {
 	for _, g := range sg.groups {
 		if _, err := g.Reset(); err != nil {
@@ -281,11 +283,11 @@ func (sg *ShardedGroup[T]) TotalFailCount() int64 {
 	return total
 }
 
-// TotalSuccessCount 汇总所有分片成功数。
-func (sg *ShardedGroup[T]) TotalSuccessCount() int64 {
+// TotalOkCount 汇总所有分片成功数。
+func (sg *ShardedGroup[T]) TotalOkCount() int64 {
 	var total int64
 	for _, g := range sg.groups {
-		total += g.SuccessCount()
+		total += g.OkCount()
 	}
 	return total
 }
@@ -318,5 +320,5 @@ func (sg *ShardedGroup[T]) TotalWorker() int {
 }
 
 func (sg *ShardedGroup[T]) pick() int {
-	return int(sg.next.Add(1)-1) % len(sg.groups)
+	return int((sg.next.Add(1) - 1) % uint64(len(sg.groups)))
 }

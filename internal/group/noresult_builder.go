@@ -177,5 +177,9 @@ func (b *GroupNoResultBuilder) Build() *NoResult {
 func (b *GroupNoResultBuilder) Run(fn func(ctx context.Context, nr *NoResult) error) error {
 	nr := b.Build()
 	defer nr.Close()
-	return fn(b.ctx, nr)
+	ctx := b.ctx
+	if b.failFast {
+		ctx = (*Group[struct{}])(nr).ctx
+	}
+	return fn(ctx, nr)
 }

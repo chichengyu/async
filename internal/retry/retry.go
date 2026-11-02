@@ -42,7 +42,7 @@ import (
 // 参数：
 //   - ctx：上下文，取消后终止重试
 //   - fn：要执行的函数
-//   - maxRetries：最大重试次数（总执行次数 = maxRetries + 1）
+//   - maxRetries：最大重试次数（负数按 0 处理；总执行次数 = maxRetries + 1）
 //   - initialBackoff：初始退避时间
 //   - maxBackoff：最大退避时间上限
 //
@@ -59,8 +59,14 @@ func RetryWithBackoff[T any](
 	initialBackoff time.Duration,
 	maxBackoff time.Duration,
 ) (T, error) {
+	if maxRetries < 0 {
+		maxRetries = 0
+	}
 	var zero T
 	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return zero, err
+		}
 		val, err := invokeSafely(ctx, fn)
 		if err == nil {
 			return val, nil
@@ -231,13 +237,19 @@ func computeBackoff(attempt int, initialBackoff time.Duration, maxBackoff time.D
 	if initialBackoff <= 0 {
 		return 0
 	}
-	if attempt > 30 {
-		attempt = 30
+	limit := time.Duration(math.MaxInt64)
+	if maxBackoff > 0 {
+		limit = maxBackoff
 	}
-	mul := math.Pow(2, float64(attempt))
-	backoff := time.Duration(mul) * initialBackoff
-	if maxBackoff > 0 && backoff > maxBackoff {
-		backoff = maxBackoff
+	if initialBackoff >= limit {
+		return limit
+	}
+	backoff := initialBackoff
+	for i := 0; i < attempt; i++ {
+		if backoff > limit/2 {
+			return limit
+		}
+		backoff *= 2
 	}
 	return backoff
 }

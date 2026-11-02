@@ -125,22 +125,12 @@ func Execute[T any](
 			wg.Add(1)
 			go func(start, end int) {
 				defer wg.Done()
-				currentIdx := start
-				defer func() {
-					if r := recover(); r != nil {
-						for j := currentIdx; j < end; j++ {
-							var zero T
-							nextResults[j] = core.Result[T]{Value: zero, Err: core.NewPanicError(r)}
-						}
-					}
-				}()
 				for j := start; j < end; j++ {
-					currentIdx = j
 					if stage.SkipOnError && resultsList[j].Err != nil {
 						nextResults[j] = resultsList[j]
 						continue
 					}
-					val, err := fn(ctx, stage.Name, resultsList[j].Value)
+					val, err := safeCall(ctx, fn, stage.Name, resultsList[j].Value)
 					nextResults[j] = core.Result[T]{Value: val, Err: err}
 				}
 			}(start, end)
@@ -206,23 +196,12 @@ func ExecuteWithMeta[T any](
 			wg.Add(1)
 			go func(start, end int) {
 				defer wg.Done()
-				currentIdx := start
-				defer func() {
-					if r := recover(); r != nil {
-						for j := currentIdx; j < end; j++ {
-							var zero T
-							stageResults[j] = core.Result[T]{Value: zero, Err: core.NewPanicError(r)}
-						}
-					}
-				}()
 				for j := start; j < end; j++ {
-					currentIdx = j
 					if stage.SkipOnError && itemErrs[j] != nil {
-						var zero T
-						stageResults[j] = core.Result[T]{Value: zero, Err: itemErrs[j]}
+						stageResults[j] = core.Result[T]{Value: items[j], Err: itemErrs[j]}
 						continue
 					}
-					val, err := fn(ctx, stage.Name, items[j])
+					val, err := safeCall(ctx, fn, stage.Name, items[j])
 					stageResults[j] = core.Result[T]{Value: val, Err: err}
 				}
 			}(start, end)
@@ -231,9 +210,7 @@ func ExecuteWithMeta[T any](
 		nextItems := make([]T, 0, len(stageResults))
 		for i, r := range stageResults {
 			results = append(results, ResultWithMeta[T]{Result: r, Stage: stage.Name})
-			if r.Err != nil && itemErrs[i] == nil {
-				itemErrs[i] = r.Err
-			}
+			itemErrs[i] = r.Err
 			nextItems = append(nextItems, r.Value)
 		}
 		items = nextItems
@@ -288,7 +265,8 @@ func ExecuteWithGroup[T any](
 //   - fn：处理函数，接收 ctx、阶段名和当前元素
 //   - bufSize：channel 缓冲区大小，<=0 时自动计算
 //
-// 返回的 channel 在最终阶段所有任务完成后自动关闭。
+// 返回的 channel 在最终阶段所有任务完成后自动关闭。消费者提前停止读取时应取消 ctx，
+// 以解除被阻塞的结果发送；取消后未发送的结果可能丢弃。
 //
 // 使用示例：
 //
@@ -358,22 +336,12 @@ func ExecutePipe[T any](
 			wg.Add(1)
 			go func(start, end int) {
 				defer wg.Done()
-				currentIdx := start
-				defer func() {
-					if r := recover(); r != nil {
-						for j := currentIdx; j < end; j++ {
-							var zero T
-							nextResults[j] = core.Result[T]{Value: zero, Err: core.NewPanicError(r)}
-						}
-					}
-				}()
 				for j := start; j < end; j++ {
-					currentIdx = j
 					if stage.SkipOnError && resultsList[j].Err != nil {
 						nextResults[j] = resultsList[j]
 						continue
 					}
-					val, err := fn(ctx, stage.Name, resultsList[j].Value)
+					val, err := safeCall(ctx, fn, stage.Name, resultsList[j].Value)
 					nextResults[j] = core.Result[T]{Value: val, Err: err}
 				}
 			}(start, end)
@@ -408,11 +376,11 @@ func ExecutePipe[T any](
 	g := group.NewGroup[T](finalConcurrency)
 
 	go func() {
+		defer close(outCh)
 		for _, r := range resultsList {
 			if finalStage.SkipOnError && r.Err != nil {
 				g.Go(ctx, func(ctx context.Context) (T, error) {
-					var zero T
-					return zero, r.Err
+					return r.Value, r.Err
 				})
 				continue
 			}
@@ -424,9 +392,15 @@ func ExecutePipe[T any](
 		}
 		results := g.Wait()
 		for _, r := range results {
-			outCh <- r
+			if ctx.Err() != nil {
+				return
+			}
+			select {
+			case outCh <- r:
+			case <-ctx.Done():
+				return
+			}
 		}
-		close(outCh)
 	}()
 	return outCh
 }
@@ -543,22 +517,12 @@ func (p *Pipeline[T]) executeNative(
 			wg.Add(1)
 			go func(start, end int) {
 				defer wg.Done()
-				currentIdx := start
-				defer func() {
-					if r := recover(); r != nil {
-						for j := currentIdx; j < end; j++ {
-							var zero T
-							nextResults[j] = core.Result[T]{Value: zero, Err: core.NewPanicError(r)}
-						}
-					}
-				}()
 				for j := start; j < end; j++ {
-					currentIdx = j
 					if stage.SkipOnError && resultsList[j].Err != nil {
 						nextResults[j] = resultsList[j]
 						continue
 					}
-					val, err := fn(ctx, stage.Name, resultsList[j].Value)
+					val, err := safeCall(ctx, fn, stage.Name, resultsList[j].Value)
 					nextResults[j] = core.Result[T]{Value: val, Err: err}
 				}
 			}(start, end)
@@ -593,8 +557,7 @@ func (p *Pipeline[T]) executeSharded(
 		for _, r := range resultsList {
 			if stage.SkipOnError && r.Err != nil {
 				mg.Go(ctx, func(ctx context.Context) (T, error) {
-					var zero T
-					return zero, r.Err
+					return r.Value, r.Err
 				})
 				continue
 			}
@@ -662,23 +625,12 @@ func (p *Pipeline[T]) executeWithMetaNative(
 			wg.Add(1)
 			go func(start, end int) {
 				defer wg.Done()
-				currentIdx := start
-				defer func() {
-					if r := recover(); r != nil {
-						for j := currentIdx; j < end; j++ {
-							var zero T
-							stageResults[j] = core.Result[T]{Value: zero, Err: core.NewPanicError(r)}
-						}
-					}
-				}()
 				for j := start; j < end; j++ {
-					currentIdx = j
 					if stage.SkipOnError && elemErrs[j] != nil {
-						var zero T
-						stageResults[j] = core.Result[T]{Value: zero, Err: elemErrs[j]}
+						stageResults[j] = core.Result[T]{Value: elems[j], Err: elemErrs[j]}
 						continue
 					}
-					val, err := fn(ctx, stage.Name, elems[j])
+					val, err := safeCall(ctx, fn, stage.Name, elems[j])
 					stageResults[j] = core.Result[T]{Value: val, Err: err}
 				}
 			}(start, end)
@@ -687,9 +639,7 @@ func (p *Pipeline[T]) executeWithMetaNative(
 		nextItems := make([]T, 0, len(stageResults))
 		for i, r := range stageResults {
 			results = append(results, ResultWithMeta[T]{Result: r, Stage: stage.Name})
-			if r.Err != nil && elemErrs[i] == nil {
-				elemErrs[i] = r.Err
-			}
+			elemErrs[i] = r.Err
 			nextItems = append(nextItems, r.Value)
 		}
 		elems = nextItems
@@ -721,8 +671,7 @@ func (p *Pipeline[T]) executeWithMetaSharded(
 		for _, r := range resultsList {
 			if stage.SkipOnError && r.Err != nil {
 				mg.Go(ctx, func(ctx context.Context) (T, error) {
-					var zero T
-					return zero, r.Err
+					return r.Value, r.Err
 				})
 				continue
 			}

@@ -44,7 +44,7 @@ func (b *SerialSlice[T, R]) Logger(l core.Logger) *SerialSlice[T, R] {
 
 func (b *SerialSlice[T, R]) Map(fn func(context.Context, T) (R, error)) *SliceResult[R] {
 	results, err := NewRunner[T, R](b.ctx, b.items, b.policy).Map(fn)
-	return &SliceResult[R]{results: results, err: err, failValues: collectFailValues(b.items, results)}
+	return &SliceResult[R]{results: results, err: err, errIsSummary: true, failValues: collectFailValues(b.items, results)}
 }
 
 func (b *SerialSlice[T, R]) ForEach(fn func(context.Context, T) error) *ForEachResult {

@@ -79,7 +79,13 @@ type AsyncResult[T any] struct {
 	ready     chan struct{}         // 结果就绪信号
 	result    core.Result[T]        // 缓存的结果
 	once      sync.Once             // 保证只从 channel 读取一次
+	startOnce sync.Once             // 共享后台结果等待者
+	readyOnce sync.Once             // 保证只关闭一次就绪信号
 	populated bool                  // result 是否已从 channel 成功读取
+}
+
+func (ar *AsyncResult[T]) startWaiter() {
+	ar.startOnce.Do(func() { go ar.getResult() })
 }
 
 func (ar *AsyncResult[T]) getResult() core.Result[T] {
@@ -87,19 +93,17 @@ func (ar *AsyncResult[T]) getResult() core.Result[T] {
 		ar.mu.Lock()
 		if !ar.populated && ar.results != nil {
 			ar.mu.Unlock()
-			r := <-ar.results
+			r, ok := <-ar.results
 			ar.mu.Lock()
-			ar.result = r
-			ar.populated = true
+			if ok && !ar.populated {
+				ar.result = r
+				ar.populated = true
+			}
 			ar.mu.Unlock()
 		} else {
 			ar.mu.Unlock()
 		}
-		select {
-		case <-ar.ready:
-		default:
-			close(ar.ready)
-		}
+		ar.readyOnce.Do(func() { close(ar.ready) })
 	})
 	<-ar.ready
 	ar.mu.Lock()
@@ -192,11 +196,7 @@ func (ar *AsyncResult[T]) Cancel() (T, error) {
 				ar.populated = true
 				ar.mu.Unlock()
 				// 关闭 ready，通知所有 Wait 调用者结果已就绪
-				select {
-				case <-ar.ready:
-				default:
-					close(ar.ready)
-				}
+				ar.readyOnce.Do(func() { close(ar.ready) })
 				return r.Value, r.Err
 			}
 		default:
@@ -207,7 +207,7 @@ func (ar *AsyncResult[T]) Cancel() (T, error) {
 	// 步骤 4：短暂等待（1ms），给 goroutine 一个完成窗口再判定
 	timer := time.NewTimer(time.Millisecond)
 	defer timer.Stop()
-	go ar.getResult()
+	ar.startWaiter()
 	select {
 	case <-ar.ready:
 		ar.mu.Lock()
@@ -242,7 +242,7 @@ func (ar *AsyncResult[T]) IsPanic() bool {
 //	ar := task.Go(ctx, fn)
 //	val, err, ok := ar.WaitTimeout(3 * time.Second)
 //	if !ok {
-//	    fmt.Println("任务超时，已丢弃结果")
+//	    fmt.Println("等待超时，稍后仍可获取结果")
 //	    return
 //	}
 func (ar *AsyncResult[T]) WaitTimeout(timeout time.Duration) (T, error, bool) {
@@ -272,11 +272,7 @@ func (ar *AsyncResult[T]) WaitTimeout(timeout time.Duration) (T, error, bool) {
 				ar.result = r
 				ar.populated = true
 				ar.mu.Unlock()
-				select {
-				case <-ar.ready:
-				default:
-					close(ar.ready)
-				}
+				ar.readyOnce.Do(func() { close(ar.ready) })
 				return r.Value, r.Err, true
 			}
 		default:
@@ -285,7 +281,7 @@ func (ar *AsyncResult[T]) WaitTimeout(timeout time.Duration) (T, error, bool) {
 	ar.mu.Unlock()
 
 	// 步骤 4：阻塞等待结果或超时
-	go ar.getResult()
+	ar.startWaiter()
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 	select {
@@ -343,11 +339,7 @@ func (ar *AsyncResult[T]) WaitContext(ctx context.Context) (T, error, bool) {
 				ar.result = r
 				ar.populated = true
 				ar.mu.Unlock()
-				select {
-				case <-ar.ready:
-				default:
-					close(ar.ready)
-				}
+				ar.readyOnce.Do(func() { close(ar.ready) })
 				return r.Value, r.Err, true
 			}
 		default:
@@ -356,7 +348,7 @@ func (ar *AsyncResult[T]) WaitContext(ctx context.Context) (T, error, bool) {
 	ar.mu.Unlock()
 
 	// 步骤 4：阻塞等待结果或 ctx 取消
-	go ar.getResult()
+	ar.startWaiter()
 	select {
 	case <-ar.ready:
 		ar.mu.Lock()

@@ -55,6 +55,9 @@ func (tb *TokenBucket) Allow() bool {
 // 参数：
 //   - n：需要消耗的令牌数（n <= 0 时始终返回 true）
 func (tb *TokenBucket) AllowN(n float64) bool {
+	if n <= 0 {
+		return true
+	}
 	tb.mu.Lock()
 	defer tb.mu.Unlock()
 

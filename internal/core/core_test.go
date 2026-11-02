@@ -15,6 +15,32 @@ import (
 	"github.com/chichengyu/async/internal/core"
 )
 
+func TestTraceIDKeyCustomTypesRegression(t *testing.T) {
+	old := core.GetTraceIDKey()
+	t.Cleanup(func() { core.SetTraceIDKey(old) })
+	type frameworkKey int
+	for _, key := range []any{"X-Trace-Id", frameworkKey(1), core.TraceIDKey} {
+		core.SetTraceIDKey(key)
+		ctx := core.WithTraceID(context.Background(), "trace-value")
+		if core.GetTraceIDKey() != key || ctx.Value(key) != "trace-value" || core.GetTraceID(ctx) != "trace-value" {
+			t.Fatalf("trace ID failed to round-trip with key %T", key)
+		}
+	}
+	for _, invalid := range []any{nil, []int{1}, map[string]int{}} {
+		func() {
+			defer func() {
+				if recover() == nil {
+					t.Errorf("accepted invalid context key %T", invalid)
+				}
+			}()
+			core.SetTraceIDKey(invalid)
+		}()
+		if core.GetTraceIDKey() != core.TraceIDKey {
+			t.Fatal("invalid key replaced the working configuration")
+		}
+	}
+}
+
 // testLogger is a thread-safe logger for testing.
 type testLogger struct {
 	mu     sync.Mutex
@@ -643,7 +669,7 @@ func TestTraceID_Concurrent(t *testing.T) {
 
 // ==================== SafeCall Tests ====================
 
-func TestSafeCall_Success(t *testing.T) {
+func TestSafeCall_Ok(t *testing.T) {
 	val, err := core.SafeCall(context.Background(), 42, func(ctx context.Context, item int) (string, error) {
 		return fmt.Sprintf("val-%d", item), nil
 	})
@@ -686,7 +712,7 @@ func TestSafeCall_Panic(t *testing.T) {
 	}
 }
 
-func TestSafeCallVoid_Success(t *testing.T) {
+func TestSafeCallVoid_Ok(t *testing.T) {
 	err := core.SafeCallVoid(context.Background(), 42, func(ctx context.Context, item int) error {
 		return nil
 	})
@@ -723,7 +749,7 @@ func TestSafeCallVoid_Panic(t *testing.T) {
 func TestSafeCall_Concurrent(t *testing.T) {
 	var wg sync.WaitGroup
 	n := 100
-	var successCount, errorCount, panicCount atomic.Int64
+	var okCount, errorCount, panicCount atomic.Int64
 
 	for i := 0; i < n; i++ {
 		wg.Add(1)
@@ -736,7 +762,7 @@ func TestSafeCall_Concurrent(t *testing.T) {
 					return item * 2, nil
 				})
 				if err == nil && val == i*2 {
-					successCount.Add(1)
+					okCount.Add(1)
 				}
 			case 1:
 				_, err := core.SafeCall(context.Background(), i, func(ctx context.Context, item int) (int, error) {
@@ -759,8 +785,8 @@ func TestSafeCall_Concurrent(t *testing.T) {
 	}
 	wg.Wait()
 
-	if successCount.Load() == 0 || errorCount.Load() == 0 || panicCount.Load() == 0 {
-		t.Logf("success=%d error=%d panic=%d", successCount.Load(), errorCount.Load(), panicCount.Load())
+	if okCount.Load() == 0 || errorCount.Load() == 0 || panicCount.Load() == 0 {
+		t.Logf("success=%d error=%d panic=%d", okCount.Load(), errorCount.Load(), panicCount.Load())
 	}
 }
 
@@ -1039,6 +1065,71 @@ func TestOverflowStrategy(t *testing.T) {
 
 // ==================== RingBuffer Tests ====================
 
+func TestRingBufferMixedOperationsAgainstQueue(t *testing.T) {
+	for _, strategy := range []core.OverflowStrategy{core.OverflowBlock, core.OverflowDrop, core.OverflowError} {
+		t.Run(fmt.Sprint(strategy), func(t *testing.T) {
+			const capacity = 5
+			rb := core.NewRingBuffer[int](capacity, strategy)
+			queue := make([]int, 0, capacity)
+			var dropped int64
+			var state uint32 = 12345
+			for step := 0; step < 10000; step++ {
+				state = state*1664525 + 1013904223
+				switch (state >> 16) % 8 {
+				case 0, 1, 2, 3:
+					want := len(queue) < capacity || strategy == core.OverflowDrop
+					if got := rb.Push(step); got != want {
+						t.Fatalf("step %d: Push=%v want %v", step, got, want)
+					}
+					if want {
+						if len(queue) == capacity {
+							queue = queue[1:]
+							dropped++
+						}
+						queue = append(queue, step)
+					}
+				case 4:
+					got, ok := rb.Pop()
+					if ok != (len(queue) > 0) || (ok && got != queue[0]) {
+						t.Fatalf("step %d: Pop=(%d,%v), queue=%v", step, got, ok, queue)
+					}
+					if ok {
+						queue = queue[1:]
+					}
+				case 5:
+					got, ok := rb.Peek()
+					if ok != (len(queue) > 0) || (ok && got != queue[0]) {
+						t.Fatalf("step %d: Peek=(%d,%v), queue=%v", step, got, ok, queue)
+					}
+				case 6:
+					n := int((state >> 24) % 4)
+					count := n
+					if count == 0 || count > len(queue) {
+						count = len(queue)
+					}
+					got := rb.FlushN(n)
+					if len(got) != count {
+						t.Fatalf("step %d: FlushN(%d)=%v, queue=%v", step, n, got, queue)
+					}
+					for i := range got {
+						if got[i] != queue[i] {
+							t.Fatalf("step %d: FlushN=%v, queue=%v", step, got, queue)
+						}
+					}
+					queue = queue[count:]
+				case 7:
+					rb.Reset()
+					queue = queue[:0]
+					dropped = 0
+				}
+				if rb.Len() != len(queue) || rb.IsFull() != (len(queue) == capacity) || rb.Dropped() != dropped {
+					t.Fatalf("step %d: len=%d full=%v dropped=%d, queue=%v want dropped=%d", step, rb.Len(), rb.IsFull(), rb.Dropped(), queue, dropped)
+				}
+			}
+		})
+	}
+}
+
 func TestNewRingBuffer(t *testing.T) {
 	rb := core.NewRingBuffer[int](100, core.OverflowDrop)
 	if rb.Cap() != 100 {
@@ -1284,6 +1375,106 @@ func TestRingBuffer_WrapAround(t *testing.T) {
 	}
 }
 
+func TestRingBufferConcurrentProducersConsumersPreserveValues(t *testing.T) {
+	const producers, perProducer, consumers = 8, 500, 6
+	const total = producers * perProducer
+	rb := core.NewRingBuffer[int](31, core.OverflowError)
+	var producersWG, consumersWG sync.WaitGroup
+	finished := make(chan struct{})
+	seen := make([]atomic.Int32, total)
+	var consumed atomic.Int64
+	for i := 0; i < consumers; i++ {
+		consumersWG.Add(1)
+		go func(batch bool) {
+			defer consumersWG.Done()
+			for {
+				var values []int
+				if batch {
+					values = rb.FlushN(7)
+				} else if value, ok := rb.Pop(); ok {
+					values = append(values, value)
+				}
+				for _, value := range values {
+					if value < 0 || value >= total {
+						t.Errorf("unexpected value %d", value)
+					} else {
+						seen[value].Add(1)
+					}
+					consumed.Add(1)
+				}
+				if len(values) > 0 {
+					continue
+				}
+				select {
+				case <-finished:
+					if rb.Len() == 0 {
+						return
+					}
+				default:
+					runtime.Gosched()
+				}
+			}
+		}(i%2 == 0)
+	}
+	for producer := 0; producer < producers; producer++ {
+		producersWG.Add(1)
+		go func(producer int) {
+			defer producersWG.Done()
+			for i := 0; i < perProducer; i++ {
+				for !rb.Push(producer*perProducer + i) {
+					runtime.Gosched()
+				}
+			}
+		}(producer)
+	}
+	producersWG.Wait()
+	close(finished)
+	consumersWG.Wait()
+	if consumed.Load() != total || rb.Len() != 0 || rb.Dropped() != 0 {
+		t.Fatalf("consumed=%d remaining=%d dropped=%d", consumed.Load(), rb.Len(), rb.Dropped())
+	}
+	for value := range seen {
+		if count := seen[value].Load(); count != 1 {
+			t.Fatalf("value %d observed %d times", value, count)
+		}
+	}
+}
+
+func TestRingBufferConcurrentDropAccounting(t *testing.T) {
+	const producers, perProducer, capacity = 32, 100, 17
+	rb := core.NewRingBuffer[int](capacity, core.OverflowDrop)
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for producer := 0; producer < producers; producer++ {
+		wg.Add(1)
+		go func(producer int) {
+			defer wg.Done()
+			<-start
+			for i := 0; i < perProducer; i++ {
+				if !rb.Push(producer*perProducer + i) {
+					t.Error("OverflowDrop rejected a value")
+				}
+			}
+		}(producer)
+	}
+	close(start)
+	wg.Wait()
+	if got, want := rb.Dropped(), int64(producers*perProducer-capacity); got != want {
+		t.Fatalf("dropped = %d, want %d", got, want)
+	}
+	values := rb.Flush()
+	if len(values) != capacity {
+		t.Fatalf("retained %d values, want %d", len(values), capacity)
+	}
+	seen := make(map[int]bool, capacity)
+	for _, value := range values {
+		if value < 0 || value >= producers*perProducer || seen[value] {
+			t.Fatalf("invalid or duplicate retained value %d", value)
+		}
+		seen[value] = true
+	}
+}
+
 func TestRingBuffer_Concurrent(t *testing.T) {
 	rb := core.NewRingBuffer[int](10000, core.OverflowDrop)
 	var wg sync.WaitGroup
@@ -1364,6 +1555,7 @@ func TestWaitTimeoutImpl_NormalCompletion(t *testing.T) {
 func TestWaitTimeoutImpl_Timeout(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(1)
+	finished := make(chan struct{})
 	var waited atomic.Bool
 	var submitGuard atomic.Bool
 
@@ -1375,7 +1567,13 @@ func TestWaitTimeoutImpl_Timeout(t *testing.T) {
 
 	results, ok := core.WaitTimeoutImpl(10*time.Millisecond, &wg, cancel, &submitGuard, &waited, cancelAll, func() []core.Result[int] {
 		return []core.Result[int]{{Value: 1}}
-	}, context.Background())
+	}, context.Background(), func() { close(finished) })
+	wg.Done()
+	select {
+	case <-finished:
+	case <-time.After(5 * time.Second):
+		t.Fatal("completion callback did not run after timeout")
+	}
 
 	if ok {
 		t.Error("WaitTimeoutImpl should return ok=false on timeout")
@@ -1426,6 +1624,7 @@ func TestWaitContextImpl_NormalCompletion(t *testing.T) {
 func TestWaitContextImpl_ContextCancel(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(1)
+	finished := make(chan struct{})
 	var waited atomic.Bool
 
 	var cancelCount atomic.Int64
@@ -1442,7 +1641,13 @@ func TestWaitContextImpl_ContextCancel(t *testing.T) {
 
 	results, ok := core.WaitContextImpl(ctx, &wg, cancel, nil, &waited, cancelAll, func() []core.Result[int] {
 		return []core.Result[int]{{Value: 1}}
-	}, context.Background(), "Test")
+	}, context.Background(), "Test", func() { close(finished) })
+	wg.Done()
+	select {
+	case <-finished:
+	case <-time.After(5 * time.Second):
+		t.Fatal("completion callback did not run after cancellation")
+	}
 
 	if ok {
 		t.Error("WaitContextImpl should return ok=false on ctx cancel")
@@ -1600,6 +1805,9 @@ func TestProduction_RingBufferHighConcurrency(t *testing.T) {
 	}
 
 	t.Logf("Pushed: %d, Popped: %d, Disposed: %d", pushTotal.Load(), popTotal.Load(), rb.Disposed())
+	if pushed, popped, dropped := pushTotal.Load(), popTotal.Load(), int64(rb.Disposed()); pushed != popped+dropped {
+		t.Fatalf("pushed=%d, popped=%d, dropped=%d: values not accounted for", pushed, popped, dropped)
+	}
 }
 
 // TestMain ensures cleanup of any global state

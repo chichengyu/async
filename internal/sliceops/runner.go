@@ -17,6 +17,7 @@ import (
 	"context"
 
 	"github.com/chichengyu/async/internal/core"
+	"github.com/chichengyu/async/internal/pool"
 )
 
 // Runner 统一执行器，根据 Policy 策略分发到统一的执行引擎。
@@ -60,6 +61,9 @@ func (r *Runner[T, R]) Stream(fn func(context.Context, T) (R, error), bufSize in
 
 // Fold 串行聚合，对每个元素调用 fn(acc, item) 累积结果。本质串行，不受并行配置影响。
 func (r *Runner[T, R]) Fold(initial R, fn func(context.Context, R, T) (R, error)) (R, error) {
+	if pl, ok := r.policy.Pool().(*pool.Pool[R]); ok && pl != nil && r.policy.IsPoolOwned() {
+		defer pl.Close()
+	}
 	return Reduce(r.ctx, r.items, initial, fn)
 }
 
@@ -79,6 +83,10 @@ func (r *Runner[T, R]) EachBatch(fn func(context.Context, []T) error) (total int
 	chunks := Chunk(r.items, p.chunkSize)
 	if p.chunkSize <= 0 {
 		chunks = Chunk(r.items, 1)
+	}
+	if p.Pool() != nil || p.IsPoolOwned() {
+		t, f, fe := execEachPool[[]T, R](r.ctx, chunks, fn, p)
+		return t, f, fe, nil
 	}
 	return execEach(r.ctx, chunks, fn, p)
 }

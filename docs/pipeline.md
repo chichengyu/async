@@ -103,10 +103,10 @@ p := async.Pipeline[string](items).Context(ctx).
 
 | 链路 | 返回值 | 说明 |
 |------|--------|------|
-| `PipelineBuilder.Execute(fn)` | `([]Result[T], error)` | 串行执行 |
+| `PipelineBuilder.Execute(fn)` | `([]Result[T], error)` | 阶段依次执行，阶段内并发 |
 | `PipelineBuilder.Run(fn)` | `([]Result[T], error)` | Execute 别名 |
-| `PipelineBuilder.ExecuteWithMeta(fn)` | `[]ResultWithMeta[T]` | 串行执行 + 阶段元信息 |
-| `PipelineBuilder.ExecutePipe(fn, bufSize)` | `<-chan Result[T]` | 串行执行 + channel 输出 |
+| `PipelineBuilder.ExecuteWithMeta(fn)` | `[]ResultWithMeta[T]` | 阶段内并发 + 阶段元信息 |
+| `PipelineBuilder.ExecutePipe(fn, bufSize)` | `<-chan Result[T]` | 阶段内并发 + channel 输出 |
 | `SerialChain.Execute(fn)` | `([]Result[T], error)` | 串行模式执行 |
 | `SerialChain.Run(fn)` | `([]Result[T], error)` | Execute 别名 |
 | `SerialChain.ExecuteWithMeta(fn)` | `[]ResultWithMeta[T]` | 串行 + 元信息 |
@@ -287,11 +287,11 @@ async.Pipeline[Data](items).Context(ctx).
 
 ## 串行模式
 
-串行模式是这个库的默认模式。阶段之间按顺序执行：Stage 0 完全处理完所有元素后，Stage 1 才开始。这是最常用、最易理解、100% 向后兼容的模式。
+默认构建器和显式串行模式都按阶段顺序执行：Stage 0 完全处理完所有元素后，Stage 1 才开始。默认构建器在阶段内按并发度处理元素；显式调用 `Serial()` 后则逐项串行处理。
 
-> **⚠️ 串行模式是默认模式**
+> **⚠️ 默认构建器按阶段顺序执行**
 >
-> 直接在 `PipelineBuilder` 上调用 `.Execute(fn)` / `.Run(fn)` / `.ExecuteWithMeta(fn)` / `.ExecutePipe(fn, bufSize)` 时，以串行模式执行，无需切换到 `Serial()/Parallel()` 等模式。
+> 直接在 `PipelineBuilder` 上调用终端方法时，阶段内可以并发执行。需要逐项串行处理时调用 `Serial()`。
 
 ### 方式一：PipelineBuilder 直接执行（默认串行）
 
@@ -343,6 +343,11 @@ for _, mr := range metaResults {
 ```
 
 ### ExecutePipe：通过 channel 流式输出
+
+消费者应持续读取直到 channel 关闭；若提前停止读取，须取消传入的 context，
+以解除阻塞的结果发送。取消后未发送的结果可能丢弃，已缓冲结果仍可读取。
+`ExecutePipe` 和 `Pipe().Run` 使用调用前配置的 Timeout、FailFast 和 OnResult；
+`Serial().Pipe()` 和 `Parallel().Pipe()` 分别使用对应模式执行。
 
 ```go
 ch := async.Pipeline[int](items).Context(ctx).
@@ -407,7 +412,7 @@ for r := range ch {
 
 > **⚠️ Parallel() 必须显式调用**
 >
-> `PipelineBuilder` 上直接调用 `.Execute(fn)` 是以串行模式执行。要启用并行分片/池化/扩缩容，必须先 `.Parallel()` 切换到并行模式。
+> `PipelineBuilder` 上直接调用 `.Execute(fn)` 时阶段内已可并发。要启用并行分片/池化/扩缩容，必须先 `.Parallel()` 切换到并行模式。
 
 ### 基本用法：仅切换并行模式
 
@@ -566,6 +571,10 @@ results, err := async.Pipeline[int](items).Context(ctx).
 
 所有公共配置对流模式同样生效：
 
+启用 `FailFast` 时，阶段失败会取消其余工作；`Run` 返回的错误可能是
+`context.Canceled`，触发取消的阶段错误保存在对应的 `results[i].Err` 中。
+取消时尚未完成的元素可能没有结果，请先检查 `results[i].Occupied`。
+
 ```go
 results, err := async.Pipeline[int](items).Context(ctx).
     Timeout(30*time.Second).
@@ -661,6 +670,39 @@ ch := async.Pipeline[int](items).Context(ctx).
 
 ## 常驻管道模式（Flow）
 
+### 直接创建：NewFlow
+
+`async.NewFlow(ctx, cfg, fn)` 直接创建并启动常驻管道。`cfg.Stages` 配置阶段及其并发数，不能为空，否则会 panic；并发数不大于零时使用 `IO()` 默认值。`cfg.BufSize` 配置阶段间和结果通道的缓冲，不大于零时默认为 256。`fn` 接收阶段名称与当前元素，返回处理后的值和错误。
+
+```go
+fl := async.NewFlow(ctx, async.FlowConfig[string]{
+    Stages: []async.Stage[string]{{Name: "normalize", Concurrency: 2}},
+    BufSize: 64,
+}, func(ctx context.Context, stage string, item string) (string, error) {
+    return strings.TrimSpace(item), nil
+})
+
+done := make(chan struct{})
+go func() {
+    defer close(done)
+    for _, item := range items {
+        if _, err := fl.Submit(ctx, item); err != nil {
+            log.Printf("submit: %v", err)
+            break
+        }
+    }
+    for _, result := range fl.Close() {
+        handle(result)
+    }
+}()
+for result := range fl.Results() {
+    handle(result)
+}
+<-done
+```
+
+首次 `Close` 等待已提交的元素处理结束并关闭结果通道，也会读取并返回部分结果；与 `Results` 并发消费时，须同时处理两处取得的结果。并发的后续 `Close` 立即返回 nil，不等待首次关闭完成；需要确认关闭结束时应等待首次调用返回。处理函数 `handle` 因此必须支持并发调用，且应等待关闭协程处理完返回值。应在提交结束后调用 `Close`，否则对 `Results` 的循环不会因提交结束而自动退出。
+
 通过 `.Flow()` 切换到常驻管道模式。与一次性管道不同：
 - **不需要 items**：通过 `Submit()` 持续提交数据
 - **goroutine 常驻**：worker 常驻运行直到 Close
@@ -671,6 +713,12 @@ ch := async.Pipeline[int](items).Context(ctx).
 > 1. `PipelineBuilder.Flow()` 切换到 `FlowBuilder`，仅继承 ctx 和 stages，**Timeout/FailFast/OnResult 等一次性执行专属配置会被忽略**
 > 2. Flow 不暴露 `Pool/Shard/AutoScale/Worker` 等并行专属配置
 > 3. Flow 不需要 `items`，通过 `Submit()` 提交数据
+
+`Stage.SkipOnError` 控制该阶段如何处理上一阶段失败的元素：设为 `true` 时跳过该元素并透传错误；为 `false` 时仍调用该阶段，最终结果采用该阶段返回的值和错误。流式和 Flow 模式同样遵循此规则。流式模式此前会默认跳过失败元素，依赖原行为时请显式设置 `SkipOnError: true`。
+
+Flow 的 `SubmitCount()` 和 `Stats().TotalSubmit` 仅统计成功提交的元素；提交失败可能使返回的提交序号出现间隔。序号在入队前分配，并发提交时不保证与入队顺序一致，且结果中不包含序号；需要关联或排序时应在元素中携带业务标识。
+
+`Submit` 的 context 只控制等待入队，提交成功后取消它不会取消该元素的处理。阶段回调接收创建 Flow 时的管道 context；取消管道 context 可能导致尚未转发的元素或结果被丢弃，仍需调用 `Close` 完成清理。
 
 ### 方式一：FlowBuilder.Run(fn)
 
@@ -759,13 +807,15 @@ fl := async.Pipeline[string]().
         }
         return item, nil
     })
-defer fl.Close()
-
 // 生产端 goroutine
 go func() {
-    defer fl.Close()
+    defer func() {
+        for _, r := range fl.Close() {
+            if r.Ok() { saveToDB(r.Value) } else { log.Printf("处理失败: %v", r.Err) }
+        }
+    }()
     for _, msg := range messages {
-        if err := fl.Submit(ctx, msg); err != nil {
+        if _, err := fl.Submit(ctx, msg); err != nil {
             log.Printf("提交失败: %v", err)
             return
         }
@@ -1127,13 +1177,18 @@ fl := async.Pipeline[int]().
     BufSize(512).
     Flow().
     Run(myHandler)
-defer fl.Close()
-
 // 生产端
 go func() {
-    defer fl.Close()
+    defer func() {
+        for _, r := range fl.Close() {
+            if r.Ok() { saveResult(r.Value) }
+        }
+    }()
     for msg := range msgCh {
-        fl.Submit(ctx, msg)
+        if _, err := fl.Submit(ctx, msg); err != nil {
+            log.Printf("提交失败: %v", err)
+            return
+        }
     }
 }()
 
@@ -1189,7 +1244,7 @@ async.ExecuteStream[T](
     stages []async.Stage[T],             // 阶段定义
     items []T,                           // 初始数据
     fn func(context.Context, string, T) (T, error), // 处理函数
-) ([]core.Result[T], error)
+) ([]async.Result[T], error)
 ```
 
 ### 使用示例
@@ -1235,3 +1290,4 @@ for _, r := range results {
 > **⚠️ 与 Flow 的区别**
 >
 > `ExecuteStream` 的 goroutine 是一次性的，调用结束即销毁。如需长期运行的 pipeline，使用 `Flow` 模式。
+> 上下文取消时，返回的结果可能只包含部分元素；检查每个结果的 `Occupied` 后再读取。已开始的回调需要响应上下文取消，函数会等待这些回调退出。

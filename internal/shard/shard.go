@@ -222,7 +222,7 @@ func (sp *ShardedPool[T]) TrySubmit(ctx context.Context, fn func(context.Context
 func (sp *ShardedPool[T]) SubmitKeyed(key string, ctx context.Context, fn func(context.Context) (T, error)) error {
 	h := fnv.New32a()
 	h.Write([]byte(key))
-	idx := int(h.Sum32()) % len(sp.pools)
+	idx := int(uint64(h.Sum32()) % uint64(len(sp.pools)))
 	return sp.pools[idx].Submit(ctx, fn)
 }
 
@@ -230,11 +230,11 @@ func (sp *ShardedPool[T]) SubmitKeyed(key string, ctx context.Context, fn func(c
 func (sp *ShardedPool[T]) TrySubmitKeyed(key string, ctx context.Context, fn func(context.Context) (T, error)) error {
 	h := fnv.New32a()
 	h.Write([]byte(key))
-	idx := int(h.Sum32()) % len(sp.pools)
+	idx := int(uint64(h.Sum32()) % uint64(len(sp.pools)))
 	return sp.pools[idx].TrySubmit(ctx, fn)
 }
 
-// SubmitBatch 批量提交，将每个 item 分发到不同分片。
+// SubmitBatch 批量提交；Hash 模式下使用 KeyFn(item) 选择分片。
 // 返回 []SubmitResult 记录每个元素提交到哪个分片及是否出错。
 type SubmitBatchResult struct {
 	ShardIdx int
@@ -246,7 +246,7 @@ func (sp *ShardedPool[T]) SubmitBatch(ctx context.Context, items []T, fn func(co
 	results := make([]SubmitBatchResult, len(items))
 	var firstErr error
 	for i, item := range items {
-		idx := sp.pick()
+		idx := sp.pickItem(item)
 		err := sp.pools[idx].Submit(ctx, func(ctx context.Context) (T, error) {
 			return fn(ctx, item)
 		})
@@ -258,12 +258,12 @@ func (sp *ShardedPool[T]) SubmitBatch(ctx context.Context, items []T, fn func(co
 	return results, firstErr
 }
 
-// TrySubmitBatch 批量非阻塞提交。
+// TrySubmitBatch 批量非阻塞提交；Hash 模式下使用 KeyFn(item) 选择分片。
 func (sp *ShardedPool[T]) TrySubmitBatch(ctx context.Context, items []T, fn func(context.Context, T) (T, error)) ([]SubmitBatchResult, error) {
 	results := make([]SubmitBatchResult, len(items))
 	var firstErr error
 	for i, item := range items {
-		idx := sp.pick()
+		idx := sp.pickItem(item)
 		err := sp.pools[idx].TrySubmit(ctx, func(ctx context.Context) (T, error) {
 			return fn(ctx, item)
 		})
@@ -288,13 +288,12 @@ func (sp *ShardedPool[T]) Wait() []core.Result[T] {
 	return all
 }
 
-// WaitAndClose 等待所有分片完成后关闭。
+// WaitAndClose 等价于先调用 Wait 再调用 Close。若已有 Wait 在执行，
+// 本次 Wait 返回 nil 后仍会执行 Close，并等待所有分片关闭。
 func (sp *ShardedPool[T]) WaitAndClose() []core.Result[T] {
-	var all []core.Result[T]
-	for _, p := range sp.pools {
-		all = append(all, p.WaitAndClose()...)
-	}
-	return all
+	results := sp.Wait()
+	sp.Close()
+	return results
 }
 
 // Close 关闭所有分片。
@@ -306,12 +305,17 @@ func (sp *ShardedPool[T]) Close() {
 
 // Reset 重置所有分片（需在 Wait 后无活跃任务时调用）。
 // 保留原有的 worker 数、超时等配置。
+// 启用 FailFast 时重建跨分片的取消链；提交新一批任务前，须重新获取分片的 Ctx。
 func (sp *ShardedPool[T]) Reset() error {
 	for i, p := range sp.pools {
 		if _, err := p.Reset(); err != nil {
 			return err
 		}
 		_ = i
+	}
+	if sp.ffCancel != nil {
+		sp.ffCancel()
+		sp.WithFailFast(context.Background())
 	}
 	sp.waitInvoked.Store(false)
 	return nil
@@ -459,11 +463,11 @@ func (sp *ShardedPool[T]) TotalFailCount() int64 {
 	return total
 }
 
-// TotalSuccessCount 汇总所有分片的成功数。
-func (sp *ShardedPool[T]) TotalSuccessCount() int64 {
+// TotalOkCount 汇总所有分片的成功数。
+func (sp *ShardedPool[T]) TotalOkCount() int64 {
 	var total int64
 	for _, p := range sp.pools {
-		total += p.SuccessCount()
+		total += p.OkCount()
 	}
 	return total
 }
@@ -576,12 +580,19 @@ func NewAutoScaleShardedPool[T any](shards int, initialSizePerShard int, config 
 	return sp
 }
 
+func (sp *ShardedPool[T]) pickItem(item T) int {
+	if sp.dist == Hash && sp.keyFn != nil {
+		return int(sp.keyFn(item) % uint64(len(sp.pools)))
+	}
+	return sp.pick()
+}
+
 func (sp *ShardedPool[T]) pick() int {
 	if sp.dist == Hash && sp.keyFn != nil {
 		return 0
 	}
 	if sp.dist == RoundRobin {
-		return int(sp.nextIdx.Add(1)-1) % len(sp.pools)
+		return int((sp.nextIdx.Add(1) - 1) % uint64(len(sp.pools)))
 	}
 	return 0
 }

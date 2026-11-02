@@ -3,6 +3,7 @@ package sliceops
 import (
 	"math/rand"
 	"runtime"
+	"slices"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -41,21 +42,7 @@ func slicesReplace[T any](items []T, i, j int, vals ...T) []T {
 	if i > j {
 		i = j
 	}
-	keep := n - (j - i)
-	newLen := keep + len(vals)
-	if cap(items) >= newLen {
-		items = items[:newLen]
-	} else {
-		newSlice := make([]T, newLen)
-		copy(newSlice, items[:i])
-		copy(newSlice[i+len(vals):], items[j:])
-		items = newSlice
-		copy(items[i:], vals)
-		return items
-	}
-	copy(items[i+len(vals):], items[j:])
-	copy(items[i:], vals)
-	return items
+	return slices.Replace(items, i, j, vals...)
 }
 
 func slicesBinarySearch[T any](items []T, target T, cmp func(a, b T) int) (int, bool) {
@@ -91,11 +78,17 @@ func filterSerial[T any](items []T, pred func(T) bool) []T {
 }
 
 func filterParallel[T any](items []T, pred func(T) bool, conc int) []T {
+	n := len(items)
+	if n == 0 {
+		return items
+	}
 	if conc <= 0 {
 		conc = runtime.GOMAXPROCS(0)
 	}
-	n := len(items)
-	chunkSize := (n + conc - 1) / conc
+	if conc > n {
+		conc = n
+	}
+	chunkSize := 1 + (n-1)/conc
 
 	type chunk struct {
 		start, end int
@@ -149,11 +142,17 @@ func funcContains[T any](items []T, pred func(T) bool) bool {
 }
 
 func funcContainsParallel[T any](items []T, pred func(T) bool, conc int) bool {
+	n := len(items)
+	if n == 0 {
+		return false
+	}
 	if conc <= 0 {
 		conc = runtime.GOMAXPROCS(0)
 	}
-	n := len(items)
-	chunkSize := (n + conc - 1) / conc
+	if conc > n {
+		conc = n
+	}
+	chunkSize := 1 + (n-1)/conc
 	var found atomic.Bool
 	var wg sync.WaitGroup
 	for c := 0; c < conc; c++ {
@@ -193,11 +192,17 @@ func funcAll[T any](items []T, pred func(T) bool) bool {
 }
 
 func funcAllParallel[T any](items []T, pred func(T) bool, conc int) bool {
+	n := len(items)
+	if n == 0 {
+		return true
+	}
 	if conc <= 0 {
 		conc = runtime.GOMAXPROCS(0)
 	}
-	n := len(items)
-	chunkSize := (n + conc - 1) / conc
+	if conc > n {
+		conc = n
+	}
+	chunkSize := 1 + (n-1)/conc
 	var failed atomic.Bool
 	var wg sync.WaitGroup
 	for c := 0; c < conc; c++ {
@@ -251,11 +256,17 @@ func funcCount[T any](items []T, pred func(T) bool) int {
 }
 
 func funcCountParallel[T any](items []T, pred func(T) bool, conc int) int {
+	n := len(items)
+	if n == 0 {
+		return 0
+	}
 	if conc <= 0 {
 		conc = runtime.GOMAXPROCS(0)
 	}
-	n := len(items)
-	chunkSize := (n + conc - 1) / conc
+	if conc > n {
+		conc = n
+	}
+	chunkSize := 1 + (n-1)/conc
 	var total atomic.Int64
 	var wg sync.WaitGroup
 	for c := 0; c < conc; c++ {

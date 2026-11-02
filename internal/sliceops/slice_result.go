@@ -12,10 +12,26 @@ func collectFailValues[T any, R any](items []T, results []core.Result[R]) []any 
 	return fails
 }
 
+func collectBatchFailValues[T any, R any](items []T, chunkSize int, results []core.Result[R]) []any {
+	if chunkSize <= 0 {
+		chunkSize = 1
+	}
+	var fails []any
+	for i, chunk := range Chunk(items, chunkSize) {
+		if i < len(results) && results[i].Err != nil {
+			for _, item := range chunk {
+				fails = append(fails, item)
+			}
+		}
+	}
+	return fails
+}
+
 type SliceResult[R any] struct {
-	results    []core.Result[R]
-	err        error
-	failValues []any
+	results      []core.Result[R]
+	err          error
+	errIsSummary bool
+	failValues   []any
 }
 
 func (r *SliceResult[R]) Error() error {
@@ -45,7 +61,7 @@ func (r *SliceResult[R]) Values() []R {
 
 func (r *SliceResult[R]) Errors() []error {
 	var errs []error
-	if r.err != nil {
+	if r.err != nil && !r.errIsSummary {
 		errs = append(errs, r.err)
 	}
 	for _, res := range r.results {
@@ -85,9 +101,9 @@ type ForEachResult struct {
 	firstErr error
 }
 
-func (r *ForEachResult) Error() error        { return r.firstErr }
-func (r *ForEachResult) Ok() bool            { return r.firstErr == nil }
-func (r *ForEachResult) Err() bool           { return r.firstErr != nil }
-func (r *ForEachResult) Total() int64        { return r.total }
-func (r *ForEachResult) FailCount() int64    { return r.failCnt }
-func (r *ForEachResult) SuccessCount() int64 { return r.total - r.failCnt }
+func (r *ForEachResult) Error() error     { return r.firstErr }
+func (r *ForEachResult) Ok() bool         { return r.firstErr == nil }
+func (r *ForEachResult) Err() bool        { return r.firstErr != nil }
+func (r *ForEachResult) Total() int64     { return r.total }
+func (r *ForEachResult) FailCount() int64 { return r.failCnt }
+func (r *ForEachResult) OkCount() int64   { return r.total - r.failCnt }

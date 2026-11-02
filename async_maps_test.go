@@ -97,6 +97,28 @@ func TestMap_Chain_Values(t *testing.T) {
 	}
 }
 
+func TestMapFromCopyAndReferenceSemantics(t *testing.T) {
+	raw := map[string][]int{"item": {1}}
+	copied := MapFrom(raw)
+	referenced := MapFromRef(raw)
+	raw["item"][0] = 2
+	if value, ok := copied.Get("item"); !ok || value[0] != 2 {
+		t.Fatalf("shallow copied value = %v, present = %v", value, ok)
+	}
+	raw["new"] = []int{3}
+	if copied.Has("new") || !referenced.Has("new") {
+		t.Fatal("source map changes did not follow copy/reference semantics")
+	}
+	referenced.Set("other", []int{4})
+	if raw["other"][0] != 4 || copied.Has("other") {
+		t.Fatal("reference mutation did not propagate correctly")
+	}
+	delete(raw, "item")
+	if !copied.Has("item") || referenced.Has("item") {
+		t.Fatal("source deletion did not follow copy/reference semantics")
+	}
+}
+
 func TestMap_Chain_AsMap(t *testing.T) {
 	for _, tier := range test.UseTier {
 		t.Run(tier.Name, func(t *testing.T) {
@@ -599,8 +621,8 @@ func TestMap_Chain_ForEach_MapChain(t *testing.T) {
 				if r.Err() {
 					t.Fatalf("ForEach error: %v", r.Error())
 				}
-				if r.SuccessCount() != int64(tier.Size) {
-					t.Fatalf("ForEach SuccessCount: expected %d, got %d", tier.Size, r.SuccessCount())
+				if r.OkCount() != int64(tier.Size) {
+					t.Fatalf("ForEach OkCount: expected %d, got %d", tier.Size, r.OkCount())
 				}
 			})
 		}
@@ -626,8 +648,8 @@ func TestMap_Chain_ForEach_ParallelMap(t *testing.T) {
 				if r.Err() {
 					t.Fatalf("ForEach error: %v", r.Error())
 				}
-				if r.SuccessCount() != int64(tier.Size) {
-					t.Fatalf("ForEach SuccessCount: expected %d, got %d", tier.Size, r.SuccessCount())
+				if r.OkCount() != int64(tier.Size) {
+					t.Fatalf("ForEach OkCount: expected %d, got %d", tier.Size, r.OkCount())
 				}
 			})
 		}
@@ -647,8 +669,8 @@ func TestMap_Chain_ForEach_SerialMap(t *testing.T) {
 			if r.Err() {
 				t.Fatalf("ForEach error: %v", r.Error())
 			}
-			if r.SuccessCount() != int64(tier.Size) {
-				t.Fatalf("ForEach SuccessCount: expected %d, got %d", tier.Size, r.SuccessCount())
+			if r.OkCount() != int64(tier.Size) {
+				t.Fatalf("ForEach OkCount: expected %d, got %d", tier.Size, r.OkCount())
 			}
 		})
 	}
@@ -667,8 +689,8 @@ func TestMap_Chain_ForEach_SerialMap_FailFast(t *testing.T) {
 			if r.Err() {
 				t.Fatalf("ForEach Serial FF: unexpected error: %v", r.Error())
 			}
-			if r.SuccessCount() != int64(tier.Size) {
-				t.Fatalf("ForEach Serial FF: expected %d, got %d", tier.Size, r.SuccessCount())
+			if r.OkCount() != int64(tier.Size) {
+				t.Fatalf("ForEach Serial FF: expected %d, got %d", tier.Size, r.OkCount())
 			}
 			mid := strconv.Itoa(tier.Size / 2)
 			r2 := NewMapChain(mapFreshCtx(), data).Serial().FailFast().ForEach(func(ctx context.Context, k string, v int) error {
@@ -1096,7 +1118,7 @@ func TestMap_Chain_ForEachResult_FailCount(t *testing.T) {
 	}
 }
 
-func TestMap_Chain_ForEachResult_SuccessCount(t *testing.T) {
+func TestMap_Chain_ForEachResult_OkCount(t *testing.T) {
 	data := map[string]int{"a": 1, "b": 2, "c": 3}
 	r := NewMapChain(mapFreshCtx(), data).ForEach(func(ctx context.Context, k string, v int) error {
 		if k == "b" {
@@ -1104,8 +1126,8 @@ func TestMap_Chain_ForEachResult_SuccessCount(t *testing.T) {
 		}
 		return nil
 	})
-	if r.SuccessCount() != 2 {
-		t.Fatalf("SuccessCount: expected 2, got %d", r.SuccessCount())
+	if r.OkCount() != 2 {
+		t.Fatalf("OkCount: expected 2, got %d", r.OkCount())
 	}
 }
 
@@ -1756,8 +1778,8 @@ func TestMap_Chain_HighConcurrency_ForEach_Stress(t *testing.T) {
 				if counter != int64(tier.Size) {
 					t.Fatalf("ForEach: expected %d calls, got %d", tier.Size, counter)
 				}
-				if r.SuccessCount() != int64(tier.Size) {
-					t.Fatalf("SuccessCount: expected %d, got %d", tier.Size, r.SuccessCount())
+				if r.OkCount() != int64(tier.Size) {
+					t.Fatalf("OkCount: expected %d, got %d", tier.Size, r.OkCount())
 				}
 			})
 		}
@@ -1782,8 +1804,8 @@ func TestMap_Chain_HighConcurrency_ForEach_Stress(t *testing.T) {
 				if counter != int64(tier.Size) {
 					t.Fatalf("ForEach: expected %d calls, got %d", tier.Size, counter)
 				}
-				if r.SuccessCount() != int64(tier.Size) {
-					t.Fatalf("SuccessCount: expected %d, got %d", tier.Size, r.SuccessCount())
+				if r.OkCount() != int64(tier.Size) {
+					t.Fatalf("OkCount: expected %d, got %d", tier.Size, r.OkCount())
 				}
 			})
 		}
@@ -1805,8 +1827,8 @@ func TestMap_Chain_HighConcurrency_ForEach_Stress(t *testing.T) {
 				if counter != int64(tier.Size) {
 					t.Fatalf("ForEach: expected %d calls, got %d", tier.Size, counter)
 				}
-				if r.SuccessCount() != int64(tier.Size) {
-					t.Fatalf("SuccessCount: expected %d, got %d", tier.Size, r.SuccessCount())
+				if r.OkCount() != int64(tier.Size) {
+					t.Fatalf("OkCount: expected %d, got %d", tier.Size, r.OkCount())
 				}
 			})
 		}
@@ -2382,7 +2404,7 @@ func TestMap_Chain_ConcurrentMapCalls(t *testing.T) {
 			t.Parallel()
 			var wg sync.WaitGroup
 			workers := 16
-			var successCount int64
+			var okCount int64
 			for i := 0; i < workers; i++ {
 				wg.Add(1)
 				go func() {
@@ -2399,12 +2421,12 @@ func TestMap_Chain_ConcurrentMapCalls(t *testing.T) {
 						t.Errorf("concurrent Map error: %v", r.Error())
 						return
 					}
-					atomic.AddInt64(&successCount, 1)
+					atomic.AddInt64(&okCount, 1)
 				}()
 			}
 			wg.Wait()
-			if successCount != int64(workers) {
-				t.Fatalf("concurrent Map: expected %d successes, got %d", workers, successCount)
+			if okCount != int64(workers) {
+				t.Fatalf("concurrent Map: expected %d successes, got %d", workers, okCount)
 			}
 		})
 	}

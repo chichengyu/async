@@ -21,6 +21,7 @@ package sliceops
 
 import (
 	"math/rand"
+	"slices"
 	"sort"
 )
 
@@ -304,13 +305,7 @@ func (s *Slice[T, R]) Insert(idx int, items ...T) *Slice[T, R] {
 	if idx > n {
 		idx = n
 	}
-	m := len(items)
-	if m == 0 {
-		return s
-	}
-	s.items = append(s.items, make([]T, m)...)
-	copy(s.items[idx+m:], s.items[idx:])
-	copy(s.items[idx:], items)
+	s.items = slices.Insert(s.items, idx, items...)
 	return s
 }
 
@@ -341,30 +336,7 @@ func (s *Slice[T, R]) DeleteRange(i, j int) *Slice[T, R] {
 
 // Replace 将 [i, j) 范围内的元素替换为 items，返回自身。
 func (s *Slice[T, R]) Replace(i, j int, items ...T) *Slice[T, R] {
-	n := len(s.items)
-	if i < 0 {
-		i = 0
-	}
-	if j > n {
-		j = n
-	}
-	if i > j {
-		i = j
-	}
-	keep := len(s.items) - (j - i)
-	newLen := keep + len(items)
-	if cap(s.items) >= newLen {
-		s.items = s.items[:newLen]
-	} else {
-		newSlice := make([]T, newLen)
-		copy(newSlice, s.items[:i])
-		copy(newSlice[i+len(items):], s.items[j:])
-		s.items = newSlice
-		copy(s.items[i:], items)
-		return s
-	}
-	copy(s.items[i+len(items):], s.items[j:])
-	copy(s.items[i:], items)
+	s.items = slicesReplace(s.items, i, j, items...)
 	return s
 }
 
@@ -470,27 +442,12 @@ func (s *Slice[T, R]) Repeat(n int) *Slice[T, R] {
 
 // Chunk 将切片按大小分块，返回 [][]T（不再封装为 Slice）。
 func (s *Slice[T, R]) Chunk(chunkSize int) [][]T {
-	if chunkSize <= 0 || len(s.items) == 0 {
-		return nil
-	}
-	chunks := make([][]T, 0, (len(s.items)+chunkSize-1)/chunkSize)
-	for i := 0; i < len(s.items); i += chunkSize {
-		end := i + chunkSize
-		if end > len(s.items) {
-			end = len(s.items)
-		}
-		chunks = append(chunks, s.items[i:end])
-	}
-	return chunks
+	return Chunk(s.items, chunkSize)
 }
 
 // ChunkN 将切片均分为 n 份，返回 [][]T。
 func (s *Slice[T, R]) ChunkN(n int) [][]T {
-	if n <= 0 || len(s.items) == 0 {
-		return nil
-	}
-	chunkSize := (len(s.items) + n - 1) / n
-	return s.Chunk(chunkSize)
+	return ChunkN(s.items, n)
 }
 
 // Split 按条件将切片拆分为匹配和不匹配两部分，返回两个独立切片。

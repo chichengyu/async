@@ -7,11 +7,11 @@ type MapForEachResult struct {
 	firstErr error
 }
 
-func (r *MapForEachResult) Total() int64        { return r.total }
-func (r *MapForEachResult) FailCount() int64    { return r.failCnt }
-func (r *MapForEachResult) SuccessCount() int64 { return r.total - r.failCnt }
-func (r *MapForEachResult) Error() error        { return r.firstErr }
-func (r *MapForEachResult) Err() bool           { return r.firstErr != nil }
+func (r *MapForEachResult) Total() int64     { return r.total }
+func (r *MapForEachResult) FailCount() int64 { return r.failCnt }
+func (r *MapForEachResult) OkCount() int64   { return r.total - r.failCnt }
+func (r *MapForEachResult) Error() error     { return r.firstErr }
+func (r *MapForEachResult) Err() bool        { return r.firstErr != nil }
 
 // MapResult holds the result of a Map/MapToFn operation on a map.
 // Mirrors SliceResult: error is embedded, accessed via .Error() / .Err().

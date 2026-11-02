@@ -120,7 +120,7 @@ func init() {
 
 ### SetMaxCleanupDuration
 
-设置 Pool 清理失败 goroutine 时的最大等待时间。
+保存内部等待辅助函数的清理监视时长。当前 Pool 和 Group 的等待方法不读取此设置，它也不会终止任务。内部辅助函数将非正值按 30 分钟处理。
 
 ```go
 func SetMaxCleanupDuration(d time.Duration)
@@ -128,7 +128,7 @@ func SetMaxCleanupDuration(d time.Duration)
 
 | 参数 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| `d` | `time.Duration` | 30min | 清理最大等待时间 |
+| `d` | `time.Duration` | 30min | 内部辅助函数的监视时长 |
 
 ---
 
@@ -261,7 +261,7 @@ func GetTraceIDKey() TraceIDKeyType
 |------|------|
 | `ErrPoolClosed` | 池已关闭，任务被丢弃 |
 | `ErrPoolWaited` | 在 Wait 之后调用 Submit，任务被丢弃 |
-| `ErrPoolWaiting` | 在 Wait 执行期间调用 Submit |
+| `ErrPoolWaiting` | 在 Wait 或池调整大小期间调用 Submit；与 ErrPoolWaited 是不同的错误值 |
 | `ErrSubmitTimeout` | 提交超时，任务被丢弃 |
 | `ErrGroupWaited` | 在 Wait 之后调用 Go，任务被丢弃 |
 | `ErrGroupWaiting` | 在 Wait 执行期间调用 Go |
@@ -313,12 +313,24 @@ type Logger interface {
 type RingBuffer[T any] struct { /* 固定容量环形缓冲区 */ }
 ```
 
-方法:
+`async.RingBuffer[T]` 是内部环形缓冲类型的别名。当前公开包没有提供该类型的构造函数；不要使用零值调用 `Push`，零值没有分配缓冲空间。通常应通过 `Pool.WithRingBuffer` 配置结果缓冲，并通过 Pool 的 `Flush` 和 `RingBufDropped` 操作。
+
+已初始化的缓冲区提供以下方法，操作均可并发调用：
 
 | 方法 | 签名 | 说明 |
 |------|------|------|
+| `Push` | `(value T) bool` | 写入元素；满时 `OverflowDrop` 覆盖最旧元素，其他策略返回 `false` |
+| `Pop` | `() (T, bool)` | 读取并移除最旧元素，空时返回零值和 `false` |
+| `Peek` | `() (T, bool)` | 读取最旧元素但不移除，空时返回零值和 `false` |
+| `Len` / `Cap` | `() int` | 当前元素数 / 固定容量 |
+| `IsFull` | `() bool` | 缓冲区是否已满 |
+| `Overflow` | `() OverflowStrategy` | 返回创建时的溢出策略 |
+| `Flush` | `() []T` | 按 FIFO 顺序取出全部元素 |
 | `FlushN` | `(maxCount int) []T` | 取出最多 maxCount 个元素，maxCount<=0 取出全部 |
-| `Dropped` | `() int64` | 返回因溢出被丢弃的元素数 |
+| `Dropped` / `Disposed` | `() int64` / `() int` | 返回 `OverflowDrop` 覆盖的元素数，`Reset` 后归零 |
+| `Reset` | `()` | 清空元素并重置丢弃计数 |
+
+缓冲区满时，`OverflowBlock` 在此类型上不会等待，而是与 `OverflowError` 一样返回 `false`。`Dropped` 不统计被拒绝的写入。
 
 ---
 
@@ -520,6 +532,21 @@ func SafeCall[T any, R any](ctx context.Context, item T, fn func(context.Context
 
 安全调用 fn，自动捕获 panic 并包装为 PanicError。
 
+调用在当前 goroutine 中同步执行；普通错误原样返回，发生 panic 时返回 *async.PanicError，结果值为该类型的零值。ctx 原样传给回调，不会自动检查取消，回调需要自行处理。
+
+~~~go
+value, err := async.SafeCall(ctx, 21, func(ctx context.Context, n int) (int, error) {
+    if err := ctx.Err(); err != nil {
+        return 0, err
+    }
+    return n * 2, nil
+})
+if err != nil {
+    return err
+}
+fmt.Println(value) // 42
+~~~
+
 ### SafeCallVoid
 
 ```go
@@ -528,21 +555,36 @@ func SafeCallVoid[T any](ctx context.Context, item T, fn func(context.Context, T
 
 安全调用 fn（fn 只返回 error），自动捕获 panic。
 
+调用同样是同步的，普通错误原样返回；回调 panic 时返回 *async.PanicError。回调须自行检查 ctx 的取消状态。
+
+~~~go
+err := async.SafeCallVoid(ctx, "item", func(ctx context.Context, item string) error {
+    if err := ctx.Err(); err != nil {
+        return err
+    }
+    fmt.Println(item)
+    return nil
+})
+if err != nil {
+    return err
+}
+~~~
+
 ### BuildAggregateNoResult
 
 ```go
-func BuildAggregateNoResult(results []Result[struct{}]) (total int64, failCnt int64, firstErr error)
+func BuildAggregateNoResult(nr *NoResult) (total int64, failCnt int64, firstErr error, results []Result[struct{}])
 ```
 
-从 NoResult（`[]Result[struct{}]`）构建聚合的统计信息。
+从已完成等待的 `NoResult` 构建聚合统计和结果快照。总数只统计已占用的结果；稀疏索引的空槽仍保留在结果快照中。
 
 ### FillNoResultSkipped
 
 ```go
-func FillNoResultSkipped(results []Result[struct{}], total int) []Result[struct{}]
+func FillNoResultSkipped(nr *NoResult, total int)
 ```
 
-为 NoResult 填充跳过的任务占位（FailFast 导致未执行任务的占位）。
+在 `Wait` 后为 `NoResult` 填充跳过的任务占位；已有稀疏空槽会优先填充。目标数量不大于已有记录数时不做修改。
 
 ### Must
 
@@ -559,26 +601,22 @@ func Must[T any](v T, err error) T
 - **❌ `SetDefaultTimeout(d)` 对 Pool 不生效**：`SetDefaultTimeout` 设置的是 `core.defaultTimeout`，但 Pool 的 `applyConfig` 中 `TimeOut` 未设置时用**实例构造时的 `core.GetDefaultTimeout()` 值**，之后再调用 `SetDefaultTimeout` 不会影响已创建的 Pool 实例。
 
   ```go
-  // ❌ 无效：先创建 Pool，后改全局默认
-  core.SetDefaultTimeout(60 * time.Second)
-  p, _ := pool.New[int](8).WithContext(ctx)
-  // p 内部 timeout = 60s（构造时快照）
-  core.SetDefaultTimeout(10 * time.Second) // 不影响 p
-
-  // ✅ 正确：Pool.WithTimeout() 或 Builder.Timeout()
-  p.WithTimeout(10 * time.Second)
+  // 构造时使用 60 秒默认值；之后修改全局默认值不会影响已创建的 Pool。
+  async.SetDefaultTimeout(60 * time.Second)
+  _ = async.Pool[int]().Context(ctx).Worker(8).Run(func(ctx context.Context, p *async.PoolInstance[int]) error {
+      // p 内部 timeout = 60s（构造时快照）
+      async.SetDefaultTimeout(10 * time.Second) // 不影响 p
+      p.WithTimeout(10 * time.Second)            // 显式更新 p
+      return nil
+  })
   ```
 
-- **❌ `AutoScaleConfig` 零值 → 从不扩缩容**：`AutoScaleConfig{}` 的 `MinWorkers=0, MaxWorkers=0, CheckInterval=0`，零值配置不会启动任何扩缩容行为。必须用 `DefaultAutoScaleConfig()` 或显式设置所有字段。
+- **自动扩缩容默认值**：启用时，`AutoScaleConfig` 中的零值字段会填充默认值。传入 `nil` 或零值配置均使用默认参数；如需自定义，可指定部分字段。
 
   ```go
-  // ❌ 无效：零值
-  async.Group[int]().EnableAutoScale(&core.AutoScaleConfig{})
-
-  // ✅ 正确
-  async.Group[int]().EnableAutoScale(core.DefaultAutoScaleConfig())
-  // 或
-  async.Group[int]().EnableAutoScale(nil) // nil 自动用 DefaultAutoScaleConfig()
+  g := async.Group[int]().Build()
+  g.EnableAutoScale(&async.AutoScaleConfig{MinWorkers: 2, MaxWorkers: 20})
+  defer g.DisableAutoScale()
   ```
 
 - **❌ `DefaultWorkerSize` 与 `IO()` 混淆**：`DefaultSizePerShard = 0`，在 applyConfig 时 `0` 自动转为 `WithConfig(0) = IO()`（即 `NumCPU×2`）。显式设 `DefaultWorkerSize` 为 8 则无论 CPU 核数都是 8。注意这个区别。
@@ -587,7 +625,7 @@ func Must[T any](v T, err error) T
 
   ```go
   // ❌ 危险：生产代码 panic
-  result := core.Must(callExternalAPI(ctx))
+  result := async.Must(callExternalAPI(ctx))
 
   // ✅ 正确：返回 error
   result, err := callExternalAPI(ctx)
@@ -596,14 +634,14 @@ func Must[T any](v T, err error) T
   }
   ```
 
-- **❌ `SafeCall` 捕获 panic 后不检查 `IsPanic()`**：`SafeCall` / `SafeCallVoid` 自动捕获 panic 转换为 error，但 fn 本身的正常 error 也会返回。需要区分 panic 和业务错误。
+- **区分 panic 和业务错误**：`SafeCall` / `SafeCallVoid` 自动捕获 panic 转换为 error，但 fn 本身的正常 error 也会返回。需要区分时可用 `errors.As` 检查 `PanicError`。
 
   ```go
-  r, err := core.SafeCall(ctx, item, fn)
+  _, err := async.SafeCall(ctx, item, fn)
   if err != nil {
-      var panicErr *core.PanicError
+      var panicErr *async.PanicError
       if errors.As(err, &panicErr) {
-          log.Printf("panic: %v, stack: %s", panicErr.Cause, panicErr.Stack)
+          log.Printf("panic: %v, stack: %s", panicErr.Value, panicErr.Stack)
       } else {
           log.Printf("business error: %v", err)
       }
@@ -641,9 +679,6 @@ func init() {
     async.SetMaxResults(100_000)
 
     // ========== 推荐设置 ==========
-
-    // 4. 清理超时：WaitTimeout 后残留 goroutine 的最大存活时间
-    async.SetMaxCleanupDuration(30 * time.Minute)
 
     // 5. 失败日志级别：建议生产环境用 Warn，仅打印失败任务
     async.SetTaskFailLogLevel(async.LogLevelWarn)

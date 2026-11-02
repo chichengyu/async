@@ -8,7 +8,7 @@ import (
 
 // ──────────────────────────── DefaultShardCount ────────────────────────────
 
-// DefaultShardCount 返回默认分片数（runtime.GOMAXPROCS(0)，最少 2）。
+// DefaultShardCount 返回默认分片数（core.IO()，最少 2）。
 // 可在创建 ShardedPool/ShardedGroup/ShardedRateLimiter 等时使用。
 func DefaultShardCount() int {
 	n := core.IO()
@@ -28,7 +28,8 @@ func DefaultShardCount() int {
 // 示例：
 //
 //	err := ratelimit.WithRateLimiter(1000, time.Second, func(rl *RateLimiter) error {
-//	    rl.Wait(ctx)
+//	    if err := rl.Wait(ctx); err != nil { return err }
+//	    defer rl.Release()
 //	    return doRequest()
 //	})
 func WithRateLimiter(rate int, perDuration time.Duration, fn func(rl *RateLimiter) error) error {
@@ -42,7 +43,8 @@ func WithRateLimiter(rate int, perDuration time.Duration, fn func(rl *RateLimite
 // 示例：
 //
 //	err := ratelimit.WithRateLimiterWithBurst(50, time.Second, 200, func(rl *RateLimiter) error {
-//	    rl.Wait(ctx)
+//	    if err := rl.Wait(ctx); err != nil { return err }
+//	    defer rl.Release()
 //	    return doRequest()
 //	})
 func WithRateLimiterWithBurst(rate int, perDuration time.Duration, burst int, fn func(rl *RateLimiter) error) error {
@@ -57,7 +59,8 @@ func WithRateLimiterWithBurst(rate int, perDuration time.Duration, burst int, fn
 // 示例：
 //
 //	err := ratelimit.WithShardedRateLimiter(16, 10000, time.Second, func(rl *ShardedRateLimiter) error {
-//	    rl.Wait(ctx)
+//	    if err := rl.Wait(ctx); err != nil { return err }
+//	    defer rl.Release()
 //	    return doRequest()
 //	})
 func WithShardedRateLimiter(shards int, rate int, perDuration time.Duration, fn func(rl *ShardedRateLimiter) error) error {
@@ -71,7 +74,8 @@ func WithShardedRateLimiter(shards int, rate int, perDuration time.Duration, fn 
 // 示例：
 //
 //	err := ratelimit.WithShardedRateLimiterWithBurst(16, 100, time.Second, 500, func(rl *ShardedRateLimiter) error {
-//	    rl.Wait(ctx)
+//	    if err := rl.Wait(ctx); err != nil { return err }
+//	    defer rl.Release()
 //	    return doRequest()
 //	})
 func WithShardedRateLimiterWithBurst(shards int, rate int, perDuration time.Duration, burst int, fn func(rl *ShardedRateLimiter) error) error {
@@ -86,9 +90,10 @@ func WithShardedRateLimiterWithBurst(shards int, rate int, perDuration time.Dura
 // 示例：
 //
 //	err := ratelimit.WithShardedAdaptiveRateLimiter(16, 32, 800, func(sa *ShardedAdaptiveRateLimiter) error {
-//	    sa.Acquire(ctx)
-//	    if err := doRequest(); err != nil { sa.RecordFailure() } else { sa.RecordSuccess() }
-//	    sa.Release()
+//	    if err := sa.Acquire(ctx); err != nil { return err }
+//	    defer sa.Release()
+//	    err := doRequest()
+//	    if err != nil { sa.RecordFailure() } else { sa.RecordOk() }
 //	    return err
 //	})
 func WithShardedAdaptiveRateLimiter(shards int, minRate int, maxRate int, fn func(sa *ShardedAdaptiveRateLimiter) error) error {

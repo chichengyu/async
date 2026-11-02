@@ -27,11 +27,11 @@ func (b *MapParallel[K, V, R]) ToSerial() *MapSerial[K, V, R] {
 }
 
 func (b *MapParallel[K, V, R]) Worker(n int) *MapParallel[K, V, R] {
-	b.policy = sliceops.Par(n)
+	b.policy = b.policy.Worker(n)
 	return b
 }
 func (b *MapParallel[K, V, R]) DefaultWorker() *MapParallel[K, V, R] {
-	b.policy = sliceops.DefPar()
+	b.policy = b.policy.Worker(0)
 	return b
 }
 func (b *MapParallel[K, V, R]) Pool(p *pool.Pool[R]) *MapParallel[K, V, R] {

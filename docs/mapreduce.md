@@ -27,6 +27,8 @@ Slice 模块提供切片元素的并发/串行处理，支持 Map / ForEach / Re
 >
 > - `SliceBuilder` → `.Serial()` → `SerialSlice` → `.ToParallel()` → `ParallelSlice`
 > - `SliceBuilder` → `.Parallel()` → `ParallelSlice` → `.ToSerial()` → `SerialSlice`
+> - 这些切换会保留上下文和当前数据，但重置执行策略；请在切换后重新设置超时、FailFast 等配置。
+> - 如果切换前设置了 `PoolAuto(p)`，新构建器不会接管该池；仅执行新构建器不会关闭旧池，调用方应确保旧池被关闭。
 > - `SliceBuilder` 默认已是并行，不需要 `.Parallel()` 即可使用并行配置方法
 >
 > **⚠️ 串行模式下不暴露并行配置方法**
@@ -84,7 +86,7 @@ Slice 模块提供切片元素的并发/串行处理，支持 Map / ForEach / Re
 | `.DefaultPool()` | 创建默认并发度协程池并注入（自动管理生命周期） | — |
 | `.Pool(p)` | 注入外部协程池（用户管理生命周期） | 无 |
 | `.PoolAuto(p)` | 注入外部协程池（自动 Close） | 无 |
-| `.Timeout(d)` | 单任务超时 | 30s |
+| `.Timeout(d)` | 单任务超时 | 不设置 |
 | `.DefaultTimeout()` | 恢复默认超时（30s） | — |
 | `.FailFast()` | 启用 FailFast（任一失败立即终止其余） | 关闭 |
 | `.DefaultFailFast()` | 关闭 FailFast | — |
@@ -96,6 +98,18 @@ Slice 模块提供切片元素的并发/串行处理，支持 Map / ForEach / Re
 | `.DefaultBuf()` | 使用默认流式缓冲 | — |
 | `.Logger(l)` | 注入自定义日志（全局生效） | 静默 |
 | `.DefaultLogger()` | 恢复默认日志 | — |
+
+使用 `.Pool(p)` 时，正数的 `.Timeout(d)` 仅应用于当前切片操作中的每个任务，优先于池原有的任务超时，不会更改池的超时配置。`.FailFast()` 在任务函数返回错误或发生 panic 时取消当前操作的其他任务；任务执行前被池拒绝或丢弃不会触发取消。操作完成后池会复位以供复用，调用方负责关闭它。
+池化 Map、ForEach 和 Stream 会等待池中所有已提交任务，包括调用方单独提交的任务，然后通过 `ResetWait` 清空池的结果和统计计数。因此操作期间不要让其他调用方并发提交、等待或复用该池；需要保留池结果或统计时，应在使用这些操作前另行处理。池的上下文若因等待而取消，复位不会重建它，下一批使用池上下文前须重新配置。
+池设置了 `OverflowDrop` 或 `OverflowError` 且等待队列已满时，被拒绝的元素结果包含 `ErrQueueOverflow`；Map 的汇总错误在没有优先报告的其他错误时反映该错误，ForEach 将其计入失败数，Stream 会发送错误结果。取消上下文可能使 Stream 提前停止发送结果。
+池化 Map 和 ForEach 的 FailFast 汇总优先报告触发取消的回调错误，避免其他任务的 `context.Canceled` 掩盖原始错误；并发失败时先记录的回调错误取决于调度。
+
+串行 FailFast 提前停止后，未执行的元素标记为 `context.Canceled`；它们不计入成功值，ForEach 的失败数包含这些取消的元素。
+未使用池、分片、分块或超时的并行 Map 在 FailFast 回调报错或 panic 后取消操作；panic 只记录在发生 panic 的元素上，因取消而未执行的元素记录上下文取消错误。已经开始的回调需要自行响应上下文取消。
+该路径的 `Error()` 返回首次触发 FailFast 的回调错误；多个回调同时失败时，具体哪个错误先记录取决于调度。
+分片执行时，若上下文取消导致元素未执行，ForEach 会将其计入失败；没有回调错误时，汇总错误反映该取消。FailFast Map 同样会在没有回调错误时报告取消。
+
+未启用 FailFast 时，Map 回调发生 panic 会转换为对应元素的错误，其他元素仍会继续处理，包括同一并行分块中的后续元素。
 
 ### 模式切换
 
@@ -229,6 +243,16 @@ Slice 模块提供切片元素的并发/串行处理，支持 Map / ForEach / Re
 | `.Shuffle()` | 随机打乱 |
 | `.Repeat(n)` | 重复拼接 |
 
+`Insert` 将负索引视为 0，将大于长度的索引视为末尾；插入值可以引用当前切片的底层数组。`Items()` 返回直接引用，后续原地修改可能改变该数组；需要独立切片时使用 `Values()`。
+
+```go
+items := make([]int, 4, 8)
+copy(items, []int{1, 2, 3, 4})
+b := async.Slice(ctx, items)
+b.Insert(1, b.Items()[2:]...)
+fmt.Println(b.Values()) // [1 3 4 2 3 4]
+```
+
 ### 查询
 
 | 方法 | 说明 |
@@ -325,6 +349,12 @@ sum, err := async.Slice[int](ctx, nums).
 
 边执行边通过 channel 返回结果，适合大批量数据实时处理。
 
+消费者较慢时，结果缓冲区满会使任务等待，直到结果被消费。提前停止消费时应取消传入的 context，以解除阻塞的结果发送。取消后，尚未发送的结果可能被丢弃；已开始的回调仍需自行响应 context 或返回。
+
+`.Timeout(d)` 为每个 Stream 回调设置独立的上下文截止时间。回调需要检查该上下文并返回错误，超时不会强制中止忽略 context 的函数；启用 FailFast 时，回调返回的超时错误会取消其他任务。
+
+配置 `.Pool(p)` 后，Stream 使用该池执行任务，并在结果通道关闭前等待和复位池；调用方负责关闭池。`.PoolAuto(p)` 则在通道关闭前关闭池。流执行期间不要并发复用同一个池，且应持续消费结果或取消传入的 context。
+
 ```go
 ch := async.Slice[int](ctx, items).
     Worker(16).
@@ -348,12 +378,12 @@ for res := range ch {
 
 | 方法 | 说明 |
 |------|------|
-| `.Error()` | 第一个错误（遍历所有结果） |
+| `.Error()` | 优先返回操作整体错误；否则按结果顺序返回第一个元素错误 |
 | `.Ok()` | 全部成功返回 true |
 | `.Err()` | 有错误返回 true |
 | `.Values()` | 所有成功的值切片 |
-| `.Errors()` | 所有错误切片 |
-| `.FailValues()` | 失败输入值（原始 T 类型元素） |
+| `.Errors()` | 各失败元素的错误切片；FailFast 的首个错误摘要不会重复添加 |
+| `.FailValues()` | 失败输入值（原始 T 类型元素）；`MapBatch` 返回失败批次中的全部元素 |
 | `.Results()` | 原始 Result[R] 切片 |
 | `.Must()` | 有错误时 panic |
 | `.Unwrap()` | `([]R, error)` |
@@ -388,7 +418,9 @@ values := results.Must()
 | `.Err()` | 有错误返回 true |
 | `.Total()` | 总任务数 |
 | `.FailCount()` | 失败任务数 |
-| `.SuccessCount()` | 成功任务数 |
+| `.OkCount()` | 成功任务数 |
+
+> **注意**：`.OkCount()` 只包含成功完成的元素，失败元素不计入；调用结果访问方法前应先让 `ForEach` 返回。
 
 ---
 
@@ -432,16 +464,13 @@ results := async.Slice[int](ctx, items).
 ### 模式来回切换
 
 ```go
-sb := async.Slice[int](ctx, items)
-// 串行模式做确定性操作
-sb.Serial().Sort(cmp).Filter(pred)
-// 切回并行做批量处理
-result := sb.Parallel().Worker(8).Map(fn)
+serial := async.Slice[int](ctx, items).Serial().Sort(cmp).Filter(pred)
+// 使用筛选后的串行构建器切回并行模式。
+result := serial.ToParallel().Worker(8).Map(fn)
 
 // 或者链式：
-serial := async.Slice[int](ctx, items).Serial()
-serial.Filter(pred)
-result := serial.ToParallel().Worker(8).Map(fn)
+result := async.Slice[int](ctx, items).Serial().
+    Filter(pred).ToParallel().Worker(8).Map(fn)
 ```
 
 > **⚠️ SerialSlice → ParallelSlice 后可以继续链式数据操作**
@@ -498,7 +527,7 @@ r := async.Slice[string](ctx, records).
 > **⚠️ Chunk ≠ Shards**
 >
 > - `Chunk(n)`：将切片按每 n 个元素分块，逐步提交给并发 worker 处理。适合限制单次内存占用的场景。
-> - `Shards(n)`：将切片均匀分成 n 份，每份由一个独立 goroutine 全权处理。适合减少锁竞争。
+> - `Shards(n)`：将切片均匀分成最多 n 个非空分片，片内顺序执行，由最多 `Worker` 个 goroutine 调度。
 
 ---
 
@@ -507,20 +536,14 @@ r := async.Slice[string](ctx, records).
 将任务提交到外部协程池中执行：
 
 ```go
-// 方式一：Pool(p)，用户管理生命周期
-p := pool.NewPool[string](16)
-defer p.Close()
+// Pool(p)：在 Pool.Run 回调中使用池；Run 返回时关闭池。
+err := async.Pool[string]().Context(ctx).Worker(16).
+    Run(func(ctx context.Context, p *async.PoolInstance[string]) error {
+        results := async.Slice[string](ctx, items).Pool(p).Map(processFunc)
+        return results.Error()
+    })
 
-results := async.Slice[string](ctx, items).
-    Pool(p).
-    Map(processFunc)
-
-// 方式二：PoolAuto(p)，自动 Close
-results := async.Slice[string](ctx, items).
-    PoolAuto(pool.NewPool[string](16)).
-    Map(processFunc)
-
-// 方式三：DefaultPool()，内部创建并自动管理
+// DefaultPool()：内部创建并自动管理池。
 results := async.Slice[string](ctx, items).
     DefaultPool().
     Map(processFunc)
@@ -535,7 +558,7 @@ results := async.Slice[string](ctx, items).
 | 默认值 | 获取/恢复方法 | 默认值 | 说明 |
 |--------|-------------|--------|------|
 | 默认并发度 | `.DefaultWorker()` | **`IO()`**（`NumCPU×2`） | 默认并行模式使用 |
-| 默认超时 | `.DefaultTimeout()` | **30s** | 全局默认超时 |
+| 默认超时设置 | `.DefaultTimeout()` | **30s** | 新建构建器默认不启用超时，调用该方法后启用；此值固定，不受 `SetDefaultTimeout` 影响 |
 | 默认 FailFast | `.DefaultFailFast()` | **关闭** | 不启用快速失败 |
 | 默认分片 | `.DefaultShard()` | **GOMAXPROCS**（最少 2） | 不启用分片时无此行 |
 | 默认分块 | `.DefaultChunk()` | **100** | 常量 `defaultBatchSize` |
@@ -665,7 +688,7 @@ async.Slice[Record](ctx, millions).
 
 ### 常见错误
 
-- **❌ 大切片不设 MaxResults 用 Wait 取全部**：默认 100K 可能 OOM，建议用 Stream 流式消费或配合 Chunk 批量处理
+- **❌ 忽略大切片的内存开销**：池默认保留最多 100K 个结果；池化 Map 为返回完整映射结果还会按输入数量保存结果。海量数据应考虑分批处理，并评估各批次的内存占用。
 - **❌ 小切片过度分片**：Shards > 数据量/Worker 时无意义，分片数不超过并发度
 - **❌ Reduce 期望并行**：Reduce 永远串行，不支持 Worker/Shards 配置
 - **❌ ForEach 结果未检查**：`ForEachResult.Err()` 可能为 true，建议始终检查
@@ -691,7 +714,9 @@ results := async.Slice[int](ctx, items).
 
 ## Map 容器（K-V 泛型容器）
 
-`async.Map[K, V]` 是泛型 key-value 容器，支持链式调用和并发/串行处理。`K` 必须满足 `comparable` 约束，`V` 为任意类型。
+`async.Map[K, V]` 是泛型 key-value 容器，支持链式调用。`K` 必须满足 `comparable` 约束，`V` 为任意类型。并发/串行处理由单独的 `MapChain` 提供。
+
+> **并发访问**：`Map` 本身没有锁；并发访问中只要有写入，调用方必须同步所有访问，包括 `AsMap()` 和 `MapFromRef()` 暴露的共享 map。`MapChain` 直接引用输入 map，构建器不可并发修改，执行期间也不得并发修改输入 map；并行回调访问其他共享数据时需自行同步。
 
 ### 创建入口
 
@@ -699,14 +724,14 @@ results := async.Slice[int](ctx, items).
 |------|------|
 | `async.NewMap[K,V]()` | 创建空容器 |
 | `async.NewMapCap[K,V](capacity)` | 创建空容器，预分配 capacity 容量 |
-| `async.MapFrom[K,V](m)` | 从原生 map 创建（深拷贝） |
+| `async.MapFrom[K,V](m)` | 从原生 map 创建（浅拷贝键值对） |
 | `async.MapFromRef[K,V](m)` | 从原生 map 创建（直接引用，不拷贝） |
 
 ```go
 m := async.NewMap[string, int]()
 m.Set("a", 1).Set("b", 2)
 
-// 深拷贝
+// 浅拷贝键值对，引用类型的值仍共享其底层数据
 m2 := async.MapFrom(map[string]int{"x": 1, "y": 2})
 
 // 引用（外部修改会影响 m3）
@@ -843,11 +868,11 @@ cnt := m.Count(func(k string, v int) bool { return v > 2 }) // 1
 | `.Pool(p)` | 注入外部协程池 | — |
 | `.PoolAuto(p)` | 注入协程池（自动 Close） | — |
 | `.DefaultPool()` | 使用内置协程池 | — |
-| `.Timeout(d)` | 设置单任务超时 | 30s |
-| `.DefaultTimeout()` | 恢复默认超时 | — |
+| `.Timeout(d)` | 设置单任务超时 | 不设置 |
+| `.DefaultTimeout()` | 将单任务超时设置为固定的 30 秒，不受 `SetDefaultTimeout` 影响 | — |
 | `.FailFast()` | 启用快速失败 | 关闭 |
 | `.DefaultFailFast()` | 关闭快速失败 | — |
-| `.Shards(n)` | 设置水平分片数 | 不分片 |
+| `.Shards(n)` | 为无池的并行操作设置分片数 | 不分片 |
 | `.DefaultShard()` | 按 GOMAXPROCS 分片 | — |
 | `.Buf(size)` | 设置 Stream 缓冲区 | 0（自适应） |
 | `.DefaultBuf()` | 清除 Buf 设置 | — |
@@ -855,6 +880,10 @@ cnt := m.Count(func(k string, v int) bool { return v > 2 }) // 1
 | `.DefaultChunk()` | 恢复默认分块大小 | — |
 | `.Logger(l)` | 注入自定义日志（全局生效） | 静默 |
 | `.DefaultLogger()` | 恢复默认日志 | — |
+
+MapChain 的 `Worker` 和 `DefaultWorker` 只更改并发度，保留超时、FailFast、池和其他设置。`Pool` / `PoolAuto` 适用于 Map、ForEach、Stream 和批量操作；Filter 和 Reduce 保持串行，`PoolAuto` 的池在操作结束时关闭。
+无池的 Map / ForEach / Stream 将条目分片，片内顺序执行；批量操作先按 `Chunk` 划分批次，再对批次分片。最多 `Worker` 个分片同时运行。池化操作由池控制并发；Filter 和 Reduce 保持串行。
+MapChain 的模式切换同样创建新构建器并重置策略；旧构建器中设置的池不会转移，调用方须确保不再使用的旧池被关闭。
 
 #### MapParallel 专属方法
 
@@ -898,7 +927,7 @@ cnt := m.Count(func(k string, v int) bool { return v > 2 }) // 1
 | `.MapToFn(fn)` | `(ctx, K, V) → (R, error)` | `*MapResult[K,R]` | Map 别名（向后兼容） |
 | `.ForEach(fn)` | `(ctx, K, V) → error` | `*MapForEachResult` | 并发遍历 |
 | `.Filter(fn)` | `(ctx, K, V) → bool` | `(*Map[K,V], error)` | 并发过滤 |
-| `.Stream(fn, bufSize)` | `(ctx, K, V) → (R, error)` | `<-chan core.Result[R]` | 流式映射 |
+| `.Stream(fn, bufSize)` | `(ctx, K, V) → (R, error)` | `<-chan async.Result[R]` | 流式映射 |
 | `.Reduce(initial, fn)` | `(ctx, R, K, V) → (R, error)` | `(R, error)` | 串行聚合 |
 | `.MapBatch(fn)` | `(ctx, []MapEntry[K,V]) → (R, error)` | `*MapResult[K,R]` | 批量映射 |
 | `.ForEachBatch(fn)` | `(ctx, []MapEntry[K,V]) → error` | `*MapForEachResult` | 批量遍历 |
@@ -951,7 +980,7 @@ cnt := m.Count(func(k string, v int) bool { return v > 2 }) // 1
 |------|------|------|
 | `Total()` | `int64` | 总处理数 |
 | `FailCount()` | `int64` | 失败数 |
-| `SuccessCount()` | `int64` | 成功数 |
+| `OkCount()` | `int64` | 成功数 |
 | `Error()` | `error` | 第一个错误 |
 | `Err()` | `bool` | 是否有错误 |
 
@@ -972,7 +1001,7 @@ type MapEntry[K comparable, V any] struct {
 data := map[string]int{"a": 1, "b": 2, "c": 3, "d": 4}
 
 // 并发 Map
-result := async.NewMapChain[string, int](ctx, data).
+result := async.NewMapChainWith[string, int, string](ctx, data).
     Worker(8).
     Shards(4).
     Map(func(ctx context.Context, k string, v int) (string, error) {
@@ -989,7 +1018,7 @@ filtered, err := async.NewMapChain[string, int](ctx, data).
     })
 
 // 流式处理
-ch := async.NewMapChain[string, int](ctx, data).
+ch := async.NewMapChainWith[string, int, string](ctx, data).
     Parallel().Worker(4).
     Stream(func(ctx context.Context, k string, v int) (string, error) {
         return k, nil
@@ -1000,7 +1029,7 @@ for r := range ch {
 }
 
 // 批量处理
-result := async.NewMapChain[string, int](ctx, data).
+result := async.NewMapChainWith[string, int, string](ctx, data).
     Chunk(2).
     MapBatch(func(ctx context.Context, batch []async.MapEntry[string, int]) (string, error) {
         return batch[0].Key, nil
@@ -1009,15 +1038,19 @@ result := async.NewMapChain[string, int](ctx, data).
 
 ---
 
+Map 的 `Stream` 将回调中的 panic 转为包含 `PanicError` 的结果。启用 `FailFast` 后，遇到错误会停止后续处理；并行模式下，已经开始的回调仍可能返回结果。
+
+取消传入的 context 后，`Stream` 停止启动后续回调，阻塞的结果发送也可以退出；尚未发送的结果可能被丢弃。已开始的回调需要自行响应 context 或返回，通道才会关闭。提前停止消费时，应取消该 context。
+
 ### Map 容器 & MapChain 生产推荐配置
 
 ```go
 // ========== MapChain 并发映射：标准 K-V 并行处理 ==========
 data := map[string]int{"a": 1, "b": 2, "c": 3, "d": 4}
 
-result := async.NewMapChain[string, int](ctx, data).
+result := async.NewMapChainWith[string, int, string](ctx, data).
     Worker(16).
-    Shards(8).                              // 8 分片降低锁竞争
+    Shards(8).                              // 最多 8 个分片并行
     Timeout(30 * time.Second).              // 单条目超时
     FailFast().                             // 任一失败立即停止
     Map(func(ctx context.Context, k string, v int) (string, error) {
@@ -1029,7 +1062,7 @@ if result.Err() {
 fmt.Println(result.Data())                  // map[string]string
 
 // ========== MapChain 流式消费：边处理边消费 ==========
-ch := async.NewMapChain[string, int](ctx, data).
+ch := async.NewMapChainWith[string, int, string](ctx, data).
     Worker(16).Shards(8).
     Buf(4096).                              // channel 缓冲
     Stream(func(ctx context.Context, k string, v int) (string, error) {
@@ -1037,14 +1070,15 @@ ch := async.NewMapChain[string, int](ctx, data).
     }, 4096)
 for r := range ch {
     if r.Err != nil {
-        log.Printf("处理失败 key=%s: %v", r.Value, r.Err)
+        log.Printf("处理失败: %v", r.Err)
         continue
     }
     saveResult(r.Value)
 }
 
 // ========== MapChain 批量 + 分块：数据库批量操作 ==========
-result := async.NewMapChain[string, Record](ctx, data).
+recordData := map[string]Record{ /* 按业务填充 */ }
+batchResult := async.NewMapChainWith[string, Record, int64](ctx, recordData).
     Worker(8).Shards(4).
     Chunk(200).                             // 每 200 条一批
     Timeout(60 * time.Second).              // 批量操作加大超时
@@ -1064,19 +1098,19 @@ if err != nil {
     log.Printf("聚合失败: %v", err)
 }
 // 或先并发转换再串行聚合
-r, _ := async.NewMapChainWith[string, int](ctx, data).  // With 改变输出类型
+r := async.NewMapChainWith[string, int, *Processed](ctx, data).
     Worker(16).Shards(8).FailFast().
     Map(func(ctx context.Context, k string, v int) (*Processed, error) {
         return heavyTransform(ctx, v), nil
     })
-reduced, err := async.NewMapChain[string, *Processed](ctx, r.Data()).
+reduced, err := async.NewMapChainWith[string, *Processed, float64](ctx, r.Data()).
     Serial().                               // 聚合必须串行
     Reduce(0.0, func(ctx context.Context, acc float64, k string, v *Processed) (float64, error) {
         return acc + v.Score, nil
     })
 
 // ========== Map 操作链（同步操作，构建查询 ==========
-// 不涉及并发，结构 线程安全
+// 同步操作；共享容器并且存在写入时需要外部同步
 m := async.NewMap[string, int]().
     Set("a", 1).Set("b", 2).Set("c", 3).
     Filter(func(k string, v int) bool { return v > 1 }).

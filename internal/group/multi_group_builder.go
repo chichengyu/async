@@ -81,10 +81,11 @@ func (b *MultiGroupBuilder[T]) Run(fn func(ctx context.Context, mg *MultiGroup[T
 	if b.submitTimeout > 0 {
 		g.WithSubmitTimeout(b.submitTimeout)
 	}
+	ctx := b.ctx
 	if b.failFast {
-		g.WithFailFast(b.ctx)
+		_, ctx = g.WithFailFast(ctx)
 	}
 	mg := g.Shard(b.shards)
 	defer mg.Close()
-	return fn(b.ctx, mg)
+	return fn(ctx, mg)
 }

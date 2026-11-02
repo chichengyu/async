@@ -3,13 +3,515 @@ package maps
 import (
 	"context"
 	"errors"
+	"fmt"
+	"math"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/chichengyu/async/internal/pool"
+	"github.com/chichengyu/async/internal/sliceops"
 	"github.com/chichengyu/async/test"
 )
+
+func TestMapStreamPanicRespectsFailFast(t *testing.T) {
+	for _, serial := range []bool{false, true} {
+		for _, fast := range []bool{false, true} {
+			policy := sliceops.Par(1)
+			if serial {
+				policy = sliceops.Seq()
+			}
+			if fast {
+				policy = policy.FF()
+			}
+			r := NewMapRunner[int, int, int](context.Background(), map[int]int{1: 1, 2: 2, 3: 3}, policy)
+			count := 0
+			for result := range r.Stream(func(context.Context, int, int) (int, error) { panic("failure") }, 3) {
+				if !result.IsPanic() {
+					t.Fatalf("fast=%v: expected panic error, got %v", fast, result.Err)
+				}
+				count++
+			}
+			want := 3
+			if fast {
+				want = 1
+			}
+			if count != want {
+				t.Fatalf("serial=%v fast=%v: got %d results, want %d", serial, fast, count, want)
+			}
+		}
+	}
+}
+
+func TestMapStreamSingleShardRunsCallbacksSequentially(t *testing.T) {
+	started := make(chan struct{}, 2)
+	release := make(chan struct{})
+	ch := NewMapChain(context.Background(), map[string]int{"a": 1, "b": 2}).
+		Worker(2).Shards(1).Stream(func(_ context.Context, _ string, v int) (int, error) {
+		started <- struct{}{}
+		<-release
+		return v, nil
+	}, 2)
+	<-started
+	overlapped := false
+	select {
+	case <-started:
+		overlapped = true
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(release)
+	count := 0
+	for result := range ch {
+		if result.Err != nil {
+			t.Errorf("unexpected error: %v", result.Err)
+		}
+		count++
+	}
+	if overlapped || count != 2 {
+		t.Fatalf("overlapped = %t, results = %d; want false, 2", overlapped, count)
+	}
+}
+
+func TestMapShardCoverageAcrossOperations(t *testing.T) {
+	for _, n := range []int{1, 5, 11} {
+		for _, shards := range []int{1, 3, 20} {
+			for _, op := range []string{"map", "each", "stream", "map-batch", "each-batch"} {
+				t.Run(fmt.Sprintf("n=%d/shards=%d/%s", n, shards, op), func(t *testing.T) {
+					data := make(map[int]int, n)
+					for i := 0; i < n; i++ {
+						data[i] = i
+					}
+					var mu sync.Mutex
+					seen := make(map[int]int, n)
+					record := func(key int) {
+						mu.Lock()
+						seen[key]++
+						mu.Unlock()
+					}
+					chain := NewMapChain(context.Background(), data).Worker(2).Shards(shards).Chunk(2)
+					switch op {
+					case "map":
+						r := chain.Map(func(_ context.Context, k, v int) (int, error) { record(k); return v, nil })
+						if r.Err() || r.Len() != n {
+							t.Fatalf("map len=%d err=%v", r.Len(), r.Error())
+						}
+					case "each":
+						r := chain.ForEach(func(_ context.Context, k, _ int) error { record(k); return nil })
+						if r.Err() || r.Total() != int64(n) {
+							t.Fatalf("each total=%d err=%v", r.Total(), r.Error())
+						}
+					case "stream":
+						count := 0
+						for r := range chain.Stream(func(_ context.Context, k, v int) (int, error) { record(k); return v, nil }, n) {
+							if r.Err != nil {
+								t.Fatal(r.Err)
+							}
+							count++
+						}
+						if count != n {
+							t.Fatalf("stream results=%d, want %d", count, n)
+						}
+					case "map-batch":
+						r := chain.MapBatch(func(_ context.Context, batch []MapEntry[int, int]) (int, error) {
+							for _, e := range batch {
+								record(e.Key)
+							}
+							return len(batch), nil
+						})
+						if r.Err() || r.Len() != (n+1)/2 {
+							t.Fatalf("batch len=%d err=%v", r.Len(), r.Error())
+						}
+					case "each-batch":
+						r := chain.ForEachBatch(func(_ context.Context, batch []MapEntry[int, int]) error {
+							for _, e := range batch {
+								record(e.Key)
+							}
+							return nil
+						})
+						if r.Err() || r.Total() != int64(n) {
+							t.Fatalf("batch total=%d err=%v", r.Total(), r.Error())
+						}
+					}
+					for i := 0; i < n; i++ {
+						if seen[i] != 1 {
+							t.Errorf("key %d processed %d times", i, seen[i])
+						}
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestMapStreamSingleShardCancelWithFullBuffer(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	second := make(chan struct{})
+	var calls atomic.Int32
+	ch := NewMapChain(ctx, map[int]int{1: 1, 2: 2, 3: 3}).
+		Worker(2).Shards(1).Stream(func(context.Context, int, int) (int, error) {
+		if calls.Add(1) == 2 {
+			close(second)
+		}
+		return 1, nil
+	}, 1)
+	<-second
+	cancel()
+	deadline := time.After(time.Second)
+	for {
+		select {
+		case _, ok := <-ch:
+			if !ok {
+				if got := calls.Load(); got != 2 {
+					t.Fatalf("started %d callbacks, want 2", got)
+				}
+				return
+			}
+		case <-deadline:
+			t.Fatal("stream did not close after cancellation")
+		}
+	}
+}
+
+func TestMapStreamSingleShardFailFast(t *testing.T) {
+	bomb := errors.New("stream failure")
+	var calls atomic.Int32
+	ch := NewMapChain(context.Background(), map[int]int{1: 1, 2: 2, 3: 3}).
+		Worker(2).Shards(1).FailFast().Stream(func(context.Context, int, int) (int, error) {
+		calls.Add(1)
+		return 0, bomb
+	}, 3)
+	count := 0
+	for result := range ch {
+		if !errors.Is(result.Err, bomb) {
+			t.Errorf("error = %v, want %v", result.Err, bomb)
+		}
+		count++
+	}
+	if count != 1 || calls.Load() != 1 {
+		t.Fatalf("results = %d, calls = %d; want 1 each", count, calls.Load())
+	}
+}
+
+func TestMapBatchSingleShardRunsCallbacksSequentially(t *testing.T) {
+	started := make(chan struct{}, 2)
+	release := make(chan struct{})
+	done := make(chan *MapResult[int, int], 1)
+	go func() {
+		done <- NewMapChain(context.Background(), map[int]int{1: 1, 2: 2}).
+			Worker(2).Shards(1).Chunk(1).MapBatch(func(_ context.Context, batch []MapEntry[int, int]) (int, error) {
+			started <- struct{}{}
+			<-release
+			return batch[0].Val, nil
+		})
+	}()
+	<-started
+	overlapped := false
+	select {
+	case <-started:
+		overlapped = true
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(release)
+	result := <-done
+	if overlapped || result.Err() || result.Len() != 2 {
+		t.Fatalf("overlapped = %t, data = %v, error = %v", overlapped, result.Data(), result.Error())
+	}
+}
+
+func TestForEachBatchSingleShardRunsCallbacksSequentially(t *testing.T) {
+	started := make(chan struct{}, 2)
+	release := make(chan struct{})
+	done := make(chan *MapForEachResult, 1)
+	go func() {
+		done <- NewMapChain(context.Background(), map[int]int{1: 1, 2: 2}).
+			Worker(2).Shards(1).Chunk(1).ForEachBatch(func(context.Context, []MapEntry[int, int]) error {
+			started <- struct{}{}
+			<-release
+			return nil
+		})
+	}()
+	<-started
+	overlapped := false
+	select {
+	case <-started:
+		overlapped = true
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(release)
+	result := <-done
+	if overlapped || result.Err() || result.Total() != 2 {
+		t.Fatalf("overlapped = %t, total = %d, error = %v", overlapped, result.Total(), result.Error())
+	}
+}
+
+func TestMapBatchSingleShardFailurePolicies(t *testing.T) {
+	for _, fast := range []bool{false, true} {
+		for _, op := range []string{"map", "each"} {
+			t.Run(fmt.Sprintf("fast=%t/%s", fast, op), func(t *testing.T) {
+				bomb := errors.New("batch failure")
+				var calls int
+				chain := NewMapChain(context.Background(), map[int]int{1: 1, 2: 2, 3: 3, 4: 4, 5: 5}).
+					Worker(4).Shards(1).Chunk(2)
+				if fast {
+					chain.FailFast()
+				}
+				wantCalls := 3
+				if fast {
+					wantCalls = 1
+				}
+				if op == "map" {
+					r := chain.MapBatch(func(context.Context, []MapEntry[int, int]) (int, error) {
+						calls++
+						return 0, bomb
+					})
+					if !errors.Is(r.Error(), bomb) || r.Len() != 0 {
+						t.Fatalf("data=%v error=%v", r.Data(), r.Error())
+					}
+				} else {
+					r := chain.ForEachBatch(func(context.Context, []MapEntry[int, int]) error { calls++; return bomb })
+					wantTotal := int64(5)
+					if fast {
+						wantTotal = 2
+					}
+					if !errors.Is(r.Error(), bomb) || r.Total() != wantTotal || r.FailCount() != wantTotal {
+						t.Fatalf("total=%d failures=%d error=%v", r.Total(), r.FailCount(), r.Error())
+					}
+				}
+				if calls != wantCalls {
+					t.Fatalf("calls=%d, want %d", calls, wantCalls)
+				}
+			})
+		}
+	}
+}
+
+func TestMapStreamStopsAfterContextCancellation(t *testing.T) {
+	for _, serial := range []bool{false, true} {
+		t.Run(fmt.Sprintf("serial=%v", serial), func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			policy := sliceops.Par(1)
+			if serial {
+				policy = sliceops.Seq()
+			}
+			started := make(chan struct{})
+			release := make(chan struct{})
+			var calls atomic.Int32
+			r := NewMapRunner[int, int, int](ctx, map[int]int{1: 1, 2: 2, 3: 3}, policy)
+			ch := r.Stream(func(context.Context, int, int) (int, error) {
+				if calls.Add(1) == 1 {
+					close(started)
+					<-release
+				}
+				return 1, nil
+			}, 1)
+			<-started
+			cancel()
+			close(release)
+			for range ch {
+			}
+			if got := calls.Load(); got != 1 {
+				t.Fatalf("started %d callbacks after cancellation, want 1 total", got)
+			}
+		})
+	}
+}
+
+func TestMapStreamCancelWithFullBuffer(t *testing.T) {
+	for _, serial := range []bool{false, true} {
+		t.Run(fmt.Sprintf("serial=%v", serial), func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			policy := sliceops.Par(1)
+			if serial {
+				policy = sliceops.Seq()
+			}
+			second := make(chan struct{})
+			var calls atomic.Int32
+			r := NewMapRunner[int, int, int](ctx, map[int]int{1: 1, 2: 2, 3: 3}, policy)
+			ch := r.Stream(func(context.Context, int, int) (int, error) {
+				if calls.Add(1) == 2 {
+					close(second)
+				}
+				return 1, nil
+			}, 1)
+			<-second
+			cancel()
+			deadline := time.After(time.Second)
+			for {
+				select {
+				case _, ok := <-ch:
+					if !ok {
+						if got := calls.Load(); got != 2 {
+							t.Fatalf("started %d callbacks, want 2", got)
+						}
+						return
+					}
+				case <-deadline:
+					t.Fatal("stream did not close after cancellation")
+				}
+			}
+		})
+	}
+}
+
+func TestMapStreamConcurrentPanics(t *testing.T) {
+	for _, fast := range []bool{false, true} {
+		t.Run(fmt.Sprintf("fast=%v", fast), func(t *testing.T) {
+			policy := sliceops.Par(4)
+			if fast {
+				policy = policy.FF()
+			}
+			data := make(map[int]int)
+			for i := 0; i < 12; i++ {
+				data[i] = i
+			}
+			var calls atomic.Int32
+			ready := make(chan struct{}, 4)
+			release := make(chan struct{})
+			r := NewMapRunner[int, int, int](context.Background(), data, policy)
+			ch := r.Stream(func(context.Context, int, int) (int, error) {
+				if calls.Add(1) <= 4 {
+					ready <- struct{}{}
+					<-release
+				}
+				panic("failure")
+			}, len(data))
+			for i := 0; i < 4; i++ {
+				<-ready
+			}
+			close(release)
+			count := 0
+			for result := range ch {
+				if !result.IsPanic() {
+					t.Fatalf("expected panic error, got %v", result.Err)
+				}
+				count++
+			}
+			want := len(data)
+			if fast {
+				want = 4
+			}
+			if count != want || int(calls.Load()) != want {
+				t.Fatalf("got %d results and %d calls, want %d", count, calls.Load(), want)
+			}
+		})
+	}
+}
+
+func TestMapRunnerPanicRespectsFailFast(t *testing.T) {
+	for _, serial := range []bool{true, false} {
+		for _, fast := range []bool{true, false} {
+			for _, op := range []string{"each", "map", "batch"} {
+				t.Run(fmt.Sprintf("serial=%v/fast=%v/%s", serial, fast, op), func(t *testing.T) {
+					policy := sliceops.Par(1).Chunk(1)
+					if serial {
+						policy = sliceops.Seq().Chunk(1)
+					}
+					if fast {
+						policy = policy.FF()
+					}
+					r := NewMapRunner[int, int, int](context.Background(), map[int]int{1: 1, 2: 2, 3: 3}, policy)
+					calls := 0
+					var err error
+					switch op {
+					case "each":
+						_, _, err = r.ForEach(func(context.Context, int, int) error { calls++; panic("failure") })
+					case "map":
+						err = r.Map(func(context.Context, int, int) (int, error) { calls++; panic("failure") }).Error()
+					case "batch":
+						err = r.MapBatch(func(context.Context, []MapEntry[int, int]) (int, error) { calls++; panic("failure") }).Error()
+					}
+					want := 3
+					if fast {
+						want = 1
+					}
+					if err == nil || calls != want {
+						t.Fatalf("calls=%d err=%v", calls, err)
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestMapBatchExtremeChunkSize(t *testing.T) {
+	data := map[int]int{1: 1, 2: 2, 3: 3}
+	r := NewMapRunner[int, int, int](context.Background(), data, sliceops.Par(1).Chunk(math.MaxInt))
+	result := r.MapBatch(func(_ context.Context, entries []MapEntry[int, int]) (int, error) { return len(entries), nil })
+	if result.Error() != nil {
+		t.Fatal(result.Error())
+	}
+	total, failed, err := r.ForEachBatch(func(context.Context, []MapEntry[int, int]) error { return nil })
+	if total != 3 || failed != 0 || err != nil {
+		t.Fatalf("total=%d failed=%d err=%v", total, failed, err)
+	}
+}
+
+func TestParallelForEachBatchCountsFailedElements(t *testing.T) {
+	data := make(map[int]int, 23)
+	for i := 0; i < 23; i++ {
+		data[i] = i
+	}
+	boom := errors.New("batch failed")
+	var failedSize atomic.Int64
+	result := NewMapChain[int, int](context.Background(), data).Parallel().Worker(4).Shards(4).Chunk(4).
+		ForEachBatch(func(_ context.Context, entries []MapEntry[int, int]) error {
+			for _, entry := range entries {
+				if entry.Key == 7 {
+					failedSize.Store(int64(len(entries)))
+					return boom
+				}
+			}
+			return nil
+		})
+	if !errors.Is(result.Error(), boom) || result.Total() != int64(len(data)) || result.FailCount() != failedSize.Load() || failedSize.Load() == 0 {
+		t.Fatalf("total=%d failed=%d batch size=%d error=%v", result.Total(), result.FailCount(), failedSize.Load(), result.Error())
+	}
+}
+
+func TestMapRunnerForEachBatchPanicCountsWholeBatch(t *testing.T) {
+	data := map[int]int{1: 1, 2: 2, 3: 3}
+	r := NewMapRunner[int, int, int](context.Background(), data, sliceops.Par(1).Chunk(3))
+	total, failed, err := r.ForEachBatch(func(context.Context, []MapEntry[int, int]) error { panic("batch failure") })
+	if total != 3 || failed != 3 || err == nil {
+		t.Fatalf("total=%d failed=%d err=%v", total, failed, err)
+	}
+}
+
+func TestMapRunnerSerialForEachBatchRecoversPanic(t *testing.T) {
+	data := map[int]int{1: 1, 2: 2, 3: 3}
+	r := NewMapRunner[int, int, int](context.Background(), data, sliceops.Seq().Chunk(3))
+	total, failed, err := r.ForEachBatch(func(context.Context, []MapEntry[int, int]) error { panic("batch failure") })
+	if total != 3 || failed != 3 || err == nil {
+		t.Fatalf("total=%d failed=%d err=%v", total, failed, err)
+	}
+}
+
+func TestMapRunnerForEachBatchPanicFailFastPolicy(t *testing.T) {
+	for _, serial := range []bool{true, false} {
+		for _, fast := range []bool{true, false} {
+			policy := sliceops.Par(1).Chunk(1)
+			if serial {
+				policy = sliceops.Seq().Chunk(1)
+			}
+			if fast {
+				policy = policy.FF()
+			}
+			r := NewMapRunner[int, int, int](context.Background(), map[int]int{1: 1, 2: 2, 3: 3}, policy)
+			total, failed, err := r.ForEachBatch(func(context.Context, []MapEntry[int, int]) error { panic("batch failure") })
+			want := int64(3)
+			if fast {
+				want = 1
+			}
+			if total != want || failed != want || err == nil {
+				t.Fatalf("serial=%v fast=%v total=%d failed=%d err=%v", serial, fast, total, failed, err)
+			}
+		}
+	}
+}
 
 // ============================================================
 // 一、Map 基础构造测试
@@ -22,6 +524,97 @@ func TestNewMap_Basic(t *testing.T) {
 	}
 	if m.Len() != 0 {
 		t.Fatalf("Len should be 0, got %d", m.Len())
+	}
+}
+
+func TestForEachConcurrentFailFastRegression(t *testing.T) {
+	for _, batch := range []bool{false, true} {
+		for iter := 0; iter < 20; iter++ {
+			data := make(map[int]int, 16)
+			for i := 0; i < 16; i++ {
+				data[i] = i
+			}
+			gate := make(chan struct{})
+			var entered atomic.Int32
+			fail := func() error {
+				if entered.Add(1) == 16 {
+					close(gate)
+				}
+				<-gate
+				return errors.New("regression")
+			}
+			chain := NewMapChain(context.Background(), data).Worker(16).FailFast()
+			var err error
+			if batch {
+				err = chain.Chunk(1).ForEachBatch(func(context.Context, []MapEntry[int, int]) error { return fail() }).Error()
+			} else {
+				err = chain.ForEach(func(context.Context, int, int) error { return fail() }).Error()
+			}
+			if err == nil {
+				t.Fatal("missing callback failure")
+			}
+		}
+	}
+}
+
+func TestMapTimeoutAllCallbacksRegression(t *testing.T) {
+	for _, serial := range []bool{false, true} {
+		policy := sliceops.Par(2).TO(5 * time.Millisecond).Chunk(1)
+		if serial {
+			policy = sliceops.Seq().TO(5 * time.Millisecond).Chunk(1)
+		}
+		for _, method := range []string{"map", "each", "filter", "stream", "reduce", "mapBatch", "eachBatch"} {
+			t.Run(method+map[bool]string{true: "/serial", false: "/parallel"}[serial], func(t *testing.T) {
+				runner := NewMapRunner[int, int, int](context.Background(), map[int]int{1: 1, 2: 2}, policy)
+				var calls atomic.Int32
+				var mu sync.Mutex
+				var contexts []context.Context
+				check := func(ctx context.Context) error {
+					calls.Add(1)
+					mu.Lock()
+					contexts = append(contexts, ctx)
+					mu.Unlock()
+					if _, ok := ctx.Deadline(); !ok {
+						t.Error("callback received no deadline")
+						return errors.New("missing deadline")
+					}
+					<-ctx.Done()
+					if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+						t.Errorf("timeout error=%v", ctx.Err())
+					}
+					return ctx.Err()
+				}
+				fn := func(ctx context.Context, k, v int) (int, error) { return v, check(ctx) }
+				switch method {
+				case "map":
+					runner.Map(fn)
+				case "each":
+					runner.ForEach(func(ctx context.Context, _, _ int) error { return check(ctx) })
+				case "filter":
+					runner.Filter(func(ctx context.Context, _, _ int) bool { check(ctx); return true })
+				case "stream":
+					for range runner.Stream(fn, 1) {
+					}
+				case "reduce":
+					runner.Reduce(0, func(ctx context.Context, acc, _, _ int) (int, error) { check(ctx); return acc + 1, nil })
+				case "mapBatch":
+					runner.MapBatch(func(ctx context.Context, _ []MapEntry[int, int]) (int, error) { return 0, check(ctx) })
+				case "eachBatch":
+					runner.ForEachBatch(func(ctx context.Context, _ []MapEntry[int, int]) error { return check(ctx) })
+				}
+				if calls.Load() != 2 {
+					t.Fatalf("callback count=%d, want 2", calls.Load())
+				}
+				if contexts[0] == contexts[1] {
+					t.Error("callbacks shared a task timeout context")
+				}
+				for _, ctx := range contexts {
+					if ctx.Err() == nil {
+						t.Error("callback context not released")
+					}
+				}
+			})
+		}
 	}
 }
 
@@ -442,11 +1035,11 @@ func TestFind(t *testing.T) {
 		t.Fatal("should find v>2")
 	}
 	if !(k == "c" && v == 3) {
-		t.Logf("Find(fn) = (%s, %d, %v)", k, v, found)
+		t.Fatalf("Find(fn) = (%s, %d, %v), want (c, 3, true)", k, v, found)
 	}
-	_, _, found = m.Find(func(k string, v int) bool { return v > 100 })
-	if found {
-		t.Fatal("should not find v>100")
+	k, v, found = m.Find(func(k string, v int) bool { return v > 100 })
+	if found || k != "" || v != 0 {
+		t.Fatalf("Find(no match) = (%q, %d, %v), want zero values and false", k, v, found)
 	}
 }
 
@@ -804,6 +1397,157 @@ func TestMapChain_Map_Error(t *testing.T) {
 	}
 }
 
+func TestMapParallelRetainsCompletedValueOnFailure(t *testing.T) {
+	for _, failFast := range []bool{false, true} {
+		t.Run(fmt.Sprintf("failFast=%t", failFast), func(t *testing.T) {
+			bomb := errors.New("map failure")
+			started := make(chan struct{}, 2)
+			release := make(chan struct{})
+			chain := NewMapChain(context.Background(), map[string]int{"ok": 1, "fail": 2}).Worker(2)
+			if failFast {
+				chain.FailFast()
+			}
+			go func() {
+				<-started
+				<-started
+				close(release)
+			}()
+			result := chain.Map(func(_ context.Context, key string, value int) (int, error) {
+				started <- struct{}{}
+				<-release
+				if key == "fail" {
+					return 0, bomb
+				}
+				return value * 10, nil
+			})
+			if !errors.Is(result.Error(), bomb) {
+				t.Fatalf("error = %v, want %v", result.Error(), bomb)
+			}
+			if got := result.Data(); len(got) != 1 || got["ok"] != 10 {
+				t.Fatalf("data = %v, want map[ok:10]", got)
+			}
+		})
+	}
+}
+
+func TestMapSingleShardRunsCallbacksSequentially(t *testing.T) {
+	started := make(chan struct{}, 2)
+	release := make(chan struct{})
+	done := make(chan *MapResult[string, int], 1)
+	go func() {
+		done <- NewMapChain(context.Background(), map[string]int{"a": 1, "b": 2}).
+			Worker(2).Shards(1).Map(func(_ context.Context, _ string, value int) (int, error) {
+			started <- struct{}{}
+			<-release
+			return value, nil
+		})
+	}()
+	<-started
+	overlapped := false
+	select {
+	case <-started:
+		overlapped = true
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(release)
+	result := <-done
+	if overlapped {
+		t.Error("callbacks in one shard ran concurrently")
+	}
+	if result.Err() || result.Len() != 2 {
+		t.Fatalf("result = %v, error = %v", result.Data(), result.Error())
+	}
+}
+
+func TestForEachSingleShardRunsCallbacksSequentially(t *testing.T) {
+	started := make(chan struct{}, 2)
+	release := make(chan struct{})
+	done := make(chan *MapForEachResult, 1)
+	go func() {
+		done <- NewMapChain(context.Background(), map[string]int{"a": 1, "b": 2}).
+			Worker(2).Shards(1).ForEach(func(context.Context, string, int) error {
+			started <- struct{}{}
+			<-release
+			return nil
+		})
+	}()
+	<-started
+	overlapped := false
+	select {
+	case <-started:
+		overlapped = true
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(release)
+	result := <-done
+	if overlapped {
+		t.Error("callbacks in one shard ran concurrently")
+	}
+	if result.Err() || result.Total() != 2 {
+		t.Fatalf("total = %d, error = %v", result.Total(), result.Error())
+	}
+}
+
+func TestMapSeparateShardsRunConcurrently(t *testing.T) {
+	started := make(chan struct{}, 2)
+	release := make(chan struct{})
+	done := make(chan *MapResult[string, int], 1)
+	go func() {
+		done <- NewMapChain(context.Background(), map[string]int{"a": 1, "b": 2}).
+			Worker(2).Shards(2).Map(func(_ context.Context, _ string, value int) (int, error) {
+			started <- struct{}{}
+			<-release
+			return value, nil
+		})
+	}()
+	<-started
+	parallel := false
+	select {
+	case <-started:
+		parallel = true
+	case <-time.After(time.Second):
+	}
+	close(release)
+	result := <-done
+	if !parallel {
+		t.Error("separate shards did not run concurrently")
+	}
+	if result.Err() || result.Len() != 2 {
+		t.Fatalf("result = %v, error = %v", result.Data(), result.Error())
+	}
+}
+
+func TestMapUnevenShardsUseConfiguredParallelism(t *testing.T) {
+	started := make(chan struct{}, 5)
+	release := make(chan struct{})
+	done := make(chan *MapResult[int, int], 1)
+	go func() {
+		done <- NewMapChain(context.Background(), map[int]int{1: 1, 2: 2, 3: 3, 4: 4, 5: 5}).
+			Worker(4).Shards(4).Map(func(_ context.Context, _, v int) (int, error) {
+			started <- struct{}{}
+			<-release
+			return v, nil
+		})
+	}()
+	count := 0
+	timer := time.NewTimer(time.Second)
+wait:
+	for count < 4 {
+		select {
+		case <-started:
+			count++
+		case <-timer.C:
+			break wait
+		}
+	}
+	timer.Stop()
+	close(release)
+	r := <-done
+	if count != 4 || r.Err() || r.Len() != 5 {
+		t.Fatalf("started=%d, len=%d, err=%v", count, r.Len(), r.Error())
+	}
+}
+
 func TestMapChain_ForEach(t *testing.T) {
 	ctx := context.Background()
 	data := map[string]int{"a": 1, "b": 2, "c": 3, "d": 4}
@@ -986,6 +1730,416 @@ func TestMapParallel_AllConfigMethods(t *testing.T) {
 	}
 }
 
+func TestMapWorkerPreservesTimeout(t *testing.T) {
+	ctx := context.Background()
+	data := map[string]int{"a": 1}
+	chain := NewMapChain[string, int](ctx, data)
+	parallel := NewMapChain[string, int](ctx, data).Parallel()
+	for _, tc := range []struct {
+		name string
+		run  func() *MapResult[string, int]
+	}{
+		{"chain Worker", func() *MapResult[string, int] {
+			return chain.Timeout(time.Second).Worker(2).Map(func(ctx context.Context, _ string, n int) (int, error) {
+				_, ok := ctx.Deadline()
+				if !ok {
+					return 0, errors.New("missing deadline")
+				}
+				return n, nil
+			})
+		}},
+		{"chain DefaultWorker", func() *MapResult[string, int] {
+			return chain.Timeout(time.Second).DefaultWorker().Map(func(ctx context.Context, _ string, n int) (int, error) {
+				_, ok := ctx.Deadline()
+				if !ok {
+					return 0, errors.New("missing deadline")
+				}
+				return n, nil
+			})
+		}},
+		{"parallel Worker", func() *MapResult[string, int] {
+			return parallel.Timeout(time.Second).Worker(2).Map(func(ctx context.Context, _ string, n int) (int, error) {
+				_, ok := ctx.Deadline()
+				if !ok {
+					return 0, errors.New("missing deadline")
+				}
+				return n, nil
+			})
+		}},
+		{"parallel DefaultWorker", func() *MapResult[string, int] {
+			return parallel.Timeout(time.Second).DefaultWorker().Map(func(ctx context.Context, _ string, n int) (int, error) {
+				_, ok := ctx.Deadline()
+				if !ok {
+					return 0, errors.New("missing deadline")
+				}
+				return n, nil
+			})
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := tc.run().Error(); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestMapWorkerPreservesFailFast(t *testing.T) {
+	for _, parallel := range []bool{false, true} {
+		t.Run(fmt.Sprintf("parallel=%v", parallel), func(t *testing.T) {
+			var calls atomic.Int32
+			boom := errors.New("failure")
+			fn := func(context.Context, string, int) (int, error) { calls.Add(1); return 0, boom }
+			b := NewMapChain[string, int](context.Background(), map[string]int{"a": 1, "b": 2, "c": 3})
+			var result *MapResult[string, int]
+			if parallel {
+				result = b.Parallel().FailFast().Worker(1).Map(fn)
+			} else {
+				result = b.FailFast().Worker(1).Map(fn)
+			}
+			if !errors.Is(result.Error(), boom) || calls.Load() != 1 {
+				t.Fatalf("error = %v, calls = %d", result.Error(), calls.Load())
+			}
+		})
+	}
+}
+
+func TestMapWorkerPreservesExternalPool(t *testing.T) {
+	for _, parallel := range []bool{false, true} {
+		for _, useDefault := range []bool{false, true} {
+			t.Run(fmt.Sprintf("parallel=%v/default=%v", parallel, useDefault), func(t *testing.T) {
+				p := pool.NewPool[int](1)
+				p.Close()
+				var calls atomic.Int32
+				fn := func(context.Context, string, int) (int, error) { calls.Add(1); return 1, nil }
+				b := NewMapChain[string, int](context.Background(), map[string]int{"a": 1})
+				var result *MapResult[string, int]
+				if parallel {
+					bp := b.Parallel().Pool(p)
+					if useDefault {
+						bp.DefaultWorker()
+					} else {
+						bp.Worker(2)
+					}
+					result = bp.Map(fn)
+				} else {
+					b.Pool(p)
+					if useDefault {
+						b.DefaultWorker()
+					} else {
+						b.Worker(2)
+					}
+					result = b.Map(fn)
+				}
+				if result.Error() == nil || calls.Load() != 0 {
+					t.Fatalf("error = %v, calls = %d", result.Error(), calls.Load())
+				}
+			})
+		}
+	}
+}
+
+func TestMapUsesAndReusesExternalPool(t *testing.T) {
+	p := pool.NewPool[int](2)
+	defer p.Close()
+	for i := 0; i < 2; i++ {
+		r := NewMapChain[string, int](context.Background(), map[string]int{"a": 1, "b": 2}).Pool(p).Map(
+			func(_ context.Context, _ string, n int) (int, error) { return n * 2, nil })
+		if r.Error() != nil || len(r.Data()) != 2 || r.Data()["a"] != 2 || r.Data()["b"] != 4 {
+			t.Fatalf("iteration %d: error = %v, data = %v", i, r.Error(), r.Data())
+		}
+	}
+}
+
+func TestParallelMapFailFastKeepsStartedSuccessfulCallback(t *testing.T) {
+	boom := errors.New("fail fast")
+	started := make(chan struct{}, 2)
+	release := make(chan struct{})
+	done := make(chan *MapResult[int, int], 1)
+	go func() {
+		done <- NewMapChain[int, int](context.Background(), map[int]int{1: 1, 2: 2}).
+			Parallel().Worker(2).Shards(2).FailFast().Map(func(_ context.Context, key, value int) (int, error) {
+			started <- struct{}{}
+			<-release
+			if key == 1 {
+				return 0, boom
+			}
+			return value * 10, nil
+		})
+	}()
+	for i := 0; i < 2; i++ {
+		select {
+		case <-started:
+		case <-time.After(5 * time.Second):
+			close(release)
+			t.Fatal("callbacks did not start")
+		}
+	}
+	close(release)
+	select {
+	case result := <-done:
+		if !errors.Is(result.Error(), boom) || len(result.Data()) != 1 || result.Data()[2] != 20 {
+			t.Fatalf("error=%v data=%v", result.Error(), result.Data())
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Map did not finish")
+	}
+}
+
+func TestParallelMapPropagatesCallbackCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	data := map[int]int{1: 1, 2: 2, 3: 3, 4: 4}
+	var calls atomic.Int32
+	result := NewMapChain[int, int](ctx, data).Parallel().Worker(2).Shards(2).Map(
+		func(ctx context.Context, _, _ int) (int, error) {
+			calls.Add(1)
+			return 0, ctx.Err()
+		})
+	if !errors.Is(result.Error(), context.Canceled) || len(result.Data()) != 0 || calls.Load() != int32(len(data)) {
+		t.Fatalf("error=%v data=%v calls=%d", result.Error(), result.Data(), calls.Load())
+	}
+}
+
+func TestParallelMapReportsErrorAndRetainsSuccessfulKeys(t *testing.T) {
+	data := make(map[int]int, 64)
+	for i := 0; i < 64; i++ {
+		data[i] = i
+	}
+	boom := errors.New("map failure")
+	result := NewMapChain[int, int](context.Background(), data).Parallel().Worker(8).Shards(8).Map(
+		func(_ context.Context, key, value int) (int, error) {
+			if key == 17 {
+				return 0, boom
+			}
+			return value * 2, nil
+		})
+	if !errors.Is(result.Error(), boom) || len(result.Data()) != len(data)-1 {
+		t.Fatalf("error = %v, data size = %d", result.Error(), len(result.Data()))
+	}
+	for key := range data {
+		value, ok := result.Data()[key]
+		if key == 17 {
+			if ok {
+				t.Fatalf("failed key present: %v", result.Data())
+			}
+		} else if !ok || value != key*2 {
+			t.Fatalf("key %d: value=%d present=%v", key, value, ok)
+		}
+	}
+}
+
+func TestMapPoolReportsCallbackErrorsAndExcludesFailedKeys(t *testing.T) {
+	p := pool.NewPool[int](2)
+	defer p.Close()
+	boom := errors.New("failure")
+	r := NewMapChain[string, int](context.Background(), map[string]int{"ok": 1, "bad": 2}).Pool(p).Map(
+		func(_ context.Context, key string, n int) (int, error) {
+			if key == "bad" {
+				return 0, boom
+			}
+			return n * 10, nil
+		})
+	if !errors.Is(r.Error(), boom) || len(r.Data()) != 1 || r.Data()["ok"] != 10 {
+		t.Fatalf("error = %v, data = %v", r.Error(), r.Data())
+	}
+	if _, ok := r.Data()["bad"]; ok {
+		t.Fatalf("failed key included: %v", r.Data())
+	}
+}
+
+func TestMapPoolTimeoutReachesCallback(t *testing.T) {
+	p := pool.NewPool[int](1)
+	defer p.Close()
+	r := NewMapChain[string, int](context.Background(), map[string]int{"a": 1}).Pool(p).Timeout(time.Millisecond).Map(
+		func(ctx context.Context, _ string, _ int) (int, error) { <-ctx.Done(); return 0, ctx.Err() })
+	if !errors.Is(r.Error(), context.DeadlineExceeded) || len(r.Data()) != 0 {
+		t.Fatalf("error = %v, data = %v", r.Error(), r.Data())
+	}
+}
+
+func TestMapPoolFailFastReportsTriggeringError(t *testing.T) {
+	p := pool.NewPool[int](2)
+	defer p.Close()
+	boom := errors.New("trigger")
+	started := make(chan struct{})
+	r := NewMapChain[string, int](context.Background(), map[string]int{"waiting": 1, "fail": 2}).Pool(p).FailFast().Map(
+		func(ctx context.Context, key string, _ int) (int, error) {
+			if key == "waiting" {
+				close(started)
+				<-ctx.Done()
+				return 0, ctx.Err()
+			}
+			<-started
+			return 0, boom
+		})
+	if !errors.Is(r.Error(), boom) {
+		t.Fatalf("error = %v", r.Error())
+	}
+}
+
+func TestMapPoolAppliesToForEachAndStream(t *testing.T) {
+	for _, operation := range []string{"foreach", "stream"} {
+		t.Run(operation, func(t *testing.T) {
+			p := pool.NewPool[int](1)
+			p.Close()
+			var calls atomic.Int32
+			b := NewMapChain[string, int](context.Background(), map[string]int{"a": 1}).Pool(p)
+			if operation == "foreach" {
+				r := b.ForEach(func(context.Context, string, int) error { calls.Add(1); return nil })
+				if r.Error() == nil {
+					t.Fatal("closed pool error missing")
+				}
+			} else {
+				result, ok := <-b.Stream(func(context.Context, string, int) (int, error) { calls.Add(1); return 1, nil }, 1)
+				if !ok || result.Err == nil {
+					t.Fatalf("closed pool result = %#v, ok = %v", result, ok)
+				}
+			}
+			if calls.Load() != 0 {
+				t.Fatalf("calls = %d", calls.Load())
+			}
+		})
+	}
+}
+
+func TestMapPoolAppliesToBatchOperations(t *testing.T) {
+	for _, operation := range []string{"map", "foreach"} {
+		t.Run(operation, func(t *testing.T) {
+			p := pool.NewPool[int](1)
+			p.Close()
+			var calls atomic.Int32
+			b := NewMapChain[string, int](context.Background(), map[string]int{"a": 1, "b": 2}).Pool(p).Chunk(2)
+			if operation == "map" {
+				r := b.MapBatch(func(context.Context, []MapEntry[string, int]) (int, error) { calls.Add(1); return 1, nil })
+				if r.Error() == nil {
+					t.Fatal("closed pool error missing")
+				}
+			} else {
+				r := b.ForEachBatch(func(context.Context, []MapEntry[string, int]) error { calls.Add(1); return nil })
+				if r.Error() == nil {
+					t.Fatal("closed pool error missing")
+				}
+			}
+			if calls.Load() != 0 {
+				t.Fatalf("calls = %d", calls.Load())
+			}
+		})
+	}
+}
+
+func TestMapBatchUsesAndReusesPool(t *testing.T) {
+	p := pool.NewPool[int](2)
+	defer p.Close()
+	data := map[string]int{"a": 1, "b": 2, "c": 3}
+	b := NewMapChain[string, int](context.Background(), data).Pool(p).Chunk(2)
+	r := b.MapBatch(func(_ context.Context, entries []MapEntry[string, int]) (int, error) { return len(entries), nil })
+	if r.Error() != nil || r.Len() != 2 {
+		t.Fatalf("map error = %v, data = %v", r.Error(), r.Data())
+	}
+	sum := 0
+	for _, n := range r.Data() {
+		sum += n
+	}
+	if sum != 3 {
+		t.Fatalf("batch total = %d", sum)
+	}
+	fr := b.ForEachBatch(func(context.Context, []MapEntry[string, int]) error { return nil })
+	if fr.Error() != nil || fr.Total() != 3 || fr.FailCount() != 0 {
+		t.Fatalf("foreach total = %d, failures = %d, error = %v", fr.Total(), fr.FailCount(), fr.Error())
+	}
+}
+
+func TestMapPoolBatchFailureCountsElements(t *testing.T) {
+	p := pool.NewPool[int](2)
+	defer p.Close()
+	boom := errors.New("batch failure")
+	data := map[string]int{"a": 1, "b": 2, "c": 3}
+	b := NewMapChain[string, int](context.Background(), data).Pool(p).Chunk(2)
+	var failedSize atomic.Int32
+	r := b.ForEachBatch(func(_ context.Context, entries []MapEntry[string, int]) error {
+		if len(entries) == 2 {
+			failedSize.Store(int32(len(entries)))
+			return boom
+		}
+		return nil
+	})
+	if !errors.Is(r.Error(), boom) || r.Total() != 3 || r.FailCount() != int64(failedSize.Load()) || r.FailCount() != 2 {
+		t.Fatalf("total = %d, failures = %d, error = %v", r.Total(), r.FailCount(), r.Error())
+	}
+}
+
+func TestMapPoolBatchFailureRetainsSuccessfulBatch(t *testing.T) {
+	p := pool.NewPool[int](2)
+	defer p.Close()
+	boom := errors.New("batch failure")
+	b := NewMapChain[string, int](context.Background(), map[string]int{"a": 1, "b": 2, "c": 3}).Pool(p).Chunk(2)
+	r := b.MapBatch(func(_ context.Context, entries []MapEntry[string, int]) (int, error) {
+		if len(entries) == 2 {
+			return 0, boom
+		}
+		return 42, nil
+	})
+	if !errors.Is(r.Error(), boom) || r.Len() != 1 {
+		t.Fatalf("error = %v, data = %v", r.Error(), r.Data())
+	}
+	for _, value := range r.Data() {
+		if value != 42 {
+			t.Fatalf("data = %v", r.Data())
+		}
+	}
+}
+
+func TestMapPoolAutoClosesForFilterAndReduce(t *testing.T) {
+	for _, operation := range []string{"filter", "reduce"} {
+		t.Run(operation, func(t *testing.T) {
+			p := pool.NewPool[int](1)
+			defer p.Close()
+			b := NewMapChain[string, int](context.Background(), map[string]int{"a": 1}).PoolAuto(p)
+			if operation == "filter" {
+				_, err := b.Filter(func(context.Context, string, int) bool { return true })
+				if err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				_, err := b.Reduce(0, func(_ context.Context, acc int, _ string, n int) (int, error) { return acc + n, nil })
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := p.Submit(context.Background(), func(context.Context) (int, error) { return 0, nil }); err == nil {
+				t.Fatal("owned pool still accepts tasks")
+			}
+		})
+	}
+}
+
+func TestMapPoolAutoClosesForEmptyOperations(t *testing.T) {
+	for _, operation := range []string{"map", "foreach", "stream", "mapbatch", "foreachbatch"} {
+		t.Run(operation, func(t *testing.T) {
+			p := pool.NewPool[int](1)
+			defer p.Close()
+			b := NewMapChain[string, int](context.Background(), map[string]int{}).PoolAuto(p).Chunk(2)
+			switch operation {
+			case "map":
+				b.Map(func(context.Context, string, int) (int, error) { t.Error("unexpected call"); return 0, nil })
+			case "foreach":
+				b.ForEach(func(context.Context, string, int) error { t.Error("unexpected call"); return nil })
+			case "stream":
+				for range b.Stream(func(context.Context, string, int) (int, error) { t.Error("unexpected call"); return 0, nil }, 1) {
+				}
+			case "mapbatch":
+				b.MapBatch(func(context.Context, []MapEntry[string, int]) (int, error) { t.Error("unexpected call"); return 0, nil })
+			case "foreachbatch":
+				b.ForEachBatch(func(context.Context, []MapEntry[string, int]) error { t.Error("unexpected call"); return nil })
+			}
+			if err := p.Submit(context.Background(), func(context.Context) (int, error) { return 0, nil }); err == nil {
+				t.Fatal("owned pool still accepts tasks")
+			}
+		})
+	}
+}
+
 func TestMapParallel_Filter_Stream(t *testing.T) {
 	ctx := context.Background()
 	data := map[string]int{"a": 1, "b": 2, "c": 3, "d": 4}
@@ -1165,8 +2319,8 @@ func TestMapForEachResult(t *testing.T) {
 	if r.FailCount() != 3 {
 		t.Fatalf("FailCount = %d, want 3", r.FailCount())
 	}
-	if r.SuccessCount() != 97 {
-		t.Fatalf("SuccessCount = %d, want 97", r.SuccessCount())
+	if r.OkCount() != 97 {
+		t.Fatalf("OkCount = %d, want 97", r.OkCount())
 	}
 	if r.Err() {
 		t.Fatal("Err should be false when firstErr is nil")

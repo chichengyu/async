@@ -3,12 +3,15 @@ package pipeline
 import (
 	"context"
 	"errors"
+	"fmt"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/chichengyu/async/internal/core"
+	"github.com/chichengyu/async/internal/pool"
 	"github.com/chichengyu/async/test"
 )
 
@@ -18,6 +21,1570 @@ func genItems(n int) []int {
 		items[i] = i
 	}
 	return items
+}
+
+func TestBuilderPipeInheritsConfiguration(t *testing.T) {
+	for _, pipe := range []bool{false, true} {
+		t.Run(fmt.Sprintf("pipe=%v", pipe), func(t *testing.T) {
+			want := errors.New("failure")
+			var callbacks, later atomic.Int32
+			b := NewPipelineBuilder([]int{1}).Stage("first", 1).Stage("later", 1).
+				Timeout(time.Second).FailFast().OnResult(func(string, core.Result[int]) { callbacks.Add(1) })
+			fn := func(ctx context.Context, stage string, value int) (int, error) {
+				if _, ok := ctx.Deadline(); !ok {
+					t.Error("missing timeout deadline")
+				}
+				if stage == "later" {
+					later.Add(1)
+					return value, nil
+				}
+				return value + 1, want
+			}
+			var ch <-chan core.Result[int]
+			if pipe {
+				ch = b.Pipe().Run(fn).Receive()
+			} else {
+				ch = b.ExecutePipe(fn, 1)
+			}
+			var results []core.Result[int]
+			for r := range ch {
+				results = append(results, r)
+			}
+			if len(results) != 1 || !errors.Is(results[0].Err, want) || results[0].Value != 2 || callbacks.Load() != 1 || later.Load() != 0 {
+				t.Fatalf("results=%v callbacks=%d later=%d", results, callbacks.Load(), later.Load())
+			}
+		})
+	}
+}
+
+func TestModePipeInheritsConfiguration(t *testing.T) {
+	for _, mode := range []string{"serial", "parallel"} {
+		t.Run(mode, func(t *testing.T) {
+			var callbacks atomic.Int32
+			b := NewPipelineBuilder([]int{1}).Stage("final", 1).Timeout(time.Second).
+				OnResult(func(string, core.Result[int]) { callbacks.Add(1) })
+			var pipe *PipelinePipeBuilder[int]
+			if mode == "serial" {
+				pipe = b.Serial().Pipe()
+			} else {
+				pipe = b.Parallel().Pipe()
+			}
+			for range pipe.Run(func(ctx context.Context, _ string, value int) (int, error) {
+				if _, ok := ctx.Deadline(); !ok {
+					t.Error("missing timeout deadline")
+				}
+				return value, nil
+			}).Receive() {
+			}
+			if callbacks.Load() != 1 {
+				t.Fatalf("callbacks=%d", callbacks.Load())
+			}
+		})
+	}
+}
+
+func TestBuilderMetaConfiguredPreservesSkipOnError(t *testing.T) {
+	want := errors.New("failure")
+	b := NewPipelineBuilder([]int{1}).OnResult(func(string, core.Result[int]) {})
+	b.stages = []Stage[int]{{Name: "first", Concurrency: 1}, {Name: "skip", Concurrency: 1, SkipOnError: true}}
+	var skipped atomic.Int32
+	results := b.ExecuteWithMeta(func(_ context.Context, stage string, value int) (int, error) {
+		if stage == "skip" {
+			skipped.Add(1)
+			return 0, nil
+		}
+		return value + 10, want
+	})
+	if len(results) != 2 || results[1].Value != 11 || !errors.Is(results[1].Err, want) || skipped.Load() != 0 {
+		t.Fatalf("results = %v, skipped calls = %d", results, skipped.Load())
+	}
+}
+
+func TestBuilderOnResultReceivesTaskPanic(t *testing.T) {
+	var calls atomic.Int32
+	var observed core.Result[int]
+	results, err := NewPipelineBuilder([]int{1}).Stage("work", 1).
+		OnResult(func(_ string, result core.Result[int]) { observed = result; calls.Add(1) }).
+		Execute(func(context.Context, string, int) (int, error) { panic("task") })
+	if err != nil || len(results) != 1 || !results[0].IsPanic() || calls.Load() != 1 || !observed.IsPanic() {
+		t.Fatalf("results=%v err=%v calls=%d observed=%v", results, err, calls.Load(), observed)
+	}
+}
+
+func TestBuilderMetaHonorsFailFastAndOnResult(t *testing.T) {
+	want := errors.New("failure")
+	var calls, later atomic.Int32
+	results := NewPipelineBuilder([]int{1}).Stage("first", 1).Stage("later", 1).FailFast().
+		OnResult(func(_ string, _ core.Result[int]) { calls.Add(1) }).
+		ExecuteWithMeta(func(_ context.Context, stage string, value int) (int, error) {
+			if stage == "later" {
+				later.Add(1)
+				return value, nil
+			}
+			return value, want
+		})
+	if len(results) != 1 || !errors.Is(results[0].Err, want) || calls.Load() != 1 || later.Load() != 0 {
+		t.Fatalf("results = %v, callbacks = %d, later = %d", results, calls.Load(), later.Load())
+	}
+}
+
+func TestBuilderMetaHonorsTimeout(t *testing.T) {
+	results := NewPipelineBuilder([]int{1}).Stage("work", 1).Timeout(20 * time.Millisecond).
+		ExecuteWithMeta(func(ctx context.Context, _ string, v int) (int, error) {
+			select {
+			case <-ctx.Done():
+				return v, ctx.Err()
+			case <-time.After(time.Second):
+				return v, errors.New("timeout not propagated")
+			}
+		})
+	if len(results) != 1 || !errors.Is(results[0].Err, context.DeadlineExceeded) {
+		t.Fatalf("results = %v", results)
+	}
+}
+
+func TestParallelPipeFinalOnResult(t *testing.T) {
+	var calls atomic.Int32
+	b := NewPipelineBuilder([]int{1}).Stage("final", 1).OnResult(func(stage string, r core.Result[int]) {
+		if stage != "final" || r.Value != 2 {
+			t.Errorf("callback: stage=%s result=%v", stage, r)
+		}
+		calls.Add(1)
+		panic("callback")
+	}).Parallel()
+	var results []core.Result[int]
+	for r := range b.ExecutePipe(func(_ context.Context, _ string, v int) (int, error) { return v + 1, nil }, 1) {
+		results = append(results, r)
+	}
+	if calls.Load() != 1 || len(results) != 1 || !results[0].IsPanic() {
+		t.Fatalf("calls = %d, results = %v", calls.Load(), results)
+	}
+}
+
+func TestParallelPipeFailFastPreservesIntermediateFailure(t *testing.T) {
+	want := errors.New("first stage failure")
+	var later atomic.Int32
+	ch := NewPipelineBuilder([]int{1}).Stage("first", 1).Stage("last", 1).FailFast().Parallel().
+		ExecutePipe(func(_ context.Context, stage string, value int) (int, error) {
+			if stage == "last" {
+				later.Add(1)
+				return value, nil
+			}
+			return value, want
+		}, 1)
+	var results []core.Result[int]
+	for r := range ch {
+		results = append(results, r)
+	}
+	if len(results) != 1 || !errors.Is(results[0].Err, want) || later.Load() != 0 {
+		t.Fatalf("results = %v, later calls = %d", results, later.Load())
+	}
+}
+
+func TestParallelPipeIntermediatePanicIsolated(t *testing.T) {
+	var seen []int
+	var mu sync.Mutex
+	b := NewPipelineBuilder([]int{1, 2, 3}).Stage("first", 1).Stage("last", 1).
+		OnResult(func(stage string, r core.Result[int]) {
+			if stage == "first" {
+				mu.Lock()
+				seen = append(seen, r.Value)
+				mu.Unlock()
+			}
+		}).Parallel()
+	for range b.ExecutePipe(func(_ context.Context, stage string, value int) (int, error) {
+		if stage == "first" && value == 2 {
+			panic("bad item")
+		}
+		return value, nil
+	}, 3) {
+	}
+	if len(seen) != 3 || seen[0] != 1 || seen[1] != 0 || seen[2] != 3 {
+		t.Fatalf("first-stage callback values = %v, want [1 0 3]", seen)
+	}
+}
+
+func TestParallelMetaFailFastReportsOnlyExecutedItems(t *testing.T) {
+	want := errors.New("failure")
+	results := NewPipelineBuilder([]int{1, 2, 3}).Stage("first", 1).Stage("later", 1).FailFast().Parallel().
+		ExecuteWithMeta(func(_ context.Context, stage string, value int) (int, error) {
+			if stage == "later" {
+				t.Error("later stage called")
+			}
+			if value == 2 {
+				return value, want
+			}
+			return value, nil
+		})
+	if len(results) != 2 || results[0].Value != 1 || results[0].Err != nil || !errors.Is(results[1].Err, want) {
+		t.Fatalf("results = %v; want only two executed first-stage items", results)
+	}
+}
+
+func TestParallelMetaPanicIsolatedPerItem(t *testing.T) {
+	for _, callbackPanic := range []bool{false, true} {
+		t.Run(fmt.Sprintf("callback=%v", callbackPanic), func(t *testing.T) {
+			b := NewPipelineBuilder([]int{1, 2, 3}).Stage("work", 1).Parallel()
+			if callbackPanic {
+				b.OnResult(func(_ string, r core.Result[int]) {
+					if r.Value == 2 {
+						panic("callback")
+					}
+				})
+			}
+			results := b.ExecuteWithMeta(func(_ context.Context, _ string, value int) (int, error) {
+				if !callbackPanic && value == 2 {
+					panic("task")
+				}
+				return value, nil
+			})
+			if len(results) != 3 || results[0].Value != 1 || results[0].Err != nil || !results[1].IsPanic() || results[2].Value != 3 || results[2].Err != nil {
+				t.Fatalf("results = %v", results)
+			}
+		})
+	}
+}
+
+func TestSerialFailFastStopsFollowingStages(t *testing.T) {
+	want := errors.New("first stage failure")
+	for _, mode := range []string{"run", "meta"} {
+		t.Run(mode, func(t *testing.T) {
+			var later atomic.Int32
+			b := NewPipelineBuilder([]int{1, 2}).Stage("first", 1).Stage("later", 1).FailFast().Serial()
+			fn := func(_ context.Context, stage string, value int) (int, error) {
+				if stage == "later" {
+					later.Add(1)
+					return value, nil
+				}
+				return value, want
+			}
+			if mode == "run" {
+				results, _ := b.Run(fn)
+				if len(results) != 2 || !errors.Is(results[0].Err, want) {
+					t.Errorf("results = %v", results)
+				}
+			} else {
+				results := b.ExecuteWithMeta(fn)
+				if len(results) != 1 || !errors.Is(results[0].Err, want) {
+					t.Errorf("metadata = %v", results)
+				}
+			}
+			if got := later.Load(); got != 0 {
+				t.Errorf("later stage calls = %d", got)
+			}
+		})
+	}
+}
+
+func TestSerialChainContainsPanics(t *testing.T) {
+	for _, callbackPanic := range []bool{false, true} {
+		t.Run(fmt.Sprintf("callback=%v", callbackPanic), func(t *testing.T) {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Errorf("panic escaped: %v", r)
+				}
+			}()
+			b := NewPipelineBuilder([]int{1, 2}).Stage("work", 1).Serial()
+			if callbackPanic {
+				b.OnResult(func(_ string, r core.Result[int]) {
+					if r.Value == 1 {
+						panic("callback")
+					}
+				})
+			}
+			results, err := b.Run(func(_ context.Context, _ string, value int) (int, error) {
+				if !callbackPanic && value == 1 {
+					panic("task")
+				}
+				return value, nil
+			})
+			if err != nil || len(results) != 2 || !results[0].IsPanic() || results[1].Value != 2 || results[1].Err != nil {
+				t.Fatalf("results = %v, err = %v", results, err)
+			}
+		})
+	}
+}
+
+func TestSerialChainPipeAndMetaContainPanics(t *testing.T) {
+	for _, mode := range []string{"pipe", "meta"} {
+		for _, callbackPanic := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/callback=%v", mode, callbackPanic), func(t *testing.T) {
+				b := NewPipelineBuilder([]int{1, 2}).Stage("work", 1).Serial()
+				if callbackPanic {
+					b.OnResult(func(_ string, r core.Result[int]) {
+						if r.Value == 1 {
+							panic("callback")
+						}
+					})
+				}
+				fn := func(_ context.Context, _ string, value int) (int, error) {
+					if !callbackPanic && value == 1 {
+						panic("task")
+					}
+					return value, nil
+				}
+				var results []core.Result[int]
+				if mode == "pipe" {
+					for r := range b.ExecutePipe(fn, 2) {
+						results = append(results, r)
+					}
+				} else {
+					for _, r := range b.ExecuteWithMeta(fn) {
+						results = append(results, r.Result)
+					}
+				}
+				if len(results) != 2 || !results[0].IsPanic() || results[1].Value != 2 || results[1].Err != nil {
+					t.Fatalf("results = %v", results)
+				}
+			})
+		}
+	}
+}
+
+func TestChainPipeCancelUnblocksOutput(t *testing.T) {
+	for _, mode := range []string{"serial", "parallel"} {
+		t.Run(mode, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			b := NewPipelineBuilder(genItems(100)).Context(ctx).Stage("work", 2)
+			fn := func(_ context.Context, _ string, value int) (int, error) { return value, nil }
+			var ch <-chan core.Result[int]
+			if mode == "serial" {
+				ch = b.Serial().ExecutePipe(fn, 1)
+			} else {
+				ch = b.Parallel().ExecutePipe(fn, 1)
+			}
+			deadline := time.After(5 * time.Second)
+			for len(ch) == 0 {
+				select {
+				case <-deadline:
+					t.Fatal("output was not filled")
+				default:
+					runtime.Gosched()
+				}
+			}
+			cancel()
+			count := 0
+			for {
+				select {
+				case _, ok := <-ch:
+					if !ok {
+						if count > 4 {
+							t.Fatalf("received %d results after cancellation", count)
+						}
+						return
+					}
+					count++
+				case <-time.After(5 * time.Second):
+					t.Fatal("output did not close after cancellation")
+				}
+			}
+		})
+	}
+}
+
+func TestExecutePipeCancelUnblocksOutput(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	items := genItems(100)
+	var completed atomic.Int32
+	allDone := make(chan struct{})
+	ch := ExecutePipe(ctx, []Stage[int]{{Name: "work", Concurrency: 4}}, items, func(_ context.Context, _ string, value int) (int, error) {
+		if completed.Add(1) == int32(len(items)) {
+			close(allDone)
+		}
+		return value, nil
+	}, 1)
+	select {
+	case <-allDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("tasks did not finish")
+	}
+	deadline := time.After(5 * time.Second)
+	for len(ch) == 0 {
+		select {
+		case <-deadline:
+			t.Fatal("output was not filled")
+		default:
+			runtime.Gosched()
+		}
+	}
+	cancel()
+	count := 0
+	for {
+		select {
+		case _, ok := <-ch:
+			if !ok {
+				if count > 2 {
+					t.Fatalf("received %d results after cancellation, want at most two", count)
+				}
+				return
+			}
+			count++
+		case <-time.After(5 * time.Second):
+			t.Fatal("output did not close after cancellation")
+		}
+	}
+}
+
+func TestExecutePipeIntermediatePanicIsIsolated(t *testing.T) {
+	stages := []Stage[int]{{Name: "first", Concurrency: 1}, {Name: "last", Concurrency: 1, SkipOnError: true}}
+	var values []int
+	panics := 0
+	for r := range ExecutePipe(context.Background(), stages, []int{1, 2, 3}, func(_ context.Context, stage string, value int) (int, error) {
+		if stage == "first" && value == 2 {
+			panic("bad item")
+		}
+		return value, nil
+	}, 3) {
+		if r.IsPanic() {
+			panics++
+		} else if r.Err == nil {
+			values = append(values, r.Value)
+		}
+	}
+	if panics != 1 || len(values) != 2 || values[0] != 1 || values[1] != 3 {
+		t.Fatalf("panic count = %d, successful values = %v", panics, values)
+	}
+}
+
+func TestExecutePipeSkipPreservesFailedValue(t *testing.T) {
+	want := errors.New("failure")
+	stages := []Stage[int]{{Name: "first", Concurrency: 1}, {Name: "last", Concurrency: 1, SkipOnError: true}}
+	var results []core.Result[int]
+	for r := range ExecutePipe(context.Background(), stages, []int{1}, func(_ context.Context, stage string, value int) (int, error) {
+		if stage == "last" {
+			t.Error("skipped stage was called")
+		}
+		return value + 10, want
+	}, 1) {
+		results = append(results, r)
+	}
+	if len(results) != 1 || results[0].Value != 11 || !errors.Is(results[0].Err, want) {
+		t.Fatalf("results = %v, want value 11 and original failure", results)
+	}
+}
+
+func TestExecutePanicDoesNotSkipOtherItems(t *testing.T) {
+	stages := []Stage[int]{{Name: "work", Concurrency: 1}}
+	fn := func(_ context.Context, _ string, value int) (int, error) {
+		if value == 2 {
+			panic("bad item")
+		}
+		return value * 10, nil
+	}
+	for _, execute := range []struct {
+		name string
+		run  func() []core.Result[int]
+	}{
+		{"execute", func() []core.Result[int] { r, _ := Execute(context.Background(), stages, []int{1, 2, 3}, fn); return r }},
+		{"meta", func() []core.Result[int] {
+			meta := ExecuteWithMeta(context.Background(), stages, []int{1, 2, 3}, fn)
+			r := make([]core.Result[int], len(meta))
+			for i := range meta {
+				r[i] = meta[i].Result
+			}
+			return r
+		}},
+	} {
+		t.Run(execute.name, func(t *testing.T) {
+			r := execute.run()
+			if len(r) != 3 || r[0].Value != 10 || !r[1].IsPanic() || r[2].Err != nil || r[2].Value != 30 {
+				t.Fatalf("results = %v; want independent result for each item", r)
+			}
+		})
+	}
+}
+
+func TestExecuteWithMetaSkipUsesPreviousStageResult(t *testing.T) {
+	stages := []Stage[int]{{Name: "fail", Concurrency: 1}, {Name: "recover", Concurrency: 1}, {Name: "final", Concurrency: 1, SkipOnError: true}}
+	fn := func(_ context.Context, stage string, value int) (int, error) {
+		switch stage {
+		case "fail":
+			return value, errors.New("initial failure")
+		case "recover":
+			return value + 1, nil
+		default:
+			return value + 10, nil
+		}
+	}
+	regular, err := Execute(context.Background(), stages, []int{1}, fn)
+	if err != nil || len(regular) != 1 || regular[0].Err != nil || regular[0].Value != 12 {
+		t.Fatalf("regular results = %v, error = %v", regular, err)
+	}
+	meta := ExecuteWithMeta(context.Background(), stages, []int{1}, fn)
+	if len(meta) != 3 || meta[2].Err != nil || meta[2].Value != 12 {
+		t.Fatalf("metadata results = %v, want recovered final value 12", meta)
+	}
+}
+
+func TestExecuteWithMetaSkipPreservesFailedValue(t *testing.T) {
+	want := errors.New("failure")
+	stages := []Stage[int]{{Name: "fail", Concurrency: 1}, {Name: "skip", Concurrency: 1, SkipOnError: true}}
+	meta := ExecuteWithMeta(context.Background(), stages, []int{1}, func(_ context.Context, stage string, value int) (int, error) {
+		if stage == "skip" {
+			t.Error("skipped stage was called")
+		}
+		return value + 10, want
+	})
+	if len(meta) != 2 || meta[1].Value != 11 || !errors.Is(meta[1].Err, want) {
+		t.Fatalf("metadata results = %v, want original failure and value 11", meta)
+	}
+}
+
+func TestPipelineSkipPreservesValueAndAllowsRecovery(t *testing.T) {
+	want := errors.New("failure")
+	for _, shards := range []int{1, 2} {
+		t.Run(fmt.Sprintf("shards=%d", shards), func(t *testing.T) {
+			stages := []Stage[int]{{Name: "fail", Concurrency: 1}, {Name: "skip", Concurrency: 1, SkipOnError: true}, {Name: "recover", Concurrency: 1}, {Name: "final", Concurrency: 1, SkipOnError: true}}
+			fn := func(_ context.Context, stage string, value int) (int, error) {
+				switch stage {
+				case "fail":
+					return value + 10, want
+				case "skip":
+					t.Error("skipped stage called")
+					return 0, nil
+				default:
+					return value + 1, nil
+				}
+			}
+			p := NewPipeline(stages).Shard(shards)
+			results, err := p.Execute(context.Background(), []int{1}, fn)
+			if err != nil || len(results) != 1 || results[0].Value != 13 || results[0].Err != nil {
+				t.Errorf("results=%v err=%v", results, err)
+			}
+			meta := p.ExecuteWithMeta(context.Background(), []int{1}, fn)
+			if len(meta) != 4 {
+				t.Fatalf("meta=%v", meta)
+			}
+			if meta[1].Value != 11 || !errors.Is(meta[1].Err, want) || meta[3].Value != 13 || meta[3].Err != nil {
+				t.Errorf("meta=%v", meta)
+			}
+		})
+	}
+}
+
+func TestPipelineNativePanicDoesNotSkipOtherItems(t *testing.T) {
+	p := NewPipeline([]Stage[int]{{Name: "work", Concurrency: 1}})
+	fn := func(_ context.Context, _ string, value int) (int, error) {
+		if value == 2 {
+			panic("bad item")
+		}
+		return value * 10, nil
+	}
+	results, err := p.Execute(context.Background(), []int{1, 2, 3}, fn)
+	if err != nil || len(results) != 3 || results[0].Value != 10 || !results[1].IsPanic() || results[2].Value != 30 || results[2].Err != nil {
+		t.Errorf("results=%v err=%v", results, err)
+	}
+	meta := p.ExecuteWithMeta(context.Background(), []int{1, 2, 3}, fn)
+	if len(meta) != 3 || meta[0].Value != 10 || !meta[1].IsPanic() || meta[2].Value != 30 || meta[2].Err != nil {
+		t.Errorf("metadata=%v", meta)
+	}
+}
+
+func TestStreamFailFastPreservesFailureAcrossStages(t *testing.T) {
+	want := errors.New("stage failed")
+	results, err := NewPipelineBuilder([]int{1}).Stage("first", 1).Stage("second", 1).FailFast().Stream().
+		Run(func(_ context.Context, stage string, value int) (int, error) {
+			if stage == "first" {
+				return value, want
+			}
+			t.Fatal("second stage must not run after fail-fast")
+			return value, nil
+		})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context cancellation", err)
+	}
+	if len(results) != 1 || !results[0].Occupied || !errors.Is(results[0].Err, want) {
+		t.Fatalf("results = %+v, want original stage failure", results)
+	}
+}
+
+func TestParallelPoolAutoUsesAndClosesSuppliedPool(t *testing.T) {
+	p := pool.NewPool[int](1)
+	defer p.Close()
+	results, err := NewPipelineBuilder([]int{1, 2}).Stage("work", 1).Parallel().PoolAuto(p).
+		Run(func(_ context.Context, _ string, n int) (int, error) { return n * 2, nil })
+	if err != nil || len(results) != 2 || results[0].Value != 2 || results[1].Value != 4 {
+		t.Fatalf("results = %v, err = %v", results, err)
+	}
+	if p.TotalCount() != 2 {
+		t.Fatalf("supplied pool handled %d tasks, want 2", p.TotalCount())
+	}
+	if err := p.Submit(context.Background(), func(context.Context) (int, error) { return 0, nil }); !errors.Is(err, core.ErrPoolClosed) {
+		t.Fatalf("submit after PoolAuto = %v, want ErrPoolClosed", err)
+	}
+}
+
+func TestParallelPoolRunsMultipleStages(t *testing.T) {
+	for _, auto := range []bool{false, true} {
+		t.Run(fmt.Sprint(auto), func(t *testing.T) {
+			p := pool.NewPool[int](2)
+			defer p.Close()
+			b := NewPipelineBuilder([]int{1, 2}).Stage("double", 2).Stage("add", 2).Parallel()
+			if auto {
+				b.PoolAuto(p)
+			} else {
+				b.Pool(p)
+			}
+			results, err := b.Run(func(_ context.Context, stage string, n int) (int, error) {
+				if stage == "double" {
+					return n * 2, nil
+				}
+				return n + 1, nil
+			})
+			if err != nil || len(results) != 2 || results[0].Err != nil || results[0].Value != 3 || results[1].Err != nil || results[1].Value != 5 {
+				t.Fatalf("results = %v, err = %v", results, err)
+			}
+		})
+	}
+}
+
+func TestParallelPoolRemainsUsableAfterRun(t *testing.T) {
+	p := pool.NewPool[int](1)
+	defer p.Close()
+	_, err := NewPipelineBuilder([]int{1}).Stage("work", 1).Parallel().Pool(p).
+		Run(func(_ context.Context, _ string, n int) (int, error) { return n, nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Submit(context.Background(), func(context.Context) (int, error) { return 42, nil }); err != nil {
+		t.Fatal(err)
+	}
+	results := p.Wait()
+	if len(results) != 1 || results[0].Err != nil || results[0].Value != 42 {
+		t.Fatalf("results = %v", results)
+	}
+}
+
+func TestParallelPoolReportsClosedPool(t *testing.T) {
+	p := pool.NewPool[int](1)
+	p.Close()
+	results, err := NewPipelineBuilder([]int{1, 2}).Stage("work", 1).Parallel().Pool(p).
+		Run(func(_ context.Context, _ string, n int) (int, error) { return n, nil })
+	if err != nil || len(results) != 2 {
+		t.Fatalf("results = %v, err = %v", results, err)
+	}
+	for _, result := range results {
+		if !errors.Is(result.Err, core.ErrPoolClosed) {
+			t.Fatalf("result = %v, want ErrPoolClosed", result)
+		}
+	}
+}
+
+func TestParallelPoolFailFastCancelsRunningTask(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	started := make(chan struct{})
+	done := make(chan []core.Result[int], 1)
+	go func() {
+		results, _ := NewPipelineBuilder([]int{1, 2}).Context(ctx).Stage("work", 2).FailFast().Parallel().DefaultPool().
+			Run(func(ctx context.Context, _ string, n int) (int, error) {
+				if n == 1 {
+					close(started)
+					<-ctx.Done()
+					return 0, ctx.Err()
+				}
+				<-started
+				return 0, errors.New("failure")
+			})
+		done <- results
+	}()
+	select {
+	case results := <-done:
+		if len(results) != 2 || !errors.Is(results[0].Err, context.Canceled) || results[1].Err == nil {
+			t.Fatalf("results = %v", results)
+		}
+	case <-time.After(time.Second):
+		cancel()
+		<-done
+		t.Fatal("failure did not cancel the running task")
+	}
+}
+
+func TestParallelPoolFailFastPreservesFailureAcrossStages(t *testing.T) {
+	sentinel := errors.New("failure")
+	var next atomic.Int32
+	results, err := NewPipelineBuilder([]int{1}).Stage("first", 1).Stage("second", 1).FailFast().Parallel().DefaultPool().
+		Run(func(_ context.Context, stage string, n int) (int, error) {
+			if stage == "first" {
+				return n, sentinel
+			}
+			next.Add(1)
+			return n, nil
+		})
+	if err != nil || len(results) != 1 || !errors.Is(results[0].Err, sentinel) || next.Load() != 0 {
+		t.Fatalf("results = %v, err = %v, next calls = %d", results, err, next.Load())
+	}
+}
+
+func TestParallelDefaultPoolHonorsMaxResults(t *testing.T) {
+	results, err := NewPipelineBuilder([]int{1, 2, 3}).Stage("work", 1).MaxResults(1).Parallel().DefaultPool().
+		Run(func(_ context.Context, _ string, n int) (int, error) { return n, nil })
+	if err != nil || len(results) != 1 {
+		t.Fatalf("results = %v, err = %v, want one stored result", results, err)
+	}
+}
+
+func TestParallelPoolCallbackPanicBecomesResult(t *testing.T) {
+	var later atomic.Int32
+	results, err := NewPipelineBuilder([]int{1}).Stage("first", 1).Stage("later", 1).
+		FailFast().OnResult(func(string, core.Result[int]) { panic("callback") }).Parallel().DefaultPool().
+		Execute(func(_ context.Context, stage string, value int) (int, error) {
+			if stage == "later" {
+				later.Add(1)
+			}
+			return value, nil
+		})
+	if err != nil || len(results) != 1 || !results[0].IsPanic() || later.Load() != 0 {
+		t.Fatalf("results=%v err=%v later=%d", results, err, later.Load())
+	}
+}
+
+func TestParallelPoolCallbackPanicCancelsRunningTask(t *testing.T) {
+	started := make(chan struct{})
+	var canceled atomic.Bool
+	results, err := NewPipelineBuilder([]int{1, 2}).Stage("work", 2).FailFast().
+		OnResult(func(_ string, r core.Result[int]) {
+			if r.Value == 2 {
+				panic("callback")
+			}
+		}).
+		Parallel().DefaultPool().Execute(func(ctx context.Context, _ string, value int) (int, error) {
+		if value == 1 {
+			close(started)
+			select {
+			case <-ctx.Done():
+				canceled.Store(true)
+			case <-time.After(300 * time.Millisecond):
+			}
+		} else {
+			<-started
+		}
+		return value, nil
+	})
+	if err != nil || len(results) != 2 || !results[1].IsPanic() || !canceled.Load() {
+		t.Fatalf("results=%v err=%v canceled=%v", results, err, canceled.Load())
+	}
+}
+
+func TestParallelPoolFailureCancelsBeforeCallbackReturns(t *testing.T) {
+	started := make(chan struct{})
+	canceled := make(chan struct{})
+	var observed atomic.Bool
+	_, err := NewPipelineBuilder([]int{1, 2}).Stage("work", 2).FailFast().
+		OnResult(func(_ string, r core.Result[int]) {
+			if r.Value == 2 {
+				select {
+				case <-canceled:
+					observed.Store(true)
+				case <-time.After(300 * time.Millisecond):
+				}
+			}
+		}).Parallel().DefaultPool().Execute(func(ctx context.Context, _ string, value int) (int, error) {
+		if value == 1 {
+			close(started)
+			select {
+			case <-ctx.Done():
+				close(canceled)
+			case <-time.After(time.Second):
+			}
+			return value, nil
+		}
+		<-started
+		return value, errors.New("failure")
+	})
+	if err != nil || !observed.Load() {
+		t.Fatalf("err=%v callback saw cancellation=%v", err, observed.Load())
+	}
+}
+
+func TestParallelPoolFailFastCallbackOnceWithResultLimit(t *testing.T) {
+	var calls atomic.Int32
+	_, err := NewPipelineBuilder([]int{1, 2, 3}).Stage("work", 2).FailFast().MaxResults(1).
+		OnResult(func(string, core.Result[int]) { calls.Add(1) }).Parallel().DefaultPool().
+		Execute(func(_ context.Context, _ string, v int) (int, error) { return v, nil })
+	if err != nil || calls.Load() != 3 {
+		t.Fatalf("err=%v callbacks=%d", err, calls.Load())
+	}
+}
+
+func TestParallelPoolCallbacksWithOutOfOrderOverflow(t *testing.T) {
+	p := pool.NewPool[int](3).WithMaxResults(1).WithRingBuffer(8, core.OverflowBlock)
+	defer p.Close()
+	firstStarted := make(chan struct{})
+	thirdDone := make(chan struct{})
+	var counts [4]atomic.Int32
+	results, err := NewPipelineBuilder([]int{1, 2, 3}).Stage("work", 3).FailFast().
+		OnResult(func(_ string, r core.Result[int]) {
+			if r.Value >= 1 && r.Value <= 3 {
+				counts[r.Value].Add(1)
+			}
+		}).
+		Parallel().Pool(p).Execute(func(_ context.Context, _ string, value int) (int, error) {
+		switch value {
+		case 1:
+			close(firstStarted)
+		case 2:
+			<-thirdDone
+		case 3:
+			<-firstStarted
+			close(thirdDone)
+		}
+		return value, nil
+	})
+	if err != nil || len(results) != 3 {
+		t.Fatalf("results=%v err=%v", results, err)
+	}
+	for i := 1; i <= 3; i++ {
+		if counts[i].Load() != 1 {
+			t.Errorf("value=%d callbacks=%d results=%v", i, counts[i].Load(), results)
+		}
+	}
+}
+
+func TestParallelPoolCallbacksWithRejectedOverflow(t *testing.T) {
+	p := pool.NewPool[int](1).WithMaxPending(2).WithOverflow(core.OverflowDrop).WithMaxResults(1).WithRingBuffer(8, core.OverflowBlock)
+	defer p.Close()
+	started, release := make(chan struct{}), make(chan struct{})
+	var successes, failures atomic.Int32
+	var results []core.Result[int]
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		results, _ = NewPipelineBuilder([]int{1, 2, 3}).Stage("work", 1).FailFast().
+			OnResult(func(_ string, r core.Result[int]) {
+				if errors.Is(r.Err, core.ErrQueueOverflow) {
+					failures.Add(1)
+				} else if r.Err == nil {
+					successes.Add(1)
+				}
+			}).
+			Parallel().Pool(p).Execute(func(_ context.Context, _ string, value int) (int, error) {
+			if value == 1 {
+				close(started)
+				<-release
+			}
+			return value, nil
+		})
+	}()
+	select {
+	case <-started:
+		deadline := time.After(2 * time.Second)
+		for p.TotalCount() < 3 {
+			select {
+			case <-deadline:
+				close(release)
+				<-done
+				t.Fatal("submissions did not finish")
+			default:
+				runtime.Gosched()
+			}
+		}
+		close(release)
+		<-done
+	case <-done:
+		// Fail-fast may cancel the first task before it starts.
+	case <-time.After(2 * time.Second):
+		close(release)
+		t.Fatal("pipeline did not start or finish")
+	}
+	var resultOk, resultFailure int32
+	for _, r := range results {
+		if errors.Is(r.Err, core.ErrQueueOverflow) {
+			resultFailure++
+		} else if r.Err == nil {
+			resultOk++
+		}
+	}
+	if successes.Load() != resultOk || failures.Load() != resultFailure {
+		t.Fatalf("success callbacks=%d failure callbacks=%d results=%v", successes.Load(), failures.Load(), results)
+	}
+}
+
+func TestParallelPoolRejectedCallbackPanicBecomesResult(t *testing.T) {
+	p := pool.NewPool[int](1)
+	p.Close()
+	var calls atomic.Int32
+	results, err := NewPipelineBuilder([]int{1}).Stage("work", 1).FailFast().
+		OnResult(func(string, core.Result[int]) {
+			calls.Add(1)
+			panic("callback")
+		}).Parallel().Pool(p).Execute(func(_ context.Context, _ string, value int) (int, error) {
+		return value, nil
+	})
+	if err != nil || calls.Load() != 1 || len(results) != 1 || !results[0].IsPanic() {
+		t.Fatalf("results=%v err=%v calls=%d", results, err, calls.Load())
+	}
+}
+
+func TestParallelPoolOverflowCallbackPanicInRingBuffer(t *testing.T) {
+	p := pool.NewPool[int](1).WithMaxPending(1).WithOverflow(core.OverflowDrop).WithMaxResults(1).WithRingBuffer(16, core.OverflowBlock)
+	defer p.Close()
+	started, release := make(chan struct{}), make(chan struct{})
+	if err := p.Submit(context.Background(), func(context.Context) (int, error) {
+		close(started)
+		<-release
+		return 0, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	if err := p.Submit(context.Background(), func(context.Context) (int, error) { return 0, nil }); err != nil {
+		close(release)
+		t.Fatal(err)
+	}
+	results, err := NewPipelineBuilder([]int{1}).Stage("work", 1).FailFast().
+		OnResult(func(_ string, r core.Result[int]) {
+			if errors.Is(r.Err, core.ErrQueueOverflow) {
+				close(release)
+				panic("overflow callback")
+			}
+		}).Parallel().Pool(p).Execute(func(_ context.Context, _ string, value int) (int, error) { return value, nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, result := range results {
+		if result.IsPanic() {
+			return
+		}
+	}
+	t.Fatalf("callback panic missing from results: %v", results)
+}
+
+func TestParallelModesCallbackPanicBecomesResult(t *testing.T) {
+	for _, mode := range []string{"sharded", "autoscale"} {
+		t.Run(mode, func(t *testing.T) {
+			var later atomic.Int32
+			chain := NewPipelineBuilder([]int{1}).Stage("first", 1).Stage("later", 1).
+				FailFast().OnResult(func(string, core.Result[int]) { panic("callback") }).Parallel()
+			if mode == "sharded" {
+				chain.Shard(2)
+			} else {
+				chain.DefaultAutoScale()
+			}
+			results, err := chain.Execute(func(_ context.Context, stage string, value int) (int, error) {
+				if stage == "later" {
+					later.Add(1)
+				}
+				return value, nil
+			})
+			if err != nil || len(results) != 1 || !results[0].IsPanic() || later.Load() != 0 {
+				t.Fatalf("results=%v err=%v later=%d", results, err, later.Load())
+			}
+		})
+	}
+}
+
+func TestParallelNativeFailFastRetainsFirstStageFailure(t *testing.T) {
+	sentinel := errors.New("first stage failed")
+	var later atomic.Int32
+	results, err := NewPipelineBuilder([]int{1}).Stage("first", 1).Stage("later", 1).
+		FailFast().Parallel().Execute(func(_ context.Context, stage string, value int) (int, error) {
+		if stage == "first" {
+			return value, sentinel
+		}
+		later.Add(1)
+		return value, nil
+	})
+	if err != nil || len(results) != 1 || !errors.Is(results[0].Err, sentinel) || later.Load() != 0 {
+		t.Fatalf("results=%v err=%v later=%d", results, err, later.Load())
+	}
+}
+
+func TestExecuteStreamReportsCancellationAfterInputQueued(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	started := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		_, err := ExecuteStream(ctx, []Stage[int]{{Name: "stage", Concurrency: 1}}, []int{1},
+			func(ctx context.Context, _ string, value int) (int, error) {
+				close(started)
+				<-ctx.Done()
+				return value, ctx.Err()
+			})
+		done <- err
+	}()
+	<-started
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("ExecuteStream error = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("ExecuteStream did not return after cancellation")
+	}
+}
+
+func TestExecuteStreamPreservesConcurrentCancellationErrors(t *testing.T) {
+	const count = 32
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	started := make(chan int, count)
+	type outcome struct {
+		results []core.Result[int]
+		err     error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		results, err := ExecuteStream(ctx, []Stage[int]{
+			{Name: "first", Concurrency: count},
+			{Name: "second", Concurrency: count},
+		}, genItems(count), func(ctx context.Context, stage string, value int) (int, error) {
+			if stage == "second" {
+				t.Error("canceled item reached second stage")
+			}
+			started <- value
+			<-ctx.Done()
+			return value, ctx.Err()
+		})
+		done <- outcome{results, err}
+	}()
+	for i := 0; i < count; i++ {
+		select {
+		case <-started:
+		case <-time.After(5 * time.Second):
+			t.Fatal("tasks did not start")
+		}
+	}
+	cancel()
+	select {
+	case got := <-done:
+		if !errors.Is(got.err, context.Canceled) || len(got.results) != count {
+			t.Fatalf("results=%d err=%v", len(got.results), got.err)
+		}
+		for i, result := range got.results {
+			if !result.Occupied || result.Value != i || !errors.Is(result.Err, context.Canceled) {
+				t.Fatalf("result %d: %+v", i, result)
+			}
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("pipeline did not terminate")
+	}
+}
+
+func TestStreamChainOnResultReceivesEachStageResult(t *testing.T) {
+	var calls []string
+	results, err := NewPipelineBuilder([]int{2}).
+		Stage("double", 1).Stage("add", 1).
+		OnResult(func(stage string, r core.Result[int]) {
+			calls = append(calls, fmt.Sprintf("%s:%d", stage, r.Value))
+		}).Stream().Run(func(_ context.Context, stage string, value int) (int, error) {
+		if stage == "double" {
+			return value * 2, nil
+		}
+		if len(calls) != 1 || calls[0] != "double:4" {
+			return 0, errors.New("first stage callback did not run before second stage")
+		}
+		return value + 3, nil
+	})
+	if err != nil || len(results) != 1 || results[0].Err != nil || results[0].Value != 7 {
+		t.Fatalf("results = %v, error = %v", results, err)
+	}
+	if len(calls) != 2 || calls[0] != "double:4" || calls[1] != "add:7" {
+		t.Fatalf("callbacks = %v, want [double:4 add:7]", calls)
+	}
+}
+
+func TestPipelineBuilderExecuteInvokesOnResult(t *testing.T) {
+	var calls []string
+	results, err := NewPipelineBuilder([]int{2}).Stage("double", 1).Stage("add", 1).
+		OnResult(func(stage string, r core.Result[int]) {
+			calls = append(calls, fmt.Sprintf("%s:%d", stage, r.Value))
+		}).Execute(func(_ context.Context, stage string, value int) (int, error) {
+		if stage == "double" {
+			return value * 2, nil
+		}
+		return value + 3, nil
+	})
+	if err != nil || len(results) != 1 || results[0].Value != 7 {
+		t.Fatalf("results = %v, error = %v", results, err)
+	}
+	if len(calls) != 2 || calls[0] != "double:4" || calls[1] != "add:7" {
+		t.Fatalf("callbacks = %v, want [double:4 add:7]", calls)
+	}
+}
+
+func TestPipelineBuilderExecuteAppliesTimeout(t *testing.T) {
+	results, err := NewPipelineBuilder([]int{1}).Stage("check", 1).Timeout(time.Second).
+		Execute(func(ctx context.Context, _ string, value int) (int, error) {
+			if _, ok := ctx.Deadline(); !ok {
+				return 0, errors.New("missing deadline")
+			}
+			return value, nil
+		})
+	if err != nil || len(results) != 1 || results[0].Err != nil || results[0].Value != 1 {
+		t.Fatalf("results = %v, error = %v", results, err)
+	}
+}
+
+func TestPipelineBuilderExecuteFailFastStopsPendingTasks(t *testing.T) {
+	sentinel := errors.New("failed")
+	var calls atomic.Int32
+	results, err := NewPipelineBuilder([]int{1, 2}).Stage("work", 1).FailFast().
+		Execute(func(_ context.Context, _ string, value int) (int, error) {
+			calls.Add(1)
+			return value, sentinel
+		})
+	if err != nil || len(results) != 2 || !errors.Is(results[0].Err, sentinel) {
+		t.Fatalf("results = %v, error = %v", results, err)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("task calls = %d, want 1", got)
+	}
+}
+
+func TestPipelineBuilderExecuteFailFastPreservesFailureAcrossStages(t *testing.T) {
+	sentinel := errors.New("failed")
+	var second atomic.Int32
+	results, err := NewPipelineBuilder([]int{1}).Stage("first", 1).Stage("second", 1).FailFast().
+		Execute(func(_ context.Context, stage string, value int) (int, error) {
+			if stage == "first" {
+				return value, sentinel
+			}
+			second.Add(1)
+			return value + 1, nil
+		})
+	if err != nil || len(results) != 1 || !errors.Is(results[0].Err, sentinel) || second.Load() != 0 {
+		t.Fatalf("results = %v, error = %v, second calls = %d", results, err, second.Load())
+	}
+}
+
+func TestParallelFailFastStopsAcrossExecutionModes(t *testing.T) {
+	want := errors.New("failed")
+	for _, mode := range []string{"sharded", "autoscale"} {
+		t.Run(mode, func(t *testing.T) {
+			chain := NewPipelineBuilder([]int{1}).Stage("first", 1).Stage("later", 1).FailFast().Parallel()
+			if mode == "sharded" {
+				chain.Shard(2)
+			} else {
+				chain.DefaultAutoScale()
+			}
+			var later atomic.Int32
+			results, err := chain.Execute(func(_ context.Context, stage string, value int) (int, error) {
+				if stage == "first" {
+					return value, want
+				}
+				later.Add(1)
+				return value + 1, nil
+			})
+			if err != nil || len(results) != 1 || !errors.Is(results[0].Err, want) || later.Load() != 0 {
+				t.Fatalf("results=%v err=%v later=%d", results, err, later.Load())
+			}
+		})
+	}
+}
+
+func TestParallelFailFastCancelsRunningTasks(t *testing.T) {
+	for _, mode := range []string{"sharded", "autoscale"} {
+		t.Run(mode, func(t *testing.T) {
+			chain := NewPipelineBuilder([]int{1, 2}).Stage("work", 2).FailFast().Parallel()
+			if mode == "sharded" {
+				chain.Shard(2)
+			} else {
+				chain.DefaultAutoScale()
+			}
+			started := make(chan struct{})
+			var canceled atomic.Bool
+			chain.Execute(func(ctx context.Context, _ string, value int) (int, error) {
+				if value == 1 {
+					close(started)
+					select {
+					case <-ctx.Done():
+						canceled.Store(true)
+					case <-time.After(300 * time.Millisecond):
+					}
+					return value, nil
+				}
+				<-started
+				return value, errors.New("failure")
+			})
+			if !canceled.Load() {
+				t.Fatal("running task did not receive fail-fast cancellation")
+			}
+		})
+	}
+}
+
+func TestParallelPipeFailFastCancelsRunningTasks(t *testing.T) {
+	started := make(chan struct{})
+	var canceled atomic.Bool
+	want := errors.New("failure")
+	ch := NewPipelineBuilder([]int{1, 2}).Stage("work", 2).FailFast().Parallel().
+		ExecutePipe(func(ctx context.Context, _ string, value int) (int, error) {
+			if value == 1 {
+				close(started)
+				select {
+				case <-ctx.Done():
+					canceled.Store(true)
+				case <-time.After(300 * time.Millisecond):
+				}
+				return value, nil
+			}
+			<-started
+			return value, want
+		}, 2)
+	found := false
+	for result := range ch {
+		if errors.Is(result.Err, want) {
+			found = true
+		}
+	}
+	if !canceled.Load() || !found {
+		t.Fatalf("canceled=%v failure=%v", canceled.Load(), found)
+	}
+}
+
+func TestPipelineFailFastPanicPreservesCompletedResults(t *testing.T) {
+	var secondCalls atomic.Int32
+	results, err := NewPipelineBuilder([]int{1, 2, 3}).Stage("first", 1).Stage("second", 1).FailFast().
+		Execute(func(_ context.Context, stage string, value int) (int, error) {
+			if stage == "second" {
+				secondCalls.Add(1)
+			}
+			if value == 2 {
+				panic("failure")
+			}
+			return value * 10, nil
+		})
+	if err != nil || len(results) != 3 || results[0].Err != nil || results[0].Value != 10 || !results[1].IsPanic() || secondCalls.Load() != 0 {
+		t.Fatalf("results = %v, error = %v, second calls = %d", results, err, secondCalls.Load())
+	}
+}
+
+func TestPipelineFailFastCallbackPanicIsContained(t *testing.T) {
+	results, err := NewPipelineBuilder([]int{1, 2}).Stage("work", 1).FailFast().
+		OnResult(func(string, core.Result[int]) { panic("callback failure") }).
+		Execute(func(_ context.Context, _ string, value int) (int, error) { return value, nil })
+	if err != nil || len(results) != 2 || !results[0].IsPanic() {
+		t.Fatalf("results = %v, error = %v", results, err)
+	}
+}
+
+func TestStreamFailFastCancelsOnPanic(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	started := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		_, err := NewPipelineBuilder([]int{1, 2}).Context(ctx).Stage("work", 2).FailFast().Stream().
+			Run(func(ctx context.Context, _ string, value int) (int, error) {
+				if value == 1 {
+					close(started)
+					<-ctx.Done()
+					return 0, ctx.Err()
+				}
+				<-started
+				panic("failure")
+			})
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("error = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("panic did not cancel another task")
+	}
+}
+
+func TestStreamFailFastCancelsOnCallbackPanic(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	started := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		_, err := NewPipelineBuilder([]int{1, 2}).Context(ctx).Stage("work", 2).FailFast().
+			OnResult(func(_ string, r core.Result[int]) {
+				if r.Value == 2 {
+					panic("callback failure")
+				}
+			}).Stream().
+			Run(func(ctx context.Context, _ string, value int) (int, error) {
+				if value == 1 {
+					close(started)
+					<-ctx.Done()
+					return 0, ctx.Err()
+				}
+				<-started
+				return value, nil
+			})
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("error = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("callback panic did not cancel another task")
+	}
+}
+
+func TestFlowSkipAndRecoveryConcurrentItems(t *testing.T) {
+	const count = 80
+	boom := errors.New("stage failed")
+	var skippedCalls atomic.Int64
+	fl := NewFlow(context.Background(), FlowConfig[int]{
+		Stages:  []Stage[int]{{Name: "first", Concurrency: 4}, {Name: "skip", Concurrency: 4, SkipOnError: true}, {Name: "recover", Concurrency: 4}},
+		BufSize: count,
+	}, func(_ context.Context, stage string, n int) (int, error) {
+		switch stage {
+		case "first":
+			if n%2 == 0 {
+				return n, boom
+			}
+		case "skip":
+			if n%2 == 0 {
+				skippedCalls.Add(1)
+			}
+		case "recover":
+			return n + 100, nil
+		}
+		return n, nil
+	})
+	for i := 0; i < count; i++ {
+		if _, err := fl.Submit(context.Background(), i); err != nil {
+			t.Fatal(err)
+		}
+	}
+	results := fl.Close()
+	if len(results) != count || skippedCalls.Load() != 0 || fl.ErrCount() != count/2 {
+		t.Fatalf("results=%d skippedCalls=%d errors=%d", len(results), skippedCalls.Load(), fl.ErrCount())
+	}
+	seen := make(map[int]bool, count)
+	for _, result := range results {
+		if result.Err != nil || result.Value < 100 || result.Value >= 100+count || seen[result.Value] {
+			t.Fatalf("unexpected result: %v", result)
+		}
+		seen[result.Value] = true
+	}
+}
+
+func TestFlowCloseBackpressureAndPanicRegression(t *testing.T) {
+	for _, stages := range []int{1, 3} {
+		cfg := FlowConfig[int]{BufSize: 1}
+		for i := 0; i < stages; i++ {
+			cfg.Stages = append(cfg.Stages, Stage[int]{Name: "echo", Concurrency: 1})
+		}
+		fl := NewFlow(context.Background(), cfg, func(_ context.Context, _ string, n int) (int, error) {
+			if n == 1 {
+				panic("regression")
+			}
+			return n, nil
+		})
+		for i := 0; i < 2; i++ {
+			if _, err := fl.Submit(context.Background(), i); err != nil {
+				t.Fatal(err)
+			}
+		}
+		done := make(chan []core.Result[int], 1)
+		go func() { done <- fl.Close() }()
+		select {
+		case results := <-done:
+			if len(results) != 2 || results[0].Value != 0 || results[1].Err == nil || !results[1].IsPanic() {
+				t.Fatalf("stage count=%d, incomplete panic result: %v", stages, results)
+			}
+			if fl.Stats().TotalResult != 2 || fl.ErrCount() != int64(stages) {
+				t.Fatalf("incorrect counters: %+v", fl.Stats())
+			}
+		case <-time.After(time.Second):
+			for range fl.Results() {
+			}
+			<-done
+			t.Fatal("Close blocked on its full result buffer")
+		}
+	}
+}
+
+func TestFlowCancelUnblocksFullResultBuffer(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	secondStarted := make(chan struct{})
+	fl := NewFlow(ctx, FlowConfig[int]{Stages: []Stage[int]{{Name: "work", Concurrency: 1}}, BufSize: 1},
+		func(_ context.Context, _ string, n int) (int, error) {
+			if n == 2 {
+				close(secondStarted)
+			}
+			return n, nil
+		})
+	if _, err := fl.Submit(context.Background(), 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fl.Submit(context.Background(), 2); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-secondStarted:
+	case <-time.After(5 * time.Second):
+		cancel()
+		fl.Close()
+		t.Fatal("second task did not start")
+	}
+	cancel()
+	done := make(chan []core.Result[int], 1)
+	go func() { done <- fl.Close() }()
+	select {
+	case results := <-done:
+		if len(results) < 1 || len(results) > 2 || results[0].Value != 1 {
+			t.Fatalf("results = %v", results)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close blocked after cancellation")
+	}
+}
+
+func TestFlowSubmitContextDoesNotCancelAcceptedItem(t *testing.T) {
+	started, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	unblock := func() { once.Do(func() { close(release) }) }
+	fl := NewFlow(context.Background(), FlowConfig[int]{Stages: []Stage[int]{{Name: "work", Concurrency: 1}}, BufSize: 1},
+		func(ctx context.Context, _ string, n int) (int, error) {
+			close(started)
+			<-release
+			return n, ctx.Err()
+		})
+	t.Cleanup(func() { unblock(); fl.Close() })
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if _, err := fl.Submit(ctx, 42); err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	cancel()
+	unblock()
+	results := fl.Close()
+	if len(results) != 1 || results[0].Value != 42 || results[0].Err != nil {
+		t.Fatalf("results after submit context cancellation = %v", results)
+	}
+}
+
+func TestFlowCanceledBlockedSubmitNotCounted(t *testing.T) {
+	started, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	unblock := func() { once.Do(func() { close(release) }) }
+	fl := NewFlow(context.Background(), FlowConfig[int]{Stages: []Stage[int]{{Name: "work", Concurrency: 1}}, BufSize: 1},
+		func(_ context.Context, _ string, n int) (int, error) {
+			if n == 1 {
+				close(started)
+				<-release
+			}
+			return n, nil
+		})
+	t.Cleanup(func() { unblock(); fl.Close() })
+	if _, err := fl.Submit(context.Background(), 1); err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	if _, err := fl.Submit(context.Background(), 2); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := fl.Submit(ctx, 3); !errors.Is(err, context.Canceled) {
+		t.Fatalf("blocked Submit = %v, want context.Canceled", err)
+	}
+	unblock()
+	results := fl.Close()
+	if fl.SubmitCount() != 2 || len(results) != 2 || results[0].Value != 1 || results[1].Value != 2 {
+		t.Fatalf("submitted=%d results=%v", fl.SubmitCount(), results)
+	}
+}
+
+func TestFlowCloseDrainsInFlightSubmitRegression(t *testing.T) {
+	fl := NewFlow(context.Background(), FlowConfig[int]{
+		Stages: []Stage[int]{{Name: "echo", Concurrency: 1}}, BufSize: 1,
+	}, func(_ context.Context, _ string, n int) (int, error) { return n, nil })
+	for i := 0; i < 3; i++ {
+		if _, err := fl.Submit(context.Background(), i); err != nil {
+			t.Fatal(err)
+		}
+	}
+	submitted := make(chan error, 1)
+	go func() { _, err := fl.Submit(context.Background(), 3); submitted <- err }()
+	deadline := time.Now().Add(time.Second)
+	for fl.addInFlight.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if fl.addInFlight.Load() == 0 {
+		t.Fatal("submit did not enter the blocked send")
+	}
+	done := make(chan []core.Result[int], 1)
+	go func() { done <- fl.Close() }()
+	select {
+	case results := <-done:
+		if len(results) != 4 {
+			t.Fatalf("accepted items=%d, want 4", len(results))
+		}
+	case <-time.After(time.Second):
+		for range fl.Results() {
+		}
+		<-done
+		t.Fatal("Close did not unblock the accepted submit")
+	}
+	if err := <-submitted; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestFlowConcurrentSubmitCloseAndConsumePreservesAcceptedItems(t *testing.T) {
+	const producers = 200
+	fl := NewFlow(context.Background(), FlowConfig[int]{
+		Stages: []Stage[int]{{Name: "first", Concurrency: 4}, {Name: "last", Concurrency: 3}}, BufSize: 2,
+	}, func(_ context.Context, _ string, value int) (int, error) { return value, nil })
+	if _, err := fl.Submit(context.Background(), -1); err != nil {
+		t.Fatal(err)
+	}
+	consumed := make(chan []core.Result[int], 1)
+	go func() {
+		var results []core.Result[int]
+		for result := range fl.Results() {
+			results = append(results, result)
+		}
+		consumed <- results
+	}()
+	start := make(chan struct{})
+	accepted := make(chan int, producers)
+	var wg sync.WaitGroup
+	for i := 0; i < producers; i++ {
+		wg.Add(1)
+		go func(value int) {
+			defer wg.Done()
+			<-start
+			_, err := fl.Submit(context.Background(), value)
+			if err == nil {
+				accepted <- value
+			} else if !errors.Is(err, core.ErrPoolClosed) {
+				t.Errorf("Submit(%d): %v", value, err)
+			}
+		}(i)
+	}
+	closed := make(chan []core.Result[int], 1)
+	go func() { <-start; closed <- fl.Close() }()
+	close(start)
+	wg.Wait()
+	close(accepted)
+	remaining := <-closed
+	results := append(remaining, (<-consumed)...)
+	want := map[int]bool{-1: true}
+	for value := range accepted {
+		want[value] = true
+	}
+	if int64(len(want)) != fl.SubmitCount() || len(results) != len(want) {
+		t.Fatalf("accepted=%d submitCount=%d results=%d", len(want), fl.SubmitCount(), len(results))
+	}
+	for _, result := range results {
+		if result.Err != nil || !want[result.Value] {
+			t.Fatalf("unexpected or duplicate result: %+v", result)
+		}
+		delete(want, result.Value)
+	}
+	if len(want) != 0 {
+		t.Fatalf("missing accepted values: %v", want)
+	}
 }
 
 // ============================================================
@@ -1235,15 +2802,20 @@ func TestStream_MultiStage(t *testing.T) {
 func TestStream_EmptyStages(t *testing.T) {
 	ctx := context.Background()
 	items := []int{1, 2, 3}
+	called := false
 	results, err := ExecuteStream(ctx, nil, items, func(ctx context.Context, stage string, item int) (int, error) {
+		called = true
 		return item * 2, nil
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	if called || len(results) != len(items) {
+		t.Fatalf("callback called=%v, results=%d, want %d unchanged results", called, len(results), len(items))
+	}
 	for i, r := range results {
-		if r.Value != items[i] {
-			t.Fatalf("index %d: expected %d, got %d", i, items[i], r.Value)
+		if r.Value != items[i] || !r.Occupied || r.Err != nil {
+			t.Fatalf("index %d: result=%+v, want occupied value %d without error", i, r, items[i])
 		}
 	}
 }
@@ -1268,7 +2840,7 @@ func TestStream_ErrorPropagation(t *testing.T) {
 	ctx := context.Background()
 	stages := []Stage[int]{
 		{Name: "double", Concurrency: 2},
-		{Name: "add10", Concurrency: 2},
+		{Name: "add10", Concurrency: 2, SkipOnError: true},
 	}
 	items := []int{1, 2, 3, 4, 5}
 	results, err := ExecuteStream(ctx, stages, items, func(ctx context.Context, stage string, item int) (int, error) {
@@ -1337,7 +2909,7 @@ func TestStream_PanicRecovery(t *testing.T) {
 	ctx := context.Background()
 	stages := []Stage[int]{
 		{Name: "panic", Concurrency: 2},
-		{Name: "pass", Concurrency: 2},
+		{Name: "pass", Concurrency: 2, SkipOnError: true},
 	}
 	items := []int{1, 2, 3, 4, 5}
 	results, err := ExecuteStream(ctx, stages, items, func(ctx context.Context, stage string, item int) (int, error) {
@@ -2326,6 +3898,51 @@ func TestFlow_CloseIdempotent(t *testing.T) {
 	}
 }
 
+func TestFlowConcurrentCloseReturnsBeforeFirstCloseCompletes(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	fl := NewFlow(context.Background(), FlowConfig[int]{
+		Stages: []Stage[int]{{Name: "hold", Concurrency: 1}}, BufSize: 1,
+	}, func(_ context.Context, _ string, value int) (int, error) {
+		close(started)
+		<-release
+		return value, nil
+	})
+	if _, err := fl.Submit(context.Background(), 42); err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	first := make(chan []core.Result[int], 1)
+	go func() { first <- fl.Close() }()
+	deadline := time.After(5 * time.Second)
+	for !fl.closed.Load() {
+		select {
+		case <-deadline:
+			close(release)
+			t.Fatal("first Close did not begin")
+		default:
+			runtime.Gosched()
+		}
+	}
+	if got := fl.Close(); got != nil {
+		t.Errorf("second Close = %v, want nil", got)
+	}
+	select {
+	case <-first:
+		t.Error("first Close returned before the worker completed")
+	default:
+	}
+	close(release)
+	select {
+	case results := <-first:
+		if len(results) != 1 || results[0].Value != 42 || results[0].Err != nil {
+			t.Fatalf("first Close results = %v", results)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("first Close did not finish")
+	}
+}
+
 func TestFlow_SubmitAfterClose(t *testing.T) {
 	ctx := context.Background()
 	fl := NewPipelineBuilder([]int{}).Context(ctx).
@@ -3093,4 +4710,157 @@ func TestFlowStats_StatsBeforeConsumer(t *testing.T) {
 			_ = remaining
 		})
 	}
+}
+
+func TestStreamAndFlowAgreeOnConcurrentStageErrors(t *testing.T) {
+	const count = 200
+	wantErr := errors.New("stage failure")
+	stages := []Stage[int]{{Name: "first", Concurrency: 8}, {Name: "skip", Concurrency: 4, SkipOnError: true}, {Name: "recover", Concurrency: 6}}
+	fn := func(_ context.Context, stage string, value int) (int, error) {
+		switch stage {
+		case "first":
+			if value%3 == 0 {
+				return value, wantErr
+			}
+		case "skip":
+			return value + count, nil
+		case "recover":
+			if value%3 == 0 {
+				return value, wantErr
+			}
+		}
+		return value, nil
+	}
+	items := make([]int, count)
+	for i := range items {
+		items[i] = i
+	}
+	stream, err := ExecuteStream(context.Background(), stages, items, fn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fl := NewFlow(context.Background(), FlowConfig[int]{Stages: stages, BufSize: count}, fn)
+	defer fl.Close()
+	if n, err := fl.SubmitBatch(context.Background(), items); err != nil || n != count {
+		t.Fatalf("SubmitBatch = %d, %v", n, err)
+	}
+	flow := fl.Close()
+	if len(stream) != count || len(flow) != count {
+		t.Fatalf("stream results=%d flow results=%d", len(stream), len(flow))
+	}
+	want := make(map[int]bool, count)
+	for i, result := range stream {
+		value := i
+		if i%3 != 0 {
+			value += count
+		}
+		fails := value%3 == 0
+		if !result.Occupied || result.Value != value || (fails && !errors.Is(result.Err, wantErr)) || (!fails && result.Err != nil) {
+			t.Fatalf("stream item %d = %+v", i, result)
+		}
+		want[value] = fails
+	}
+	for _, result := range flow {
+		fails, ok := want[result.Value]
+		if !ok || !result.Occupied || (fails && !errors.Is(result.Err, wantErr)) || (!fails && result.Err != nil) {
+			t.Fatalf("unexpected flow result: %+v", result)
+		}
+		delete(want, result.Value)
+	}
+	if len(want) != 0 {
+		t.Fatalf("missing flow results: %v", want)
+	}
+}
+
+func TestReviewStageErrorHandling(t *testing.T) {
+	sentinel := errors.New("first")
+	for _, flow := range []bool{false, true} {
+		for _, skip := range []bool{false, true} {
+			t.Run(fmt.Sprintf("flow=%v/skip=%v", flow, skip), func(t *testing.T) {
+				stages := []Stage[int]{{Name: "first", Concurrency: 1}, {Name: "second", Concurrency: 1, SkipOnError: skip}}
+				calls := 0
+				fn := func(_ context.Context, stage string, n int) (int, error) {
+					calls++
+					if stage == "first" {
+						return n, sentinel
+					}
+					return n + 1, nil
+				}
+				var value int
+				var gotErr error
+				if flow {
+					fl := NewFlow(context.Background(), FlowConfig[int]{Stages: stages, BufSize: 1}, fn)
+					if _, err := fl.Submit(context.Background(), 1); err != nil {
+						t.Fatal(err)
+					}
+					results := fl.Close()
+					if len(results) != 1 {
+						t.Fatalf("results=%v", results)
+					}
+					value, gotErr = results[0].Value, results[0].Err
+				} else {
+					results, err := ExecuteStream(context.Background(), stages, []int{1}, fn)
+					if err != nil {
+						t.Fatal(err)
+					}
+					value, gotErr = results[0].Value, results[0].Err
+				}
+				if skip {
+					if calls != 1 || value != 1 || !errors.Is(gotErr, sentinel) {
+						t.Fatalf("calls=%d value=%d err=%v", calls, value, gotErr)
+					}
+				} else if calls != 2 || value != 2 || gotErr != nil {
+					t.Fatalf("calls=%d value=%d err=%v", calls, value, gotErr)
+				}
+			})
+		}
+	}
+}
+
+func TestReviewStreamMetaEmptyStages(t *testing.T) {
+	for _, items := range [][]int{nil, {1}} {
+		results := NewPipelineBuilder(items).Stream().ExecuteWithMeta(func(_ context.Context, _ string, n int) (int, error) { t.Fatal("unexpected callback"); return n, nil })
+		if len(results) != len(items) {
+			t.Fatalf("results=%v", results)
+		}
+		if len(items) > 0 && (results[0].Value != items[0] || results[0].Stage != "") {
+			t.Fatalf("results=%v", results)
+		}
+	}
+}
+
+func TestReviewFlowOkSubmitCount(t *testing.T) {
+	started, release := make(chan struct{}), make(chan struct{})
+	fl := NewFlow(context.Background(), FlowConfig[int]{Stages: []Stage[int]{{Name: "x", Concurrency: 1}}, BufSize: 1}, func(_ context.Context, _ string, n int) (int, error) {
+		if n == 0 {
+			close(started)
+			<-release
+		}
+		return n, nil
+	})
+	defer fl.Close()
+	if _, err := fl.Submit(context.Background(), 0); err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	if _, err := fl.Submit(context.Background(), 1); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := fl.Submit(ctx, 2); !errors.Is(err, context.Canceled) {
+				t.Errorf("err=%v", err)
+			}
+		}()
+	}
+	wg.Wait()
+	if fl.SubmitCount() != 2 || fl.Stats().TotalSubmit != 2 {
+		t.Errorf("count=%d stats=%d", fl.SubmitCount(), fl.Stats().TotalSubmit)
+	}
+	close(release)
 }
