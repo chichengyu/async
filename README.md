@@ -5,15 +5,11 @@
 [![Go Report](https://goreportcard.com/badge/github.com/chichengyu/async)](https://goreportcard.com/report/github.com/chichengyu/async)
 [![License](https://img.shields.io/badge/license-MIT-green?style=flat)](LICENSE)
 
-**零依赖、千万级压测验证、370K ops/s 吞吐的泛型 Go 并发工具库。**
+**零外部依赖的泛型 Go 并发工具库。**
 
-协程池 · 任务组 · Map/Reduce · 重试 · 限流 · 管道 · 分片 — 链式构建，生产就绪。
+协程池 · 任务组 · Map/Reduce · 重试 · 限流 · 管道 · 分片，提供链式配置与显式生命周期管理。
 
-> **✅ 深度交叉验证报告：[极限并发测试报告](docs/test_report.md)** — 5 项深度验证（4 项误判排除 + 1 项真实 Bug 已根治），Race Detector 零竞态。
->
-> **🛡️ 生产就绪** — 440+ 用例 · 全子包 Race 零报警 · 32 新模块 Chain 高并发覆盖 · 生产注意事项 [速查](docs/production.md)
-
----
+> 验证命令和范围见 [验证报告](docs/test_report.md)。方法参数与调用片段见 [方法参考](docs/api/README.md)，生产配置见 [生产建议](docs/production.md)。
 
 ## 设计理念
 
@@ -22,94 +18,63 @@ async 基于以下核心理念构建，区别于市面上其他 Go 并发库：
 | 理念 | 实践 |
 |------|------|
 | **泛型一等公民** | 全 API 泛型化，`Pool[T]` / `Group[T]` / `Map[T,R]` 编译期类型安全 |
-| **链式零配置启动** | 从 `async.Pool[int]().Worker(8).Run(fn)` 到生产就绪只需 5 行 |
-| **防御式默认值** | 三层默认值体系（全局 → Builder → 实例），开箱安全，显式覆盖 |
-| **不隐藏复杂度** | 每处默认值都有对应的 `Default*()` 恢复方法，源代码级透明 |
-| **生产即默认** | 内置背压控制、超时传播、panic 恢复、goroutine 泄漏防护 |
+| **链式配置** | 通过 `async.Pool[int]().Worker(8).Run(fn)` 设置并发度与生命周期 |
+| **默认值配置** | 全局、Builder 和实例各有设置入口；生效时点与非正值处理以组件文档为准 |
+| **显式默认值** | 构建器提供 `Default*()` 方法；可用范围以对应类型的方法为准 |
+| **生产配置能力** | 提供背压、超时信号、panic 恢复和显式生命周期管理 API；任务需响应 context，Pool/Group 需按模式正确关闭 |
 | **零外部依赖** | 纯 Go 标准库 + `sync/atomic`，无 CGO、无第三方库 |
-| **32 路分片无锁** | 结果存储采用 32 路分片 `[]Result[T]`，避免全局锁竞争 |
+| **32 路分片锁** | 结果存储采用 32 路分片 `[]Result[T]`，避免全局锁竞争 |
 
 ---
 
-## 为什么选 async？
+## 能力与使用边界
 
-| 对比 | ants | conc | workerpool | **async** |
-|------|:--:|:--:|:--:|:--:|
-| 泛型协程池 | ✅ | ❌ | ❌ | ✅ **32 路分片无锁** |
-| 任务组（一次性批量） | ❌ | ❌ | ❌ | ✅ **含自动扩缩容** |
-| Map/ForEach/Reduce | ❌ | ❌ | ❌ | ✅ **8 种变体** |
-| 重试 + 退避策略 | ❌ | ❌ | ❌ | ✅ **4 种策略** |
-| 限流器 | ❌ | ❌ | ❌ | ✅ **4 种算法** |
-| 管道编排 | ❌ | ❌ | ❌ | ✅ **串行+并行分片** |
-| 水平分片（MultiPool/ShardedPool） | ❌ | ❌ | ❌ | ✅ **多层分片** |
-| BoundedRunner 限流执行器 | ❌ | ❌ | ❌ | ✅ **千万级 goroutine 管控** |
-| 流式结果消费 | ❌ | ❌ | ❌ | ✅ **实时 channel** |
-| 环形缓冲防 OOM | ❌ | ❌ | ❌ | ✅ **固定容量兜底** |
-| 背压控制 | ❌ | ❌ | ❌ | ✅ **3 种溢出策略** |
-| 零外部依赖 | ❌ | ❌ | ❌ | ✅ **纯标准库** |
+| 能力 | 实现与使用边界 |
+|------|------|
+| 泛型协程池与任务组 | 固定 worker、任务结果、扩缩容；生命周期见 [Pool](docs/pool.md) 与 [Group](docs/group.md) |
+| 数据处理 | Slice/Map 的串行、并行、池化、分片及批处理；Reduce 按顺序聚合 |
+| 重试与限流 | 退避、每次调用超时及四种限流模式；回调需响应 context，重试需考虑幂等 |
+| 管道 | 一次性阶段执行、流水线 Stream、常驻 Flow，使用时明确结果消费及关闭责任 |
+| 水平分片 | 多 Pool/Group 实例及 Hash/RoundRobin 路由；容量和扩展收益需业务压测 |
+| BoundedRunner | 限制同时占用许可的 Task 业务回调数；等待提交仍需调用方管理取消 |
+| 结果存储与背压 | 主结果上限、环形缓冲和流式消费；容量不足时按策略拒绝、等待或丢失结果 |
+| 依赖 | 生产实现仅使用 Go 标准库 |
 
 ---
 
-## 性能一览
+## 质量评分
 
-| 场景 | 吞吐量 | 测试规模 |
-|------|--------|----------|
-| `Pool.Submit` + `Wait` | **370K ops/s** | 1 千万任务 |
-| `Map` 千万元素映射 | **2.95 亿/s** | 1 千万元素 |
-| `Pipeline` 2 阶段 | **85M ops/s** | 1 千万元素 |
-| `BoundedRunner` | **569K ops/s** | 1 千万任务 |
-| `TokenBucket.Allow` | **194 万/s** | 1 千万次 |
-| `SlidingWindow.Allow` | **159 万/s** | 1 千万次 |
-| `RateLimiter Acquire/Release` | **924 万/s** | 1 百万次 |
-| `Group AutoScale`（10M 便捷API） | **805K ops/s** | 1 千万任务 |
-| `Retry` | **51M/s** | 1 百万次 |
+基于 [全库审计](docs/audit-results.md)、[独立复审](docs/independent-review.md) 与当前基准，对各维度作如下项目自评。五星表示现有实现、文档和专项验证较完整；四星表示已有能力，但仍有明确的使用约束或验证范围限制。评分不是第三方认证，也不代表所有输入与并发调度均无缺陷。
 
-> 全部测试启用 `-race` 验证。7 套压测体系、440+ 用例、Depth 交叉验证全部通过，详见 [测试报告](docs/test_report.md)。
+| 维度 | 评分 | 验证依据与使用边界 |
+|------|:----:|------------------|
+| **正确性** | ⭐⭐⭐⭐⭐ | 25 项已确认缺陷均先复现再修复；正向、异常、边界、独立模型及错误变体交叉验证，当前无遗留已确认问题 |
+| **并发安全** | ⭐⭐⭐⭐⭐ | 当前实现全库 Linux short audit race 的 13 个测试包通过；专项覆盖并发提交/关闭、取消、通知与异常 worker 接替 |
+| **性能** | ⭐⭐⭐⭐☆ | 下表提供当前版本可复跑基准；固定总 worker 的分片对比有实测收益，实际业务和其他硬件需另测 |
+| **Goroutine 管理** | ⭐⭐⭐⭐⭐ | Run 自动关闭、显式 Close/Wait、有界许可与业务 Goexit 收尾均有专项验证；超时发出取消信号，业务仍须配合退出 |
+| **内存管理** | ⭐⭐⭐⭐☆ | MaxResults、RingBuffer、背压与所有权契约可控制保留规模；无限队列、无限结果及业务持有的引用仍需调用方管理 |
+| **可观测性** | ⭐⭐⭐⭐☆ | Stats、流式结果、StreamDropped 与四级日志支持运行观测；外部监控接入和业务指标由应用配置 |
+| **零外部依赖** | ⭐⭐⭐⭐⭐ | 库运行实现仅依赖 Go 标准库，不要求 CGO 或第三方运行库 |
+| **文档完整度** | ⭐⭐⭐⭐⭐ | 1,415 个方法条目包含参数、示例、生产建议和注意事项；1,388 个声明调用片段、3 个完整程序可编译，138 块去重原文有执行验证 |
 
----
+## 极限吞吐量（轻量负载实测）
 
-## 质量评级
+2026-11-10，Intel Core i7-14700F、Windows/amd64、Go 1.25.0、GOMAXPROCS=8；每项运行 3 次、每次目标 1 秒，取吞吐中位数。以下是所列轻量场景的本机基准，未搜索所有配置的全局峰值，不代表真实业务 QPS；不同组件的计量单位与工作量不同，不能直接横向比较。
 
-经过深度交叉验证（逐行代码审查 + 440+ 用例 + 千万级 Race Detector + 死锁专项测试），async 库在各维度的质量评估：
+| 组件 / 场景 | 实测吞吐量（中位数） | 相对单 Pool 加速比 |
+|-------------|-------------------:|:------------------:|
+| 单 Pool（32 worker） | **1.29M tasks/s** | 1.00× |
+| MultiPool（8 分片 × 4 worker） | **3.44M tasks/s** | **2.68×** |
+| MultiPool（16 分片 × 2 worker） | **3.95M tasks/s** | **3.07×** |
+| Map.Get（1,024 个整数键，串行命中查询） | **2.62 亿 lookups/s** | — |
+| RateLimiter（串行 Acquire + Release） | **624 万 pairs/s** | — |
+| Pipeline（2 阶段，各 8 并发，4,096 项/批） | **4,085 万 items/s** | — |
 
-| 维度 | 评分 | 验证方法 |
-|------|:--:|------|
-| **正确性** | ⭐⭐⭐⭐⭐ | 千万任务 Race Detector 零报警、5 项深度交叉验证通过 |
-| **并发安全** | ⭐⭐⭐⭐⭐ | 多层防御链（CAS → atomic → done 检测 → recover）、锁分片、死锁 100 轮验证通过 |
-| **性能** | ⭐⭐⭐⭐⭐ | 单 Pool 370K/s、MultiPool 280 万/s、Map 2.95 亿/s、RateLimiter 924 万/s |
-| **Goroutine 管理** | ⭐⭐⭐⭐⭐ | Run 自动管理生命周期、WaitTimeout 超时清理、addInFlight 防 TOCTOU 竞态 |
-| **内存安全** | ⭐⭐⭐⭐⭐ | MaxResults 防 OOM、RingBuffer 固定容量兜底、3 种溢出策略（Drop/Block/DiscardOld） |
-| **可观测性** | ⭐⭐⭐⭐☆ | Stats 统计、Streaming 流式消费、四级日志级别、StreamDropped 丢失监控 |
-| **零依赖** | ⭐⭐⭐⭐⭐ | 纯 Go 标准库，无 CGO、无第三方库 |
-| **文档完善度** | ⭐⭐⭐⭐⭐ | 生产注意事项文档、选型决策矩阵、生命周期对照表、快速上手示例 |
+Pool 三项均由 8 个并发提交者执行轻量回调、固定总计 32 个 worker，计时包含提交、执行与等待完成；关闭任务超时，每片最多保留 1 个结果。Map 测量字典查询；RateLimiter 测量可立即获取并归还的许可对，不测令牌耗尽等待；Pipeline 测量每项完成两次加一变换及结果校验。详细配置、复跑命令和三轮原始输出见 [吞吐量基准](docs/benchmarks/README.md)。
 
-### 极限吞吐量
+## 验证与容量评估
 
-| 组件 | 吞吐量 | 线性扩展 |
-|------|--------|:--:|
-| 单 Pool | **370K ops/s** | — |
-| MultiPool（8 分片） | **2.8M ops/s** | ✅ 7.6x |
-| MultiPool（16 分片） | **~5.5M ops/s** | ✅ ~15x |
-| Map | **2.95 亿/s** | — |
-| RateLimiter | **924 万/s** | — |
-| Pipeline | **85M ops/s** | — |
-
-### 深度交叉验证确认的安全边界
-
-| 组件 | 验证项 | 验证方法 | 结论 |
-|------|--------|----------|:--:|
-| RateLimiter | `Resize`+`Acquire`/`Release` 并发 | 426K 次 Race Detector | ✅ 零竞态 |
-| RateLimiter | 锁序反转死锁 | 100 轮死锁专项 | ✅ 测试通过 |
-| Pool | `Close` 并发 Submit | 多层防御链交叉验证 | ✅ 无逃逸路径 |
-| Pool | `WaitTimeout` goroutine 泄漏 | 50 轮并发关闭 | ✅ 有超时兜底 |
-| Group | `AutoScale`+`Go`/`Reset` 竞态 | 30 轮 × 100 并发 | ✅ 无竞态 |
-| **Group** | **WaitContext/WaitTimeout 取消传播缺陷** | **90 用例交叉验证 + -race** | **✅ 已根治** |
-| Pool | `Resize`+`Submit` 交替 | 500 万任务 Race | ✅ 零报警 |
-| MultiPool | `Submit`+`Wait`（8 分片） | 1000 万任务 Race | ✅ 零报警 |
-
-> 所有验证均经过**正向（正常路径）+ 反向（边界/异常路径）**双重验证，确保安全边界严密封装。
-
----
+验证结果以 [当前报告](docs/test_report.md) 的命令和环境为准。吞吐取决于回调、并发度、结果保留方式和硬件，应在业务负载下测试。Pool 结果存储使用 32 路分片互斥锁。
 
 ## 5 秒上手
 
@@ -127,12 +92,12 @@ import (
 func main() {
     ctx := context.Background()
 
-    // 创建协程池：复用 goroutine，内置 32 路无锁分片结果存储
+    // 创建协程池：复用 goroutine，内置 32 路分片锁结果存储
     async.Pool[int]().Context(ctx).
         Worker(16).
-        MaxResults(10_000).                     // 防 OOM
+        MaxResults(10_000).                     // 限制主结果切片
         RingBuf(5_000).                         // 环形缓冲兜底
-        Run(func(ctx context.Context, p *async.Pool[int]) error {
+        Run(func(ctx context.Context, p *async.PoolInstance[int]) error {
             for i := 0; i < 100_000; i++ {
                 p.Submit(ctx, func(ctx context.Context) (int, error) {
                     return i * i, nil
@@ -145,22 +110,26 @@ func main() {
 
     // 数据并行：Slice 对切片元素做并发值变换
     nums := []int{1, 2, 3, 4, 5}
-    mapResults := async.Slice(ctx, nums).
+    mapResults := async.SliceWith[string](ctx, nums).
         DefaultWorker().
         Map(func(ctx context.Context, n int) (string, error) {
             return fmt.Sprintf("square(%d)=%d", n, n*n), nil
         })
 
-    // 重试 + 指数退避
-    data, err := async.Retry[*User](ctx).
+    // 重试 + 指数退避：示例中第一次失败、第二次成功
+    attempts := 0
+    data, err := async.Retry[int](ctx).
         Exponential().
         MaxRetries(3).
         Backoff(100*time.Millisecond, 5*time.Second).
-        Execute(func(ctx context.Context) (*User, error) {
-            return callExternalAPI(ctx)
+        Execute(func(ctx context.Context) (int, error) {
+            attempts++
+            if attempts == 1 { return 0, fmt.Errorf("temporary failure") }
+            return 42, nil
         })
     if err != nil {
-        log.Fatalf("RPC 调用失败: %v", err)
+        fmt.Println("重试失败:", err)
+        return
     }
 
     fmt.Println(mapResults.Values(), data)
@@ -217,13 +186,13 @@ func init() {
     // 设置全局默认超时（Group/Pool 未单独设置时生效）
     async.SetDefaultTimeout(30 * time.Second)
 
-    // 设置提交超时（worker 满时最多等多久才返回 ErrSubmitTimeout）
+    // 记录全局提交超时值；当前 Pool/Group 不会自动应用，请在 Builder/实例上设置 SubmitTimeout
     async.SetSubmitTimeout(5 * time.Second)
 
     // 设置任务失败日志级别（Debug / Info / Warn / Error / Silent）
     async.SetTaskFailLogLevel(async.LogLevelWarn)
 
-    // 注入自定义 Logger（实现 core.Logger 接口）
+    // 注入自定义 Logger（实现 async.Logger 接口）
     async.SetLogger(myLogger)
 }
 ```
@@ -231,15 +200,15 @@ func init() {
 | 配置项 | 函数 | 默认值 | 说明 |
 |--------|------|--------|------|
 | 默认超时 | `SetDefaultTimeout(d)` | 30s | Group/Pool 未单独设置超时时的默认值 |
-| 提交超时 | `SetSubmitTimeout(d)` | 5s | Submit 等待空闲 worker 的最大时长 |
+| 提交超时 | `SetSubmitTimeout(d)` | 全局记录值初始 5s | 当前仅保存/读取该值；Pool/Group 需显式设置 Builder/实例级 SubmitTimeout，实例默认无限等待 |
 | 清理监视 | `SetMaxCleanupDuration(d)` | 30min | 内部辅助函数使用；当前 Pool/Group 等待方法不读取此设置 |
 | 失败日志级别 | `SetTaskFailLogLevel(lvl)` | Error | 任务失败时的日志级别 |
-| Trace 日志 | `SetTraceLogEnabled(bool)` | 开 | 是否输出 Trace 级别日志 |
-| 自定义 Logger | `SetLogger(logger)` | 静默 | 注入自定义日志实现（模块级，非 Context 感知） |
+| Trace 日志 | `SetTraceLogEnabled(bool)` | 开 | 控制生成或设置 TraceID 时是否通过 Logger 注入上下文；不禁用 TraceID |
+| 自定义 Logger | `SetLogger(logger)` | 静默 | 全局注入实现 `async.Logger` 的日志器，日志调用接收 context |
 
 ### TraceID 管理
 
-所有 API 内部自动调用 `EnsureTraceID`，如果上游已注入 trace_id（如 gin/go-zero/tRPC 中间件），直接传 ctx 即可，内部自动识别并复用。
+Pool/Group 的构建器入口、Slice 和 Task 等会调用 `EnsureTraceID`；如果上游已注入有效 trace_id，会识别并复用。`SafeCall` 等仅透传上下文的辅助函数不自动注入；需要统一 trace_id 时可在请求入口显式调用。
 
 ```go
 // 确保 ctx 中有 trace_id（没有则自动生成 32 位随机串）
@@ -263,7 +232,7 @@ newID := async.NewTraceID()
 > async.SetTraceIDKey(trace.TraceKey)        // go-zero 框架
 > ```
 
-> **不需要手动调用 EnsureTraceID**：文档示例中的 `ctx := async.EnsureTraceID(context.Background())` 仅为独立 demo 模拟。所有 API（Pool.Run、Group.Build、Slice 等）内部自动处理。
+> Pool.Run、Group.Build、Slice 等入口会自动处理 TraceID。对辅助函数或自定义 goroutine，可在上游调用 `EnsureTraceID` 后统一传递返回的 context。
 
 ---
 
@@ -275,10 +244,10 @@ async 提供了多种并发模式，根据场景选择：
 |------|------|------|
 | 长期运行的后台服务，反复提交任务 | [Pool（协程池）](docs/pool.md) | goroutine 复用，需手动 Close |
 | 单 Pool 达到 QPS 上限 | [MultiPool（水平分片池）](docs/pool.md#multipool水平分片协程池) | N 个 Pool 实例，round-robin 分发 |
-| 一次性批量任务（数据迁移、批量 API 调用） | [Group（任务组）](docs/group.md) | 用完即销毁，每次 Go 新建 goroutine |
+| 一次性批量任务（数据迁移、批量 API 调用） | [Group（任务组）](docs/group.md) | 使用固定 worker，等待结束后可 Reset 复用 |
 | 单 Group 锁竞争瓶颈 | [MultiGroup（水平分片组）](docs/group.md#multigroup水平分片任务组) | N 个 Group 实例，round-robin 分发 |
-| 单个异步任务，fire-and-forget | [Task（异步任务）](docs/task.md) | 不阻塞当前 goroutine，支持超时 |
-| 千万级高并发任务，需限制 goroutine 数 | [BoundedRunner（限流执行器）](docs/task.md#boundedrunner限流执行器) | 信号量限流，避免 goroutine 爆炸 |
+| 单个异步任务，fire-and-forget | [Task（异步任务）](docs/task.md) | 后台执行，支持协作式超时；Bounded 满时提交可能阻塞 |
+| 大批量异步任务，需限制业务并发 | [BoundedRunner（限流执行器）](docs/task.md#boundedrunner限流执行器) | 在固定生产者内同步提交，复用许可并分批回收句柄 |
 | 跨 Pool 实例分发（独立配置、Key 哈希） | [ShardedPool（分片协程池）](docs/shard.md) | 多 Pool 独立实例，Hash/RoundRobin |
 | 跨 Group 实例分发 | [ShardedGroup（分片任务组）](docs/shard.md) | 多 Group 独立实例，Hash/RoundRobin |
 
@@ -288,15 +257,18 @@ async 提供了多种并发模式，根据场景选择：
 // Run 模式：自动创建→执行→Close
 async.Pool[string]().Context(ctx).
     Worker(16).
-    Run(func(ctx context.Context, p *async.Pool[string]) error {
+    Run(func(ctx context.Context, p *async.PoolInstance[string]) error {
         for _, url := range urls {
             p.Submit(ctx, func(ctx context.Context) (string, error) {
                 return httpGet(ctx, url)
             })
         }
-        results, err := p.Wait()
-        // 处理 results...
-        return err
+        results := p.Wait()
+        for _, r := range results {
+            if r.Err != nil { return r.Err }
+            // 处理 r.Value...
+        }
+        return nil
     })
 ```
 
@@ -304,13 +276,13 @@ async.Pool[string]().Context(ctx).
 
 ### MultiPool - 水平分片协程池
 
-当单 Pool 达到 QPS 上限时（~37 万 QPS），通过水平扩展突破瓶颈（8 分片可达 ~300 万 QPS）：
+当监控或业务压测确认单 Pool 存在调度或锁竞争瓶颈时，可评估水平分片；收益取决于任务开销、硬件和结果保留方式：
 
 ```go
 async.PoolMulti[string]().Context(ctx).
     Shards(8).              // 8 个分片
     Worker(16).             // 每分片 16 worker
-    Run(func(ctx context.Context, mp *pool.MultiPool[string]) error {
+    Run(func(ctx context.Context, mp *async.MultiPool[string]) error {
         for _, url := range urls {
             mp.Submit(ctx, func(ctx context.Context) (string, error) {
                 return httpGet(ctx, url)
@@ -322,7 +294,7 @@ async.PoolMulti[string]().Context(ctx).
     })
 ```
 
-> **⚠️ 分片结果不保证全局顺序**：各分片结果依次合并，但分片之间不按时间排序。需要保序请使用非分片版本。
+> **⚠️ 分片结果不保证全局顺序**：各分片结果依次合并。需要还原顺序时，可在任务结果中携带序号并在收集后排序；非分片 Pool 的主结果按提交位置排列，但环形缓冲溢出结果另按写入顺序追加且可能丢失。
 
 > 详细说明请参阅：[协程池 (Pool) 文档](docs/pool.md) | [MultiPool 文档](docs/pool.md#multipool水平分片协程池)
 
@@ -347,7 +319,7 @@ results := g.Wait()
 // Run 模式：自动管理生命周期
 async.Group[int]().Context(ctx).
     Worker(4).
-    Run(func(ctx context.Context, g *group.Group[int]) error {
+    Run(func(ctx context.Context, g *async.GroupInstance[int]) error {
         g.Go(ctx, func(ctx context.Context) (int, error) {
             return fetchUserCount(ctx), nil
         })
@@ -372,7 +344,7 @@ defer g.Close()
 g.Wait()
 
 // 自定义扩缩容配置
-g := async.Group[int]().Context(ctx).
+customGroup := async.Group[int]().Context(ctx).
     Worker(4).
     AutoScale(&async.AutoScaleConfig{
         MinWorkers:       2,
@@ -380,10 +352,11 @@ g := async.Group[int]().Context(ctx).
         CheckInterval:    3 * time.Second,
         ScaleUpChecks:    2,
         ScaleDownChecks:  3,
-        ScaleFactor:      0.5,
+        ScaleUpFactor:    1.5,
+        ScaleDownFactor:  0.75,
     }).
     Build()
-defer g.Close()
+defer customGroup.Close()
 ```
 
 **GroupVoid（无返回值任务组）：**
@@ -404,7 +377,7 @@ nr.Wait()
 async.GroupVoid().Context(ctx).
     Worker(16).
     DefaultAutoScale().
-    Run(func(ctx context.Context, nr *group.NoResult) error {
+    Run(func(ctx context.Context, nr *async.GroupNoResult) error {
         for _, record := range records {
             nr.Go(ctx, func(ctx context.Context) error {
                 return db.Insert(ctx, record)
@@ -422,7 +395,7 @@ async.GroupVoid().Context(ctx).
 async.GroupMulti[int]().Context(ctx).
     Shards(8).       // 8 分片
     Worker(50).      // 每分片 50 并发 = 400 并发总量
-    Run(func(ctx context.Context, mg *group.MultiGroup[int]) error {
+    Run(func(ctx context.Context, mg *async.MultiGroup[int]) error {
         for i := 0; i < 10000; i++ {
             mg.Go(ctx, func(ctx context.Context) (int, error) {
                 return compute(ctx), nil
@@ -432,7 +405,7 @@ async.GroupMulti[int]().Context(ctx).
     })
 ```
 
-> **⚠️ goroutine 不复用**：与 MultiPool 不同，MultiGroup 每次 `Go()` 启动新 goroutine。适合一次性批量任务，不适合百万级高频提交。
+> **⚠️ 资源与结果存储**：MultiGroup 由多个 Group 组成，各分片使用 worker 执行任务并保留结果。大量任务应评估总 worker 数和结果内存占用。
 
 ### Task - 异步任务
 
@@ -470,10 +443,10 @@ _, err = tk.Result()
 
 ### BoundedRunner - 限流执行器
 
-限制并发 goroutine 数的异步任务执行器，通过信号量控制最大并发数，避免高并发场景下 goroutine 爆炸。
+通过信号量限制同时占用许可的业务回调数；调用方在许可耗尽时同步等待，须复用同一构建器。
 
 ```go
-// 创建限流执行器：限制最多 1000 个并发 goroutine
+// 创建限流执行器：最多 1000 个回调同时持有许可
 builder := async.Task[int]().Context(ctx).Bounded(1000)
 
 for i := 0; i < 10_000_000; i++ {
@@ -484,7 +457,7 @@ for i := 0; i < 10_000_000; i++ {
 }
 ```
 
-> **⚠️ 内存注意**：BoundedRunner 限制的是**同时运行**的 goroutine 数，不是总任务数。一次性提交千万个任务需要存储等量的 `*AsyncResult[T]`，注意内存占用。
+> **⚠️ 内存注意**：上限约束业务许可，不限制总任务数、调用方创建的等待提交 goroutine、业务子 goroutine 或结果投递收尾。应由固定数量的生产者同步提交，避免先为全部输入创建 goroutine。保留全部句柄也占用内存，应分批等待并处理错误；上面丢弃句柄的示例只展示提交方式，生产收尾见 [Task 批量示例](docs/task.md#生产环境使用建议)。
 
 > 详细说明请参阅：[异步任务 (Task) 文档](docs/task.md) | [分片 (Shard) 文档](docs/shard.md)
 
@@ -494,16 +467,17 @@ for i := 0; i < 10_000_000; i++ {
 
 对切片元素进行并发处理，是 async 最常用的功能。使用 `Slice` / `SliceWith` 链式 Builder。
 
-> **⚠️ Map / ForEach 不保序**：并发版本不保证处理顺序。需要保序请使用 `Serial()` 模式。
+> **⚠️ 回调执行顺序**：并发 Map / ForEach 不保证回调的开始或完成顺序。需要依次执行回调时使用 `Serial()`；普通 Slice.Map 的结果槽位仍按输入索引排列。
 
 ### Map - 并发映射
 
 ```go
 // 同类型 Map：int → int
-r := async.Slice(ctx, items).
+nums := []int{1, 2, 3}
+r := async.Slice(ctx, nums).
     Worker(16).
-    Map(func(ctx context.Context, item string) (Result, error) {
-        return process(ctx, item)
+    Map(func(ctx context.Context, n int) (int, error) {
+        return n * 2, nil
     })
 
 if r.Err() {
@@ -512,7 +486,7 @@ if r.Err() {
 values := r.Values()
 
 // 跨类型 Map：int → string
-r := async.SliceWith[string](ctx, nums).
+textResults := async.SliceWith[string](ctx, nums).
     DefaultWorker().
     Map(func(ctx context.Context, n int) (string, error) {
         return strconv.Itoa(n), nil
@@ -534,7 +508,7 @@ if r.Err() {
 fmt.Printf("成功: %d, 失败: %d\n", r.OkCount(), r.FailCount())
 ```
 
-### Reduce - 并发聚合
+### Reduce - 串行聚合
 
 ```go
 sum, err := async.Slice(ctx, nums).
@@ -547,7 +521,7 @@ sum, err := async.Slice(ctx, nums).
 
 ```go
 // 每 100 条一批，批量处理，4 并发
-r := async.Slice(ctx, records).
+r := async.SliceWith[int64](ctx, records).
     Worker(4).
     Chunk(100).
     MapBatch(func(ctx context.Context, batch []Record) (int64, error) {
@@ -564,7 +538,7 @@ r := async.Slice(ctx, records).
 | `Worker(n)` | 设置并发度 |
 | `DefaultWorker()` | 使用默认 IO 并发度 |
 | `Serial()` | 切换为串行模式 |
-| `FailFast()` | 首个失败立即取消其他任务 |
+| `FailFast()` | 失败后请求取消其他任务，已开始的回调须响应 context |
 | `Timeout(d)` | 指定单任务超时 |
 | `Chunk(size)` | 启用分块模式 |
 | `Shards(n)` | 启用水平分片 |
@@ -574,7 +548,7 @@ r := async.Slice(ctx, records).
 r := async.Slice(ctx, items).Serial().Map(fn)
 
 // 并行 + FailFast + 超时 + 分块
-r := async.Slice(ctx, items).
+r = async.Slice(ctx, items).
     Worker(16).
     FailFast().
     Timeout(5*time.Second).
@@ -619,17 +593,19 @@ vals = r.Must()           // 提取值，有错误则 panic
 
 | 方法 | 返回 | 说明 |
 |------|------|------|
-| `r.Error()` | `error` | 第一个错误（nil = 全部成功） |
-| `r.Ok()` | `bool` | 是否全部成功 |
+| `r.Error()` | `error` | 汇总错误优先，否则返回保留结果中的首个错误；无记录错误时为 nil |
+| `r.Ok()` | `bool` | `Error() == nil`，空结果也可为 true |
 | `r.Err()` | `bool` | 是否有错误 |
-| `r.Values()` | `[]R` | 提取所有成功的值 |
-| `r.Errors()` | `[]error` | 提取所有错误 |
-| `r.Results()` | `[]async.Result[R]` | 获取所有原始结果 |
-| `r.First()` | `(R, bool)` | 获取第一个成功的值 |
+| `r.Values()` | `[]R` | 提取保留槽位中 Err 为 nil 的值，不检查 Occupied |
+| `r.Errors()` | `[]error` | 逐项错误及非摘要的顶层错误，不重复加入摘要错误 |
+| `r.Results()` | `[]async.Result[R]` | 获取内部保留结果切片的直接引用 |
+| `r.First()` | `(R, bool)` | 获取首个 Err 为 nil 的槽位值，不检查 Occupied |
 | `r.Unwrap()` | `([]R, error)` | 值与错误元组 |
 | `r.Must()` | `[]R` | 提取值，有错误则 panic |
-| `r.Len()` | `int` | 结果总数 |
+| `r.Len()` | `int` | 保留结果槽位数，含失败项及未占用空槽 |
 | `r.FailValues()` | `[]any` | 失败元素的原始输入值 |
+
+`Ok()` 和错误列表只反映已经记录的错误，不能单独证明全部输入均已执行；取消、FailFast、池结果上限或空槽都需结合对应入口核对。`Values()` 和 `First()` 不检查 `Occupied`，零值空槽也可能被当作无错误值。需要完整业务结果时同时核对输入关联、完成统计及保留配置。
 
 ### ForEachResult
 
@@ -647,12 +623,12 @@ fail := r.FailCount()
 | 方法 | 返回 | 说明 |
 |------|------|------|
 | `r.Error()` | `error` | 第一个错误 |
-| `r.Ok()` | `bool` | 是否全部成功 |
-| `r.Total()` | `int64` | 总任务数 |
-| `r.OkCount()` | `int64` | 成功数量 |
-| `r.FailCount()` | `int64` | 失败数量 |
+| `r.Ok()` | `bool` | 是否未保存首错，空输入也为 true |
+| `r.Total()` | `int64` | 执行器记录的总项数，批量入口的单位见对应方法 |
+| `r.OkCount()` | `int64` | `Total() - FailCount()` |
+| `r.FailCount()` | `int64` | 执行器记录的失败项数 |
 
-> **注意**：`OkCount()` 只统计已完成且成功的任务；运行中、失败、取消、拒绝和 panic 不计入。批量统计建议在 `ForEach` 返回后读取。
+> **注意**：这些值来自终端操作保存的统计，不重新执行或查询任务。取消或 FailFast 后可能只处理部分输入；核对全部输入是否执行时，还需结合该入口的未执行项规则。
 
 ---
 
@@ -663,7 +639,7 @@ fail := r.FailCount()
 > **⚠️ 生产环境用退避重试**：高频无间隔重试会打爆后端。强烈推荐指数退避 + Backoff 上限。
 
 ```go
-// 指数退避重试：100ms → 200ms → 400ms → 800ms（上限 5s）
+// 最多重试三次：重试前分别等待 100ms、200ms、400ms（配置上限 5s）
 result, err := async.Retry[*Response](ctx).
     Exponential().
     MaxRetries(3).
@@ -673,7 +649,7 @@ result, err := async.Retry[*Response](ctx).
     })
 
 // 带每次调用超时
-result, err := async.Retry[*Response](ctx).
+result, err = async.Retry[*Response](ctx).
     Exponential().
     MaxRetries(3).
     Backoff(100*time.Millisecond, 5*time.Second).
@@ -683,7 +659,7 @@ result, err := async.Retry[*Response](ctx).
     })
 
 // 线性退避重试（每次等 1 秒）
-err := async.RetryVoid(ctx).
+err = async.RetryVoid(ctx).
     Linear().
     MaxRetries(5).
     Backoff(1*time.Second, 0).
@@ -791,6 +767,8 @@ import (
     "context"
     "fmt"
     "log"
+    "io"
+    "net/http"
     "time"
 
     "github.com/chichengyu/async"
@@ -807,8 +785,8 @@ func main() {
     async.Pool[string]().Context(ctx).
         Worker(16).
         MaxResults(100_000).
-        Run(func(ctx context.Context, p *async.Pool[string]) error {
-            urls := []string{"url1", "url2", "url3", "url4", "url5"}
+        Run(func(ctx context.Context, p *async.PoolInstance[string]) error {
+            urls := []string{"https://example.com", "https://example.org"}
             for _, url := range urls {
                 u := url
                 p.Submit(ctx, func(ctx context.Context) (string, error) {
@@ -819,12 +797,19 @@ func main() {
                         Backoff(100*time.Millisecond, 5*time.Second).
                         PerCallTimeout(3 * time.Second).
                         Execute(func(ctx context.Context) (string, error) {
-                            return httpGetWithTimeout(ctx, u)
+                            req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+                            if err != nil { return "", err }
+                            resp, err := http.DefaultClient.Do(req)
+                            if err != nil { return "", err }
+                            defer resp.Body.Close()
+                            if resp.StatusCode >= 400 { return "", fmt.Errorf("HTTP %d", resp.StatusCode) }
+                            body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+                            return string(body), err
                         })
                 })
             }
 
-            results, _ := p.Wait()
+            results := p.Wait()
 
             // 第四步：处理结果
             for _, r := range results {
@@ -847,14 +832,14 @@ func main() {
 
 | # | 检查项 | 说明 |
 |---|--------|------|
-| 1 | ✅ 全局配置 | `init()` 中设置 `SetDefaultTimeout` / `SetSubmitTimeout` / `SetLogger` |
-| 2 | ✅ 超时必设 | Pool/Group/Task 显式设置 `Timeout(d)`，避免永久阻塞 |
-| 3 | ✅ 生命周期 | Pool 用 `Run(fn)` 自动管理；Build 模式必须 `defer Close()` |
-| 4 | ✅ 内存控制 | `MaxResults(100_000)` + `RingBuf(50_000)` 防止 OOM |
+| 1 | ✅ 全局配置 | 启动时统一设置默认超时和日志器；全局 `SetSubmitTimeout` 当前仅保存值，提交超时需在 Builder/实例显式设置 |
+| 2 | ✅ 超时协作 | Pool/Group/Task 显式设置 `Timeout(d)`，回调及下游调用必须响应 context，超时不能强制终止回调 |
+| 3 | ✅ 生命周期 | Pool 用 `Run(fn)` 自动管理；Group Build 后由调用方 Wait/Close，建议立即 defer Close 覆盖提前返回 |
+| 4 | ✅ 内存控制 | `MaxResults(100_000)` 限制主结果，`RingBuf(50_000)` 缓冲溢出结果；仍需评估整体内存及丢失风险 |
 | 5 | ✅ 背压策略 | `MaxPending(n)` + `OverflowError` 而非默认阻塞 |
 | 6 | ✅ RateLimiter | 用完必须 `defer rl.Close()`，内部有 ticker goroutine |
 | 7 | ✅ Retry 退避 | 生产用 `Exponential().Backoff(initial, max)`，不用纯 Retry |
-| 8 | ✅ Group 上限 | 任务数 > 5 万切换到 Pool，避免 goroutine 爆炸 |
+| 8 | ✅ 容量评估 | Group 使用固定 worker；根据队列、保留结果及业务耗时压测，持续提交场景可选择 Pool |
 | 9 | ✅ FailFast 取舍 | 失败后取消其余工作；检查各项结果以保留已完成的成功值 |
 | 10 | ✅ Streaming 消费 | 启用 Streaming 必须有消费者 goroutine，避免 worker 阻塞 |
 
@@ -866,15 +851,15 @@ func main() {
 
 | 包 | 说明 | 文档 |
 |---|---|---|
-| `async` | 顶层入口，重导出所有子包的类型与函数 | — |
-| `core` | 基础类型（Result/PanicError）、错误、日志、全局配置 | — |
+| `async` | 顶层入口，重导出所有子包的类型与函数 | [方法参考](docs/api/async.md) |
+| `core` | 基础类型（Result/PanicError）、错误、日志、全局配置 | [基础方法](docs/api/core.md) · [全局配置](docs/config.md) |
 | `pool` | 泛型协程池 `Pool[T]`，复用 goroutine，**含 MultiPool 水平分片** | [pool.md](docs/pool.md) |
 | `group` | 泛型任务组 `Group[T]`，一次性批量并发，**含 MultiGroup 水平分片** | [group.md](docs/group.md) |
 | `shard` | 分片分发 `ShardedPool[T]` / `ShardedGroup[T]`，分摊到多独立实例 | [shard.md](docs/shard.md) |
-| `task` | 单个异步任务 `Task[T]` 与可取消 `AsyncResult[T]`，**含 BoundedRunner 限流执行器** | [task.md](docs/task.md) |
-| `mapreduce` | Slice Builder 链式数据并行：Map/ForEach/Reduce/Chunk | — |
-| `retry` | 指数退避/线性退避重试与限速控制 | — |
-| `ratelimit` | 速率限制器（令牌桶/滑动窗口/自适应/分片） | — |
+| `task` | 异步结果 `AsyncResult[T]` 与可取消业务 context 的 `TaskHandle[T]`，**含 BoundedRunner 限流执行器** | [task.md](docs/task.md) |
+| `mapreduce` | Slice Builder 链式数据并行：Map/ForEach/Reduce/Chunk | [mapreduce.md](docs/mapreduce.md) |
+| `retry` | 指数退避/线性退避重试与限速控制 | [retry.md](docs/retry.md) |
+| `ratelimit` | 速率限制器（令牌桶/滑动窗口/自适应/分片） | [ratelimit.md](docs/ratelimit.md) |
 | `pipeline` | 多阶段数据处理管道，**含 ParallelPipeline 支持水平分片** | [pipeline.md](docs/pipeline.md) |
 
 ---
@@ -909,7 +894,7 @@ async.IOMulti(n)  // 自定义倍数 = runtime.NumCPU() * n
 | `ErrGroupWaiting` | Group Wait 期间调用 Go | 禁止在等待期间提交新任务 |
 | `ErrSkipped` | FailFast 模式下任务被跳过 | 前置任务失败触发级联跳过 |
 | `ErrRateLimiterStopped` | 限流器已停止后请求 | 调用 Stop() 或 Close() 后 |
-| `ErrTimeout` | 操作超时 | SubmitTimeout / WaitTimeout 触发 |
+| `ErrTimeout` | AsyncResult.WaitTimeout 本次等待到期 | Submit 入队超时使用 ErrSubmitTimeout；Pool/Group 等待通过 bool 报告完成状态 |
 | `ErrQueueOverflow` | 背压队列满，任务被拒绝 | 配合 MaxPending + OverflowError |
 
 ---
@@ -954,7 +939,7 @@ async.IOMulti(n)  // 自定义倍数 = runtime.NumCPU() * n
 | `.Parallel()` | 切换并行模式 |
 | `.Worker(n)` | 设置并发度 |
 | `.DefaultWorker()` | 使用默认 IO 并发度 |
-| `.DefaultPool()` | 创建默认并发度协程池并注入 |
+| `.DefaultPool()` | 标记终端执行时创建默认协程池，并自动关闭 |
 | `.Pool(p)` | 注入外部协程池（自行管理生命周期） |
 | `.PoolAuto(p)` | 注入外部协程池（自动 Close） |
 | `.Timeout(d)` | 设置单任务超时 |
@@ -962,12 +947,12 @@ async.IOMulti(n)  // 自定义倍数 = runtime.NumCPU() * n
 | `.Shards(n)` | 设置水平分片数 |
 | `.Chunk(size)` | 启用分块模式 |
 | `.Buf(size)` | 设置 Stream 缓冲区 |
-| `.Map(fn)` → `*SliceResult` | 并发映射 |
-| `.MapBatch(fn)` → `*SliceResult` | 分块映射 |
+| `.Map(fn)` → `*SliceResult[R]` | 并发映射 |
+| `.MapBatch(fn)` → `*SliceResult[R]` | 分块映射 |
 | `.ForEach(fn)` → `*ForEachResult` | 并发遍历 |
 | `.ForEachBatch(fn)` → `*ForEachResult` | 分块遍历 |
-| `.Reduce(init, fn)` → `(R, error)` | 并发聚合 |
-| `.Stream(fn, buf)` → `<-chan Result` | 流式 Map |
+| `.Reduce(init, fn)` → `(R, error)` | 按输入顺序串行聚合，不使用 worker 并发 |
+| `.Stream(fn, buf)` → `<-chan Result[R]` | 流式 Map |
 
 ### Pool Builder 链式方法
 
@@ -982,7 +967,7 @@ async.IOMulti(n)  // 自定义倍数 = runtime.NumCPU() * n
 | `.MaxPending(n)` | 设置最大排队任务数 |
 | `.Overflow(s)` | 设置溢出策略 |
 | `.OverflowBlock()` | 队列满阻塞 |
-| `.OverflowDrop()` | 队列满丢弃（默认） |
+| `.OverflowDrop()` | 达到正数 MaxPending 时丢弃新任务，提交可返回 nil；未配置策略时默认阻塞 |
 | `.OverflowError()` | 队列满返回错误 |
 | `.RingBuf(cap)` | 设置环形缓冲容量 |
 | `.MaxResults(n)` | 设置最大结果数 |
@@ -1003,7 +988,7 @@ async.IOMulti(n)  // 自定义倍数 = runtime.NumCPU() * n
 | `.Streaming(buf)` | 设置流式 buf |
 | `.ResultCallback(fn)` | 设置结果回调 |
 | `.AutoScale(config)` | 启用自动扩缩容 |
-| `.Build()` → `*Group[T]` | 终端方法：构建 Group（手动管理） |
+| `.Build()` → `*GroupInstance[T]` | 终端方法：构建 Group（手动管理，最终 Wait/Close） |
 | `.Run(fn)` | 终端方法：构建→执行→Close |
 
 ### Task Builder 链式方法
@@ -1013,11 +998,11 @@ async.IOMulti(n)  // 自定义倍数 = runtime.NumCPU() * n
 | `.Context(ctx)` | 设置上下文 |
 | `.WithTimeout(d)` | 设置超时 |
 | `.Bounded(max)` | 创建并使用最多 `max` 个并发任务的限流器 |
-| `.DefaultBounded()` | 使用默认 BoundedRunner |
+| `.DefaultBounded()` | 清除并发限制；后续任务不再经过本构建器的许可 |
 | `.Go(fn)` → `*AsyncResult[T]` | 启动带返回值异步任务 |
-| `.GoResult(fn)` → `*TaskHandle[T]` | 启动可取消异步任务 |
+| `.GoResult(fn)` → `TaskHandle[T]` | 启动可取消异步任务，返回值类型句柄 |
 | `.GoAct(fn)` → `*AsyncErr` | 启动无返回值异步任务 |
-| `.GoResultAct(fn)` → `*TaskErr` | 启动可取消无返回值任务 |
+| `.GoResultAct(fn)` → `TaskErr` | 启动可取消无返回值任务 |
 
 ### Retry Builder 链式方法
 
@@ -1052,16 +1037,16 @@ async.IOMulti(n)  // 自定义倍数 = runtime.NumCPU() * n
 | `.Context(ctx)` | 设置上下文 |
 | `.Stage(name, concurrency)` | 添加阶段 |
 | `.Execute(fn)` → `([]Result[T], error)` | 执行管道 |
-| `.ExecuteWithMeta(fn)` → `([]ResultWithMeta[T], error)` | 执行（带阶段元信息） |
+| `.ExecuteWithMeta(fn)` → `[]ResultWithMeta[T]` | 执行并返回阶段元信息；逐项检查 Result.Err |
 | `.ExecutePipe(fn, buf)` → `<-chan Result[T]` | 流式管道 |
 
 ### 全局配置
 
 | 函数 | 说明 |
 |------|------|
-| `SetDefaultTimeout(d)` | 全局默认超时 |
+| `SetDefaultTimeout(d)` | 后续新建 Pool/Group 的默认单任务 context 超时；不更新已有实例，Task 不读取 |
 | `GetDefaultTimeout()` | 获取默认超时 |
-| `SetSubmitTimeout(d)` | 全局提交超时 |
+| `SetSubmitTimeout(d)` | 保存供 GetSubmitTimeout 读取的全局值；Pool/Group 不自动应用，须在实例或构建器配置 |
 | `GetSubmitTimeout()` | 获取提交超时 |
 | `SetMaxCleanupDuration(d)` | 内部等待辅助函数的清理监视时长；不控制 Pool/Group 等待 |
 | `SetTaskFailLogLevel(lvl)` | 任务失败日志级别 |
@@ -1080,26 +1065,35 @@ async.IOMulti(n)  // 自定义倍数 = runtime.NumCPU() * n
 | `NewTraceID()` | 生成 trace_id |
 | `SafeCall[T,R](ctx, item, fn)` | 安全调用（捕获 panic） |
 | `SafeCallVoid[T](ctx, item, fn)` | 安全调用（无返回值） |
-| `ForEachPool[T](ctx, items, fn, concurrency)` | 切片元素协程池并发，只关心 error |
+| `ForEachPool[T](ctx, items, fn, concurrency)` | 返回 `(*NoResultPool, error)`，池已关闭；error 汇总全部输入的首个提交/执行错误 |
 | `Must[T](val, err)` | 提取值，err!=nil 则 panic |
 
 ---
 
 ## Pool 方法详解
 
-`Pool[T]` 是泛型协程池，复用 goroutine，适合长期运行、反复提交任务的场景。内置 32 路无锁分片结果存储、自动扩缩容、流式结果消费、环形缓冲、背压控制。
+`Pool[T]` 是泛型协程池，复用 goroutine，适合长期运行、反复提交任务的场景。内置 32 路分片锁结果存储、自动扩缩容、流式结果消费、环形缓冲、背压控制。
 
 ### 创建与生命周期
 
 ```go
 // Run 模式（推荐）：自动管理生命周期
-async.Pool[string]().Context(ctx).
+err := async.Pool[string]().Context(ctx).
     Worker(10).
-    Run(func(ctx context.Context, p *async.Pool[string]) error {
-        p.Submit(ctx, fn)
+    MaxResults(0). // 此示例只有一项任务，明确保留结果
+    Run(func(ctx context.Context, p *async.PoolInstance[string]) error {
+        if err := p.Submit(ctx, fn); err != nil {
+            return err
+        }
         results := p.Wait()
-        return nil
+        if len(results) != 1 || !results[0].Occupied {
+            return errors.New("single task result missing")
+        }
+        return results[0].Err
     })
+if err != nil {
+    return err
+}
 
 // 注意：Run 内部自动 Close，无需手动 defer
 ```
@@ -1107,72 +1101,108 @@ async.Pool[string]().Context(ctx).
 ### 超时与上下文
 
 ```go
-// 设置任务总超时
-async.Pool[int]().Context(ctx).
+// 设置每次业务执行的 context 超时，不包含排队，不强制终止回调
+err := async.Pool[int]().Context(ctx).
     Worker(16).
     Timeout(30 * time.Second).
-    Run(func(ctx context.Context, p *async.Pool[int]) error {
+    Run(func(ctx context.Context, p *async.PoolInstance[int]) error {
         // ...
         return nil
     })
+if err != nil {
+    return err
+}
 ```
 
 ### 环形缓冲
 
 ```go
-async.Pool[string]().Context(ctx).
-    Worker(8).
-    RingBuf(10000).
-    OverflowDrop().
-    Run(func(ctx context.Context, p *async.Pool[string]) error {
-        for i := 0; i < 10_000_000; i++ {
-            p.Submit(ctx, fn)
-        }
-        // 分批取出结果
-        for {
-            batch := p.Flush(5000)
-            if len(batch) == 0 {
-                break
+// 每批最多 1000 项，覆盖全部输入；逐批等待和回收
+for start := 0; start < len(items); start += 1000 {
+    batchItems := items[start:min(start+1000, len(items))]
+    err := async.Pool[string]().Context(ctx).
+        Worker(8).
+        MaxResults(0). // 此有限批次完整保留主结果，环形缓冲镜像同一批
+        RingBuf(1000).
+        OverflowDrop().
+        Run(func(ctx context.Context, p *async.PoolInstance[string]) error {
+            for _, item := range batchItems {
+                if err := p.Submit(ctx, func(ctx context.Context) (string, error) {
+                    return process(ctx, item)
+                }); err != nil {
+                    return err
+                }
             }
-            processBatch(batch)
-        }
-        return nil
-    })
+            // 先完成任务；只用主结果检查错误，避免与镜像重复执行业务处理
+            for _, result := range p.Wait() {
+                if result.Err != nil {
+                    return result.Err
+                }
+            }
+            // 任务已结束后，空缓冲才表示本批镜像已取完
+            for {
+                batch := p.Flush(200)
+                if len(batch) == 0 {
+                    break
+                }
+                processBatch(batch)
+            }
+            return nil
+        })
+    if err != nil {
+        return err
+    }
+}
 ```
 
 ### 背压控制
 
 ```go
 // 最多允许 1000 个任务排队，超出则返回错误
-async.Pool[string]().Context(ctx).
+err := async.Pool[string]().Context(ctx).
     Worker(8).
+    MaxResults(0). // 示例输入须为有限批次，明确保留每项错误
     MaxPending(1000).
     OverflowError().
-    Run(func(ctx context.Context, p *async.Pool[string]) error {
+    Run(func(ctx context.Context, p *async.PoolInstance[string]) error {
         for _, item := range items {
-            err := p.Submit(ctx, fn)
+            err := p.Submit(ctx, func(ctx context.Context) (string, error) {
+                return process(ctx, item)
+            })
             if errors.Is(err, async.ErrQueueOverflow) {
                 // 队列满，降级处理
                 fallbackProcess(item)
                 continue
             }
+            if err != nil {
+                return err
+            }
+        }
+        for _, result := range p.Wait() {
+            if result.Err != nil && !errors.Is(result.Err, async.ErrQueueOverflow) {
+                return result.Err
+            }
         }
         return nil
     })
+if err != nil {
+    return err
+}
 ```
 
 ### 流式结果消费
 
 ```go
-// 注意：流式消费通过 Pool 实例方法配置
-// 使用 Run 模式无法直接在 PoolBuilder 上配置 Streaming
-// 需使用 Build 风格或通过 Config 函数配置
-async.Pool[string]().Context(ctx).
+// PoolBuilder.Streaming(buf) 可直接配置流式缓冲；需同时启动消费者
+err := async.Pool[string]().Context(ctx).
     Worker(8).
+    MaxResults(0). // 示例输入须为有限批次，流之外保留完整结果用于核错
     Streaming(1024).
-    Run(func(ctx context.Context, p *async.Pool[string]) error {
+    Run(func(ctx context.Context, p *async.PoolInstance[string]) error {
         ch := p.StreamResults()
+        consumed := make(chan struct{})
         go func() {
+            defer close(consumed)
             for r := range ch {
                 if r.Ok() {
                     fmt.Println("实时收到:", r.Value)
@@ -1180,19 +1210,37 @@ async.Pool[string]().Context(ctx).
             }
         }()
 
+        var submitErr error
         for _, item := range items {
-            p.Submit(ctx, fn)
+            if err := p.Submit(ctx, func(ctx context.Context) (string, error) {
+                return process(ctx, item)
+            }); err != nil {
+                submitErr = err
+                break
+            }
         }
-        p.Wait()
+        results := p.Wait()
+        <-consumed // Wait 关闭流后，仍须等待消费者处理完已读结果
+        if submitErr != nil {
+            return submitErr
+        }
+        for _, result := range results {
+            if result.Err != nil {
+                return result.Err
+            }
+        }
         return nil
     })
+if err != nil {
+    return err
+}
 ```
 
 ---
 
 ## RateLimiter 方法详解
 
-### RateLimiter（令牌信号量）— 推荐模式
+### RateLimiter（定时补充令牌）
 
 ```go
 rl := async.Ratelimit(ctx).RateLimiter().
@@ -1235,12 +1283,13 @@ rl.Close()
 | 方法 | 说明 |
 |------|------|
 | `Token(ctx)` | 获取令牌，返回可 Release 的 Token |
-| `Release()` | 释放当前占用的令牌 |
-| `Acquire(ctx)` | 获取令牌（阻塞），需手动 Release |
-| `Wait(ctx)` | 阻塞等待直到获得令牌 |
+| `Release()` | 提前归还一个令牌；不校验调用方是否持有，重复释放可能增加额度 |
+| `Acquire(ctx)` | 按当前策略获取令牌；失败不得 Release，成功后按用途决定是否归还 |
+| `Wait(ctx)` | 等同 Acquire，遵循当前策略 |
 | `Resize(newRate)` | 动态调整令牌速率（并发安全） |
 | `WithStrategy(s)` | 令牌耗尽时策略 |
-| `Rate() int` | 返回当前速率 |
+| `Size() int` | 返回每 Per 窗口的配置速率 |
+| `Available() int` | 返回当前可用令牌数 |
 | `Close()` | 关闭限流器 |
 
 ### SlidingWindow
@@ -1251,7 +1300,7 @@ sw := async.Ratelimit(ctx).SlidingWindow().
 
 sw.Allow()     // 非阻塞：成功返回 true
 sw.AllowN(10)  // 一次占用 N 个计数
-sw.Current()   // 当前窗口内的计数
+// 无 Current 查询方法；调用方按业务需要记录获取结果。
 ```
 
 ### TokenBucket
@@ -1266,21 +1315,26 @@ tb.AllowN(50)
 
 ### Adaptive
 
+示例位于返回 `error` 的业务函数中，参数 `ctx` 非 nil，业务签名为 `doRequest(context.Context) error`。获取成功后注册释放，并把业务错误返回上层；生产中复用限流器，业务需及时响应 context。普通 Adaptive 没有后台补充 goroutine，也没有公开 `Close` 方法。
+
 ```go
 al := async.Ratelimit(ctx).Adaptive().
     MinWorker(5).MaxWorker(100).Build()
 
 if err := al.Acquire(ctx); err != nil {
-    return
+    return err
 }
-if err := doRequest(); err == nil {
-    al.RecordOk()
-} else {
+defer al.Release()
+if err := doRequest(ctx); err != nil {
     al.RecordFailure()
+    return err
 }
-al.Release()
-concurrency := al.Current()
+al.RecordOk()
+// 无 Current 查询方法；通过成功/失败记录驱动内部并发调整。
+return nil
 ```
+
+注意：有可用槽位时，已取消的 context 仍可能获取成功，业务必须自行响应取消。正常返回的失败、取消或超时记录失败；业务返回 nil 则记录成功。panic 或 `runtime.Goexit` 会执行释放 defer，但不会执行后续结果记录，也不会在这里转换成 error；需要统计异常时由业务边界处理。
 
 ---
 
@@ -1295,16 +1349,17 @@ ar := async.Task[*User]().Context(ctx).
     })
 
 user, err := ar.Wait()           // 阻塞等待（幂等）
-user, err := ar.WaitContext(ctx)  // 通过 context 取消等待
+user, err, completed := ar.WaitContext(ctx) // 第三个返回值表示是否取得任务结果
+fmt.Println(user, err, completed)
 
 select {
-case <-ar.Done():                 // 检查是否已完成（非阻塞）
-    user, err := ar.Wait()
+case r := <-ar.WaitCh():          // 获取已缓存或后续到达的结果
+    fmt.Println(r.Value, r.Err)
 default:
-    fmt.Println("任务仍在执行中...")
+    fmt.Println("结果通知尚未到达此通道")
 }
 
-ar.Cancel()                       // 取消任务
+user, err = ar.Cancel()           // 只限制本次等待，任务继续执行；就绪时返回结果
 ```
 
 ### TaskHandle[T]
@@ -1364,48 +1419,15 @@ all := results.Snapshot()
 
 | 方法 | 说明 |
 |------|------|
-| `Mu[T]()` | 创建空并发安全切片 |
+| `var mu async.Mu[T]` | 声明零值可用的并发安全切片 |
 | `Append(add func() T)` | 线程安全追加 |
-| `Snapshot() []T` | 获取所有元素的副本 |
+| `Snapshot() []T` | 获取元素槽位的浅拷贝；元素内部的指针、map、切片仍共享 |
 
 ---
 
-## 极限高并发测试报告简介
+## 测试与文档检查
 
-async 经过了 **440+ 用例、7 套测试体系、全子包 Race Detector 5 轮反复验证**，确保生产环境并发安全。
-
-### 深度交叉验证
-
-针对 5 项并发疑点（RateLimiter 锁序反转、Resize 并发竞态、Pool WaitTimeout goroutine 泄漏、Group AutoScale 竞态、Group WaitContext/WaitTimeout 取消传播缺陷）进行了系统性审查与验证，**4 项验证通过，1 项真实 Bug 已彻底修复，核心并发路径安全可靠**。
-
-### 核心吞吐指标
-
-| 组件 | 吞吐量 | 测试规模 |
-|------|--------|----------|
-| `Pool.Submit` + `Wait` | **370K ops/s** | 1 千万任务 |
-| `MultiPool` 8 分片 | **2.8M ops/s** | 1 千万任务 |
-| `Map` 千万元素 | **2.95 亿/s** | 1 千万元素 |
-| `Pipeline` 2 阶段 | **85M ops/s** | 1 千万元素 |
-| `RateLimiter Acquire/Release` | **924 万/s** | 100 万次 |
-| `TokenBucket.Allow` | **194 万/s** | 1 千万次 |
-| `SlidingWindow.Allow` | **159 万/s** | 1 千万次 |
-| `Retry` 内存函数 | **51M/s** | 100 万次 |
-
-### 极限压测（10M Race）
-
-| 测试场景 | 任务量 | Race 结果 |
-|----------|--------|-----------|
-| Pool Submit + Wait | 10,000,000 | ✅ 通过 |
-| Pool AutoScale 动态扩缩 | 10,000,000 | ✅ 通过 |
-| MultiPool 8 分片 | 10,000,000 | ✅ 通过 |
-| Map 千万元素 | 10,000,000 | ✅ 通过 |
-| TokenBucket.Allow | 10,000,000 | ✅ 通过 |
-| SlidingWindow.Allow | 10,000,000 | ✅ 通过 |
-| BoundedRunner 限流执行 | 10,000,000 | ✅ 通过 |
-
-> 📊 完整数据、Race Detector 全子包明细、Slice/Map/Ratelimit Chain 高并发矩阵，详见 [极限并发测试报告](docs/test_report.md)。
-
----
+实际运行范围见 [验证报告](docs/test_report.md)。方法签名、参数、调用片段、生产建议和注意事项见 [方法参考](docs/api/README.md)。修改后运行 go run ./docs/cmd/apidoc 更新参考，再使用 -check 检查漂移。
 
 ## License
 

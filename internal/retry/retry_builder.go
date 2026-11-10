@@ -75,7 +75,7 @@ type RetryChain[T any] struct {
 	mode limitMode // 当前限流模式
 
 	// RateLimiter / SlidingWindow 共用参数
-	rlRate   int           // RateLimiter 速率（每时间窗口操作次数）
+	rlRate   int           // RateLimiter 每窗口额度 / TokenBucket 每秒令牌数
 	rlPer    time.Duration // RateLimiter 时间窗口
 	rlBurst  int           // RateLimiter 突发容量
 	rlShards int           // RateLimiter 水平分片数
@@ -84,7 +84,6 @@ type RetryChain[T any] struct {
 	swShards int           // SlidingWindow 水平分片数
 
 	// TokenBucket 参数
-	tbRate     float64 // TokenBucket 每秒令牌生成速率
 	tbCapacity float64 // TokenBucket 最大令牌容量
 
 	// Adaptive 参数
@@ -199,6 +198,7 @@ func (c *RetryChain[T]) PerCallTimeout(d time.Duration) *RetryChain[T] {
 }
 
 // DefaultConfig 恢复默认配置：指数退避，最多重试 3 次，退避 100ms~30s，无每次调用超时。
+// 保留父 context、限流模式、各模式参数和分片数；不等同于重新创建构建器。
 //
 // 示例：
 //
@@ -232,7 +232,8 @@ func (c *RetryChain[T]) DefaultPerCallTimeout() *RetryChain[T] {
 	return c
 }
 
-// DefaultRate 使用默认限流速率（10/s）。
+// DefaultRate 将有效 Rate 恢复为 10，保留 Per。
+// RateLimiter 按 Per 窗口计数，TokenBucket 按秒计数。
 func (c *RetryChain[T]) DefaultRate() *RetryChain[T] {
 	c.rlRate = 0
 	return c
@@ -302,8 +303,8 @@ func (c *RetryChain[T]) RateLimiter() *RetryChain[T] {
 	return c
 }
 
-// Rate 设置 RateLimiter 速率：每 PerDuration 内允许的操作次数（int 版，RateLimiter/SlidingWindow 共用）。
-// TokenBucket 使用的是 float64 版 Rate（参数类型不同，Go 不支持方法重载，靠模式区分即可）。
+// Rate 设置 RateLimiter 每 Per 窗口额度或 TokenBucket 每秒令牌数。
+// n <= 0 时使用 10；与模式选择的调用顺序无关。SlidingWindow 使用 Limit 设置额度。
 //
 // 示例：
 //
@@ -336,7 +337,7 @@ func (c *RetryChain[T]) Burst(n int) *RetryChain[T] {
 // ──────────────────────── 模式二：TokenBucket ────────────────────────
 
 // TokenBucket 启用 TokenBucket 令牌桶限流模式。每次重试前检查令牌，拿不到时跳过等待退避重试。
-// 配置方法：Rate（float64 版）/ Capacity。
+// 配置方法：Rate(int) / Capacity(float64) / Shards(int)。
 //
 // 示例：
 //
@@ -429,7 +430,8 @@ func (c *RetryChain[T]) MaxWorker(n int) *RetryChain[T] {
 
 // ──────────────────────── 通用：分片配置 ────────────────────────
 
-// Shards 设置限流器水平分片数，降低锁竞争以支持极限高并发（4 种模式通用）。
+// Shards 设置本次执行所创建限流器的分片数（4 种模式通用）。
+// 单次 Execute 的尝试依次执行，分片不会使这些尝试并行，也不共享其他 Execute 的额度。
 // n <= 0 时自动使用 DefaultShardCount()。
 //
 // 示例：
@@ -455,7 +457,9 @@ func (c *RetryChain[T]) DefaultLogger() *RetryChain[T] { core.SetLogger(nil); re
 // ── 终端方法 ──
 
 // Execute 执行重试链，返回 (T, error)。
-// 重试耗尽后返回的错误包装最后一次尝试的错误。
+// 每次尝试前或退避时观察到父取消则返回 context 错误；不覆盖回调返回的成功，
+// 最后一次业务失败仍包装该错误，等待许可失败也可能以耗尽错误包装取消。
+// 最后一次若被 TokenBucket/SlidingWindow 拒绝，只包装该次限流错误，不保留此前业务错误。
 //
 // 示例：
 //
@@ -530,8 +534,8 @@ func (c *RetryChain[T]) ExecuteVoid(fn func(context.Context) error) error {
 	return err
 }
 
-// Run 统一执行方法，fn 签名为 func() error（无 context 参数，链内已有 ctx）。
-// 是 Execute / ExecuteVoid 的简化版，适合绝大多数重试场景。
+// Run 统一执行方法，fn 签名为 func() error，不接收链内或单次调用的 context。
+// 需要业务响应取消或单次超时时，使用 ExecuteVoid / RunVoid 并在回调内检查 context。
 //
 // 示例：
 //
@@ -584,10 +588,7 @@ func (c *RetryChain[T]) perOrDefault() time.Duration {
 }
 
 func (c *RetryChain[T]) tbRateOrDefault() float64 {
-	if c.tbRate <= 0 {
-		return 10
-	}
-	return c.tbRate
+	return float64(c.rateOrDefault())
 }
 
 func (c *RetryChain[T]) tbCapacityOrDefault() float64 {
@@ -688,9 +689,9 @@ func (c *RetryChain[T]) executeCore(
 		if err != nil || !acquired {
 			if attempt == c.maxRetries {
 				if err != nil {
-					return zero, fmt.Errorf("retry exhausted after %d attempts: %w", c.maxRetries+1, err)
+					return zero, fmt.Errorf("retry exhausted after %d attempts: %w", uint(c.maxRetries)+1, err)
 				}
-				return zero, fmt.Errorf("retry exhausted after %d attempts: rate limit exceeded", c.maxRetries+1)
+				return zero, fmt.Errorf("retry exhausted after %d attempts: rate limit exceeded", uint(c.maxRetries)+1)
 			}
 			backoff := computeBackoff(attempt, initialBackoff, maxBackoff)
 			if backoff > 0 {
@@ -705,42 +706,46 @@ func (c *RetryChain[T]) executeCore(
 			continue
 		}
 
-		// ── 执行 fn ──
-		val, err := c.invokeSafely(fn)
-		// Adaptive 记录结果
-		if al != nil {
-			if err == nil {
-				al.RecordOk()
-			} else {
-				al.RecordFailure()
+		// Scope cleanup to this attempt: Goexit and an escaping logger panic
+		// must release the permit, and retries must not accumulate defers.
+		val, err := func() (T, error) {
+			defer func() {
+				if rl != nil {
+					rl.Release()
+				}
+				if srl != nil {
+					srl.Release()
+				}
+				if al != nil {
+					al.Release()
+				}
+				if sal != nil {
+					sal.Release()
+				}
+			}()
+			val, err := c.invokeSafely(fn)
+			if al != nil {
+				if err == nil {
+					al.RecordOk()
+				} else {
+					al.RecordFailure()
+				}
 			}
-		}
-		if sal != nil {
-			if err == nil {
-				sal.RecordOk()
-			} else {
-				sal.RecordFailure()
+			if sal != nil {
+				if err == nil {
+					sal.RecordOk()
+				} else {
+					sal.RecordFailure()
+				}
 			}
-		}
-		// 释放 RateLimiter/Adaptive/Sharded* 占用的槽位
-		if rl != nil {
-			rl.Release()
-		}
-		if srl != nil {
-			srl.Release()
-		}
-		if al != nil {
-			al.Release()
-		}
-		if sal != nil {
-			sal.Release()
-		}
+			return val, err
+		}()
 
 		if err == nil {
 			return val, nil
 		}
 		if attempt == c.maxRetries {
-			return zero, fmt.Errorf("retry exhausted after %d attempts: %w", c.maxRetries+1, err)
+			return zero, fmt.Errorf("retry exhausted after %d attempts: %w", uint(c.maxRetries)+1, err)
 		}
 		backoff := computeBackoff(attempt, initialBackoff, maxBackoff)
 		if backoff > 0 {
@@ -753,11 +758,11 @@ func (c *RetryChain[T]) executeCore(
 			}
 		}
 	}
-	return zero, fmt.Errorf("retry exhausted after %d attempts", c.maxRetries+1)
+	return zero, fmt.Errorf("retry exhausted after %d attempts", uint(c.maxRetries)+1)
 }
 
 // acquire 尝试获取限流许可，返回 (是否获取成功, 错误)。
-// 对于 TokenBucket/SlidingWindow，未获取到返回 acquired=false 并自动等待退避。
+// 对于 TokenBucket/SlidingWindow，未获取到返回 acquired=false，由 executeCore 决定是否退避。
 // 对于 RateLimiter/Adaptive，错误表示 ctx 取消。
 func (c *RetryChain[T]) acquire(
 	attempt int,

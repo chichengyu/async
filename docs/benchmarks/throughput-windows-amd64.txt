@@ -1,0 +1,24 @@
+goos: windows
+goarch: amd64
+pkg: github.com/chichengyu/async/docs/benchmarks
+cpu: Intel(R) Core(TM) i7-14700F
+BenchmarkThroughputPool/Shards1-8  	 1541325	       815.1 ns/op	   1226866 tasks/s	     334 B/op	       6 allocs/op
+BenchmarkThroughputPool/Shards1-8  	 1507692	       764.4 ns/op	   1308261 tasks/s	     334 B/op	       6 allocs/op
+BenchmarkThroughputPool/Shards1-8  	 1595182	       777.8 ns/op	   1285614 tasks/s	     334 B/op	       6 allocs/op
+BenchmarkThroughputPool/Shards8-8  	 4249713	       290.3 ns/op	   3444136 tasks/s	     359 B/op	       6 allocs/op
+BenchmarkThroughputPool/Shards8-8  	 4114472	       299.4 ns/op	   3340261 tasks/s	     359 B/op	       6 allocs/op
+BenchmarkThroughputPool/Shards8-8  	 4053336	       286.2 ns/op	   3494543 tasks/s	     359 B/op	       6 allocs/op
+BenchmarkThroughputPool/Shards16-8 	 4518354	       257.8 ns/op	   3878759 tasks/s	     377 B/op	       6 allocs/op
+BenchmarkThroughputPool/Shards16-8 	 4822086	       245.6 ns/op	   4071119 tasks/s	     377 B/op	       6 allocs/op
+BenchmarkThroughputPool/Shards16-8 	 4853599	       253.3 ns/op	   3948237 tasks/s	     377 B/op	       6 allocs/op
+BenchmarkThroughputMapGet-8        	297522013	         3.846 ns/op	 260016573 lookups/s	       0 B/op	       0 allocs/op
+BenchmarkThroughputMapGet-8        	318176635	         3.727 ns/op	 268296482 lookups/s	       0 B/op	       0 allocs/op
+BenchmarkThroughputMapGet-8        	318373070	         3.817 ns/op	 262013495 lookups/s	       0 B/op	       0 allocs/op
+BenchmarkThroughputRateLimiter-8   	 7324419	       160.3 ns/op	   6237574 pairs/s	     144 B/op	       3 allocs/op
+BenchmarkThroughputRateLimiter-8   	 7667971	       159.6 ns/op	   6264405 pairs/s	     144 B/op	       3 allocs/op
+BenchmarkThroughputRateLimiter-8   	 7584452	       165.1 ns/op	   6057828 pairs/s	     144 B/op	       3 allocs/op
+BenchmarkThroughputPipeline-8      	   10000	    100268 ns/op	  40850724 items/s	  395404 B/op	      41 allocs/op
+BenchmarkThroughputPipeline-8      	   12696	     96602 ns/op	  42400709 items/s	  395404 B/op	      41 allocs/op
+BenchmarkThroughputPipeline-8      	   10000	    105659 ns/op	  38766242 items/s	  395404 B/op	      41 allocs/op
+PASS
+ok  	github.com/chichengyu/async/docs/benchmarks	32.377s

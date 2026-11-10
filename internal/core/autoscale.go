@@ -32,7 +32,7 @@ type AutoScaleConfig struct {
 	ScaleDownFactor float64
 }
 
-// DefaultAutoScaleConfig 返回生产级默认自动扩缩容配置：
+// DefaultAutoScaleConfig 返回默认自动扩缩容配置；生产容量需按业务负载验证：
 //
 //	MinWorkers = CPU*2
 //	MaxWorkers = CPU*100
@@ -57,7 +57,7 @@ func DefaultAutoScaleConfig() *AutoScaleConfig {
 	}
 }
 
-// Normalize 填充零值字段为默认值。
+// Normalize 原地把非正数字段填为默认值，不校验字段之间的约束或浮点有限性。
 func (c *AutoScaleConfig) Normalize() {
 	if c.MinWorkers <= 0 {
 		c.MinWorkers = runtime.NumCPU() * 2

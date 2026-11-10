@@ -35,13 +35,17 @@ func GoAct(ctx context.Context, fn func(context.Context) error) *AsyncResult[NoR
 	results := make(chan core.Result[NoResult], 1)
 	ar := &AsyncResult[NoResult]{results: results, ready: make(chan struct{})}
 	go func() {
+		returned := false
 		defer func() {
 			if r := recover(); r != nil {
 				results <- core.Result[NoResult]{Value: NoResult{}, Err: core.NewPanicError(r)}
+			} else if !returned {
+				results <- core.Result[NoResult]{Err: core.ErrTaskGoexit}
 			}
 			close(results)
 		}()
 		err := fn(ctx)
+		returned = true
 		results <- core.Result[NoResult]{Value: NoResult{}, Err: err}
 	}()
 	return ar
@@ -67,13 +71,17 @@ func GoResultAct(ctx context.Context, fn func(context.Context) error) Task[NoRes
 	ctx, cancel := context.WithCancel(ctx)
 	results := make(chan core.Result[NoResult], 1)
 	go func() {
+		returned := false
 		defer func() {
 			if r := recover(); r != nil {
 				results <- core.Result[NoResult]{Value: NoResult{}, Err: core.NewPanicError(r)}
+			} else if !returned {
+				results <- core.Result[NoResult]{Err: core.ErrTaskGoexit}
 			}
 			close(results)
 		}()
 		err := fn(ctx)
+		returned = true
 		results <- core.Result[NoResult]{Value: NoResult{}, Err: err}
 	}()
 	var once sync.Once

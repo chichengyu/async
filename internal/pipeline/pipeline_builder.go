@@ -12,7 +12,7 @@ import (
 //
 // 使用示例：
 //
-//	// 基础用法（100% 向后兼容）
+//	// 基础用法：阶段依次执行，阶段内并发
 //	results, err := async.Pipeline[Data](items).Context(ctx).
 //	    Stage("parse", 4).
 //	    Stage("enrich", 8).
@@ -68,10 +68,10 @@ func (b *PipelineBuilder[T]) Flow() *FlowBuilder[T] {
 	return newFlowBuilder(b.ctx, b.stages)
 }
 
-// ── 终端方法（向后兼容：直接调用原核心函数，100% 行为不变）──
+// ── 终端方法：按 FailFast、回调与超时配置选择执行路径 ──
 
 // Execute 依次执行各阶段，前一阶段输出作为后一阶段输入。
-// 保持向后兼容：直接代理到核心 Execute 函数。
+// 未启用 FailFast 时调用核心 Execute；启用后使用支持失败取消的内部执行路径。
 func (b *PipelineBuilder[T]) Execute(fn func(context.Context, string, T) (T, error)) ([]core.Result[T], error) {
 	ctx, cancel := b.applyTimeout()
 	defer cancel()
@@ -81,9 +81,11 @@ func (b *PipelineBuilder[T]) Execute(fn func(context.Context, string, T) (T, err
 	if b.resultCb != nil {
 		original := fn
 		fn = func(ctx context.Context, stage string, item T) (T, error) {
-			value, err := safeCall(ctx, original, stage, item)
-			result := core.Result[T]{Value: value, Err: err, Occupied: true}
-			invokeResultCallback(b.resultCb, stage, &result)
+			var result core.Result[T]
+			finishNativeStage(func() (T, error) { return safeCall(ctx, original, stage, item) }, func(value T, err error) {
+				result = core.Result[T]{Value: value, Err: err, Occupied: true}
+				invokeResultCallback(b.resultCb, stage, &result)
+			})
 			return result.Value, result.Err
 		}
 	}

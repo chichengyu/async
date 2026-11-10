@@ -1,6 +1,7 @@
 // Package sliceops 执行策略定义。
 // Policy 封装串行/并行执行模式及所有可选配置（超时、FailFast、水平分片、分块、流式缓冲）。
-// 使用值接收者链式调用，每次返回新 Policy（不可变），天然并发安全。
+// 使用值接收者链式调用，每次返回配置副本；其中的池引用仍共享。
+// 配置变量的并发读写、业务回调和共享池的生命周期仍须由调用方同步。
 //
 // 设计模式：Strategy Pattern —— 将执行算法族封装为可组合的策略对象，
 // 消除 MapWithFailFast / MapWithTimeout / MapWithFFTimeout 等组合爆炸。
@@ -37,7 +38,7 @@ type Policy struct {
 	chunkSize   int
 	bufSize     int
 	pool        any  // *pool.Pool[R]，nil 表示不使用外部池
-	poolOwned   bool // DefaultPool() 创建的池，使用后需 Close
+	poolOwned   bool // 内部创建或由 WithOwnedPool 转移所有权的池，使用后需 Close
 }
 
 // Seq 创建串行执行策略。
@@ -60,7 +61,8 @@ func DefPar() Policy {
 
 // ──────────────────────────── 链式配置方法 ────────────────────────────
 
-// FF 启用 FailFast：任一任务失败立即终止其余任务。
+// FF 启用 FailFast；Slice Runner 的执行路径在失败时取消派生 context。
+// Map 的无池执行路径只停止后续调度，不主动取消已开始回调；行为由使用此策略的执行器决定。
 func (p Policy) FF() Policy {
 	p.failFast = true
 	return p
@@ -84,7 +86,7 @@ func (p Policy) Chunk(size int) Policy {
 	return p
 }
 
-// Shard 设置水平分片数，n <= 0 时使用 GOMAXPROCS。
+// Shard 设置水平分片数，n <= 0 时使用 GOMAXPROCS（至少 2）。
 func (p Policy) Shard(n int) Policy {
 	if n <= 0 {
 		n = runtime.GOMAXPROCS(0)
@@ -139,7 +141,8 @@ func (p Policy) Pool() any {
 	return p.pool
 }
 
-// IsPoolOwned 池是否由内部创建（DefaultPool），使用后需自动 Close。
+// IsPoolOwned 返回终端执行是否负责关闭池。
+// WithDefaultPool 创建的池和 WithOwnedPool 接管的池均返回 true。
 func (p Policy) IsPoolOwned() bool {
 	return p.poolOwned
 }

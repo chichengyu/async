@@ -3345,10 +3345,12 @@ func TestSerialFailFastTimeoutStopsRemainingCallbacks(t *testing.T) {
 	for _, operation := range []string{"map", "foreach"} {
 		t.Run(operation, func(t *testing.T) {
 			var calls atomic.Int32
+			var callbackErr error
 			fn := func(ctx context.Context, _ int) error {
 				calls.Add(1)
 				<-ctx.Done()
-				return ctx.Err()
+				callbackErr = ctx.Err()
+				return callbackErr
 			}
 			b := NewSliceBuilder(context.Background(), []int{1, 2, 3}).Serial().FailFast().Timeout(time.Millisecond)
 			if operation == "map" {
@@ -3360,12 +3362,19 @@ func TestSerialFailFastTimeoutStopsRemainingCallbacks(t *testing.T) {
 				}
 			} else {
 				r := b.ForEach(fn)
-				if r.Total() != 3 || r.FailCount() != 3 || !errors.Is(r.Error(), context.DeadlineExceeded) {
+				// This timeout path aggregates unordered NoResult entries. A
+				// rejected submission can record Canceled before the timed-out
+				// callback records DeadlineExceeded; neither order is promised.
+				if r.Total() != 3 || r.FailCount() != 3 ||
+					(!errors.Is(r.Error(), context.DeadlineExceeded) && !errors.Is(r.Error(), context.Canceled)) {
 					t.Fatalf("total = %d, failures = %d, error = %v", r.Total(), r.FailCount(), r.Error())
 				}
 			}
 			if calls.Load() != 1 {
 				t.Fatalf("calls = %d", calls.Load())
+			}
+			if !errors.Is(callbackErr, context.DeadlineExceeded) {
+				t.Fatalf("callback error = %v", callbackErr)
 			}
 		})
 	}

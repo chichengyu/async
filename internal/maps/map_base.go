@@ -56,9 +56,7 @@ func (b *MapBase[K, V, S]) Set(key K, value V) S {
 }
 
 func (b *MapBase[K, V, S]) SetAll(entries map[K]V) S {
-	for k, v := range entries {
-		b.data[k] = v
-	}
+	copyMapEntries(b.data, entries, false)
 	return b.self
 }
 
@@ -84,11 +82,7 @@ func (b *MapBase[K, V, S]) Range(fn func(K, V) bool) S {
 }
 
 func (b *MapBase[K, V, S]) Filter(fn func(K, V) bool) S {
-	for k, v := range b.data {
-		if !fn(k, v) {
-			delete(b.data, k)
-		}
-	}
+	filterMapEntries(b.data, fn)
 	return b.self
 }
 
@@ -97,16 +91,12 @@ func (b *MapBase[K, V, S]) Reject(fn func(K, V) bool) S {
 }
 
 func (b *MapBase[K, V, S]) MapValues(fn func(K, V) V) S {
-	for k, v := range b.data {
-		b.data[k] = fn(k, v)
-	}
+	mapEntryValues(b.data, fn)
 	return b.self
 }
 
 func (b *MapBase[K, V, S]) Merge(other map[K]V) S {
-	for k, v := range other {
-		b.data[k] = v
-	}
+	copyMapEntries(b.data, other, false)
 	return b.self
 }
 
@@ -118,11 +108,7 @@ func (b *MapBase[K, V, S]) MergeMap(other *Map[K, V]) S {
 }
 
 func (b *MapBase[K, V, S]) MergeWithDefault(other map[K]V) S {
-	for k, v := range other {
-		if _, ok := b.data[k]; !ok {
-			b.data[k] = v
-		}
-	}
+	copyMapEntries(b.data, other, true)
 	return b.self
 }
 

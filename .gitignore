@@ -24,6 +24,9 @@ Thumbs.db
 
 # Test outputs
 test_output.txt
+/.gocache_audit/
+/.gocache_shuffle/
+/.gotmp/
 
 # Dependency directories
 vendor/

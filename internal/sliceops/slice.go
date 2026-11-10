@@ -10,13 +10,13 @@
 //
 //	// 纯数据操作
 //	s := sliceops.New[int]([]int{3, 1, 2})
-//	s.SortFunc(func(a, b int) int { return a - b }).Filter(func(i int) bool { return i > 0 })
+//	s.SortFunc(cmp.Compare[int]).Filter(func(i int) bool { return i > 0 }) // import "cmp"
 //
 //	// 声明输出类型的 MapReduce
 //	s := sliceops.NewWithResult[int, string]([]int{1, 2, 3})
-//	results := s.Map(ctx, 8, func(ctx context.Context, i int) (string, error) {
+//	results, err := s.Map(ctx, func(ctx context.Context, i int) (string, error) {
 //	    return strconv.Itoa(i), nil
-//	})
+//	}, 8)
 package sliceops
 
 import (
@@ -236,6 +236,7 @@ func (s *Slice[T, R]) BinarySearchFunc(target T, cmp func(a, b T) int) (int, boo
 // ──────────────────────────── 过滤与去重 ────────────────────────────
 
 // Filter 保留满足 pred 的元素，原地过滤后返回自身。
+// 不清零旧尾部；谓词 panic 原样传播，长度未更新但前部可能已改写。
 func (s *Slice[T, R]) Filter(pred func(T) bool) *Slice[T, R] {
 	n := 0
 	for _, v := range s.items {
@@ -265,20 +266,9 @@ func (s *Slice[T, R]) CompactFunc(eq func(a, b T) bool) *Slice[T, R] {
 }
 
 // DedupFunc 移除所有重复元素（不考虑是否连续，按 eq 判断），原地操作后返回自身。
+// 最坏 O(n²) 次比较；eq 为 nil 时使用 Go 相等性，元素必须可作为 map key。
 func (s *Slice[T, R]) DedupFunc(eq func(a, b T) bool) *Slice[T, R] {
-	if len(s.items) < 2 {
-		return s
-	}
-	seen := make(map[any]struct{}, len(s.items))
-	n := 0
-	for _, v := range s.items {
-		if _, ok := seen[v]; !ok {
-			seen[v] = struct{}{}
-			s.items[n] = v
-			n++
-		}
-	}
-	s.items = s.items[:n]
+	s.items = dedupItems(s.items, eq)
 	return s
 }
 
@@ -291,6 +281,7 @@ func (s *Slice[T, R]) Append(items ...T) *Slice[T, R] {
 }
 
 // Prepend 在头部插入元素，返回自身。
+// 容量足够时复用参数数组并覆盖参数原长度外的槽位，共享视图可见。
 func (s *Slice[T, R]) Prepend(items ...T) *Slice[T, R] {
 	s.items = append(items, s.items...)
 	return s
@@ -335,6 +326,7 @@ func (s *Slice[T, R]) DeleteRange(i, j int) *Slice[T, R] {
 }
 
 // Replace 将 [i, j) 范围内的元素替换为 items，返回自身。
+// 支持重叠参数；缩短时清零新长度到旧长度之间的槽位，共享视图可见。
 func (s *Slice[T, R]) Replace(i, j int, items ...T) *Slice[T, R] {
 	s.items = slicesReplace(s.items, i, j, items...)
 	return s
@@ -384,7 +376,8 @@ func (s *Slice[T, R]) SliceRange(i, j int) *Slice[T, R] {
 	return s
 }
 
-// Clip 释放未使用的容量，返回自身。
+// Clip 在容量大于长度时复制到新数组，使 cap == len，返回自身。
+// 旧数组仍被其他引用持有时不会回收；复制可能暂时增加峰值内存。
 func (s *Slice[T, R]) Clip() *Slice[T, R] {
 	if cap(s.items) > len(s.items) {
 		clipped := make([]T, len(s.items))
@@ -394,7 +387,7 @@ func (s *Slice[T, R]) Clip() *Slice[T, R] {
 	return s
 }
 
-// Grow 增加切片容量以容纳 n 个额外元素，返回自身。
+// Grow 确保容量至少容纳 len+n 个元素，不改变长度，返回自身；n <= 0 无操作。
 func (s *Slice[T, R]) Grow(n int) *Slice[T, R] {
 	if n <= 0 {
 		return s
@@ -422,12 +415,13 @@ func (s *Slice[T, R]) Clone() []T {
 }
 
 // Repeat 将切片重复 n 次后替换内部数据，返回自身。
+// 空输入直接返回并保留现有视图；非空输入重复追加，元素内部引用仍共享。
 func (s *Slice[T, R]) Repeat(n int) *Slice[T, R] {
 	if n <= 0 {
 		s.items = s.items[:0]
 		return s
 	}
-	if n == 1 {
+	if n == 1 || len(s.items) == 0 {
 		return s
 	}
 	orig := make([]T, len(s.items))
@@ -445,12 +439,13 @@ func (s *Slice[T, R]) Chunk(chunkSize int) [][]T {
 	return Chunk(s.items, chunkSize)
 }
 
-// ChunkN 将切片均分为 n 份，返回 [][]T。
+// ChunkN 按 ceil(len/n) 的块长切分，返回最多 n 份；实际份数可能少于 n。
 func (s *Slice[T, R]) ChunkN(n int) [][]T {
 	return ChunkN(s.items, n)
 }
 
-// Split 按条件将切片拆分为匹配和不匹配两部分，返回两个独立切片。
+// Split 按条件拆分为匹配和不匹配两部分，各自保留输入顺序。
+// 返回切片的元素槽位独立，元素内部引用仍与输入共享；空分组为 nil。
 func (s *Slice[T, R]) Split(pred func(T) bool) (matched []T, unmatched []T) {
 	for _, v := range s.items {
 		if pred(v) {

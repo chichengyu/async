@@ -14,13 +14,13 @@ import (
 // 使用示例：
 //
 //	al := ratelimit.NewAdaptiveRateLimiter(5, 100) // 并发度范围 5-100
-//	al.Acquire(ctx)
+//	if err := al.Acquire(ctx); err != nil { return err }
+//	defer al.Release()
 //	if err := callAPI(ctx); err == nil {
 //	    al.RecordOk()
 //	} else {
 //	    al.RecordFailure()
 //	}
-//	al.Release()
 
 type AdaptiveRateLimiter struct {
 	base       *RateLimiter // 底层 RateLimiter 实例
@@ -35,7 +35,7 @@ type AdaptiveRateLimiter struct {
 }
 
 // NewAdaptiveRateLimiter 创建自适应限流器。
-// 初始并发度 = (minRate + maxRate) / 2。
+// 初始并发度为归一化边界的整数中点，以 minRate + (maxRate-minRate)/2 避免加法溢出。
 //
 // 参数：
 //   - minRate：最小并发度（负载低时也不会低于此值）
@@ -52,7 +52,9 @@ func NewAdaptiveRateLimiter(minRate, maxRate int) *AdaptiveRateLimiter {
 	if maxRate <= minRate {
 		maxRate = minRate
 	}
-	init := (minRate + maxRate) / 2
+	// Both normalized bounds are positive and maxRate >= minRate. Taking
+	// their difference first preserves the midpoint without overflowing int.
+	init := minRate + (maxRate-minRate)/2
 	a := &AdaptiveRateLimiter{
 		base:       newRateLimiterSimple(init),
 		minRate:    minRate,
@@ -64,10 +66,10 @@ func NewAdaptiveRateLimiter(minRate, maxRate int) *AdaptiveRateLimiter {
 	return a
 }
 
-// Acquire 获取一个并发槽位。阻塞直到 ctx 取消或获取成功。
+// Acquire 获取一个并发槽位；有空位时优先获取，无空位时等待许可或 ctx 取消。
 //
 // 参数：
-//   - ctx：上下文，取消后返回 ctx.Err()
+//   - ctx：非 nil 上下文；无空位时响应取消，已取消但有空位仍可能成功
 func (a *AdaptiveRateLimiter) Acquire(ctx context.Context) error {
 	a.mu.RLock()
 	base := a.base

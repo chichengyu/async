@@ -60,8 +60,7 @@ import (
 // ──────────────────────────── 常量 ────────────────────────────
 
 const (
-	// DefaultSubmitTimeout 是 Submit 等待空闲 worker 的默认超时时间（5秒）。
-	// 可通过 SetSubmitTimeout 全局修改，也可通过 Group/Pool 的 WithSubmitTimeout 单独设置。
+	// DefaultSubmitTimeout 是全局提交超时配置的初始值（5秒）；当前不自动应用到 Pool/Group。
 	DefaultSubmitTimeout = 5 * time.Second
 
 	// WaitContextCleanupWarn 是 WaitTimeout/WaitContext 超时后，清理 goroutine 发出警告的间隔（5分钟）。
@@ -135,9 +134,8 @@ func GetDefaultTimeout() time.Duration {
 	return time.Duration(atomic.LoadInt64(&defaultTimeout))
 }
 
-// SetSubmitTimeout 设置 Pool.Submit 等待 worker 空闲的超时时间，默认 5 秒。
-// 当所有 worker 都在忙且任务队列满时，Submit 会阻塞等待，超过此时间返回 ErrSubmitTimeout。
-// d 必须大于 0，否则不生效。
+// SetSubmitTimeout 设置并保存全局提交超时配置值。当前 Pool/Group 创建路径不自动读取此值；
+// d 必须大于 0，否则不更新。具体实例的提交等待需通过实例或 Builder 显式设置。
 //
 // 参数：
 //   - d：提交超时时间，必须 > 0
@@ -157,7 +155,7 @@ func GetSubmitTimeoutValue() time.Duration {
 	return time.Duration(atomic.LoadInt64(&globalSubmitTimer))
 }
 
-// GetSubmitTimeout 返回当前 Pool.Submit 等待 worker 空闲的超时时间。
+// GetSubmitTimeout 返回当前保存的全局提交超时配置值。
 func GetSubmitTimeout() time.Duration {
 	return GetSubmitTimeoutValue()
 }
@@ -172,9 +170,10 @@ func GetSubmitTimeout() time.Duration {
 //
 // 使用示例：
 //
-//	core.SetDefaultMaxResults(10000)       // 全局限制
-//	p := pool.NewPool[int](8)              // maxResults=10000
-//	p := pool.NewPool[int](8).WithMaxResults(0)  // 覆盖回无限
+//	core.SetDefaultMaxResults(10000) // 后续创建的池默认保留至多 10000 项
+//	p := pool.NewPool[int](8)
+//	defer p.Close()
+//	p.WithMaxResults(0) // 本池覆盖为无限制
 func SetDefaultMaxResults(n int) {
 	if n >= 0 {
 		atomic.StoreInt64(&defaultMaxResults, int64(n))
@@ -224,7 +223,7 @@ var (
 	ErrPoolWaited = errors.New("async: Pool.Submit called after Wait, task discarded")
 
 	// ErrSubmitTimeout 表示提交超时，任务被丢弃。
-	// 当 Pool/Group 的所有并发槽位都忙且超过 submitTimeout 时返回此错误。
+	// Pool 等待入队/背压容量或 Group 等待提交许可超过提交期限时返回。
 	ErrSubmitTimeout = errors.New("async: submit timeout, task discarded")
 
 	// ErrGroupWaited 表示在 Wait 之后调用 Go，任务被丢弃。
@@ -244,6 +243,10 @@ var (
 
 	// ErrTimeout 表示操作超时。
 	ErrTimeout = errors.New("async: operation timed out")
+
+	// ErrTaskGoexit means a Task/Pool/Group, native parallel/sharded Slice/Map, or parallel/Stream/Flow Pipeline business callback ended its goroutine
+	// through runtime.Goexit instead of returning a value or error.
+	ErrTaskGoexit = errors.New("async: task ended with runtime.Goexit")
 
 	// ErrPoolWaiting 表示 Pool.Submit 在 Wait 或调整大小期间调用。
 	ErrPoolWaiting = errors.New("async: Pool.Submit called after Wait, task discarded")
@@ -296,7 +299,8 @@ func GetTaskFailLogLevel() TaskLogLevel {
 }
 
 // SetTraceLogEnabled 启用或禁用 Trace 日志。
-// 启用时，每次 EnsureTraceID 都会将 trace_id 注入到 logger 上下文中。
+// 启用时，EnsureTraceID 生成新值或 WithTraceID 显式覆盖时调用日志上下文注入。
+// 不影响 TraceID 的存储，也不屏蔽 LogCtx 系列自动附加 trace_id 字段。
 // 默认为启用状态。
 //
 // 参数：
@@ -369,7 +373,8 @@ type Result[T any] struct {
 	Occupied bool  // 是否已被占用（内部用于结果槽位管理）
 }
 
-// Ok 返回任务是否执行成功（无错误无 panic）。
+// Ok 仅判断 Err 是否为 nil，不检查 Occupied，也不证明任务已经执行。
+// 使用可能含空槽的结果切片时，应按对应入口约定另外检查槽位状态。
 func (r Result[T]) Ok() bool {
 	return r.Err == nil
 }
@@ -455,11 +460,12 @@ func MergeCancel(oldCancel, newCancel context.CancelFunc) context.CancelFunc {
 // WaitTimeoutImpl 实现带超时的 Wait 逻辑，内部使用。
 //
 // 参数说明：
-//   - submitGuard: 提交保护标记，Wait 开始时应为 true，结束时自动设为 false。
-//     Pool 用它禁止 Wait 期间的新 Submit；Group 传 nil（自己在外部管理）。
-//   - cancelAll 和 copyResults 必须由调用方保证线程安全。
-//     Pool 内部使用分片锁，无需外部互斥；Group 应在闭包内自行加锁。
-//   - onDone runs after all task producers finish, even if the wait timed out.
+//   - submitGuard：可 nil；由调用方预先设 true，返回前设 false。辅助函数不管理提交入口。
+//   - cancel：可 nil；非 nil 时须支持重复和并发调用，返回路径和 AfterFunc 可能各调用一次。
+//   - cancelAll/copyResults：非 nil、并发安全且及时返回；取消和快照同步执行，可延迟超时返回。
+//   - onDone：任务生产者完成后按参数顺序执行，非 nil、不 panic；超时返回后仍执行。
+//
+// 当前 Pool/Group 使用各自的等待流程，不调用本辅助函数。
 func WaitTimeoutImpl[T any](
 	d time.Duration,
 	wg *sync.WaitGroup,
@@ -562,11 +568,12 @@ func WaitTimeoutImpl[T any](
 // WaitContextImpl 实现基于 context 的 Wait 逻辑，内部使用。
 //
 // 参数说明：
-//   - submitGuard: 提交保护标记，Wait 开始时应为 true，结束时自动设为 false。
-//     Pool 用它禁止 Wait 期间的新 Submit；Group 传 nil（自己在外部管理）。
-//   - cancelAll 和 copyResults 必须由调用方保证线程安全。
-//     Pool 内部使用分片锁，无需外部互斥；Group 应在闭包内自行加锁。
-//   - onDone runs after all task producers finish, even if ctx was canceled.
+//   - submitGuard：可 nil；由调用方预先设 true，返回前设 false。辅助函数不管理提交入口。
+//   - cancel：可 nil，返回路径同步调用；不会强制结束业务。
+//   - cancelAll/copyResults：非 nil、并发安全且及时返回；取消和快照同步执行，可延迟返回。
+//   - onDone：任务生产者完成后按参数顺序执行，非 nil、不 panic；取消返回后仍执行。
+//
+// 当前 Pool/Group 使用各自的等待流程，不调用本辅助函数。
 func WaitContextImpl[T any](
 	ctx context.Context,
 	wg *sync.WaitGroup,
@@ -655,7 +662,7 @@ func WaitContextImpl[T any](
 // 使用示例：
 //
 //	// 8 核机器返回 8
-//	pool := async.NewPool[int](async.CPU())
+//	async.Pool[int]().Worker(async.CPU()).Run(fn)
 func CPU() int {
 	return runtime.NumCPU()
 }
@@ -666,12 +673,15 @@ func CPU() int {
 // 使用示例：
 //
 //	// 8 核机器返回 16
-//	pool := async.NewPool[string](async.IO())
-//	for _, url := range urls {
-//	    pool.Submit(ctx, func(ctx context.Context) (string, error) {
-//	        return httpGet(ctx, url)
-//	    })
-//	}
+//	err := async.Pool[string]().Worker(async.IO()).Run(func(ctx context.Context, p *async.PoolInstance[string]) error {
+//	    for _, url := range urls {
+//	        if err := p.Submit(ctx, func(ctx context.Context) (string, error) {
+//	            return httpGet(ctx, url)
+//	        }); err != nil { return err }
+//	    }
+//	    p.Wait()
+//	    return p.FirstError()
+//	})
 func IO() int {
 	return runtime.NumCPU() * 2
 }
@@ -684,7 +694,7 @@ func IO() int {
 // 使用示例：
 //
 //	// 8 核机器，倍数 4，返回 32（高并发 RPC 场景）
-//	pool := async.NewPool[string](async.IOMulti(4))
+//	async.Pool[string]().Worker(async.IOMulti(4)).Run(fn)
 func IOMulti(multiplier int) int {
 	if multiplier <= 0 {
 		multiplier = 2
@@ -766,8 +776,8 @@ func GetTraceIDKey() interface{} {
 	return getTraceIDKey()
 }
 
-// EnsureTraceID 确保 ctx 中有 trace_id，没有则自动生成并注入。
-// 如果启用了 TraceLog，会将 trace_id 注入到 logger 上下文中。
+// EnsureTraceID 保留当前 key 下的已有非 nil 值；缺失时自动生成 trace_id。
+// 只有缺失值生成路径在启用 TraceLog 时注入 logger 上下文；不修复空字符串或非 string 值。
 //
 // 参数：
 //   - ctx：原始上下文
@@ -802,12 +812,12 @@ func GetTraceID(ctx context.Context) string {
 }
 
 // WithTraceID 设置指定的 trace_id 到 ctx 中。
-// 如果 id 为空字符串，则等同于 EnsureTraceID（自动生成）。
-// 如果启用了 TraceLog，会将 trace_id 注入到 logger 上下文中。
+// 如果 id 为空字符串，则等同于 EnsureTraceID：保留已有非 nil 值，缺失时才生成。
+// 非空 id 覆盖或空 id 缺失生成时，启用 TraceLog 才注入 logger 上下文。
 //
 // 参数：
 //   - ctx：原始上下文
-//   - id：要设置的 trace_id，空字符串时自动生成
+//   - id：要设置的 trace_id；空字符串保留当前非 nil 值，缺失时才生成
 //
 // 使用示例：
 //

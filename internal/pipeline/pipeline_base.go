@@ -136,7 +136,8 @@ func (b *pipelineBase[T, S]) DefaultStage(name string) S {
 	return b.Stage(name, core.IO())
 }
 
-// Timeout 设置阶段级全局超时时间。
+// Timeout 设置一次终端执行共享的上下文超时，所有阶段共享同一期限。
+// 正数生效，非正值不限时；回调须响应上下文取消。Flow 不使用此配置。
 func (b *pipelineBase[T, S]) Timeout(d time.Duration) S {
 	b.timeout = d
 	return b.self
@@ -184,7 +185,7 @@ func (b *pipelineBase[T, S]) DefaultOnResult() S {
 	return b.self
 }
 
-// MaxResults 设置内部协程池的结果存储上限（n=0 无限，n=-1 使用默认值 100_000）。
+// MaxResults 设置内部协程池的结果存储上限（n=0 无限，负数使用创建池时的全局默认值，初始为 100_000）。
 // 仅对 Pipeline 内部创建的 Pool 生效；外部注入的 Pool 不受影响。
 func (b *pipelineBase[T, S]) MaxResults(n int) S {
 	b.maxResults = n
@@ -425,32 +426,30 @@ func (b *pipelineBase[T, S]) execParallelNative(
 				end = len(resultsList)
 			}
 			wg.Add(1)
-			go func(start, end int) {
-				defer wg.Done()
-				for j := start; j < end; j++ {
-					if b.failFast && cancelled.Load() {
+			startNativeChunk(&wg, start, end, func(j int) {
+				if b.failFast && cancelled.Load() {
+					nextResults[j] = resultsList[j]
+					return
+				}
+				if b.failFast {
+					select {
+					case <-ffCtx.Done():
+						cancelled.Store(true)
 						nextResults[j] = resultsList[j]
-						continue
+						return
+					default:
 					}
-					if b.failFast {
-						select {
-						case <-ffCtx.Done():
-							cancelled.Store(true)
-							nextResults[j] = resultsList[j]
-							continue
-						default:
-						}
-					}
+				}
 
-					var itemCtx context.Context
-					var itemCancel context.CancelFunc
-					if b.timeout > 0 {
-						itemCtx, itemCancel = context.WithTimeout(ffCtx, b.timeout)
-					} else {
-						itemCtx, itemCancel = ffCtx, func() {}
-					}
+				var itemCtx context.Context
+				var itemCancel context.CancelFunc
+				if b.timeout > 0 {
+					itemCtx, itemCancel = context.WithTimeout(ffCtx, b.timeout)
+				} else {
+					itemCtx, itemCancel = ffCtx, func() {}
+				}
 
-					val, err := safeCall(itemCtx, fn, stage.Name, resultsList[j].Value)
+				finishNativeStage(func() (T, error) { return safeCall(itemCtx, fn, stage.Name, resultsList[j].Value) }, func(val T, err error) {
 					itemCancel()
 
 					nextResults[j] = core.Result[T]{Value: val, Err: err}
@@ -471,8 +470,8 @@ func (b *pipelineBase[T, S]) execParallelNative(
 						cancelled.Store(true)
 						ffCancel()
 					}
-				}
-			}(start, end)
+				})
+			})
 		}
 		wg.Wait()
 		resultsList = nextResults
@@ -514,10 +513,7 @@ func (b *pipelineBase[T, S]) execParallelSharded(
 			item := r.Value
 			stageName := stage.Name
 			mg.Go(stageCtx, func(ctx context.Context) (T, error) {
-				value, err := safeCall(ctx, fn, stageName, item)
-				result := core.Result[T]{Value: value, Err: err, Occupied: true}
-				invokeResultCallback(b.resultCb, stageName, &result)
-				return result.Value, result.Err
+				return callObservedStage(ctx, fn, stageName, item, b.resultCb)
 			})
 		}
 
@@ -673,10 +669,7 @@ func (b *pipelineBase[T, S]) execParallelAutoScale(
 			item := r.Value
 			stageName := stage.Name
 			g.Go(stageCtx, func(ctx context.Context) (T, error) {
-				value, err := safeCall(ctx, fn, stageName, item)
-				result := core.Result[T]{Value: value, Err: err, Occupied: true}
-				invokeResultCallback(b.resultCb, stageName, &result)
-				return result.Value, result.Err
+				return callObservedStage(ctx, fn, stageName, item, b.resultCb)
 			})
 		}
 
@@ -744,24 +737,22 @@ func (b *pipelineBase[T, S]) execParallelPipe(
 				end = len(resultsList)
 			}
 			wg.Add(1)
-			go func(start, end int) {
-				defer wg.Done()
-				for j := start; j < end; j++ {
-					if b.failFast && cancelled.Load() {
+			startNativeChunk(&wg, start, end, func(j int) {
+				if b.failFast && cancelled.Load() {
+					nextResults[j] = resultsList[j]
+					return
+				}
+				if b.failFast {
+					select {
+					case <-ffCtx.Done():
+						cancelled.Store(true)
 						nextResults[j] = resultsList[j]
-						continue
+						return
+					default:
 					}
-					if b.failFast {
-						select {
-						case <-ffCtx.Done():
-							cancelled.Store(true)
-							nextResults[j] = resultsList[j]
-							continue
-						default:
-						}
-					}
-					processed[j] = true
-					val, err := safeCall(ffCtx, fn, stage.Name, resultsList[j].Value)
+				}
+				processed[j] = true
+				finishNativeStage(func() (T, error) { return safeCall(ffCtx, fn, stage.Name, resultsList[j].Value) }, func(val T, err error) {
 					nextResults[j] = core.Result[T]{Value: val, Err: err}
 					invokeResultCallback(b.resultCb, stage.Name, &nextResults[j])
 					err = nextResults[j].Err
@@ -769,8 +760,8 @@ func (b *pipelineBase[T, S]) execParallelPipe(
 						cancelled.Store(true)
 						ffCancel()
 					}
-				}
-			}(start, end)
+				})
+			})
 		}
 		wg.Wait()
 		resultsList = nextResults
@@ -836,10 +827,7 @@ func (b *pipelineBase[T, S]) execParallelPipe(
 			item := r.Value
 			stageName := finalStage.Name
 			g.Go(stageCtx, func(ctx context.Context) (T, error) {
-				value, err := safeCall(ctx, fn, stageName, item)
-				result := core.Result[T]{Value: value, Err: err, Occupied: true}
-				invokeResultCallback(b.resultCb, stageName, &result)
-				return result.Value, result.Err
+				return callObservedStage(ctx, fn, stageName, item, b.resultCb)
 			})
 		}
 		g.Wait()
@@ -934,38 +922,36 @@ func (b *pipelineBase[T, S]) execParallelWithMeta(
 				end = len(elems)
 			}
 			wg.Add(1)
-			go func(start, end int) {
-				defer wg.Done()
-				for j := start; j < end; j++ {
-					if b.failFast && cancelled.Load() {
+			startNativeChunk(&wg, start, end, func(j int) {
+				if b.failFast && cancelled.Load() {
+					stageResults[j] = core.Result[T]{Value: elems[j]}
+					return
+				}
+				if b.failFast {
+					select {
+					case <-ffCtx.Done():
+						cancelled.Store(true)
 						stageResults[j] = core.Result[T]{Value: elems[j]}
-						continue
+						return
+					default:
 					}
-					if b.failFast {
-						select {
-						case <-ffCtx.Done():
-							cancelled.Store(true)
-							stageResults[j] = core.Result[T]{Value: elems[j]}
-							continue
-						default:
-						}
-					}
-					if stage.SkipOnError && previous[j].Err != nil {
-						stageResults[j] = previous[j]
-						produced[j] = true
-						continue
-					}
-
-					var itemCtx context.Context
-					var itemCancel context.CancelFunc
-					if b.timeout > 0 {
-						itemCtx, itemCancel = context.WithTimeout(ffCtx, b.timeout)
-					} else {
-						itemCtx, itemCancel = ffCtx, func() {}
-					}
-
+				}
+				if stage.SkipOnError && previous[j].Err != nil {
+					stageResults[j] = previous[j]
 					produced[j] = true
-					val, err := safeCall(itemCtx, fn, stage.Name, elems[j])
+					return
+				}
+
+				var itemCtx context.Context
+				var itemCancel context.CancelFunc
+				if b.timeout > 0 {
+					itemCtx, itemCancel = context.WithTimeout(ffCtx, b.timeout)
+				} else {
+					itemCtx, itemCancel = ffCtx, func() {}
+				}
+
+				produced[j] = true
+				finishNativeStage(func() (T, error) { return safeCall(itemCtx, fn, stage.Name, elems[j]) }, func(val T, err error) {
 					itemCancel()
 
 					stageResults[j] = core.Result[T]{Value: val, Err: err}
@@ -977,8 +963,8 @@ func (b *pipelineBase[T, S]) execParallelWithMeta(
 						cancelled.Store(true)
 						ffCancel()
 					}
-				}
-			}(start, end)
+				})
+			})
 		}
 		wg.Wait()
 		nextItems := make([]T, 0, len(stageResults))

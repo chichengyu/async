@@ -8,7 +8,7 @@ import (
 )
 
 // MultiPoolBuilder 分片协程池构造器，统一入口为 async.PoolMulti[T]()。
-// 内部创建 Pool → 水平分片为 N 份，支持极限高并发（百万~千万 QPS）。
+// 内部创建 Pool，再水平分片为 N 份；实际吞吐取决于任务和资源配置。
 // 支持链式配置，Run 自动创建→执行→Close 所有分片。
 type MultiPoolBuilder[T any] struct {
 	ctx    context.Context // 请求上下文，自动注入 trace_id
@@ -104,7 +104,7 @@ func (b *MultiPoolBuilder[T]) DefaultRingBuf() *MultiPoolBuilder[T] {
 	return b
 }
 
-// DefaultMaxResults 使用默认最大结果数（100_000）。
+// DefaultMaxResults 清除构建器覆盖，内部创建池时使用当时的全局默认最大结果数。
 func (b *MultiPoolBuilder[T]) DefaultMaxResults() *MultiPoolBuilder[T] {
 	b.cfg.MaxResults = -1
 	return b
@@ -189,17 +189,27 @@ func (b *MultiPoolBuilder[T]) Logger(l core.Logger) *MultiPoolBuilder[T] { core.
 func (b *MultiPoolBuilder[T]) DefaultLogger() *MultiPoolBuilder[T] { core.SetLogger(nil); return b }
 
 // Pool 注入外部协程池，MultiPool 使用该池进行分片。
-// 注入后 Conc/Timeout 等配置方法不再生效。
+// 注入后 Worker/Timeout 等保存到 cfg 的配置不再应用；Shards 仍决定分片数。
 // 外部池生命周期由 Run 接管：外部池成为 shard[0]，defer mp.Close() 会同时关闭它。
 // 调用方不得在 Run 之后再使用该池。
 //
 // 示例：
 //
-//	myPool := pool.New[string](8).WithTimeout(5 * time.Second)
-//	async.MultiPool[string](ctx).Pool(myPool).Shards(4).Run(func(ctx context.Context, mp *pool.MultiPool[string]) error {
-//	    mp.Submit(ctx, fn)
+//	myPool := pool.NewPool[string](8).WithTimeout(5 * time.Second)
+//	err := async.PoolMulti[string]().Context(ctx).Pool(myPool).Shards(4).Run(func(ctx context.Context, mp *async.MultiPool[string]) error {
+//	    if err := mp.Submit(ctx, fn); err != nil {
+//	        return err
+//	    }
+//	    for _, result := range mp.Wait() {
+//	        if result.Err != nil {
+//	            return result.Err
+//	        }
+//	    }
 //	    return nil
 //	})
+//	if err != nil {
+//	    log.Printf("多池失败: %v", err)
+//	}
 func (b *MultiPoolBuilder[T]) Pool(p *Pool[T]) *MultiPoolBuilder[T] {
 	b.extP = p
 	return b

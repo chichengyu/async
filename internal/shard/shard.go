@@ -31,12 +31,13 @@ const (
 // ──────────────────────────── ShardedPool ────────────────────────────
 
 // ShardedPool 将任务分发到 N 个 Pool 实例，实现水平扩展。
-// 每个分片独立运行，互不影响，适合无需全局顺序的场景。
+// 各片有独立队列和 worker，适合无需全局顺序的场景；共享 context 或 FailFast 可跨片传播取消。
 type ShardedPool[T any] struct {
 	pools       []*pool.Pool[T]
 	dist        Distribution
 	nextIdx     atomic.Uint64
 	keyFn       func(T) uint64
+	ffCtx       context.Context
 	ffCancel    context.CancelFunc
 	waitInvoked atomic.Bool
 }
@@ -120,6 +121,7 @@ func NewShardedPool[T any](cfg ShardPoolConfig[T]) *ShardedPool[T] {
 	}
 	if cfg.PoolCfg.FailFast {
 		ffCtx, ffCancel := context.WithCancel(context.Background())
+		sp.ffCtx = ffCtx
 		sp.ffCancel = ffCancel
 		for _, p := range sp.pools {
 			p.WithFailFast(ffCtx)
@@ -277,6 +279,7 @@ func (sp *ShardedPool[T]) TrySubmitBatch(ctx context.Context, items []T, fn func
 
 // Wait 等待所有分片完成，合并结果。
 // 多次调用返回 nil（与 Pool.Wait 行为一致）。
+// 所有分片完成后释放整体 FailFast context，不据此判断业务是否失败。
 func (sp *ShardedPool[T]) Wait() []core.Result[T] {
 	if !sp.waitInvoked.CompareAndSwap(false, true) {
 		return nil
@@ -284,6 +287,9 @@ func (sp *ShardedPool[T]) Wait() []core.Result[T] {
 	var all []core.Result[T]
 	for _, p := range sp.pools {
 		all = append(all, p.Wait()...)
+	}
+	if sp.ffCancel != nil {
+		sp.ffCancel()
 	}
 	return all
 }
@@ -296,10 +302,13 @@ func (sp *ShardedPool[T]) WaitAndClose() []core.Result[T] {
 	return results
 }
 
-// Close 关闭所有分片。
+// Close 逐片关闭，全部完成后释放共享 FailFast context。
 func (sp *ShardedPool[T]) Close() {
 	for _, p := range sp.pools {
 		p.Close()
+	}
+	if sp.ffCancel != nil {
+		sp.ffCancel()
 	}
 }
 
@@ -315,6 +324,7 @@ func (sp *ShardedPool[T]) Reset() error {
 	}
 	if sp.ffCancel != nil {
 		sp.ffCancel()
+		sp.ffCancel = nil
 		sp.WithFailFast(context.Background())
 	}
 	sp.waitInvoked.Store(false)
@@ -348,13 +358,15 @@ func (sp *ShardedPool[T]) WithSubmitTimeout(d time.Duration) *ShardedPool[T] {
 }
 
 // WithFailFast 为所有分片启用 FailFast 模式。
+// 返回的共享 context 在整体 Wait/Close 完成后取消；单片正常等待不会取消它。
 func (sp *ShardedPool[T]) WithFailFast(ctx context.Context) (*ShardedPool[T], context.Context) {
 	ctx = core.EnsureTraceID(ctx)
 	if len(sp.pools) == 0 {
 		return sp, ctx
 	}
 	ffCtx, ffCancel := context.WithCancel(ctx)
-	sp.ffCancel = ffCancel
+	sp.ffCtx = ffCtx
+	sp.ffCancel = core.MergeCancel(sp.ffCancel, ffCancel)
 	for _, p := range sp.pools {
 		p.WithFailFast(ffCtx)
 		p.MergeFailFastCancel(ffCancel)
@@ -499,7 +511,8 @@ func (sp *ShardedPool[T]) TotalPending() int {
 	return total
 }
 
-// TotalWorkerCount 汇总所有分片的 worker 总数。
+// TotalWorkerCount 汇总所有分片 Size 的目标 worker 数。
+// 缩容退出和关闭清理期间，此值不代表仍存活的 goroutine 数。
 func (sp *ShardedPool[T]) TotalWorkerCount() int {
 	var total int
 	for _, p := range sp.pools {

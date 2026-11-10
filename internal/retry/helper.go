@@ -16,7 +16,7 @@ import (
 //
 // 使用示例：
 //
-//	// 简单重试：最多3次
+//	// 简单重试：首次执行 + 最多3次重试
 //	err := retry.RetryFn(func() error {
 //	    return doSomething()
 //	}).WithRetry(3)
@@ -42,6 +42,9 @@ func (r RetryFn) WithRetry(maxRetries int) error {
 			return nil
 		}
 		lastErr = err
+		if attempt == maxRetries {
+			break // Do not increment MaxInt after the final failed attempt.
+		}
 	}
 	return fmt.Errorf("retry exhausted: %w", lastErr)
 }
@@ -62,10 +65,12 @@ type WorkerPoolBackend interface {
 
 // BindRetryToWorker 向 worker 池提交任务，并在遇到 ErrSubmitTimeout 时自动重试。
 // 适用于高负载场景下提交任务时池满需要重试的情况。
+// 只重试提交，不主动执行业务函数；提交成功即返回，不等待业务完成。
+// 后端必须保证提交超时代表任务未被接受，否则重试可能重复执行。后端 panic 直接传播。
 //
 // 参数：
 //   - ctx：上下文，取消后终止重试
-//   - backend：WorkerPoolBackend 接口（Pool 实现此接口）
+//   - backend：WorkerPoolBackend 适配器；泛型 Pool 的 Submit 任务回调签名不同，不能直接实现此接口
 //   - fn：要提交执行的任务函数
 //   - maxRetries：最大重试次数，负数按 0 处理
 //   - initialBackoff：初始退避时间
@@ -103,7 +108,7 @@ func BindRetryToWorker(
 			if attempt == maxRetries {
 				break
 			}
-			core.LogTaskFail(ctx, err, fmt.Sprintf("bind retry attempt %d/%d failed", attempt+1, maxRetries+1))
+			core.LogTaskFail(ctx, err, fmt.Sprintf("bind retry attempt %d/%d failed", attempt+1, uint(maxRetries)+1))
 			if backoff := computeBackoff(attempt, initialBackoff, maxBackoff); backoff > 0 {
 				timer := time.NewTimer(backoff)
 				select {

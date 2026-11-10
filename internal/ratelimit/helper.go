@@ -29,7 +29,6 @@ func DefaultShardCount() int {
 //
 //	err := ratelimit.WithRateLimiter(1000, time.Second, func(rl *RateLimiter) error {
 //	    if err := rl.Wait(ctx); err != nil { return err }
-//	    defer rl.Release()
 //	    return doRequest()
 //	})
 func WithRateLimiter(rate int, perDuration time.Duration, fn func(rl *RateLimiter) error) error {
@@ -44,7 +43,6 @@ func WithRateLimiter(rate int, perDuration time.Duration, fn func(rl *RateLimite
 //
 //	err := ratelimit.WithRateLimiterWithBurst(50, time.Second, 200, func(rl *RateLimiter) error {
 //	    if err := rl.Wait(ctx); err != nil { return err }
-//	    defer rl.Release()
 //	    return doRequest()
 //	})
 func WithRateLimiterWithBurst(rate int, perDuration time.Duration, burst int, fn func(rl *RateLimiter) error) error {
@@ -60,7 +58,6 @@ func WithRateLimiterWithBurst(rate int, perDuration time.Duration, burst int, fn
 //
 //	err := ratelimit.WithShardedRateLimiter(16, 10000, time.Second, func(rl *ShardedRateLimiter) error {
 //	    if err := rl.Wait(ctx); err != nil { return err }
-//	    defer rl.Release()
 //	    return doRequest()
 //	})
 func WithShardedRateLimiter(shards int, rate int, perDuration time.Duration, fn func(rl *ShardedRateLimiter) error) error {
@@ -75,7 +72,6 @@ func WithShardedRateLimiter(shards int, rate int, perDuration time.Duration, fn 
 //
 //	err := ratelimit.WithShardedRateLimiterWithBurst(16, 100, time.Second, 500, func(rl *ShardedRateLimiter) error {
 //	    if err := rl.Wait(ctx); err != nil { return err }
-//	    defer rl.Release()
 //	    return doRequest()
 //	})
 func WithShardedRateLimiterWithBurst(shards int, rate int, perDuration time.Duration, burst int, fn func(rl *ShardedRateLimiter) error) error {

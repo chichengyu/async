@@ -41,7 +41,7 @@ func (b *ShardPoolBuilder[T]) DefaultShards() *ShardPoolBuilder[T] {
 	return b
 }
 
-// DefaultWorker 使用默认每片 worker 数（GOMAXPROCS）。
+// DefaultWorker 清除每片 worker 覆盖，创建时使用 core.IO()（NumCPU×2）。
 func (b *ShardPoolBuilder[T]) DefaultWorker() *ShardPoolBuilder[T] {
 	b.cfg.SizePerShard = DefaultSizePerShard
 	return b
@@ -53,7 +53,7 @@ func (b *ShardPoolBuilder[T]) DefaultDistribution() *ShardPoolBuilder[T] {
 	return b
 }
 
-// DefaultTimeout 使用默认任务超时（不限时）。
+// DefaultTimeout 清除分片配置中的任务超时覆盖，保留创建各池时的全局默认任务超时。
 func (b *ShardPoolBuilder[T]) DefaultTimeout() *ShardPoolBuilder[T] {
 	b.cfg.PoolCfg.Timeout = 0
 	return b
@@ -139,11 +139,12 @@ func (b *ShardPoolBuilder[T]) Logger(l core.Logger) *ShardPoolBuilder[T] { core.
 func (b *ShardPoolBuilder[T]) DefaultLogger() *ShardPoolBuilder[T] { core.SetLogger(nil); return b }
 
 // Run 终端方法：创建分片池，执行 fn，fn 返回后自动 Close 所有分片。
+// FailFast 时 fn 接收跨片共享 context；各片正常 Wait 不提前取消它，整体收尾后释放。
 func (b *ShardPoolBuilder[T]) Run(fn func(ctx context.Context, sp *ShardedPool[T]) error) error {
 	return WithShardCfg[T](b.ctx, b.cfg, func(sp *ShardedPool[T]) error {
 		ctx := b.ctx
 		if b.cfg.PoolCfg.FailFast {
-			ctx = sp.Ctx()
+			ctx = sp.ffCtx
 		}
 		return fn(ctx, sp)
 	})

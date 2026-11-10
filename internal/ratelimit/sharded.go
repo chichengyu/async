@@ -12,16 +12,16 @@ import (
 // ──────────────────────────── ShardedRateLimiter ────────────────────────────
 
 // ShardedRateLimiter 将限流器水平分片为 N 个独立实例，支持极限高并发场景。
-// 每个分片独立的 goroutine 补充令牌，将锁竞争降低到 1/N。
+// 每个分片独立补充令牌；锁竞争改善程度取决于路由和负载，须实测。
 //
 // 使用示例：
 //
-//	// 每秒 10000 请求，分 16 片，每片 ≈625/s
+//	// 每秒共补充 10000 个令牌，分 16 片，每片 625/s
 //	rl := ratelimit.NewShardedRateLimiter(16, 10000, time.Second)
 //	defer rl.Close()
-//	rl.Wait(ctx)
-//	doRequest()
-//	rl.Release()
+//	if err := rl.Wait(ctx); err == nil {
+//	    doRequest() // 消耗额度，令牌由各片定时器补充
+//	}
 type ShardedRateLimiter struct {
 	limiters []*RateLimiter
 	nextIdx  atomic.Uint64
@@ -85,7 +85,8 @@ func distributeTotal(total, shards int) []int {
 
 // NewShardedRateLimiter 创建分片限流器。
 // shards<=0 时使用 core.IO()（runtime.NumCPU()*2），最少 2 片。
-// 总速率 = rate，余数优先分配到前几个分片。
+// rate >= shards 时总速率为 rate，余数优先分配到前几个分片；
+// rate < shards 时为兼容旧行为每片至少 1，总速率为 shards。
 //
 // 参数：
 //   - shards：分片数
@@ -110,7 +111,8 @@ func NewShardedRateLimiter(shards int, rate int, perDuration time.Duration) *Sha
 }
 
 // NewShardedRateLimiterWithBurst 创建支持突发容量的分片限流器。
-// rate 和 burst 各自按余数优先分配，保证每个分片 burst >= rate。
+// rate 和 burst 各自按余数优先分配，每片至少为 1；实际片容量至少等于该片速率。
+// 总配置小于片数时，总额度会大于请求值；burst 小于 rate 时容量会提升。
 func NewShardedRateLimiterWithBurst(shards int, rate int, perDuration time.Duration, burst int) *ShardedRateLimiter {
 	if shards <= 0 {
 		shards = core.IO()
@@ -188,7 +190,7 @@ func (sl *ShardedRateLimiter) Close() {
 	}
 }
 
-// Size 返回所有分片并发度之和。
+// Size 返回所有分片的配置速率之和，单位为每 perDuration 窗口的令牌数。
 func (sl *ShardedRateLimiter) Size() int {
 	var total int
 	for _, l := range sl.limiters {
@@ -301,8 +303,9 @@ func (st *ShardedTokenBucket) GetShard(idx int) *TokenBucket {
 // ShardedSlidingWindowRateLimiter 将滑动窗口限流器水平分片，支持极限高并发下的 Allow()。
 // 每个分片独立维护时间窗口，limit 平均分配到各分片。
 //
-// 注意：由于分片间独立，瞬时总允许量可能略高于总 limit（各分片窗口边界不对齐）。
-// 适用场景：对精度要求不高但需极高吞吐的限流。
+// window 为正时，同一滚动窗口内的接受数不超过各片额度之和；
+// limit 小于片数时每片至少 1，实际总额度会高于请求值。
+// 请求只检查选中的片，其他片有余额时也可能拒绝，适合可接受额度不均的场景。
 //
 // 使用示例：
 //
@@ -379,13 +382,13 @@ func (sw *ShardedSlidingWindowRateLimiter) GetShard(idx int) *SlidingWindowRateL
 //
 //	// 16 片，每片 min≈2, max≈50
 //	al := ratelimit.NewShardedAdaptiveRateLimiter(16, 32, 800)
-//	al.Acquire(ctx)
+//	if err := al.Acquire(ctx); err != nil { return err }
+//	defer al.Release()
 //	if err := doRequest(); err == nil {
 //	    al.RecordOk()
 //	} else {
 //	    al.RecordFailure()
 //	}
-//	al.Release()
 type ShardedAdaptiveRateLimiter struct {
 	limiters  []*AdaptiveRateLimiter
 	nextIdx   atomic.Uint64

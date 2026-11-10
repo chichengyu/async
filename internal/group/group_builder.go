@@ -11,7 +11,7 @@ import (
 // ──────────────────────────── GroupBuilder ────────────────────────────
 //
 // GroupBuilder 泛型任务组链式构造器，统一入口为 async.Group[T]()。
-// 支持 Context、Concurrency、Timeout、SubmitTimeout、FailFast、Streaming、ResultCallback。
+// 支持 Context、Worker、Timeout、SubmitTimeout、FailFast、Streaming、ResultCallback。
 //
 // 两种终端方法：
 //   - Build()：返回 *Group[T]，调用方自行管理生命周期（需手动 Wait / Close）
@@ -26,12 +26,18 @@ import (
 //	g.Wait()
 //
 //	// Run 模式
-//	async.Group[string]().Context(ctx).Worker(10).Timeout(5 * time.Second).Run(func(ctx context.Context, g *group.Group[string]) error {
-//	    for _, item := range items {
-//	        g.Go(ctx, fn)
+//	err := async.Group[string]().Context(ctx).Worker(10).Timeout(5 * time.Second).Run(func(ctx context.Context, g *async.GroupInstance[string]) error {
+//	    for range items {
+//	        if err := g.Go(ctx, fn); err != nil {
+//	            return err
+//	        }
 //	    }
-//	    return nil
+//	    g.Wait()
+//	    return g.FirstError()
 //	})
+//	if err != nil {
+//	    log.Printf("任务组失败: %v", err)
+//	}
 type GroupBuilder[T any] struct {
 	ctx           context.Context       // 请求上下文，自动注入 trace_id
 	concurrency   int                   // 最大并发数
@@ -104,19 +110,20 @@ func (b *GroupBuilder[T]) FailFast() *GroupBuilder[T] {
 	return b
 }
 
-// Streaming 设置流式结果通道缓冲大小，0 使用 concurrency*2 的默认值。
+// Streaming 设置流式结果通道缓冲大小；正数在 Build 时启用，非正数不启用。
 func (b *GroupBuilder[T]) Streaming(buf int) *GroupBuilder[T] {
 	b.streaming = buf
 	return b
 }
 
-// DefaultStreaming 使用默认流式缓冲。
+// DefaultStreaming 清除流式配置，Build 时不启用流式结果。
 func (b *GroupBuilder[T]) DefaultStreaming() *GroupBuilder[T] {
 	b.streaming = 0
 	return b
 }
 
-// ResultCallback 设置结果回调，每个任务完成时同步调用。
+// ResultCallback 设置结果记录路径的同步回调。
+// worker、提交取消或拒绝路径均可能调用；最早的 waited/waiting 拒绝不通知。
 func (b *GroupBuilder[T]) ResultCallback(fn func(core.Result[T])) *GroupBuilder[T] {
 	b.resultCb = fn
 	return b
@@ -128,7 +135,8 @@ func (b *GroupBuilder[T]) DefaultResultCallback() *GroupBuilder[T] {
 	return b
 }
 
-// AutoScale 启用自动扩缩容，config 为 nil 时使用 DefaultAutoScaleConfig()。
+// AutoScale 保存自动扩缩容配置；nil 清除本构建器配置，Build 时不启用。
+// 需默认配置时使用 DefaultAutoScale。
 func (b *GroupBuilder[T]) AutoScale(config *core.AutoScaleConfig) *GroupBuilder[T] {
 	b.autoScale = config
 	return b
@@ -149,7 +157,7 @@ func (b *GroupBuilder[T]) DefaultLogger() *GroupBuilder[T] { core.SetLogger(nil)
 // Pool 注入外部协程池，构建的 Group 将使用该池执行任务。
 func (b *GroupBuilder[T]) Pool(p *pool.Pool[T]) *GroupBuilder[T] { b.extPool = p; return b }
 
-// DefaultPool 恢复为内部自动创建协程池（默认行为）。
+// DefaultPool 清除外部 Pool 引用，恢复由 Group 自有 worker 直接执行任务。
 func (b *GroupBuilder[T]) DefaultPool() *GroupBuilder[T] { b.extPool = nil; return b }
 
 // ── 终端方法 ──
@@ -188,20 +196,21 @@ func (b *GroupBuilder[T]) Build() *Group[T] {
 
 // Run 创建→执行→关闭。
 // 内部流程：Build() → 调用 fn → Close()（Wait + 清理）。
-// 使用前必须设置 Concurrency（或使用 DefaultWorker）。
+// 未设置 Worker 时使用 IO 并发度。
 //
 // 示例：
 //
-//	async.Group[string](ctx).
+//	async.Group[string]().Context(ctx).
 //	    Worker(10).
 //	    Timeout(5 * time.Second).
-//	    Run(func(ctx context.Context, g *group.Group[string]) error {
+//	    Run(func(ctx context.Context, g *async.GroupInstance[string]) error {
 //	        for _, item := range items {
-//	            g.Go(ctx, func(ctx context.Context) (string, error) {
+//	            if err := g.Go(ctx, func(ctx context.Context) (string, error) {
 //	                return process(item)
-//	            })
+//	            }); err != nil { return err }
 //	        }
-//	        return nil
+//	        g.Wait()
+//	        return g.FirstError()
 //	    })
 func (b *GroupBuilder[T]) Run(fn func(ctx context.Context, g *Group[T]) error) error {
 	g := b.Build()

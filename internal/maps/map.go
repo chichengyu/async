@@ -4,14 +4,14 @@
 // 设计理念：
 //   - K 为 comparable 类型的键
 //   - V 为任意类型的值
-//   - 所有方法返回 *Map[K, V] 自身，支持链式调用
-//   - 完全对齐 Go 标准库 map 的所有操作语义
+//   - 修改方法通常返回自身；查询和转换方法返回各自的值或新容器
+//   - 底层使用 Go 原生 map；复制、原地修改及缺失键处理以各方法说明为准
 //
 // 使用示例：
 //
 //	m := maps.New[string, int](8)
 //	m.Set("a", 1).Set("b", 2).Set("c", 3)
-//	m.Filter(func(k string, v int) bool { return v > 1 }).Values() // [2, 3]
+//	m.Filter(func(k string, v int) bool { return v > 1 }).Values() // 包含 2 和 3，顺序不确定
 //	m.Range(func(k string, v int) bool { fmt.Println(k, v); return true })
 package maps
 
@@ -66,10 +66,9 @@ func (m *Map[K, V]) Set(key K, value V) *Map[K, V] {
 }
 
 // SetAll 批量设置键值对，覆盖已有值，返回自身。
+// 来源可共享当前 map；每个原条目复制一次，NaN 等非自反键各新增一项。
 func (m *Map[K, V]) SetAll(entries map[K]V) *Map[K, V] {
-	for k, v := range entries {
-		m.data[k] = v
-	}
+	copyMapEntries(m.data, entries, false)
 	return m
 }
 
@@ -185,12 +184,9 @@ func (m *Map[K, V]) AsMap() map[K]V {
 // ──────────────────────────── 过滤与变换 ────────────────────────────
 
 // Filter 过滤键值对，保留 fn 返回 true 的条目，原地操作后返回自身。
+// 支持 NaN 等非自反键；必要时重建同一个底层 map，外部别名保持有效。
 func (m *Map[K, V]) Filter(fn func(K, V) bool) *Map[K, V] {
-	for k, v := range m.data {
-		if !fn(k, v) {
-			delete(m.data, k)
-		}
-	}
+	filterMapEntries(m.data, fn)
 	return m
 }
 
@@ -210,20 +206,18 @@ func (m *Map[K, V]) Reject(fn func(K, V) bool) *Map[K, V] {
 }
 
 // MapValues 原地变换所有值，fn 接收 key 和 value 返回新 value，返回自身。
+// 包括 NaN 等非自反键，每个原条目调用一次；回调不得自行修改容器。
 func (m *Map[K, V]) MapValues(fn func(K, V) V) *Map[K, V] {
-	for k, v := range m.data {
-		m.data[k] = fn(k, v)
-	}
+	mapEntryValues(m.data, fn)
 	return m
 }
 
 // ──────────────────────────── 合并 ────────────────────────────
 
 // Merge 将原生 map 的键值对合并到当前 Map，同名键会被覆盖，返回自身。
+// 支持同一 map 自合并，每个原 NaN 条目只复制一次。
 func (m *Map[K, V]) Merge(other map[K]V) *Map[K, V] {
-	for k, v := range other {
-		m.data[k] = v
-	}
+	copyMapEntries(m.data, other, false)
 	return m
 }
 
@@ -236,12 +230,9 @@ func (m *Map[K, V]) MergeMap(other *Map[K, V]) *Map[K, V] {
 }
 
 // MergeWithDefault 将原生 map 合并到当前 Map，同名键不会覆盖已有值，返回自身。
+// NaN 等非自反键无法命中已有键，每个来源条目仍新增一项。
 func (m *Map[K, V]) MergeWithDefault(other map[K]V) *Map[K, V] {
-	for k, v := range other {
-		if _, ok := m.data[k]; !ok {
-			m.data[k] = v
-		}
-	}
+	copyMapEntries(m.data, other, true)
 	return m
 }
 

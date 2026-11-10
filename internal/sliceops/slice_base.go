@@ -26,7 +26,7 @@ func newSliceBase[T any, S any](ctx context.Context, items []T, policy Policy, s
 //
 //	cmp: 比较函数，返回 <0 表示 a 排在 b 前，>0 表示 b 排在 a 前，==0 表示相等。
 //
-//	sb.Sort(func(a, b int) int { return a - b })
+//	sb.Sort(cmp.Compare[int]) // import "cmp"；避免整数相减溢出
 func (b *sliceBase[T, S]) Sort(cmp func(a, b T) int) S {
 	slicesSortFunc(b.items, cmp)
 	return b.self
@@ -36,7 +36,7 @@ func (b *sliceBase[T, S]) Sort(cmp func(a, b T) int) S {
 //
 //	cmp: 比较函数，规则同 Sort。
 //
-//	sb.StableSort(func(a, b MyStruct) int { return a.Priority - b.Priority })
+//	sb.StableSort(func(a, b MyStruct) int { return cmp.Compare(a.Priority, b.Priority) }) // import "cmp"
 func (b *sliceBase[T, S]) StableSort(cmp func(a, b T) int) S {
 	slicesSortStableFunc(b.items, cmp)
 	return b.self
@@ -46,7 +46,7 @@ func (b *sliceBase[T, S]) StableSort(cmp func(a, b T) int) S {
 //
 //	cmp: 比较函数，规则同 Sort。
 //
-//	sb.IsSorted(func(a, b int) int { return a - b }) // true
+//	sb.IsSorted(cmp.Compare[int]) // import "cmp"；先确认输入确实有序
 func (b *sliceBase[T, S]) IsSorted(cmp func(a, b T) int) bool {
 	return slicesIsSortedFunc(b.items, cmp)
 }
@@ -64,7 +64,9 @@ func (b *sliceBase[T, S]) Reverse() S {
 }
 
 // Filter 使用 pred 谓词过滤切片，保留 pred 返回 true 的元素，返回自身以支持链式调用。
-// 元素数 >= 1000 时自动启用并行过滤。
+// 元素数 >= 1000 且执行策略为并行时启用并行过滤；串行策略始终同步调用谓词。
+// 并行过滤另分配结果槽位，其他路径原地压缩且不清零旧尾部。
+// 同步谓词 panic 原样传播，切片长度未更新但前部可能已改写；worker panic 会终止进程。
 //
 //	pred: 谓词函数，返回 true 保留该元素，false 丢弃。
 //
@@ -105,31 +107,20 @@ func (b *sliceBase[T, S]) Compact(eq func(a, b T) bool) S {
 	return b.self
 }
 
-// Dedup 全局去重，移除所有重复元素（基于 map 判重），保留首次出现的元素，返回自身以支持链式调用。
-// 注意：元素必须可作为 map key（即 comparable 类型），否则会 panic。
+// Dedup 按 eq 全局去重，保留每组首次出现的元素，返回自身以支持链式调用。
+// 非 nil eq 支持任意元素类型，最坏 O(n²) 次比较；大数据量建议先按业务键建立索引。
+// eq 为 nil 时兼容 Go 相等性判重，元素必须可作为 map key，否则会 panic。
 //
 //	eq: 相等判断函数，返回 true 表示两元素相等。
 //
 //	sb.Dedup(func(a, b int) bool { return a == b }).Values() // [3, 1, 2]
 func (b *sliceBase[T, S]) Dedup(eq func(a, b T) bool) S {
-	if len(b.items) < 2 {
-		return b.self
-	}
-	seen := make(map[any]struct{}, len(b.items))
-	n := 0
-	for _, v := range b.items {
-		if _, ok := seen[v]; !ok {
-			seen[v] = struct{}{}
-			b.items[n] = v
-			n++
-		}
-	}
-	b.items = b.items[:n]
+	b.items = dedupItems(b.items, eq)
 	return b.self
 }
 
-// Clip 释放切片多余容量，使 cap(slice) == len(slice)，返回自身以支持链式调用。
-// 适用于持有大量切片内存场景下主动减少内存占用。
+// Clip 在容量大于长度时复制到新数组，使 cap == len，返回自身以支持链式调用。
+// 旧数组只有在所有引用释放后才能回收，复制会有瞬时内存开销。
 //
 //	sb.Filter(pred).Clip() // 过滤后释放多余容量
 func (b *sliceBase[T, S]) Clip() S {
@@ -141,9 +132,9 @@ func (b *sliceBase[T, S]) Clip() S {
 	return b.self
 }
 
-// Grow 扩展切片容量 n 个元素（不改变 len），返回自身以支持链式调用。
+// Grow 确保容量至少可容纳 len+n 个元素（不改变 len），返回自身以支持链式调用。
 //
-//	n: 要增加的容量数。
+//	n: 需要额外容纳的元素数；负数会 panic。
 //
 //	sb.Grow(100).Append(v1, v2) // 预先扩容，避免 Append 多次分配
 func (b *sliceBase[T, S]) Grow(n int) S {
@@ -162,6 +153,7 @@ func (b *sliceBase[T, S]) Append(vals ...T) S {
 }
 
 // Prepend 在切片头部插入元素，返回自身以支持链式调用。
+// 容量足够时复用 vals 的数组，可能覆盖 vals 长度之外的共享槽位。
 //
 //	vals: 要插入的元素，按顺序出现在切片头部。
 //
@@ -227,6 +219,7 @@ func (b *sliceBase[T, S]) DeleteRange(i, j int) S {
 }
 
 // Replace 替换索引范围 [i, j) 的元素为新值 vals，返回自身以支持链式调用。
+// 支持重叠参数；缩短时清零新长度到旧长度之间的槽位，共享视图可见。
 //
 //	i:    起始索引（含）。
 //	j:    结束索引（不含）。
@@ -296,7 +289,7 @@ func (b *sliceBase[T, S]) SliceRange(i, j int) S {
 
 // Shuffle 随机打乱切片元素顺序，返回自身以支持链式调用。
 //
-//	sb.Shuffle() // 每次执行结果不同
+//	sb.Shuffle() // 随机排列；可能与原顺序或上次结果相同
 func (b *sliceBase[T, S]) Shuffle() S {
 	randShuffle(len(b.items), func(i, j int) {
 		b.items[i], b.items[j] = b.items[j], b.items[i]
@@ -306,6 +299,7 @@ func (b *sliceBase[T, S]) Shuffle() S {
 
 // Repeat 将现有切片重复 n 次拼接，返回自身以支持链式调用。
 // n <= 0 时清空切片，n == 1 时无操作。
+// 空输入直接返回，不按 n 循环；保留现有空视图和容量。
 //
 //	n: 重复次数。
 //
@@ -315,7 +309,7 @@ func (b *sliceBase[T, S]) Repeat(n int) S {
 		b.items = b.items[:0]
 		return b.self
 	}
-	if n == 1 {
+	if n == 1 || len(b.items) == 0 {
 		return b.self
 	}
 	orig := make([]T, len(b.items))
@@ -374,9 +368,9 @@ func (b *sliceBase[T, S]) Items() []T {
 	return b.items
 }
 
-// Values 返回切片元素的浅拷贝，修改返回值不影响构建器内部状态。
+// Values 返回切片元素的浅拷贝；替换返回切片的元素不影响构建器，元素内部引用仍可能共享。
 //
-//	vals := sb.Sort(cmp).Values() // 安全，可任意修改
+//	vals := sb.Sort(cmp).Values() // 可独立替换元素，引用类型内容仍需同步
 func (b *sliceBase[T, S]) Values() []T {
 	out := make([]T, len(b.items))
 	copy(out, b.items)
@@ -496,7 +490,7 @@ func (b *sliceBase[T, S]) Count(pred func(T) bool) int {
 //
 //	cmp: 比较函数，规则同 Sort。
 //
-//	max, ok := sb.Max(func(a, b int) int { return a - b }) // max=3, ok=true
+//	max, ok := sb.Max(cmp.Compare[int]) // import "cmp"；max=3, ok=true
 func (b *sliceBase[T, S]) Max(cmp func(a, b T) int) (max T, found bool) {
 	if len(b.items) == 0 {
 		return
@@ -514,7 +508,7 @@ func (b *sliceBase[T, S]) Max(cmp func(a, b T) int) (max T, found bool) {
 //
 //	cmp: 比较函数，规则同 Sort。
 //
-//	min, ok := sb.Min(func(a, b int) int { return a - b }) // min=1, ok=true
+//	min, ok := sb.Min(cmp.Compare[int]) // import "cmp"；min=1, ok=true
 func (b *sliceBase[T, S]) Min(cmp func(a, b T) int) (min T, found bool) {
 	if len(b.items) == 0 {
 		return
@@ -540,7 +534,8 @@ func (b *sliceBase[T, S]) BinarySearch(target T, cmp func(a, b T) int) (int, boo
 }
 
 // Chunked 将切片按 chunkSize 切分为多个子切片，返回 [][]T。
-// 最后一个子切片可能不足 chunkSize。不修改内部切片。
+// 最后一个子切片可能不足 chunkSize。不修改内部切片，但子切片共享输入数组，
+// 保留剩余容量，向一块追加可能覆盖后续块；大小非正或空输入返回 nil。
 //
 //	chunkSize: 每个子切片的期望大小。
 //
@@ -549,8 +544,9 @@ func (b *sliceBase[T, S]) Chunked(chunkSize int) [][]T {
 	return Chunk(b.items, chunkSize)
 }
 
-// ChunkedN 将切片近似均匀地切分为 n 个子切片，返回 [][]T。
-// 不修改内部切片。
+// ChunkedN 按 ceil(len/n) 的块大小切分，返回最多 n 个子切片。
+// 实际块数可能少于 n（例如 10 个元素、n=6 时返回 5 块）；n<=0 或空输入返回 nil。
+// 不修改内部切片，但返回的子切片共享原底层数组。
 //
 //	n: 期望的子切片数量。
 //

@@ -41,14 +41,19 @@ import (
 //	    return item, nil
 //	})
 //
-//	// 生产者 goroutine
+//	// 生产者 goroutine；save 须支持与消费者并发调用。
+//	producerDone := make(chan struct{})
 //	go func() {
+//	    defer close(producerDone)
 //	    for msg := range messageStream {
-//	        fl.Submit(ctx, msg)
+//	        if _, err := fl.Submit(ctx, msg); err != nil {
+//	            log.Printf("submit: %v", err)
+//	            break
+//	        }
 //	    }
 //	    remaining := fl.Close()
 //	    for _, r := range remaining {
-//	        save(r.Value)
+//	        if r.Ok() { save(r.Value) }
 //	    }
 //	}()
 //
@@ -58,6 +63,7 @@ import (
 //	        save(r.Value)
 //	    }
 //	}
+//	<-producerDone // Results 关闭不代表 Close 调用方已处理完残留结果
 type Flow[T any] struct {
 	stages      []*flowStage[T]
 	resultCh    chan core.Result[T]
@@ -272,12 +278,13 @@ func (fl *Flow[T]) Close() []core.Result[T] {
 	return remaining
 }
 
-// SubmitCount 返回已提交的元素数量。
+// SubmitCount 返回成功入队的元素数量，不包含被拒绝的尝试。
 func (fl *Flow[T]) SubmitCount() int64 {
 	return fl.submitCount.Load()
 }
 
-// ErrCount 返回处理过程中出错的数量。
+// ErrCount 返回阶段回调失败、panic 或业务 Goexit 的历史次数；同一元素可在多阶段重复计数。
+// 后续阶段成功不会扣减它，不等于最终失败元素数量。
 func (fl *Flow[T]) ErrCount() int64 {
 	return atomic.LoadInt64(&fl.errCnt)
 }
@@ -292,11 +299,22 @@ func (fl *Flow[T]) stageWorker(
 	fn func(context.Context, string, T) (T, error),
 	stageName string,
 ) {
-	defer fs.wg.Done()
+	returned := true
+	defer func() {
+		if !returned {
+			go fl.stageWorker(fs, fn, stageName)
+		} else {
+			fs.wg.Done()
+		}
+	}()
 	for item := range fs.inputCh {
-		fs.active.Add(1)
-		fl.processStageItem(fs, item, fn, stageName)
-		fs.active.Add(-1)
+		returned = false
+		func() {
+			fs.active.Add(1)
+			defer fs.active.Add(-1)
+			fl.processStageItem(fs, item, fn, stageName)
+		}()
+		returned = true
 	}
 }
 
@@ -307,15 +325,23 @@ func (fl *Flow[T]) processStageItem(
 	fn func(context.Context, string, T) (T, error),
 	stageName string,
 ) {
+	defer fl.forwardStageItem(fs, item)
 	if !fs.skipOnError || item.err == nil {
 		func() {
+			calling := true
 			defer func() {
 				if r := recover(); r != nil {
 					item.err = core.NewPanicError(r)
 					atomic.AddInt64(&fl.errCnt, 1)
+				} else if calling {
+					var zero T
+					item.value = zero
+					item.err = core.ErrTaskGoexit
+					atomic.AddInt64(&fl.errCnt, 1)
 				}
 			}()
 			val, err := fn(fl.ctx, stageName, item.value)
+			calling = false
 			item.value = val
 			item.err = err
 			if err != nil {
@@ -323,7 +349,9 @@ func (fl *Flow[T]) processStageItem(
 			}
 		}()
 	}
+}
 
+func (fl *Flow[T]) forwardStageItem(fs *flowStage[T], item *flowItem[T]) {
 	if fs.outputCh != nil {
 		// 非最终阶段：转发到下一阶段
 		// 外部取消管道 context 时允许停止转发，避免下游不再消费时阻塞。
@@ -375,14 +403,14 @@ type FlowStageStats struct {
 type FlowStats struct {
 	Stages      []FlowStageStats // 各阶段统计（顺序与配置一致）
 	ResultBuf   int              // result channel 当前积压
-	TotalSubmit int64            // 历史总提交数
-	TotalError  int64            // 历史总错误数
+	TotalSubmit int64            // 历史成功入队数
+	TotalError  int64            // 历史阶段回调错误/panic/Goexit 次数
 	TotalResult int64            // 成功写入 resultCh 的结果总数
-	Closed      bool             // 管道是否已关闭
+	Closed      bool             // 首次 Close 是否已经开始，不代表清理已完成
 }
 
 // Stats 返回 Flow 的完整运行时统计快照。
-// 所有计数均为原子读取，可在任意 goroutine 中安全调用。
+// 各计数可并发读取，但各字段不是同一时刻的事务一致快照。
 //
 // 使用示例：
 //

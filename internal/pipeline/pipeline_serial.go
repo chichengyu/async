@@ -25,6 +25,7 @@ func (s *SerialChain[T]) Run(fn func(context.Context, string, T) (T, error)) ([]
 }
 
 // ExecuteWithMeta 串行执行并返回带阶段元信息的结果。
+// 按阶段及输入顺序追加；空阶段返回空切片，不读取 Stage.SkipOnError。
 func (s *SerialChain[T]) ExecuteWithMeta(fn func(context.Context, string, T) (T, error)) []ResultWithMeta[T] {
 	return s.execSerialWithMeta(fn)
 }

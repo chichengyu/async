@@ -91,7 +91,17 @@ func execMapPool[T any, R any](ctx context.Context, items []T, fn func(context.C
 			if !p.failFast {
 				return fn(ctx, it)
 			}
+			returned := false
+			defer func() {
+				if recovered := recover(); recovered != nil {
+					panic(recovered)
+				}
+				if !returned {
+					triggerOnce.Do(func() { triggerErr = core.ErrTaskGoexit; cancel() })
+				}
+			}()
 			value, err := core.SafeCall(ctx, it, fn)
+			returned = true
 			if err != nil {
 				triggerOnce.Do(func() { triggerErr = err; cancel() })
 			}
@@ -237,13 +247,18 @@ func streamPool[T any, R any](ctx context.Context, items []T, fn func(context.Co
 				if !p.failFast {
 					return fn(taskCtx, it)
 				}
+				returned := false
 				defer func() {
 					if recovered := recover(); recovered != nil {
 						cancel()
 						panic(recovered)
 					}
+					if !returned {
+						cancel()
+					}
 				}()
 				value, err := fn(taskCtx, it)
+				returned = true
 				if err != nil {
 					cancel()
 				}
@@ -313,37 +328,27 @@ func mapSharded[T any, R any](ctx context.Context, items []T, fn func(context.Co
 
 	for worker := 0; worker < conc; worker++ {
 		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for {
-				shard := int(next.Add(1) - 1)
-				if shard >= shards {
-					return
-				}
-				start := shard*base + min(shard, extra)
-				end := start + base
-				if shard < extra {
-					end++
-				}
-				for j := start; j < end; j++ {
-					select {
-					case <-ctx.Done():
-						mu.Lock()
-						results[j] = core.Result[R]{Err: ctx.Err(), Occupied: true}
-						mu.Unlock()
-						continue
-					default:
-					}
-					val, err := invokeShardTask(ctx, p, func(ctx context.Context) (R, error) { return fn(ctx, items[j]) })
-					mu.Lock()
-					results[j] = core.Result[R]{Value: val, Err: err, Occupied: true}
-					mu.Unlock()
-					if err != nil && p.failFast {
-						once.Do(func() { firstErr = err; ffCancel() })
-					}
-				}
+		cursor := shardCursor(func() int { return int(next.Add(1) - 1) }, shards, base, extra)
+		startNativeWorker(&wg, cursor, func(j int) {
+			select {
+			case <-ctx.Done():
+				mu.Lock()
+				results[j] = core.Result[R]{Err: ctx.Err(), Occupied: true}
+				mu.Unlock()
+				return
+			default:
 			}
-		}()
+			finishNativeTask(func() (R, error) {
+				return invokeShardTask(ctx, p, func(ctx context.Context) (R, error) { return fn(ctx, items[j]) })
+			}, func(val R, err error) {
+				mu.Lock()
+				results[j] = core.Result[R]{Value: val, Err: err, Occupied: true}
+				mu.Unlock()
+				if err != nil && p.failFast {
+					once.Do(func() { firstErr = err; ffCancel() })
+				}
+			})
+		})
 	}
 	wg.Wait()
 	if p.failFast && firstErr == nil {
@@ -463,44 +468,34 @@ func eachSharded[T any](ctx context.Context, items []T, fn func(context.Context,
 
 	for worker := 0; worker < conc; worker++ {
 		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for {
-				shard := int(next.Add(1) - 1)
-				if shard >= shards {
-					return
-				}
-				start := shard*base + min(shard, extra)
-				end := start + base
-				if shard < extra {
-					end++
-				}
-				for j := start; j < end; j++ {
-					select {
-					case <-ctx.Done():
-						mu.Lock()
-						results[j] = core.Result[struct{}]{Err: ctx.Err(), Occupied: true}
-						failCnt++
-						mu.Unlock()
-						continue
-					default:
-					}
-					_, err := invokeShardTask(ctx, p, func(ctx context.Context) (struct{}, error) { return struct{}{}, fn(ctx, items[j]) })
-					mu.Lock()
-					results[j] = core.Result[struct{}]{Err: err, Occupied: true}
-					if err != nil {
-						failCnt++
-						if firstErr == nil {
-							firstErr = err
-						}
-						if p.failFast {
-							ffCancel()
-						}
-					}
-					mu.Unlock()
-				}
+		cursor := shardCursor(func() int { return int(next.Add(1) - 1) }, shards, base, extra)
+		startNativeWorker(&wg, cursor, func(j int) {
+			select {
+			case <-ctx.Done():
+				mu.Lock()
+				results[j] = core.Result[struct{}]{Err: ctx.Err(), Occupied: true}
+				failCnt++
+				mu.Unlock()
+				return
+			default:
 			}
-		}()
+			finishNativeTask(func() (struct{}, error) {
+				return invokeShardTask(ctx, p, func(ctx context.Context) (struct{}, error) { return struct{}{}, fn(ctx, items[j]) })
+			}, func(_ struct{}, err error) {
+				mu.Lock()
+				results[j] = core.Result[struct{}]{Err: err, Occupied: true}
+				if err != nil {
+					failCnt++
+					if firstErr == nil {
+						firstErr = err
+					}
+					if p.failFast {
+						ffCancel()
+					}
+				}
+				mu.Unlock()
+			})
+		})
 	}
 	wg.Wait()
 	if firstErr == nil {
@@ -722,13 +717,18 @@ func streamFF[T any, R any](ctx context.Context, items []T, fn func(context.Cont
 		for i := range items {
 			idx := i
 			if err := g.Go(ffCtx, func(ctx context.Context) (R, error) {
+				returned := false
 				defer func() {
 					if r := recover(); r != nil {
 						ffCancel()
 						panic(r)
 					}
+					if !returned {
+						ffCancel()
+					}
 				}()
 				val, err := fn(ctx, items[idx])
+				returned = true
 				if err != nil {
 					ffCancel()
 				}
@@ -852,13 +852,18 @@ func eachStreamFF[T any](ctx context.Context, items []T, fn func(context.Context
 		for i := range items {
 			idx := i
 			if err := nr.Go(ffCtx, func(ctx context.Context) error {
+				returned := false
 				defer func() {
 					if r := recover(); r != nil {
 						ffCancel()
 						panic(r)
 					}
+					if !returned {
+						ffCancel()
+					}
 				}()
 				err := fn(ctx, items[idx])
+				returned = true
 				if err != nil {
 					ffCancel()
 				}
@@ -953,13 +958,21 @@ func mapParallel[T any, R any](ctx context.Context, items []T, fn func(context.C
 			end = len(items)
 		}
 		w.Add(1)
-		go func(start, end int) {
-			defer w.Done()
-			for j := start; j < end; j++ {
-				val, err := core.SafeCall(ctx, items[j], fn)
-				results[j] = core.Result[R]{Value: val, Err: err}
+		next := start
+		startNativeWorker(w, func() (int, bool) {
+			if next >= end {
+				return 0, false
 			}
-		}(start, end)
+			j := next
+			next++
+			return j, true
+		}, func(j int) {
+			finishNativeTask(func() (R, error) {
+				return core.SafeCall(ctx, items[j], fn)
+			}, func(val R, err error) {
+				results[j] = core.Result[R]{Value: val, Err: err}
+			})
+		})
 	}
 }
 
@@ -974,22 +987,30 @@ func mapParallelFF[T any, R any](ctx context.Context, cancel context.CancelFunc,
 			end = len(items)
 		}
 		w.Add(1)
-		go func(start, end int) {
-			defer w.Done()
-			for j := start; j < end; j++ {
-				select {
-				case <-ctx.Done():
-					results[j] = core.Result[R]{Err: ctx.Err()}
-					continue
-				default:
-				}
-				val, err := core.SafeCall(ctx, items[j], fn)
+		next := start
+		startNativeWorker(w, func() (int, bool) {
+			if next >= end {
+				return 0, false
+			}
+			j := next
+			next++
+			return j, true
+		}, func(j int) {
+			select {
+			case <-ctx.Done():
+				results[j] = core.Result[R]{Err: ctx.Err()}
+				return
+			default:
+			}
+			finishNativeTask(func() (R, error) {
+				return core.SafeCall(ctx, items[j], fn)
+			}, func(val R, err error) {
 				results[j] = core.Result[R]{Value: val, Err: err}
 				if err != nil {
 					firstErrOnce.Do(func() { *firstErr = err; cancel() })
 				}
-			}
-		}(start, end)
+			})
+		})
 	}
 }
 
@@ -1060,7 +1081,8 @@ func eachSerialImpl[T any](ctx context.Context, items []T, fn func(context.Conte
 
 // ──────────────────────────── 工具函数 ────────────────────────────
 
-// Chunk 将切片按大小均分。适用于将大数据集拆分为并发处理的小块。
+// Chunk 按指定大小切分，末块可不足大小；大小非正或空输入返回 nil。
+// 子切片共享输入数组并保留剩余容量，向一块追加可能覆盖后续块。
 func Chunk[T any](items []T, chunkSize int) [][]T {
 	if chunkSize <= 0 || len(items) == 0 {
 		return nil
@@ -1083,7 +1105,8 @@ func Reduce[T any, R any](ctx context.Context, items []T, initial R, fn func(con
 	return execReduce(ctx, items, initial, fn)
 }
 
-// ChunkN 将切片按份数均分。
+// ChunkN 按 ceil(len(items)/n) 的块大小切分，返回最多 n 块，实际块数可能少于 n。
+// n<=0 或空输入返回 nil；返回的子切片共享 items 的底层数组。
 func ChunkN[T any](items []T, n int) [][]T {
 	if n <= 0 || len(items) == 0 {
 		return nil

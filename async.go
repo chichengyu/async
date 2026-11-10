@@ -46,7 +46,7 @@ import (
 // ── 常量 ──
 
 const (
-	// DefaultSubmitTimeout Submit 等待空闲 worker 的默认超时（5秒）
+	// DefaultSubmitTimeout 全局提交超时配置的初始值（5秒）；当前不自动应用到 Pool/Group。
 	DefaultSubmitTimeout = core.DefaultSubmitTimeout
 	// WaitContextCleanupWarn 超时清理 goroutine 发出警告的间隔（5分钟）
 	WaitContextCleanupWarn = core.WaitContextCleanupWarn
@@ -114,6 +114,8 @@ var (
 	ErrRateLimiterStopped = core.ErrRateLimiterStopped
 	// ErrTimeout 操作超时
 	ErrTimeout = core.ErrTimeout
+	// ErrTaskGoexit Task/Pool/Group、原生并行/分片 Slice/Map 或并行、Stream、Flow Pipeline 业务回调通过 runtime.Goexit 结束而未返回
+	ErrTaskGoexit = core.ErrTaskGoexit
 	// ErrQueueOverflow 队列溢出，任务被拒绝
 	ErrQueueOverflow = core.ErrQueueOverflow
 	// TraceIDKey context 中 trace_id 的 key
@@ -156,7 +158,9 @@ var (
 	// GetDefaultTimeout 获取当前全局默认超时。
 	GetDefaultTimeout = core.GetDefaultTimeout
 
-	// SetSubmitTimeout 设置 Pool/Group.Submit 等待空闲 worker 的超时（默认 5 秒）。
+	// SetSubmitTimeout 设置并保存全局提交超时配置值（初始值为 5 秒）。
+	// 当前 Pool/Group 不会自动读取该全局值；要限制具体实例的提交等待时间，
+	// 请在 Builder 或实例上调用 SubmitTimeout/WithSubmitTimeout。
 	//
 	// 示例：
 	//   async.SetSubmitTimeout(3 * time.Second)
@@ -275,7 +279,7 @@ func SafeCallVoid[T any](ctx context.Context, item T, fn func(ctx context.Contex
 // ──────────────────────────── Group 任务组 ────────────────────────────
 
 // Group[T] 泛型任务组，适合一次性批量并发任务。
-// 每次 Go 新建 goroutine，任务完成后销毁。
+// 创建时启动 worker，经队列复用执行任务；Wait 后 worker 退出。
 // 支持超时控制、FailFast、提交超时等选项。
 //
 // 通过 async.Group[T]() 构造器链式创建：
@@ -495,7 +499,7 @@ type TaskErr = task.TaskNoResult
 // AsyncErr 仅返回错误的异步结果句柄（fn 签名为 func(ctx) error）。
 type AsyncErr = task.AsyncResultNoResult
 
-// Mu[T] 线程安全的切片容器，支持并发安全的 Appen d 和 Snapshot。
+// Mu[T] 线程安全的切片容器，支持并发安全的 Append 和 Snapshot。
 // 适用于多个 goroutine 需要安全地收集结果的场景。
 //
 // 示例：
@@ -537,7 +541,7 @@ type Mu[T any] = task.Mu[T]
 //	val, err := t.Result()
 //
 //	// 无返回值任务
-//	err := async.TaskVoid().Context(ctx).GoAct(func(ctx context.Context) error {
+//	_, err := async.TaskVoid().Context(ctx).GoAct(func(ctx context.Context) error {
 //	    return sendNotification(ctx, userID, msg)
 //	}).Wait()
 type TaskBuilder[T any] = task.TaskBuilder[T]
@@ -799,10 +803,11 @@ type FlowBuilder[T any] = pipeline.FlowBuilder[T]
 //	}
 //
 //	// 链式构建
-//	p := async.Pipeline(stages).
+//	p, err := async.Pipeline[string](items).
 //	    Parallel().
 //	    Shard(8).
-//	    Run(ctx, items, fn)
+//	    Stage("parse", 10).Stage("validate", 5).
+//	    Context(ctx).Run(fn)
 type ParallelPipeline[T any] = pipeline.Pipeline[T]
 
 // ── Flow：常驻管道 ──
@@ -879,7 +884,7 @@ func ExecuteStream[T any](
 
 // ── BoundedRunner：Task goroutine 限流 ──
 
-// BoundedRunner 限制并发 goroutine 数的异步任务执行器。
+// BoundedRunner 限制同时持有许可的业务回调数，不限制调用方或业务另建的 goroutine。
 //
 // 使用示例：
 //

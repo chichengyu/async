@@ -9,7 +9,7 @@ import (
 
 // ──────────────────────────── NoResult ────────────────────────────
 //
-// NoResult 是 Group[struct{}] 的类型别名，适用于只需要关注成功/失败、不需要返回值的场景。
+// NoResult 是以 Group[struct{}] 为基础定义的独立类型，适用于只需要关注成功/失败、不需要返回值的场景。
 // Wait() 方法无返回值（void）。
 //
 // 使用示例：
@@ -140,7 +140,8 @@ func (nr *NoResult) WithStreaming(bufSize int) *NoResult {
 	return nr
 }
 
-// WithResultCallback 设置结果回调，每个任务完成时同步调用。
+// WithResultCallback 设置结果记录路径的同步回调，委托 Group。
+// worker、提交取消或拒绝路径均可能调用；最早的 waited/waiting 拒绝不通知。
 func (nr *NoResult) WithResultCallback(fn func(core.Result[struct{}])) *NoResult {
 	(*Group[struct{}])(nr).WithResultCallback(fn)
 	return nr
@@ -212,6 +213,8 @@ func (nr *NoResult) Wait() {
 }
 
 // WaitTimeout 等待任务完成，最多等待 d。
+// completed 是当前结果切片长度，含 GoAt 产生的空槽，并非成功或已完成任务数。
+// ok 只表示等待完成，业务失败数请在等待后通过 FailCount 查询。
 func (nr *NoResult) WaitTimeout(d time.Duration) (completed int64, ok bool) {
 	results, ok := (*Group[struct{}])(nr).WaitTimeout(d)
 	if ok {
@@ -221,6 +224,8 @@ func (nr *NoResult) WaitTimeout(d time.Duration) (completed int64, ok bool) {
 }
 
 // WaitContext 等待任务完成或 ctx 取消。
+// completed 是当前结果切片长度，含 GoAt 产生的空槽，并非成功或已完成任务数。
+// 等待取消后任务可能继续退出清理，应在最终 Wait 后查询完整统计。
 func (nr *NoResult) WaitContext(ctx context.Context) (completed int64, ok bool) {
 	results, ok := (*Group[struct{}])(nr).WaitContext(ctx)
 	if ok {
@@ -254,7 +259,7 @@ func (nr *NoResult) Worker() int {
 	return (*Group[struct{}])(nr).Worker()
 }
 
-// Active 返回当前活跃 goroutine 数。
+// Active 返回已登记但未结束的任务数，包含等待入队、排队和执行中的任务。
 func (nr *NoResult) Active() int {
 	return (*Group[struct{}])(nr).Active()
 }
@@ -337,16 +342,19 @@ func BuildAggregateNoResult(nr *NoResult) (total int64, failCnt int64, firstErr 
 	return
 }
 
-// FillNoResultSkipped 在 nr.Wait() 之后补齐缺失的结果槽位，确保 TotalCount() == total。
+// FillNoResultSkipped 在 nr.Wait() 之后补齐缺失的结果槽位；仅在 total 大于当前总数时增长至 total。
 //
 // 参数：
 //   - nr：已 Wait 的 NoResult 实例
-//   - total：期望的总任务数
+//   - total：期望的总任务数；非正值或不大于当前总数时无操作
 func FillNoResultSkipped(nr *NoResult, total int) {
 	g := (*Group[struct{}])(nr)
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if need := int64(total) - g.totalCnt.Load(); need > 0 {
+	current := g.totalCnt.Load()
+	if int64(total) > current {
+		// Compare first: subtracting a positive count from MinInt64 overflows.
+		need := int64(total) - current
 		for i := range g.results {
 			if need == 0 {
 				break

@@ -60,7 +60,7 @@ func (b *TaskBuilder[T]) DefaultTimeout() *TaskBuilder[T] {
 	return b
 }
 
-// Bounded 使用 BoundedRunner 限制并发 goroutine 数。
+// Bounded 使用 BoundedRunner 限制同时持有许可的业务回调数。
 // max 为最大并发数，<=0 时使用默认 IO 并发度。
 func (b *TaskBuilder[T]) Bounded(max int) *TaskBuilder[T] {
 	b.bounded = NewBoundedRunner(max)
@@ -82,7 +82,8 @@ func (b *TaskBuilder[T]) DefaultLogger() *TaskBuilder[T] { core.SetLogger(nil); 
 // ── 终端方法 ──
 
 // Go 启动异步任务，返回 AsyncResult[T]。
-// 通过 Wait() 获取结果，不支持外部取消。
+// 通过 Wait() 获取结果；可取消传入的父 context，业务函数须响应取消。
+// 返回句柄不提供取消任务的函数，AsyncResult.Cancel 只取消等待。
 func (b *TaskBuilder[T]) Go(fn func(context.Context) (T, error)) *AsyncResult[T] {
 	fn = b.wrapTimeout(fn)
 	if b.bounded != nil {
@@ -163,8 +164,16 @@ func boundedGoResultAct(r *BoundedRunner, ctx context.Context, fn func(context.C
 		}
 	}
 
-	return GoResultAct(ctx, func(ctx context.Context) error {
+	started := false
+	defer func() {
+		if !started {
+			<-r.sem
+		}
+	}()
+	result := GoResultAct(ctx, func(ctx context.Context) error {
 		defer func() { <-r.sem }()
 		return fn(ctx)
 	})
+	started = true
+	return result
 }

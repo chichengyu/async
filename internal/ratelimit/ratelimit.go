@@ -8,12 +8,12 @@
 //
 // 使用示例：
 //
-//	// RateLimiter：每秒100个请求
+//	// RateLimiter：每秒补充100个令牌，初始可突发100个
 //	rl := ratelimit.NewRateLimiter(100, time.Second)
 //	defer rl.Close()
-//	rl.Wait(ctx)
-//	doRequest()
-//	rl.Release()
+//	if err := rl.Wait(ctx); err == nil {
+//	    doRequest() // 速率限制场景消耗额度，不立即归还令牌
+//	}
 //
 //	// TokenBucket：自带令牌自动补充
 //	tb := ratelimit.NewTokenBucket(10, 20)
@@ -23,13 +23,14 @@
 //
 //	// AdaptiveRateLimiter：自适应调整并发
 //	al := ratelimit.NewAdaptiveRateLimiter(5, 100)
-//	al.Acquire(ctx)
-//	if err := doRequest(); err == nil {
-//	    al.RecordOk()
-//	} else {
-//	    al.RecordFailure()
+//	if err := al.Acquire(ctx); err == nil {
+//	    defer al.Release()
+//	    if err := doRequest(); err == nil {
+//	        al.RecordOk()
+//	    } else {
+//	        al.RecordFailure()
+//	    }
 //	}
-//	al.Release()
 package ratelimit
 
 import (
@@ -81,11 +82,12 @@ type RateLimiter struct {
 //
 // 使用示例：
 //
-//	// 每秒最多 100 个请求
+//	// 每秒补充 100 个令牌，初始可突发 100 个；请求消耗额度，令牌由定时器补充
 //	rl := ratelimit.NewRateLimiter(100, time.Second)
-//	rl.Wait(ctx)
-//	doRequest()
-//	rl.Release()
+//	defer rl.Close()
+//	if err := rl.Wait(ctx); err == nil {
+//	    doRequest()
+//	}
 func NewRateLimiter(rate int, perDuration time.Duration) *RateLimiter {
 	if rate <= 0 {
 		rate = core.IO()
@@ -221,16 +223,16 @@ func (rl *RateLimiter) refillLocked(now time.Time) int {
 	return added
 }
 
-// Wait 获取令牌（等同 Acquire），阻塞直到获取成功或 ctx 取消。
+// Wait 等同 Acquire，按当前 Block、Reject 或 BlockForce 策略获取令牌。
 //
 // 参数：
-//   - ctx：上下文，取消后返回 ctx.Err()
+//   - ctx：非 nil 上下文；Block 仅在无令牌时响应取消，Reject/BlockForce 忽略取消
 //
 // 使用示例：
 //
-//	rl.Wait(ctx)  // 等待令牌
-//	doRequest()
-//	rl.Release()  // 归还令牌
+//	if err := rl.Wait(ctx); err == nil {
+//	    doRequest() // 定时补充额度；Release 会提前归还令牌
+//	}
 func (rl *RateLimiter) Wait(ctx context.Context) error {
 	return rl.Acquire(ctx)
 }
@@ -270,11 +272,11 @@ func (rl *RateLimiter) WithTraceID(ctx context.Context) (*RateLimiter, context.C
 	return rl, ctx
 }
 
-// Acquire 根据当前策略获取令牌。默认 Block 策略下阻塞等待令牌或 ctx 取消。
+// Acquire 根据当前策略获取令牌。默认 Block 先取可用令牌，无令牌时等待许可或 ctx 取消。
 // 当限流器通过 Resize 动态调整速率导致内部通道重建时，Acquire 会自动重试获取新令牌。
 //
 // 参数：
-//   - ctx：上下文，取消后返回 ctx.Err()（Block 策略下）
+//   - ctx：非 nil 上下文；Block 仅在无令牌时响应取消，有令牌时可成功，Reject/BlockForce 忽略取消
 //
 // 使用示例：
 //
@@ -366,7 +368,9 @@ func (rl *RateLimiter) Acquire(ctx context.Context) error {
 //
 // 使用示例：
 //
-//	rl.Acquire(ctx)
+//	if err := rl.Acquire(ctx); err != nil {
+//	    return err
+//	}
 //	defer rl.Release()
 //	doRequest()
 func (rl *RateLimiter) Release() {
@@ -440,7 +444,7 @@ func (rl *RateLimiter) Close() {
 // 已关闭的限流器上调用无效。
 //
 // 参数：
-//   - newRate：新的每秒允许操作次数
+//   - newRate：新的每 perDuration 窗口补充额度，同时调整令牌容量
 //
 // 使用示例：
 //
@@ -495,7 +499,7 @@ func (rl *RateLimiter) Resize(newRate int) {
 	rl.cond.Broadcast()
 }
 
-// Size 返回当前速率限制值（每秒允许的操作数）。
+// Size 返回当前配置额度（每 perDuration 窗口补充的令牌数，不固定为每秒）。
 func (rl *RateLimiter) Size() int {
 	return int(atomic.LoadInt32(&rl.size))
 }
@@ -535,7 +539,7 @@ func (t *Token) Release() {
 // Token 获取一个自动释放的令牌包装器，配合 defer 使用更安全。
 //
 // 参数：
-//   - ctx：上下文，取消后返回 ctx.Err()
+//   - ctx：非 nil 上下文；遵循 Acquire 当前策略，有令牌时已取消仍可能获取成功
 //
 // 使用示例：
 //

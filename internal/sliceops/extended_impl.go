@@ -13,7 +13,7 @@ import (
 // ──────────────────────────── Map 扩展 ────────────────────────────
 
 // DefaultMap 使用 core.IO() 作为默认并发度的 Map。
-// 忽略 Map 返回的 error（因为 Map 非 FailFast 不会返回错误）。
+// 此包装只返回逐项 Result，舍弃 Map 的汇总 error；必须检查每项 Result.Err。
 //
 // 参数：
 //   - ctx：上下文
@@ -22,7 +22,7 @@ import (
 //
 // 使用示例：
 //
-//	results := mapreduce.DefaultMap(ctx, ids, func(ctx context.Context, id int) (*User, error) {
+//	results := sliceops.DefaultMap(ctx, ids, func(ctx context.Context, id int) (*User, error) {
 //	    return userRepo.FindByID(ctx, id)
 //	})
 func DefaultMap[T any, R any](ctx context.Context, items []T, fn func(ctx context.Context, item T) (R, error)) []core.Result[R] {
@@ -39,7 +39,7 @@ func DefaultMap[T any, R any](ctx context.Context, items []T, fn func(ctx contex
 //
 // 使用示例：
 //
-//	results, err := mapreduce.DefaultMapWithFailFast(ctx, ids, func(ctx context.Context, id int) (*User, error) {
+//	results, err := sliceops.DefaultMapWithFailFast(ctx, ids, func(ctx context.Context, id int) (*User, error) {
 //	    return userRepo.FindByID(ctx, id)
 //	})
 func DefaultMapWithFailFast[T any, R any](ctx context.Context, items []T, fn func(ctx context.Context, item T) (R, error)) ([]core.Result[R], error) {
@@ -57,7 +57,7 @@ func DefaultMapWithFailFast[T any, R any](ctx context.Context, items []T, fn fun
 //
 // 使用示例：
 //
-//	results := mapreduce.MapWithTimeout(ctx, urls, 8, 5*time.Second, func(ctx context.Context, url string) (*Body, error) {
+//	results := sliceops.MapWithTimeout(ctx, urls, 8, 5*time.Second, func(ctx context.Context, url string) (*Body, error) {
 //	    return httpGet(ctx, url)
 //	})
 func MapWithTimeout[T any, R any](ctx context.Context, items []T, concurrency int, timeout time.Duration, fn func(ctx context.Context, item T) (R, error)) []core.Result[R] {
@@ -94,7 +94,7 @@ func MapWithTimeout[T any, R any](ctx context.Context, items []T, concurrency in
 //
 // 使用示例：
 //
-//	results := mapreduce.DefaultMapWithTimeout(ctx, ids, 3*time.Second, fn)
+//	results := sliceops.DefaultMapWithTimeout(ctx, ids, 3*time.Second, fn)
 func DefaultMapWithTimeout[T any, R any](ctx context.Context, items []T, timeout time.Duration, fn func(ctx context.Context, item T) (R, error)) []core.Result[R] {
 	return MapWithTimeout(ctx, items, core.IO(), timeout, fn)
 }
@@ -110,7 +110,7 @@ func DefaultMapWithTimeout[T any, R any](ctx context.Context, items []T, timeout
 //
 // 使用示例：
 //
-//	results, err := mapreduce.MapWithFFTimeout(ctx, urls, 8, 3*time.Second, func(ctx context.Context, url string) (*Body, error) {
+//	results, err := sliceops.MapWithFFTimeout(ctx, urls, 8, 3*time.Second, func(ctx context.Context, url string) (*Body, error) {
 //	    return httpGet(ctx, url)
 //	})
 //	if err != nil {
@@ -154,7 +154,7 @@ func MapWithFFTimeout[T any, R any](ctx context.Context, items []T, concurrency 
 //
 // 使用示例：
 //
-//	results, err := mapreduce.DefaultMapWithFFTimeout(ctx, ids, 3*time.Second, fn)
+//	results, err := sliceops.DefaultMapWithFFTimeout(ctx, ids, 3*time.Second, fn)
 func DefaultMapWithFFTimeout[T any, R any](ctx context.Context, items []T, timeout time.Duration, fn func(ctx context.Context, item T) (R, error)) ([]core.Result[R], error) {
 	return MapWithFFTimeout(ctx, items, core.IO(), timeout, fn)
 }
@@ -170,7 +170,7 @@ func DefaultMapWithFFTimeout[T any, R any](ctx context.Context, items []T, timeo
 //
 // 使用示例：
 //
-//	total, fail, firstErr, _ := mapreduce.DefaultForEach(ctx, msgs, func(ctx context.Context, msg string) error {
+//	total, fail, firstErr, _ := sliceops.DefaultForEach(ctx, msgs, func(ctx context.Context, msg string) error {
 //	    return send(ctx, msg)
 //	})
 func DefaultForEach[T any](ctx context.Context, items []T, fn func(ctx context.Context, item T) error) (total int64, failCnt int64, firstErr error, results []core.Result[struct{}]) {
@@ -186,7 +186,7 @@ func DefaultForEach[T any](ctx context.Context, items []T, fn func(ctx context.C
 //
 // 使用示例：
 //
-//	total, fail, firstErr, _ := mapreduce.DefaultForEachWithFailFast(ctx, tasks, fn)
+//	total, fail, firstErr, _ := sliceops.DefaultForEachWithFailFast(ctx, tasks, fn)
 func DefaultForEachWithFailFast[T any](ctx context.Context, items []T, fn func(ctx context.Context, item T) error) (total int64, failCnt int64, firstErr error, results []core.Result[struct{}]) {
 	return ForEachWithFailFast(ctx, items, fn, core.IO())
 }
@@ -202,7 +202,7 @@ func DefaultForEachWithFailFast[T any](ctx context.Context, items []T, fn func(c
 //
 // 使用示例：
 //
-//	total, fail, firstErr, _ := mapreduce.ForEachWithTimeout(ctx, msgs, 10, 2*time.Second, sendFn)
+//	total, fail, firstErr, _ := sliceops.ForEachWithTimeout(ctx, msgs, 10, 2*time.Second, sendFn)
 func ForEachWithTimeout[T any](ctx context.Context, items []T, concurrency int, timeout time.Duration, fn func(ctx context.Context, item T) error) (total int64, failCnt int64, firstErr error, results []core.Result[struct{}]) {
 	ctx = core.EnsureTraceID(ctx)
 	n := len(items)
@@ -235,7 +235,7 @@ func ForEachWithTimeout[T any](ctx context.Context, items []T, concurrency int, 
 //
 // 使用示例：
 //
-//	total, fail, firstErr, _ := mapreduce.DefaultForEachWithTimeout(ctx, msgs, 2*time.Second, sendFn)
+//	total, fail, firstErr, _ := sliceops.DefaultForEachWithTimeout(ctx, msgs, 2*time.Second, sendFn)
 func DefaultForEachWithTimeout[T any](ctx context.Context, items []T, timeout time.Duration, fn func(ctx context.Context, item T) error) (total int64, failCnt int64, firstErr error, results []core.Result[struct{}]) {
 	return ForEachWithTimeout(ctx, items, core.IO(), timeout, fn)
 }
@@ -251,7 +251,7 @@ func DefaultForEachWithTimeout[T any](ctx context.Context, items []T, timeout ti
 //
 // 使用示例：
 //
-//	total, fail, firstErr, _ := mapreduce.ForEachWithFFTimeout(ctx, tasks, 8, 3*time.Second, fn)
+//	total, fail, firstErr, _ := sliceops.ForEachWithFFTimeout(ctx, tasks, 8, 3*time.Second, fn)
 func ForEachWithFFTimeout[T any](ctx context.Context, items []T, concurrency int, timeout time.Duration, fn func(ctx context.Context, item T) error) (total int64, failCnt int64, firstErr error, results []core.Result[struct{}]) {
 	ctx = core.EnsureTraceID(ctx)
 	n := len(items)
@@ -288,14 +288,14 @@ func ForEachWithFFTimeout[T any](ctx context.Context, items []T, concurrency int
 //
 // 使用示例：
 //
-//	total, fail, firstErr, _ := mapreduce.DefaultForEachWithFFTimeout(ctx, tasks, 3*time.Second, fn)
+//	total, fail, firstErr, _ := sliceops.DefaultForEachWithFFTimeout(ctx, tasks, 3*time.Second, fn)
 func DefaultForEachWithFFTimeout[T any](ctx context.Context, items []T, timeout time.Duration, fn func(ctx context.Context, item T) error) (total int64, failCnt int64, firstErr error, results []core.Result[struct{}]) {
 	return ForEachWithFFTimeout(ctx, items, core.IO(), timeout, fn)
 }
 
 // ──────────────────────────── Result helpers ────────────────────────────
 
-// ResultValues 从 Result 切片中提取所有成功值（跳过错误结果）。
+// ResultValues 提取 Err 为 nil 的槽位值；不检查 Occupied，未占用空槽也会返回零值。
 func ResultValues[T any](results []core.Result[T]) []T {
 	vals := make([]T, 0, len(results))
 	for _, r := range results {
@@ -306,7 +306,7 @@ func ResultValues[T any](results []core.Result[T]) []T {
 	return vals
 }
 
-// ResultErrors 从 Result 切片中提取所有错误（跳过成功结果）。
+// ResultErrors 提取所有非 nil Err；不检查 Occupied。
 func ResultErrors[T any](results []core.Result[T]) []error {
 	errs := make([]error, 0)
 	for _, r := range results {
@@ -317,7 +317,7 @@ func ResultErrors[T any](results []core.Result[T]) []error {
 	return errs
 }
 
-// Every 检查所有 Result 是否都成功。
+// Every 检查所有槽位的 Err 是否均为 nil；不检查 Occupied，空切片返回 true。
 func Every[T any](results []core.Result[T]) bool {
 	for _, r := range results {
 		if r.Err != nil {
@@ -327,7 +327,7 @@ func Every[T any](results []core.Result[T]) bool {
 	return true
 }
 
-// Some 检查是否至少有一个 Result 成功。
+// Some 检查是否至少有一个槽位的 Err 为 nil；不检查 Occupied，空切片返回 false。
 func Some[T any](results []core.Result[T]) bool {
 	for _, r := range results {
 		if r.Err == nil {
@@ -337,7 +337,7 @@ func Some[T any](results []core.Result[T]) bool {
 	return false
 }
 
-// AnyError 检查是否有任何失败。
+// AnyError 检查是否有非 nil Err；不检查 Occupied，空切片返回 false。
 //
 // 参数：
 //   - results：Result 切片
@@ -350,14 +350,14 @@ func AnyError[T any](results []core.Result[T]) bool {
 	return false
 }
 
-// PartitionResults 将 Result 切片拆分为成功值和失败错误两个切片。
+// PartitionResults 按 Err 是否为 nil 拆分槽位值与错误；不检查 Occupied，空槽归入值切片。
 //
 // 参数：
 //   - results：Result 切片
 //
 // 使用示例：
 //
-//	successes, failures := mapreduce.PartitionResults(results)
+//	successes, failures := sliceops.PartitionResults(results)
 //	fmt.Printf("成功: %d, 失败: %d\n", len(successes), len(failures))
 func PartitionResults[T any](results []core.Result[T]) (successes []T, failures []error) {
 	successes = make([]T, 0, len(results))
@@ -752,6 +752,9 @@ func DefaultForEachChunkWithFFTimeout[T any](ctx context.Context, items []T, bat
 // ──────────────────────────── ForEachChunked ────────────────────────────
 
 // ForEachChunked 先分块，再对每个元素并发执行只返回 error 的操作。
+// 返回的总数、失败数和 results 均按批次计数；一批内多个失败合并为一个失败批次。
+// 外层批次与批内元素各自使用 concurrency，总并发可能超过 concurrency。
+// Slice.ForEachChunked 方法按元素统计，与本独立函数不同。
 //
 // 参数：
 //   - ctx：上下文
@@ -806,6 +809,7 @@ func DefaultForEachChunkedWithFailFast[T any](ctx context.Context, items []T, ba
 }
 
 // ForEachChunkedWithTimeout 带超时的逐元素分块 ForEach。
+// timeout 从外层批次开始执行计时，批内全部元素共享期限；结果及统计按批次返回。
 //
 // 参数：
 //   - ctx：上下文
@@ -835,6 +839,7 @@ func DefaultForEachChunkedWithTimeout[T any](ctx context.Context, items []T, bat
 }
 
 // ForEachChunkedWithFFTimeout 带 FailFast 和超时的逐元素分块 ForEach。
+// timeout 由整个批次共享，结果及统计按批次返回；取消仍需元素回调配合。
 //
 // 参数：
 //   - ctx：上下文

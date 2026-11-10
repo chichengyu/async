@@ -104,13 +104,14 @@ func (b *GroupNoResultBuilder) Streaming(buf int) *GroupNoResultBuilder {
 	return b
 }
 
-// DefaultStreaming 使用默认流式缓冲。
+// DefaultStreaming 清除流式配置，Build 时不启用流式结果。
 func (b *GroupNoResultBuilder) DefaultStreaming() *GroupNoResultBuilder {
 	b.streaming = 0
 	return b
 }
 
-// AutoScale 启用自动扩缩容，config 为 nil 时使用 DefaultAutoScaleConfig()。
+// AutoScale 保存自动扩缩容配置；nil 清除本构建器配置，Build 时不启用。
+// 需默认配置时使用 DefaultAutoScale。
 func (b *GroupNoResultBuilder) AutoScale(config *core.AutoScaleConfig) *GroupNoResultBuilder {
 	b.autoScale = config
 	return b
@@ -137,7 +138,7 @@ func (b *GroupNoResultBuilder) Pool(p *pool.Pool[struct{}]) *GroupNoResultBuilde
 	return b
 }
 
-// DefaultPool 恢复为内部自动创建协程池（默认行为）。
+// DefaultPool 清除外部 Pool 引用，恢复由 Group 自有 worker 直接执行任务。
 func (b *GroupNoResultBuilder) DefaultPool() *GroupNoResultBuilder { b.extPool = nil; return b }
 
 // ── 终端方法 ──

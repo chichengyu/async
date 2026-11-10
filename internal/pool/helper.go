@@ -3,6 +3,7 @@ package pool
 import (
 	"context"
 	"runtime"
+	"sync"
 
 	"github.com/chichengyu/async/internal/core"
 )
@@ -86,13 +87,26 @@ func ForEachPool[T any](ctx context.Context, items []T, fn func(context.Context,
 	}
 	p := NewPool[struct{}](concurrency)
 	p.ctx = ctx
-	for _, item := range items {
+	// Error reporting must not depend on the pool's result retention limit.
+	// Keep input order, matching FirstError's behavior for retained results.
+	var errMu sync.Mutex
+	var firstErr error
+	firstErrIndex := len(items)
+	for i, item := range items {
 		item := item
-		p.Submit(ctx, func(ctx context.Context) (struct{}, error) {
+		p.SubmitWithCompletion(ctx, func(ctx context.Context) (struct{}, error) {
 			return struct{}{}, fn(ctx, item)
+		}, func(r core.Result[struct{}]) {
+			if r.Err != nil {
+				errMu.Lock()
+				if i < firstErrIndex {
+					firstErr, firstErrIndex = r.Err, i
+				}
+				errMu.Unlock()
+			}
 		})
 	}
 	p.Wait()
 	p.Close()
-	return p, p.FirstError()
+	return p, firstErr
 }

@@ -123,17 +123,15 @@ func Execute[T any](
 				end = len(resultsList)
 			}
 			wg.Add(1)
-			go func(start, end int) {
-				defer wg.Done()
-				for j := start; j < end; j++ {
-					if stage.SkipOnError && resultsList[j].Err != nil {
-						nextResults[j] = resultsList[j]
-						continue
-					}
-					val, err := safeCall(ctx, fn, stage.Name, resultsList[j].Value)
-					nextResults[j] = core.Result[T]{Value: val, Err: err}
+			startNativeChunk(&wg, start, end, func(j int) {
+				if stage.SkipOnError && resultsList[j].Err != nil {
+					nextResults[j] = resultsList[j]
+					return
 				}
-			}(start, end)
+				finishNativeStage(func() (T, error) { return safeCall(ctx, fn, stage.Name, resultsList[j].Value) }, func(val T, err error) {
+					nextResults[j] = core.Result[T]{Value: val, Err: err}
+				})
+			})
 		}
 		wg.Wait()
 		resultsList = nextResults
@@ -194,17 +192,15 @@ func ExecuteWithMeta[T any](
 				end = len(items)
 			}
 			wg.Add(1)
-			go func(start, end int) {
-				defer wg.Done()
-				for j := start; j < end; j++ {
-					if stage.SkipOnError && itemErrs[j] != nil {
-						stageResults[j] = core.Result[T]{Value: items[j], Err: itemErrs[j]}
-						continue
-					}
-					val, err := safeCall(ctx, fn, stage.Name, items[j])
-					stageResults[j] = core.Result[T]{Value: val, Err: err}
+			startNativeChunk(&wg, start, end, func(j int) {
+				if stage.SkipOnError && itemErrs[j] != nil {
+					stageResults[j] = core.Result[T]{Value: items[j], Err: itemErrs[j]}
+					return
 				}
-			}(start, end)
+				finishNativeStage(func() (T, error) { return safeCall(ctx, fn, stage.Name, items[j]) }, func(val T, err error) {
+					stageResults[j] = core.Result[T]{Value: val, Err: err}
+				})
+			})
 		}
 		wg.Wait()
 		nextItems := make([]T, 0, len(stageResults))
@@ -219,8 +215,8 @@ func ExecuteWithMeta[T any](
 	return results
 }
 
-// ExecuteWithGroup 使用 Group 执行所有项，支持错误聚合（通过 Group.Errors/FirstError）。
-// 适合需要在阶段间关心每个元素状态的场景。
+// ExecuteWithGroup 使用 Group 执行所有项并等待，按结果记录顺序返回。
+// 第二返回值当前为 nil；调用方须检查返回的每项 Result.Err。
 //
 // 参数：
 //   - ctx：上下文，控制全局取消
@@ -255,8 +251,8 @@ func ExecuteWithGroup[T any](
 }
 
 // ExecutePipe 执行多阶段管道，通过 channel 返回最终阶段的结果。
-// 非最终阶段的处理方式与 Execute() 一致（分批并发、保序），最终阶段使用 Group 流式消费，
-// 结果逐条发送到 channel，消费者可实时处理。
+// 非最终阶段分批并发并保序，调用返回前同步完成；最终阶段使用 Group，
+// 等该阶段全部任务完成后再把结果逐条发送到 channel。
 //
 // 参数：
 //   - ctx：上下文
@@ -334,17 +330,15 @@ func ExecutePipe[T any](
 				end = len(resultsList)
 			}
 			wg.Add(1)
-			go func(start, end int) {
-				defer wg.Done()
-				for j := start; j < end; j++ {
-					if stage.SkipOnError && resultsList[j].Err != nil {
-						nextResults[j] = resultsList[j]
-						continue
-					}
-					val, err := safeCall(ctx, fn, stage.Name, resultsList[j].Value)
-					nextResults[j] = core.Result[T]{Value: val, Err: err}
+			startNativeChunk(&wg, start, end, func(j int) {
+				if stage.SkipOnError && resultsList[j].Err != nil {
+					nextResults[j] = resultsList[j]
+					return
 				}
-			}(start, end)
+				finishNativeStage(func() (T, error) { return safeCall(ctx, fn, stage.Name, resultsList[j].Value) }, func(val T, err error) {
+					nextResults[j] = core.Result[T]{Value: val, Err: err}
+				})
+			})
 		}
 		wg.Wait()
 		resultsList = nextResults
@@ -515,17 +509,15 @@ func (p *Pipeline[T]) executeNative(
 				end = len(resultsList)
 			}
 			wg.Add(1)
-			go func(start, end int) {
-				defer wg.Done()
-				for j := start; j < end; j++ {
-					if stage.SkipOnError && resultsList[j].Err != nil {
-						nextResults[j] = resultsList[j]
-						continue
-					}
-					val, err := safeCall(ctx, fn, stage.Name, resultsList[j].Value)
-					nextResults[j] = core.Result[T]{Value: val, Err: err}
+			startNativeChunk(&wg, start, end, func(j int) {
+				if stage.SkipOnError && resultsList[j].Err != nil {
+					nextResults[j] = resultsList[j]
+					return
 				}
-			}(start, end)
+				finishNativeStage(func() (T, error) { return safeCall(ctx, fn, stage.Name, resultsList[j].Value) }, func(val T, err error) {
+					nextResults[j] = core.Result[T]{Value: val, Err: err}
+				})
+			})
 		}
 		wg.Wait()
 		resultsList = nextResults
@@ -623,17 +615,15 @@ func (p *Pipeline[T]) executeWithMetaNative(
 				end = len(elems)
 			}
 			wg.Add(1)
-			go func(start, end int) {
-				defer wg.Done()
-				for j := start; j < end; j++ {
-					if stage.SkipOnError && elemErrs[j] != nil {
-						stageResults[j] = core.Result[T]{Value: elems[j], Err: elemErrs[j]}
-						continue
-					}
-					val, err := safeCall(ctx, fn, stage.Name, elems[j])
-					stageResults[j] = core.Result[T]{Value: val, Err: err}
+			startNativeChunk(&wg, start, end, func(j int) {
+				if stage.SkipOnError && elemErrs[j] != nil {
+					stageResults[j] = core.Result[T]{Value: elems[j], Err: elemErrs[j]}
+					return
 				}
-			}(start, end)
+				finishNativeStage(func() (T, error) { return safeCall(ctx, fn, stage.Name, elems[j]) }, func(val T, err error) {
+					stageResults[j] = core.Result[T]{Value: val, Err: err}
+				})
+			})
 		}
 		wg.Wait()
 		nextItems := make([]T, 0, len(stageResults))
@@ -694,8 +684,8 @@ func (p *Pipeline[T]) executeWithMetaSharded(
 	return results
 }
 
-// ExecutePipe 使用 channel 执行管道，最终阶段的结果逐条实时发送到 channel。
-// 非最终阶段的处理方式与 Execute() 一致；最终阶段使用 Group 流式消费。
+// ExecutePipe 委托自由函数 ExecutePipe，忽略 Pipeline 的 Shard 配置。
+// 非最终阶段同步完成，最终阶段用 Group 全部等待后再逐条发送到 channel。
 //
 // 参数：
 //   - ctx：上下文

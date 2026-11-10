@@ -31,6 +31,41 @@ func slicesGrow[T any](items []T, n int) []T {
 	return append(items, make([]T, n)...)[:len(items)]
 }
 
+// dedupItems preserves the first representative according to caller equality.
+// A nil comparator retains the original comparable-only hash behavior.
+func dedupItems[T any](items []T, eq func(T, T) bool) []T {
+	if len(items) < 2 {
+		return items
+	}
+	n := 0
+	if eq == nil {
+		seen := make(map[any]struct{}, len(items))
+		for _, v := range items {
+			if _, found := seen[v]; !found {
+				seen[v] = struct{}{}
+				items[n] = v
+				n++
+			}
+		}
+	} else {
+		for _, v := range items {
+			duplicate := false
+			for _, kept := range items[:n] {
+				if eq(kept, v) {
+					duplicate = true
+					break
+				}
+			}
+			if !duplicate {
+				items[n] = v
+				n++
+			}
+		}
+	}
+	clear(items[n:])
+	return items[:n]
+}
+
 func slicesReplace[T any](items []T, i, j int, vals ...T) []T {
 	n := len(items)
 	if i < 0 {

@@ -47,7 +47,10 @@ func (sw *SlidingWindowRateLimiter) Allow() bool {
 	defer sw.mu.Unlock()
 
 	now := time.Now()
-	cutoff := now.Add(-sw.window)
+	cutoff := now
+	if sw.window > 0 {
+		cutoff = now.Add(-sw.window)
+	}
 	cutoffIdx := sort.Search(len(sw.timestamps), func(i int) bool {
 		return sw.timestamps[i].After(cutoff)
 	})
@@ -72,7 +75,10 @@ func (sw *SlidingWindowRateLimiter) AllowN(n int) bool {
 	defer sw.mu.Unlock()
 
 	now := time.Now()
-	cutoff := now.Add(-sw.window)
+	cutoff := now
+	if sw.window > 0 {
+		cutoff = now.Add(-sw.window)
+	}
 	cutoffIdx := sort.Search(len(sw.timestamps), func(i int) bool {
 		return sw.timestamps[i].After(cutoff)
 	})

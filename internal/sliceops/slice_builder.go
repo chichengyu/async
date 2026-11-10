@@ -159,7 +159,7 @@ func (b *SliceBuilder[T, R]) DefaultWorker() *SliceBuilder[T, R] {
 	return b
 }
 
-// DefaultPool 创建默认并发度的协程池并注入。
+// DefaultPool 标记终端方法使用内部创建的默认协程池，此时不创建池。
 // 池由内部自动管理生命周期，终端方法执行完毕后自动 Close。
 //
 //	sb.DefaultPool().Map(fn)
@@ -209,7 +209,7 @@ func (b *SliceBuilder[T, R]) DefaultTimeout() *SliceBuilder[T, R] {
 	return b
 }
 
-// FailFast 启用 FailFast 模式：任一任务失败立即终止其余任务。
+// FailFast 启用 FailFast 模式：失败触发取消，其余任务须响应 context 才能及时退出。
 //
 //	sb.FailFast().Map(fn)
 func (b *SliceBuilder[T, R]) FailFast() *SliceBuilder[T, R] {

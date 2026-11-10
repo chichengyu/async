@@ -91,51 +91,39 @@ func (r *MapRunner[K, V, R]) ForEach(fn func(context.Context, K, V) error) (tota
 	close(ch)
 	for i := 0; i < workers; i++ {
 		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			defer func() {
-				if r := recover(); r != nil {
+		cursor := mapShardCursor(ch, base, extra)
+		startMapWorker(&wg, cursor, func(j int) bool {
+			mu.Lock()
+			stop := failFastTriggered
+			mu.Unlock()
+			if stop {
+				return false
+			}
+			e := entries[j]
+			atomic.AddInt64(&total, 1)
+			finishMapTask(func() (struct{}, error) { return struct{}{}, fn(r.ctx, e.Key, e.Val) }, func(_ struct{}, err error) {
+				if err != nil {
 					atomic.AddInt64(&failCnt, 1)
 					mu.Lock()
 					if firstErr == nil {
-						firstErr = core.NewPanicError(r)
+						firstErr = err
 					}
-					failFastTriggered = true
-					mu.Unlock()
-				}
-			}()
-			for shard := range ch {
-				start := shard*base + min(shard, extra)
-				end := start + base
-				if shard < extra {
-					end++
-				}
-				for _, e := range entries[start:end] {
-					mu.Lock()
-					if failFastTriggered {
-						mu.Unlock()
-						return
+					if r.policy.IsFailFast() {
+						failFastTriggered = true
 					}
 					mu.Unlock()
-					atomic.AddInt64(&total, 1)
-					if err := fn(r.ctx, e.Key, e.Val); err != nil {
-						atomic.AddInt64(&failCnt, 1)
-						mu.Lock()
-						if firstErr == nil {
-							firstErr = err
-						}
-						if r.policy.IsFailFast() {
-							failFastTriggered = true
-						}
-						stop := failFastTriggered
-						mu.Unlock()
-						if stop {
-							return
-						}
-					}
 				}
+			})
+			return true
+		}, func(recovered any) {
+			atomic.AddInt64(&failCnt, 1)
+			mu.Lock()
+			if firstErr == nil {
+				firstErr = core.NewPanicError(recovered)
 			}
-		}()
+			failFastTriggered = true
+			mu.Unlock()
+		})
 	}
 	wg.Wait()
 	return total, failCnt, firstErr
@@ -220,43 +208,34 @@ func (r *MapRunner[K, V, R]) Map(fn func(context.Context, K, V) (R, error)) *Map
 	var wg sync.WaitGroup
 	for i := 0; i < workers; i++ {
 		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			defer func() {
-				if r := recover(); r != nil {
-					mu.Lock()
-					if firstErr == nil {
-						firstErr = core.NewPanicError(r)
-					}
-					mu.Unlock()
-				}
-			}()
-			for shard := range ch {
-				start := shard*base + min(shard, extra)
-				end := start + base
-				if shard < extra {
-					end++
-				}
-				for _, e := range entries[start:end] {
-					mu.Lock()
-					if firstErr != nil && r.policy.IsFailFast() {
-						mu.Unlock()
-						return
-					}
-					mu.Unlock()
-					val, err := fn(r.ctx, e.Key, e.Val)
-					mu.Lock()
-					if err != nil {
-						if firstErr == nil {
-							firstErr = err
-						}
-					} else {
-						result[e.Key] = val
-					}
-					mu.Unlock()
-				}
+		cursor := mapShardCursor(ch, base, extra)
+		startMapWorker(&wg, cursor, func(j int) bool {
+			mu.Lock()
+			stop := firstErr != nil && r.policy.IsFailFast()
+			mu.Unlock()
+			if stop {
+				return false
 			}
-		}()
+			e := entries[j]
+			finishMapTask(func() (R, error) { return fn(r.ctx, e.Key, e.Val) }, func(val R, err error) {
+				mu.Lock()
+				if err != nil {
+					if firstErr == nil {
+						firstErr = err
+					}
+				} else {
+					result[e.Key] = val
+				}
+				mu.Unlock()
+			})
+			return true
+		}, func(recovered any) {
+			mu.Lock()
+			if firstErr == nil {
+				firstErr = core.NewPanicError(recovered)
+			}
+			mu.Unlock()
+		})
 	}
 	wg.Wait()
 	return NewMapResult(result, firstErr)
@@ -370,46 +349,37 @@ func (r *MapRunner[K, V, R]) Stream(fn func(context.Context, K, V) (R, error), b
 		var mu sync.Mutex
 		for i := 0; i < workers; i++ {
 			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				defer func() {
-					if r := recover(); r != nil {
+			cursor := mapShardCursor(taskCh, base, extra)
+			startMapWorker(&wg, cursor, func(j int) bool {
+				if r.ctx.Err() != nil {
+					return false
+				}
+				mu.Lock()
+				stop := failFastDone
+				mu.Unlock()
+				if stop {
+					return false
+				}
+				e := entries[j]
+				sent := false
+				finishMapTask(func() (R, error) { return fn(r.ctx, e.Key, e.Val) }, func(val R, err error) {
+					select {
+					case ch <- core.Result[R]{Value: val, Err: err}:
+						sent = true
+					case <-r.ctx.Done():
+					}
+					if sent && err != nil && r.policy.IsFailFast() {
 						mu.Lock()
 						failFastDone = true
 						mu.Unlock()
 					}
-				}()
-				for shard := range taskCh {
-					start := shard*base + min(shard, extra)
-					end := start + base
-					if shard < extra {
-						end++
-					}
-					for _, e := range entries[start:end] {
-						if r.ctx.Err() != nil {
-							return
-						}
-						mu.Lock()
-						if failFastDone {
-							mu.Unlock()
-							return
-						}
-						mu.Unlock()
-						val, err := fn(r.ctx, e.Key, e.Val)
-						select {
-						case ch <- core.Result[R]{Value: val, Err: err}:
-						case <-r.ctx.Done():
-							return
-						}
-						if err != nil && r.policy.IsFailFast() {
-							mu.Lock()
-							failFastDone = true
-							mu.Unlock()
-							return
-						}
-					}
-				}
-			}()
+				})
+				return sent
+			}, func(any) {
+				mu.Lock()
+				failFastDone = true
+				mu.Unlock()
+			})
 		}
 		wg.Wait()
 	}()
@@ -534,43 +504,34 @@ func (r *MapRunner[K, V, R]) MapBatch(fn func(context.Context, []MapEntry[K, V])
 	var wg sync.WaitGroup
 	for i := 0; i < workers; i++ {
 		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			defer func() {
-				if r := recover(); r != nil {
-					mu.Lock()
-					if firstErr == nil {
-						firstErr = core.NewPanicError(r)
-					}
-					mu.Unlock()
-				}
-			}()
-			for shard := range ch {
-				start := shard*base + min(shard, extra)
-				end := start + base
-				if shard < extra {
-					end++
-				}
-				for _, chunk := range chunks[start:end] {
-					mu.Lock()
-					if firstErr != nil && r.policy.IsFailFast() {
-						mu.Unlock()
-						return
-					}
-					mu.Unlock()
-					val, err := fn(r.ctx, chunk)
-					mu.Lock()
-					if err != nil {
-						if firstErr == nil {
-							firstErr = err
-						}
-					} else {
-						result[chunk[0].Key] = val
-					}
-					mu.Unlock()
-				}
+		cursor := mapShardCursor(ch, base, extra)
+		startMapWorker(&wg, cursor, func(j int) bool {
+			mu.Lock()
+			stop := firstErr != nil && r.policy.IsFailFast()
+			mu.Unlock()
+			if stop {
+				return false
 			}
-		}()
+			chunk := chunks[j]
+			finishMapTask(func() (R, error) { return fn(r.ctx, chunk) }, func(val R, err error) {
+				mu.Lock()
+				if err != nil {
+					if firstErr == nil {
+						firstErr = err
+					}
+				} else {
+					result[chunk[0].Key] = val
+				}
+				mu.Unlock()
+			})
+			return true
+		}, func(recovered any) {
+			mu.Lock()
+			if firstErr == nil {
+				firstErr = core.NewPanicError(recovered)
+			}
+			mu.Unlock()
+		})
 	}
 	wg.Wait()
 	return NewMapResult(result, firstErr)
@@ -664,48 +625,41 @@ func (r *MapRunner[K, V, R]) ForEachBatch(fn func(context.Context, []MapEntry[K,
 	close(ch)
 	for i := 0; i < workers; i++ {
 		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for shard := range ch {
-				start := shard*base + min(shard, extra)
-				end := start + base
-				if shard < extra {
-					end++
-				}
-				for _, chunk := range chunks[start:end] {
+		cursor := mapShardCursor(ch, base, extra)
+		startMapWorker(&wg, cursor, func(j int) bool {
+			mu.Lock()
+			stop := failFastTriggered
+			mu.Unlock()
+			if stop {
+				return false
+			}
+			chunk := chunks[j]
+			atomic.AddInt64(&total, int64(len(chunk)))
+			finishMapTask(func() (struct{}, error) {
+				err := func() (err error) {
+					defer func() {
+						if recovered := recover(); recovered != nil {
+							err = core.NewPanicError(recovered)
+						}
+					}()
+					return fn(r.ctx, chunk)
+				}()
+				return struct{}{}, err
+			}, func(_ struct{}, err error) {
+				if err != nil {
+					atomic.AddInt64(&failCnt, int64(len(chunk)))
 					mu.Lock()
-					if failFastTriggered {
-						mu.Unlock()
-						return
+					if firstErr == nil {
+						firstErr = err
+					}
+					if r.policy.IsFailFast() {
+						failFastTriggered = true
 					}
 					mu.Unlock()
-					atomic.AddInt64(&total, int64(len(chunk)))
-					err := func() (err error) {
-						defer func() {
-							if recovered := recover(); recovered != nil {
-								err = core.NewPanicError(recovered)
-							}
-						}()
-						return fn(r.ctx, chunk)
-					}()
-					if err != nil {
-						atomic.AddInt64(&failCnt, int64(len(chunk)))
-						mu.Lock()
-						if firstErr == nil {
-							firstErr = err
-						}
-						if r.policy.IsFailFast() {
-							failFastTriggered = true
-						}
-						stop := failFastTriggered
-						mu.Unlock()
-						if stop {
-							return
-						}
-					}
 				}
-			}
-		}()
+			})
+			return true
+		}, nil)
 	}
 	wg.Wait()
 	return total, failCnt, firstErr

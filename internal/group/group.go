@@ -1,5 +1,5 @@
 // Package group 提供泛型并发任务组 Group[T] 和无返回值任务组 NoResult。
-// Group 适合一次性批量任务，每次 Go 新建 goroutine，任务完成后销毁。
+// Group 适合一次性批量任务，预创建 worker goroutine，经队列分发任务，Wait 后退出。
 package group
 
 import (
@@ -164,8 +164,12 @@ func (g *Group[T]) WithTraceID(ctx context.Context) (*Group[T], context.Context)
 //
 // 使用示例：
 //
-//	g, ctx := group.DefaultGroup[string]().WithContext(ctx)
-//	defer cancel() // 由调用方管理原始 ctx 的取消
+//	parent, cancel := context.WithCancel(context.Background())
+//	defer cancel()
+//	g, taskCtx := group.DefaultGroup[string]().WithContext(parent)
+//	defer g.Close()
+//	_ = g.Go(taskCtx, func(ctx context.Context) (string, error) { return fetch(ctx) })
+//	results := g.Wait() // 检查每项 Result.Err 后再使用 Value
 func (g *Group[T]) WithContext(ctx context.Context) (*Group[T], context.Context) {
 	ctx, cancel := context.WithCancel(ctx)
 	g.cancelMu.Lock()
@@ -416,8 +420,10 @@ func (g *Group[T]) WithStreaming(bufSize int) *Group[T] {
 	return g
 }
 
-// WithResultCallback 设置结果回调，每个任务完成时同步调用。
-// 回调在 worker goroutine 中执行，应尽量轻量。
+// WithResultCallback 设置结果记录路径的同步回调。
+// worker、提交取消或拒绝路径均可能调用；最早的 waited/waiting 拒绝不通知。
+// 回调可能由 worker、提交拒绝或关闭清理路径并发调用，应尽量轻量。
+// 不得在回调中同步等待或关闭当前 Group；nil 清除回调，回调 panic 被恢复并记录。
 func (g *Group[T]) WithResultCallback(fn func(core.Result[T])) *Group[T] {
 	g.resultCb = fn
 	return g
@@ -480,12 +486,19 @@ func (g *Group[T]) drainStreaming() {
 }
 
 func (g *Group[T]) worker() {
-	defer g.workerWg.Done()
 	retired := false
+	taskReturned := true
 	defer func() {
+		if !taskReturned {
+			// Keep the same worker registration: Goexit ended this goroutine,
+			// but queued tasks still need its capacity until normal retirement.
+			go g.worker()
+			return
+		}
 		if !retired {
 			g.workerCount.Add(-1)
 		}
+		g.workerWg.Done()
 	}()
 	for {
 		if g.workerCount.Load() > g.concurrency.Load() {
@@ -506,7 +519,9 @@ func (g *Group[T]) worker() {
 		if task.quit {
 			continue
 		}
+		taskReturned = false
 		g.executeTask(task)
+		taskReturned = true
 	}
 }
 
@@ -532,10 +547,10 @@ func (g *Group[T]) executeTask(task groupTask[T]) {
 		return
 	}
 	g.busy.Add(1)
+	defer g.wg.Done()
+	defer g.active.Add(-1)
+	defer g.busy.Add(-1)
 	g.runTaskImpl(task.taskCtx, task.taskCancel, task.record, task.timeout, task.failFast, task.failCancel, task.fn)
-	g.busy.Add(-1)
-	g.active.Add(-1)
-	g.wg.Done()
 }
 
 // ──────────────────────────── Group 内部方法 ────────────────────────────
@@ -791,6 +806,7 @@ func (g *Group[T]) GoAtWithTimeout(index int, ctx context.Context, timeout time.
 
 func (g *Group[T]) runTaskImpl(taskCtx context.Context, taskCancel context.CancelFunc, record GroupRecordFunc[T], timeout time.Duration, failFast bool, failCancel context.CancelFunc, fn func(context.Context) (T, error)) {
 	defer taskCancel()
+	calling := false
 
 	defer func() {
 		if r := recover(); r != nil {
@@ -803,6 +819,12 @@ func (g *Group[T]) runTaskImpl(taskCtx context.Context, taskCancel context.Cance
 			if failFast && failCancel != nil {
 				failCancel()
 			}
+		} else if calling {
+			g.errCnt.Add(1)
+			if failFast && failCancel != nil {
+				defer failCancel()
+			}
+			record(core.Result[T]{Err: core.ErrTaskGoexit})
 		}
 	}()
 
@@ -820,7 +842,9 @@ func (g *Group[T]) runTaskImpl(taskCtx context.Context, taskCancel context.Cance
 		defer cancel()
 	}
 
+	calling = true
 	val, err := fn(taskCtx)
+	calling = false
 	if err != nil {
 		if !(failFast && errors.Is(err, context.Canceled)) {
 			core.LogTaskFail(taskCtx, err, "async task failed")
@@ -1001,7 +1025,8 @@ func (g *Group[T]) HasError() bool {
 	return g.FailCount() > 0
 }
 
-// TotalCount 返回已提交任务总数（包含成功和失败）。
+// TotalCount 返回进入提交预检查的尝试数（包含预检查拒绝及执行成功/失败）。
+// GoAt/GoAtWithTimeout 的负索引在预检查前拒绝，不计入。
 func (g *Group[T]) TotalCount() int64 {
 	return g.totalCnt.Load()
 }
@@ -1011,12 +1036,13 @@ func (g *Group[T]) Worker() int {
 	return int(g.concurrency.Load())
 }
 
-// Active 返回当前活跃（已启动未结束）的 goroutine 数。
+// Active 返回已登记但尚未结束的任务数，包含等待入队、队列内和正在执行的任务。
+// 它不是 goroutine 数或 worker 数；实际执行中的任务数见 Busy。
 func (g *Group[T]) Active() int {
 	return int(g.active.Load())
 }
 
-// Busy 返回当前正在执行任务的 goroutine 数。
+// Busy 返回当前正在执行任务的数量，不包含排队任务。
 func (g *Group[T]) Busy() int {
 	return int(g.busy.Load())
 }
@@ -1139,7 +1165,9 @@ func (g *Group[T]) JoinErrors() error {
 //	g.Wait()                  // 等待第一批完成
 //	g.Reset()                 // 重置状态
 //	for _, item := range batch2 {
-//	    g.Go(ctx, process(item))
+//	    if err := g.Go(ctx, func(ctx context.Context) (string, error) {
+//	        return process(item)
+//	    }); err != nil { return err }
 //	}
 //	g.Wait()
 func (g *Group[T]) Reset() (*Group[T], error) {
@@ -1439,7 +1467,12 @@ func (g *Group[T]) performAutoScaleCheck(config *core.AutoScaleConfig, scaleUpCo
 		*scaleDownCount = 0
 		*scaleUpCount++
 		if *scaleUpCount >= config.ScaleUpChecks {
-			newSize := int(float64(cur) * config.ScaleUpFactor)
+			// Cap before converting: a finite factor can overflow the product or int.
+			scaled := float64(cur) * config.ScaleUpFactor
+			newSize := config.MaxWorkers
+			if !(scaled >= float64(config.MaxWorkers)) {
+				newSize = int(scaled)
+			}
 			if newSize <= cur {
 				newSize = cur + 1
 			}
@@ -1455,7 +1488,11 @@ func (g *Group[T]) performAutoScaleCheck(config *core.AutoScaleConfig, scaleUpCo
 		*scaleUpCount = 0
 		*scaleDownCount++
 		if *scaleDownCount >= config.ScaleDownChecks {
-			newSize := int(float64(cur) * config.ScaleDownFactor)
+			scaled := float64(cur) * config.ScaleDownFactor
+			newSize := cur - 1
+			if !(scaled >= float64(cur)) {
+				newSize = int(scaled)
+			}
 			if newSize >= cur {
 				newSize = cur - 1
 			}
@@ -1475,8 +1512,9 @@ func (g *Group[T]) performAutoScaleCheck(config *core.AutoScaleConfig, scaleUpCo
 
 // ──────────────────────────── Group.Shard ────────────────────────────
 
-// Shard 将当前 Group 水平分片为 N 个 Group 实例，实现极限高并发。
-// 第一个分片复用当前 Group，其余自动克隆配置（超时、FailFast 等）。
+// Shard 把当前 Group 包装为多个 Group 实例，第 0 片复用当前 Group。
+// 其余片复制并发度、任务/提交超时、context/FailFast 关系、流容量及结果回调；
+// 不复制已存结果、外部 Pool 注入或 AutoScale 配置。应在提交前分片并统一关闭。
 //
 // 使用示例：
 //
@@ -1535,7 +1573,7 @@ func (g *Group[T]) Shard(shards int) *MultiGroup[T] {
 //
 // 使用示例：
 //
-//	// 自动按 CPU 核心数分片
+//	// 按 GOMAXPROCS 分片，最少 2 片
 //	mg := group.NewGroup[int](50).DefaultShard()
 //	defer mg.Close()
 func (g *Group[T]) DefaultShard() *MultiGroup[T] {

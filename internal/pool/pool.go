@@ -45,7 +45,7 @@ type poolCancellation struct{ cancel context.CancelFunc }
 // Pool 泛型协程池，复用固定数量的 goroutine 处理高频并发任务。
 // 适合长期运行、反复提交任务的场景。
 //
-// 结果存储使用 32 路分片锁设计，即使百万 QPS 提交也能保持极低锁竞争。
+// 结果存储使用 32 路分片锁；实际锁竞争与吞吐需按业务负载测量。
 //
 // 示例：
 //
@@ -57,6 +57,7 @@ type poolCancellation struct{ cancel context.CancelFunc }
 //	p.Close()
 type Pool[T any] struct {
 	taskCh        chan core.PoolTask[T] // 任务队列（缓冲 channel）
+	taskSendMu    sync.RWMutex          // 序列化任务发送与通道关闭；阻塞发送由 done 唤醒
 	wg            sync.WaitGroup        // 等待所有已提交任务完成
 	taskWaitMu    sync.Mutex
 	taskWait      chan struct{}
@@ -143,7 +144,7 @@ type SubmitResult struct {
 //	defer p.Close()
 //
 //	// 使用 CPU 密集型并发度
-//	p := pool.NewPool[int](pool.CPU())
+//	p := pool.NewPool[int](core.CPU())
 func NewPool[T any](size int) *Pool[T] {
 	if size <= 0 {
 		size = core.IO()
@@ -184,7 +185,8 @@ func DefaultPool[T any]() *Pool[T] {
 // ──────────────────────────── Config：Pool 配置结构体与链式设置 ────────────────────────────
 
 // Config 汇集 Pool 的所有可配置项，支持一次性传入或链式设置。
-// 零值字段表示"使用默认值"，不影响已有行为。
+// 多数字段零值表示不覆盖新建池的默认值；MaxResults 例外，0 表示无限制，
+// 负值表示保留池创建时的全局默认上限。需要继承该上限时从 DefaultConfig 开始。
 //
 // 使用方式一：完整传入
 //
@@ -212,8 +214,8 @@ type Config struct {
 }
 
 // DefaultConfig 返回使用默认 Size（core.IO()）的 Config。
-// MaxResults 默认值为 -1，表示不覆盖 Pool 的内置默认值（100_000）。
-// 调用链式方法 .MaxResults(n) 可显式覆盖（n=0 恢复无限，n>0 设置上限）。
+// MaxResults 默认值为 -1，表示不覆盖 Pool 创建时的全局默认值（初始 100_000）。
+// 调用链式方法 .WithMaxResults(n) 可显式覆盖（n=0 恢复无限，n>0 设置上限）。
 func DefaultConfig() Config {
 	return Config{Size: core.IO(), MaxResults: -1}
 }
@@ -687,7 +689,7 @@ func (p *Pool[T]) WithMaxResults(maxResults int) *Pool[T] {
 }
 
 // WithMaxPending 设置最大等待任务数，配合 WithOverflow 使用。
-// maxPending <= 0 表示无限制。
+// maxPending > 0 时更新限制；非正值保留已有配置，不能用于清除已有上限。
 // 当 Pending() >= maxPending 时，新提交根据溢出策略处理。
 //
 // 示例：
@@ -769,7 +771,20 @@ func (p *Pool[T]) tryQuit() bool {
 }
 
 func (p *Pool[T]) worker() {
-	defer p.workerWg.Done()
+	taskReturned := true
+	defer func() {
+		if !taskReturned {
+			if p.tryQuit() {
+				p.workerWg.Done()
+				return
+			}
+			// Goexit cannot be recovered. Transfer this registered worker slot
+			// to a successor so accepted tasks and close-time draining continue.
+			go p.worker()
+			return
+		}
+		p.workerWg.Done()
+	}()
 	p.quitMu.RLock()
 	quitCh := p.quitCh
 	p.quitMu.RUnlock()
@@ -785,9 +800,9 @@ func (p *Pool[T]) worker() {
 				}
 				continue
 			}
-			p.active.Add(1)
+			taskReturned = false
 			p.processTask(task)
-			p.active.Add(-1)
+			taskReturned = true
 			if p.tryQuit() {
 				return
 			}
@@ -809,9 +824,9 @@ func (p *Pool[T]) worker() {
 						p.tryQuit()
 						continue
 					}
-					p.active.Add(1)
+					taskReturned = false
 					p.processTask(task)
-					p.active.Add(-1)
+					taskReturned = true
 				default:
 					return
 				}
@@ -828,7 +843,10 @@ func (p *Pool[T]) processTask(task core.PoolTask[T]) {
 	idx := task.Index
 	record := task.Record
 	defer p.finishTask()
+	p.active.Add(1)
+	defer p.active.Add(-1)
 	defer taskCancel()
+	calling := false
 
 	defer func() {
 		if r := recover(); r != nil {
@@ -841,6 +859,14 @@ func (p *Pool[T]) processTask(task core.PoolTask[T]) {
 			if failFast {
 				p.cancelOnFailure()
 			}
+		} else if calling {
+			// A nil recover while the callback has not returned is Goexit,
+			// not a successful zero result. Record before releasing the task.
+			p.errCnt.Add(1)
+			if failFast {
+				defer p.cancelOnFailure()
+			}
+			record(core.Result[T]{Err: core.ErrTaskGoexit, Occupied: true}, idx)
 		}
 	}()
 
@@ -864,7 +890,9 @@ func (p *Pool[T]) processTask(task core.PoolTask[T]) {
 		defer cancel()
 	}
 
+	calling = true
 	val, err := task.Fn(taskCtx)
+	calling = false
 	if err != nil {
 		if !(failFast && errors.Is(err, context.Canceled)) {
 			core.LogTaskFail(taskCtx, err, "async pool task failed")
@@ -1624,7 +1652,7 @@ func (p *Pool[T]) resizeLocked(newSize int) int {
 
 // sendQuitSignal 向 taskCh 发送退出信号（尽力而为）。
 // 如果 taskCh 已满则静默丢弃，因为 worker 处理完任务后会通过 quitting 计数器自行退出。
-// taskCh 可能在 Close() 中被关闭，用 recover 防止 panic。
+// 调用方持有 resizeMu，与 Close 标记 closed 互斥；recover 仅作防御。
 func (p *Pool[T]) sendQuitSignal() {
 	defer func() { recover() }()
 	select {
@@ -1633,15 +1661,16 @@ func (p *Pool[T]) sendQuitSignal() {
 	}
 }
 
-// ResizeAndWaitTimeout 调整 worker 数量并等待任务完成（最多等待 timeout）。
+// ResizeAndWaitTimeout 调整 worker 数量，随后限时等待已登记任务完成。
+// timeout 仅限制最后的任务等待，不覆盖 Resize 或正在登记的提交收敛。
 //
 // 参数：
 //   - newSize：目标 worker 数量
-//   - timeout：等待已执行任务完成的最大时长
+//   - timeout：等待已登记任务归零的时长；非正值立即到期，不取消任务
 //
 // 示例：
 //
-//	// 缩容到 5 个 worker，最多等待 10 秒让正在执行的任务完成
+//	// 缩容到 5 个 worker，在登记收敛后最多等待 10 秒让已登记任务完成
 //	p.ResizeAndWaitTimeout(5, 10*time.Second)
 func (p *Pool[T]) ResizeAndWaitTimeout(newSize int, timeout time.Duration) {
 	p.Resize(newSize)
@@ -1728,7 +1757,7 @@ func (p *Pool[T]) enqueueTask(ctx context.Context, taskCtx context.Context, task
 		return err
 	}
 
-	// 快速路径：先检查 done/taskCtx，再非阻塞发送（trySend 内置 recover 防 close panic）
+	// 快速路径：先检查 done/taskCtx，再非阻塞发送；trySend 与关闭通道共用 taskSendMu。
 	select {
 	case <-p.done:
 		p.discardTask(record, idx, taskCancel, core.ErrPoolClosed)
@@ -1791,10 +1820,12 @@ func (p *Pool[T]) enqueueTask(ctx context.Context, taskCtx context.Context, task
 	}
 }
 
-// blockSend 安全地阻塞发送任务到 taskCh。
+// blockSend 用读锁保护发送与 taskCh 关闭的互斥，阻塞时由 done 唤醒。
 // 返回 (true, nil) 表示发送成功，
 // 返回 (false, error) 表示发送失败（可能是通道关闭、context 取消或超时）。
 func (p *Pool[T]) blockSend(task core.PoolTask[T], taskCtx context.Context, timerC <-chan time.Time) (sent bool, err error) {
+	p.taskSendMu.RLock()
+	defer p.taskSendMu.RUnlock()
 	if p.closed.Load() {
 		return false, core.ErrPoolClosed
 	}
@@ -1826,9 +1857,11 @@ func (p *Pool[T]) blockSend(task core.PoolTask[T], taskCtx context.Context, time
 	}
 }
 
-// trySend 非阻塞安全发送到 taskCh，用于 TrySubmit。
-// 通道关闭时通过 recover 安全返回 (false, ErrPoolClosed)。
+// trySend 非阻塞发送到 taskCh，用于 TrySubmit；与关闭共用 taskSendMu。
+// recover 保留为防御措施，不能代替发送与关闭之间的同步。
 func (p *Pool[T]) trySend(task core.PoolTask[T]) (sent bool, err error) {
+	p.taskSendMu.RLock()
+	defer p.taskSendMu.RUnlock()
 	if p.closed.Load() {
 		return false, core.ErrPoolClosed
 	}
@@ -2038,7 +2071,9 @@ func (p *Pool[T]) Close() {
 
 	p.drainOrphanTasks()
 
+	p.taskSendMu.Lock()
 	close(p.taskCh)
+	p.taskSendMu.Unlock()
 	for task := range p.taskCh {
 		if task.Quit || task.Record == nil {
 			continue
@@ -2077,7 +2112,7 @@ func (p *Pool[T]) CloseAndWait() {
 	p.Wait()
 }
 
-// CloseAndWaitTimeout 关闭池并等待，最多等待 timeout 后返回。
+// CloseAndWaitTimeout 启动关闭并限时等待；timeout 不覆盖取得 resizeMu 的锁等待。
 // ok 为 true 表示在超时内正常完成，workerDone channel 可用于异步等待 worker 退出。
 // 首次关闭超时返回的 workerDone 关闭时，队列清理可能仍在进行；调用 Close 可等待完整清理。
 // 若关闭已在进行，等待同一次关闭；超时时返回的通道在关闭清理完成后关闭。
@@ -2116,7 +2151,9 @@ func (p *Pool[T]) CloseAndWaitTimeout(timeout time.Duration) (ok bool, workerDon
 		p.workerWg.Wait()
 		close(workerDoneCh)
 		p.drainOrphanTasks()
+		p.taskSendMu.Lock()
 		close(p.taskCh)
+		p.taskSendMu.Unlock()
 		for task := range p.taskCh {
 			if task.Quit || task.Record == nil {
 				continue
@@ -2164,7 +2201,8 @@ func (p *Pool[T]) CloseByIdle(timeout time.Duration) {
 	}
 }
 
-// FailCount 返回执行失败的任务数。
+// FailCount 返回已记录的失败任务数，包含执行错误、取消和提交拒绝。
+// 统计基于转换前的执行/拒绝结果；结果转换函数不改写此计数。
 func (p *Pool[T]) FailCount() int64 {
 	return p.errCnt.Load()
 }
@@ -2185,12 +2223,14 @@ func (p *Pool[T]) HasError() bool {
 	return p.FailCount() > 0
 }
 
-// TotalCount 返回已提交的任务总数。
+// TotalCount 返回已记录的提交尝试数，包含已记录的拒绝和丢弃。
+// 非法索引的 SubmitAt 在计数之前返回；此值不等于实际执行或保留结果的数量。
 func (p *Pool[T]) TotalCount() int64 {
 	return p.totalCnt.Load()
 }
 
-// Size 返回当前 worker 数量。
+// Size 返回当前目标 worker 数量。
+// 缩容时 worker 可尚未退出，关闭后也不自动归零，不表示实时存活数量。
 func (p *Pool[T]) Size() int {
 	return int(p.size.Load())
 }
@@ -2212,15 +2252,15 @@ func (p *Pool[T]) Pending() int {
 
 // PoolStats 池统计信息。
 type PoolStats struct {
-	Size      int           // worker 数量
+	Size      int           // 目标 worker 数量，不是实时存活数量
 	Active    int           // 当前活跃任务数
 	Busy      int           // 当前忙碌任务数（正在执行 fn）
 	Pending   int           // 等待中的任务数
 	FailFast  bool          // 是否启用 FailFast
 	Timeout   time.Duration // 全局任务超时时间
-	TotalTask int64         // 历史提交任务总数
+	TotalTask int64         // 已记录的提交尝试数，含拒绝和丢弃
 	OkTask    int64         // 历史成功任务数
-	FailTask  int64         // 历史失败任务数
+	FailTask  int64         // 已记录失败数，含执行错误、取消和提交拒绝
 }
 
 func (s PoolStats) String() string {
@@ -2389,8 +2429,9 @@ func (p *Pool[T]) Values() []T {
 	return vals
 }
 
-// Reset 关闭旧池并创建新池，保留并发度等配置。
-// 必须在 Wait 之后调用，否则返回错误。
+// Reset 在同一 Pool 实例内等待旧 worker 退出并重建任务队列、worker、流和环形缓冲。
+// 保留并发度及任务/提交超时等配置，清零结果与计数，并创建新的 context。
+// 必须在 Wait 之后调用，否则返回错误；与提交、等待及其他配置操作须外部协调。
 //
 // 使用示例：
 //
@@ -2580,7 +2621,7 @@ func (p *Pool[T]) EnableAutoScale(config *core.AutoScaleConfig) {
 	}
 }
 
-// DisableAutoScale 停止自动扩缩容，将 worker 数量恢复到初始值。
+// DisableAutoScale 停止自动扩缩容，将 worker 数量调整到配置的 MinWorkers。
 //
 // 停止后仍可通过 Resize 手动调整。如果自动扩缩容未启用，调用无效果。
 func (p *Pool[T]) DisableAutoScale() {
@@ -2647,7 +2688,12 @@ func (p *Pool[T]) performAutoScaleCheck(config *core.AutoScaleConfig, scaleUpCou
 		*scaleDownCount = 0
 		*scaleUpCount++
 		if *scaleUpCount >= config.ScaleUpChecks {
-			newSize := int(float64(size) * config.ScaleUpFactor)
+			// Cap before converting: a finite factor can overflow the product or int.
+			scaled := float64(size) * config.ScaleUpFactor
+			newSize := config.MaxWorkers
+			if !(scaled >= float64(config.MaxWorkers)) {
+				newSize = int(scaled)
+			}
 			if newSize <= size {
 				newSize = size + 1
 			}
@@ -2663,7 +2709,11 @@ func (p *Pool[T]) performAutoScaleCheck(config *core.AutoScaleConfig, scaleUpCou
 		*scaleUpCount = 0
 		*scaleDownCount++
 		if *scaleDownCount >= config.ScaleDownChecks {
-			newSize := int(float64(size) * config.ScaleDownFactor)
+			scaled := float64(size) * config.ScaleDownFactor
+			newSize := size - 1
+			if !(scaled >= float64(size)) {
+				newSize = int(scaled)
+			}
 			if newSize >= size {
 				newSize = size - 1
 			}

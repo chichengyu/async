@@ -143,11 +143,9 @@ func RetryWithConfig[T any](
 		var val T
 		var err error
 		if perCallTimeout > 0 {
-			var cancel context.CancelFunc
-			var timeoutCtx context.Context
-			timeoutCtx, cancel = context.WithTimeout(ctx, perCallTimeout)
-			val, err = invokeSafely(timeoutCtx, fn)
-			cancel()
+			val, err = WithTimeout(ctx, perCallTimeout, func(timeoutCtx context.Context) (T, error) {
+				return invokeSafely(timeoutCtx, fn)
+			})
 		} else {
 			val, err = invokeSafely(ctx, fn)
 		}
@@ -163,10 +161,10 @@ func RetryWithConfig[T any](
 		}
 
 		if attempt == maxRetries {
-			return zero, fmt.Errorf("retry exhausted after %d attempts: %w", maxRetries+1, err)
+			return zero, fmt.Errorf("retry exhausted after %d attempts: %w", uint(maxRetries)+1, err)
 		}
 
-		core.LogTaskFail(ctx, err, fmt.Sprintf("retry attempt %d/%d failed", attempt+1, maxRetries+1))
+		core.LogTaskFail(ctx, err, fmt.Sprintf("retry attempt %d/%d failed", attempt+1, uint(maxRetries)+1))
 
 		if backoff := computeBackoff(attempt, initialBackoff, maxBackoff); backoff > 0 {
 			timer := time.NewTimer(backoff)

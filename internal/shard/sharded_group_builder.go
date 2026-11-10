@@ -41,7 +41,7 @@ func (b *ShardedGroupBuilder[T]) DefaultShards() *ShardedGroupBuilder[T] {
 	return b
 }
 
-// DefaultWorker 使用默认每分片并发度（GOMAXPROCS）。
+// DefaultWorker 清除每片并发度覆盖，创建时使用 core.IO()（NumCPU×2）。
 func (b *ShardedGroupBuilder[T]) DefaultWorker() *ShardedGroupBuilder[T] {
 	b.cfg.ConcurrencyPerShard = DefaultConcurrencyShard
 	return b

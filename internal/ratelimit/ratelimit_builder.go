@@ -321,7 +321,7 @@ func (b *AdaptiveSubBuilder) DefaultMaxWorker() *AdaptiveSubBuilder {
 // ──────────────────────────── 分片入口：ShardedRatelimitBuilder ────────────────────────────
 
 // ShardedRatelimitBuilder 分片限流器入口构建器，通过 RatelimitBuilder.Sharded() 创建。
-// 各分片独立运行，round-robin 分发请求，将锁竞争降低到 1/N。
+// 各分片独立运行，round-robin 分发请求；锁竞争改善程度取决于实际路由和负载。
 type ShardedRatelimitBuilder struct {
 	ctx context.Context // 请求上下文
 }

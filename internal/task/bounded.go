@@ -8,12 +8,13 @@ import (
 
 // ──────────────────────────── BoundedRunner ────────────────────────────
 
-// BoundedRunner 限制并发 goroutine 数的异步任务执行器。
-// 通过内部信号量控制最大并发 goroutine 数，用 task.Go() 的 API 体验扛千万级高并发。
+// BoundedRunner 限制同时占用许可的业务回调数。
+// 通过内部信号量控制最大并发任务数，提交方在槽位耗尽时等待。
+// 不限制提交方创建的等待 goroutine、业务子 goroutine 或结果投递收尾。
 //
 // 与裸 task.Go() 的区别：
-//   - task.Go()：每次调用创建一个新 goroutine，1 千万调用 = 1 千万 goroutine
-//   - BoundedGo()：最多同时运行 max 个任务，其余调用阻塞等待槽位或上下文取消
+//   - task.Go()：每次调用创建一个新 goroutine，同时存活数量取决于任务执行时间
+//   - BoundedGo()：最多 max 个回调持有许可，其余调用阻塞等待槽位或上下文取消
 //
 // 使用示例：
 //
@@ -34,7 +35,8 @@ type BoundedRunner struct {
 }
 
 // BoundedRunnerBuilder 链式构建 BoundedRunner。
-// 与 TaskBuilder.Bounded(max) 等价，提供独立入口用于提前创建复用。
+// 使用与 TaskBuilder.Bounded(max) 相同的并发槽位机制，Build 创建独立执行器。
+// 公开的 TaskBuilder 接受并发数，不接受已有的 BoundedRunner。
 //
 // 使用示例：
 //
@@ -58,7 +60,7 @@ func (b *BoundedRunnerBuilder) Context(ctx context.Context) *BoundedRunnerBuilde
 	return b
 }
 
-// Max 设置最大并发 goroutine 数。<=0 使用默认 IO 并发度。
+// Max 设置业务许可容量。<=0 使用默认 IO 并发度。
 func (b *BoundedRunnerBuilder) Max(n int) *BoundedRunnerBuilder {
 	b.max = n
 	return b
@@ -78,7 +80,7 @@ func (b *BoundedRunnerBuilder) Build() *BoundedRunner {
 	return NewBoundedRunner(b.max)
 }
 
-// NewBoundedRunner 创建一个限制并发 goroutine 数的执行器。
+// NewBoundedRunner 创建一个限制同时持有许可的业务回调数的执行器。
 // max <= 0 时使用默认 IO 并发度。
 func NewBoundedRunner(max int) *BoundedRunner {
 	if max <= 0 {
@@ -92,7 +94,7 @@ func NewDefaultBoundedRunner() *BoundedRunner {
 	return NewBoundedRunner(core.IO())
 }
 
-// Max 返回最大并发 goroutine 数。
+// Max 返回业务许可容量，不是进程 goroutine 数上限。
 func (r *BoundedRunner) Max() int {
 	return cap(r.sem)
 }
@@ -102,13 +104,14 @@ func (r *BoundedRunner) Available() int {
 	return cap(r.sem) - len(r.sem)
 }
 
-// Busy 返回当前正在执行任务的 goroutine 数。
+// Busy 返回当前已占用槽位数，包含取得槽位后尚未开始执行的任务。
+// 与 Available 分别读取，不保证两次调用形成同一时刻的快照。
 func (r *BoundedRunner) Busy() int {
 	return len(r.sem)
 }
 
 // BoundedGo 通过信号量限流后启动异步任务，返回 AsyncResult[T]。
-// 当并发 goroutine 数已达上限时，阻塞等待 slot 释放或 ctx 取消。
+// 当业务许可已耗尽时，在调用方阻塞等待 slot 释放或 ctx 取消。
 //
 // 重要：fn 必须正确响应 ctx.Done() 以按时释放信号量槽位。
 // 如果 fn 忽略 ctx 取消而持续阻塞（例如未在 HTTP 请求中使用 ctx），
@@ -125,10 +128,20 @@ func BoundedGo[T any](r *BoundedRunner, ctx context.Context, fn func(context.Con
 		return ar
 	}
 
-	return Go[T](ctx, func(ctx context.Context) (T, error) {
+	// Until Go returns, the submitting goroutine owns the acquired slot.
+	// Trace injection can panic or Goexit before the worker is launched.
+	started := false
+	defer func() {
+		if !started {
+			<-r.sem
+		}
+	}()
+	result := Go[T](ctx, func(ctx context.Context) (T, error) {
 		defer func() { <-r.sem }()
 		return fn(ctx)
 	})
+	started = true
+	return result
 }
 
 // BoundedGoAct 带限流的无返回值异步任务，返回 AsyncResultNoResult。
@@ -143,10 +156,18 @@ func BoundedGoAct(r *BoundedRunner, ctx context.Context, fn func(context.Context
 		return ar
 	}
 
-	return GoAct(ctx, func(ctx context.Context) error {
+	started := false
+	defer func() {
+		if !started {
+			<-r.sem
+		}
+	}()
+	result := GoAct(ctx, func(ctx context.Context) error {
 		defer func() { <-r.sem }()
 		return fn(ctx)
 	})
+	started = true
+	return result
 }
 
 // BoundedGoResult 带限流的可取消异步任务，返回 Task[T]。
@@ -164,8 +185,16 @@ func BoundedGoResult[T any](r *BoundedRunner, ctx context.Context, fn func(conte
 		}
 	}
 
-	return GoResult[T](ctx, func(ctx context.Context) (T, error) {
+	started := false
+	defer func() {
+		if !started {
+			<-r.sem
+		}
+	}()
+	result := GoResult[T](ctx, func(ctx context.Context) (T, error) {
 		defer func() { <-r.sem }()
 		return fn(ctx)
 	})
+	started = true
+	return result
 }

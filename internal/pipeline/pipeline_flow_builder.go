@@ -16,10 +16,10 @@ import (
 //
 // 使用示例：
 //
-//	fl := async.Pipeline[int]().
+//	fl := async.Pipeline[int](nil).
 //	    Stage("parse", 4).Stage("enrich", 8).
-//	    BufSize(1024).
 //	    Flow().
+//	    BufSize(1024).
 //	    Build(ctx, fn)
 //	defer fl.Close()
 type FlowBuilder[T any] struct {
@@ -70,7 +70,7 @@ func (fb *FlowBuilder[T]) Logger(l core.Logger) *FlowBuilder[T] {
 //
 // 使用示例：
 //
-//	fl := async.Pipeline[int]().
+//	fl := async.Pipeline[int](nil).
 //	    Stage("parse", 4).Stage("enrich", 8).
 //	    Flow().
 //	    Run(fn)

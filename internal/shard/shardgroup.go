@@ -120,10 +120,14 @@ func (sg *ShardedGroup[T]) GoBatch(ctx context.Context, items []T, fn func(conte
 }
 
 // Wait 等待所有分片完成，合并结果。
+// 全部完成后释放共享 FailFast context，取消状态不代表业务失败。
 func (sg *ShardedGroup[T]) Wait() []core.Result[T] {
 	var all []core.Result[T]
 	for _, g := range sg.groups {
 		all = append(all, g.Wait()...)
+	}
+	if sg.ffCancel != nil {
+		sg.ffCancel()
 	}
 	return all
 }
@@ -139,12 +143,17 @@ func (sg *ShardedGroup[T]) WaitTimeout(d time.Duration) ([]core.Result[T], bool)
 }
 
 // WaitContext 等待所有分片完成或 ctx 取消，所有分片并行等待共享同一个 ctx。
+// 全部完成时释放共享 FailFast context；未完成返回后须再 Wait/Close 完成收尾。
 func (sg *ShardedGroup[T]) WaitContext(ctx context.Context) ([]core.Result[T], bool) {
 	if len(sg.groups) == 0 {
 		return nil, true
 	}
 	if len(sg.groups) == 1 {
-		return sg.groups[0].WaitContext(ctx)
+		results, ok := sg.groups[0].WaitContext(ctx)
+		if ok && sg.ffCancel != nil {
+			sg.ffCancel()
+		}
+		return results, ok
 	}
 
 	n := len(sg.groups)
@@ -173,6 +182,9 @@ func (sg *ShardedGroup[T]) WaitContext(ctx context.Context) ([]core.Result[T], b
 			allOk = false
 		}
 	}
+	if allOk && sg.ffCancel != nil {
+		sg.ffCancel()
+	}
 	return all, allOk
 }
 
@@ -180,6 +192,9 @@ func (sg *ShardedGroup[T]) WaitContext(ctx context.Context) ([]core.Result[T], b
 func (sg *ShardedGroup[T]) Close() {
 	for _, g := range sg.groups {
 		g.Close()
+	}
+	if sg.ffCancel != nil {
+		sg.ffCancel()
 	}
 }
 
@@ -190,6 +205,10 @@ func (sg *ShardedGroup[T]) Reset() error {
 		if _, err := g.Reset(); err != nil {
 			return err
 		}
+	}
+	if sg.ffCancel != nil {
+		sg.ffCancel()
+		sg.ffCancel = nil
 	}
 	return nil
 }
@@ -213,13 +232,14 @@ func (sg *ShardedGroup[T]) WithSubmitTimeout(d time.Duration) *ShardedGroup[T] {
 }
 
 // WithFailFast 为所有分片启用 FailFast 模式。
+// 返回的共享 context 在整体等待或关闭完成后取消，父 context 不受影响。
 func (sg *ShardedGroup[T]) WithFailFast(ctx context.Context) (*ShardedGroup[T], context.Context) {
 	ctx = core.EnsureTraceID(ctx)
 	if len(sg.groups) == 0 {
 		return sg, ctx
 	}
 	ffCtx, ffCancel := context.WithCancel(ctx)
-	sg.ffCancel = ffCancel
+	sg.ffCancel = core.MergeCancel(sg.ffCancel, ffCancel)
 	for _, g := range sg.groups {
 		g.WithFailFast(ffCtx)
 		g.MergeFailFastCancel(ffCancel)

@@ -93,7 +93,7 @@ func (b *PoolBuilder[T]) DefaultRingBuf() *PoolBuilder[T] {
 	return b
 }
 
-// DefaultMaxResults 使用默认最大结果数（100_000）。
+// DefaultMaxResults 清除构建器覆盖，使用创建池时的全局默认最大结果数。
 func (b *PoolBuilder[T]) DefaultMaxResults() *PoolBuilder[T] {
 	b.cfg.MaxResults = -1
 	return b

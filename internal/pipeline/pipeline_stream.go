@@ -120,7 +120,14 @@ func streamWorker[T any](
 	stageName string,
 	skipOnError bool,
 ) {
-	defer ws.wg.Done()
+	returned := true
+	defer func() {
+		if !returned {
+			go streamWorker(ctx, ws, stageIdx, numStages, resultCh, fn, stageName, skipOnError)
+		} else {
+			ws.wg.Done()
+		}
+	}()
 	for item := range ws.input {
 		select {
 		case <-ctx.Done():
@@ -133,16 +140,18 @@ func streamWorker[T any](
 			continue
 		}
 
-		val, err := safeCall(ctx, fn, stageName, item.value)
-		item.value = val
-		item.err = err
-		if err != nil && ctx.Err() != nil {
-			// Downstream workers can exit on cancellation before receiving this failure.
-			resultCh <- item
-			continue
-		}
-
-		streamForward(ctx, item, stageIdx, numStages, ws.output, resultCh)
+		returned = false
+		finishNativeStage(func() (T, error) { return safeCall(ctx, fn, stageName, item.value) }, func(val T, err error) {
+			item.value = val
+			item.err = err
+			if err != nil && ctx.Err() != nil {
+				// Downstream workers can exit on cancellation before receiving this failure.
+				resultCh <- item
+				return
+			}
+			streamForward(ctx, item, stageIdx, numStages, ws.output, resultCh)
+		})
+		returned = true
 	}
 }
 
@@ -274,6 +283,8 @@ func (w *StreamChain[T]) Run(fn func(context.Context, string, T) (T, error)) ([]
 
 // ExecuteWithMeta 以流水线方式执行，返回带阶段元信息的结果。
 // 注意：流水线内部不追踪每阶段中间结果，仅包含最终阶段信息。
+// 空阶段返回原输入及空阶段名；取消后须先检查每个槽位的 Occupied。
+// Stage 统一标注配置中的末阶段名，中途失败也不能据此定位实际失败阶段。
 func (w *StreamChain[T]) ExecuteWithMeta(fn func(context.Context, string, T) (T, error)) []ResultWithMeta[T] {
 	return w.execStreamWithMeta(fn)
 }
@@ -294,21 +305,23 @@ func (w *StreamChain[T]) execStream(fn func(context.Context, string, T) (T, erro
 	ffCtx, ffCancel := w.prepareFailFast(ctx)
 	defer ffCancel()
 
-	wrappedFn := func(innerCtx context.Context, stage string, item T) (T, error) {
-		val, err := safeCall(innerCtx, fn, stage, item)
-		if w.resultCb != nil {
-			func() {
-				defer func() {
-					if r := recover(); r != nil {
-						err = core.NewPanicError(r)
-					}
+	wrappedFn := func(innerCtx context.Context, stage string, item T) (val T, err error) {
+		finishNativeStage(func() (T, error) { return safeCall(innerCtx, fn, stage, item) }, func(value T, callErr error) {
+			val, err = value, callErr
+			if w.resultCb != nil {
+				func() {
+					defer func() {
+						if r := recover(); r != nil {
+							err = core.NewPanicError(r)
+						}
+					}()
+					w.resultCb(stage, core.Result[T]{Value: val, Err: err, Occupied: true})
 				}()
-				w.resultCb(stage, core.Result[T]{Value: val, Err: err, Occupied: true})
-			}()
-		}
-		if err != nil && w.failFast {
-			ffCancel()
-		}
+			}
+			if err != nil && w.failFast {
+				ffCancel()
+			}
+		})
 		return val, err
 	}
 

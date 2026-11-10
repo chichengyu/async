@@ -1,4 +1,4 @@
-// Package task 提供单个异步任务和带 cancel 功能的 AsyncResult。
+// Package task 提供单个异步任务、结果等待句柄和可取消的任务句柄。
 //
 // 核心类型：
 //   - AsyncResult[T]：异步结果句柄，支持 Wait/WaitTimeout/WaitContext/Cancel/Ok/IsPanic
@@ -39,7 +39,8 @@ import (
 )
 
 // Task 表示一个可取消的异步任务。
-// 与 AsyncResult 不同，Task 提供 Cancel 方法可主动取消任务。
+// Cancel 向任务上下文发出取消信号，业务函数须协作退出。
+// AsyncResult.Cancel 只限制结果等待，不取消任务执行。
 //
 // 使用示例：
 //
@@ -64,6 +65,8 @@ func (t Task[T]) Error() error {
 
 // AsyncResult 持有一个 results chan（只读），通过它等待并获取任务结果。
 // 内部有缓存机制，多次调用 Wait 安全且不会重复读取 channel。
+// 必须使用 Go/GoAct 或对应构建器创建，零值不可用；创建后不要复制该句柄。
+// 返回值仅按 T 的值语义复制；其中的切片、map 和指针仍共享，不提供深拷贝。
 //
 // 使用示例：
 //
@@ -140,6 +143,8 @@ func (ar *AsyncResult[T]) Error() error {
 }
 
 // WaitCh 返回只读结果 channel，可用于 select 多路复用。
+// 每次调用创建新的容量为 1 的通知通道及 goroutine，发送一次缓存结果后关闭。
+// 即使任务已完成，通知也须等待 goroutine 调度；读取关闭后的通道须检查 ok。
 //
 // 使用示例：
 //
@@ -159,14 +164,16 @@ func (ar *AsyncResult[T]) WaitCh() <-chan core.Result[T] {
 	return ch
 }
 
-// Cancel 尝试取消等待：如果结果已就绪则返回结果，否则返回 context.Canceled 错误。
+// Cancel 优先返回已缓存或可立即读取的结果，否则等待结果或 1ms 定时器。
+// 定时分支返回类型零值和 context.Canceled，不取消业务或覆盖最终缓存。
+// 1ms 是定时器时长，不保证包含调度和锁等待的总耗时上限。
 //
 // 使用示例：
 //
 //	ar := task.Go(ctx, slowFn)
 //	time.Sleep(100 * time.Millisecond)
-//	if val, err := ar.Cancel(); err != nil {
-//	    fmt.Println("任务被取消")
+//	if _, err := ar.Cancel(); err != nil {
+//	    fmt.Println("本次等待已结束或任务返回错误:", err) // 任务执行未被此方法取消
 //	}
 func (ar *AsyncResult[T]) Cancel() (T, error) {
 	// 步骤 1：快速路径 — 检查 ready 是否已关闭（结果已缓存）
@@ -232,10 +239,12 @@ func (ar *AsyncResult[T]) IsPanic() bool {
 	return r.IsPanic()
 }
 
-// WaitTimeout 带超时等待，返回 (值, 错误, 是否在超时前完成)。
+// WaitTimeout 带超时等待，返回 (值, 错误, 是否取得任务结果)。
+// 已缓存或可立即读取的结果优先，包括 timeout 非正时；业务错误另查 error。
+// 超时返回 (类型零值, core.ErrTimeout, false)，不取消业务或覆盖最终缓存。
 //
 // 参数：
-//   - timeout：最长等待时间
+//   - timeout：本次等待的定时器时长，非正值立即到期；不保证总耗时上限
 //
 // 使用示例：
 //
@@ -296,12 +305,13 @@ func (ar *AsyncResult[T]) WaitTimeout(timeout time.Duration) (T, error, bool) {
 	}
 }
 
-// WaitContext 带 Context 控制等待，返回 (值, 错误, 是否在取消前完成)。
-// 当 ctx 被取消或超时时返回 (zero, ctx.Err(), false)。
+// WaitContext 带 Context 控制等待，返回 (值, 错误, 是否取得任务结果)。
+// 已缓存或可立即读到的结果优先返回；否则等待结果或 ctx 取消。
+// 取消分支返回 (zero, ctx.Err(), false)，不取消业务执行。
 // 多个 goroutine 可同时调用，结果是安全的。
 //
 // 参数：
-//   - ctx：上下文，取消后立即返回
+//   - ctx：非 nil 的等待上下文；取消与结果同时就绪时不保证选择顺序
 //
 // 使用示例：
 //
@@ -309,7 +319,7 @@ func (ar *AsyncResult[T]) WaitTimeout(timeout time.Duration) (T, error, bool) {
 //	defer cancel()
 //	val, err, ok := ar.WaitContext(ctx)
 //	if !ok {
-//	    log.Println("等待被取消: %v", err)
+//	    log.Printf("等待被取消: %v", err)
 //	    return
 //	}
 func (ar *AsyncResult[T]) WaitContext(ctx context.Context) (T, error, bool) {
@@ -383,6 +393,7 @@ func Go[T any](ctx context.Context, fn func(context.Context) (T, error)) *AsyncR
 	results := make(chan core.Result[T], 1)
 	ar := &AsyncResult[T]{results: results, ready: make(chan struct{})}
 	go func() {
+		returned := false
 		defer func() {
 			if r := recover(); r != nil {
 				var zero T
@@ -392,10 +403,18 @@ func Go[T any](ctx context.Context, fn func(context.Context) (T, error)) *AsyncR
 				ar.populated = true
 				ar.mu.Unlock()
 				results <- r
+			} else if !returned {
+				r := core.Result[T]{Err: core.ErrTaskGoexit}
+				ar.mu.Lock()
+				ar.result = r
+				ar.populated = true
+				ar.mu.Unlock()
+				results <- r
 			}
 			close(results)
 		}()
 		val, err := fn(ctx)
+		returned = true
 		r := core.Result[T]{Value: val, Err: err}
 		ar.mu.Lock()
 		ar.result = r
@@ -427,14 +446,18 @@ func GoResult[T any](ctx context.Context, fn func(context.Context) (T, error)) T
 	ctx, cancel := context.WithCancel(ctx)
 	results := make(chan core.Result[T], 1)
 	go func() {
+		returned := false
 		defer func() {
 			if r := recover(); r != nil {
 				var zero T
 				results <- core.Result[T]{Value: zero, Err: core.NewPanicError(r)}
+			} else if !returned {
+				results <- core.Result[T]{Err: core.ErrTaskGoexit}
 			}
 			close(results)
 		}()
 		val, err := fn(ctx)
+		returned = true
 		results <- core.Result[T]{Value: val, Err: err}
 	}()
 	var once sync.Once

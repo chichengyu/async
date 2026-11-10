@@ -11,8 +11,8 @@ import (
 
 // ──────────────────────────── MultiGroup 分片任务组 ────────────────────────────
 
-// MultiGroup 将任务分发到 N 个 Group 实例，实现水平扩展，支持极限高并发（百万~千万 QPS）。
-// 每个分片组独立运行，互不影响，通过 round-robin 分发任务。
+// MultiGroup 将任务分发到 N 个 Group 实例，实现水平扩展。
+// 每个分片有独立任务队列；context 与 FailFast 可跨片共享。Go 使用 round-robin 分发。
 //
 // 通过 Group.Shard() 创建，无需直接构造：
 //
@@ -44,13 +44,14 @@ func (mg *MultiGroup[T]) GetShard(idx int) *Group[T] {
 
 // ── 任务分发 ──
 
-// Go 将任务以 round-robin 方式分发到某个分片执行。
+// Go 将任务以 round-robin 方式分发到某个分片执行；被目标片拒绝的尝试也消耗轮转位置。
 func (mg *MultiGroup[T]) Go(ctx context.Context, fn func(context.Context) (T, error)) error {
 	idx := int((mg.nextIdx.Add(1) - 1) % uint64(len(mg.groups)))
 	return mg.groups[idx].Go(ctx, fn)
 }
 
-// GoKeyed 按 key 哈希分发到固定分片，保证同一 key 的任务落到同一分片。
+// GoKeyed 按 key % 分片数分发到固定分片，不额外哈希 key 或推进 Go 的轮转位置。
+// 同一 key 的任务落到同一分片，但执行顺序由该片并发度及调度决定。
 func (mg *MultiGroup[T]) GoKeyed(key uint64, ctx context.Context, fn func(context.Context) (T, error)) error {
 	idx := int(key % uint64(len(mg.groups)))
 	return mg.groups[idx].Go(ctx, fn)
@@ -160,7 +161,7 @@ func (mg *MultiGroup[T]) TotalBusy() int {
 	return total
 }
 
-// TotalTaskCount 汇总所有分片已提交任务总数。
+// TotalTaskCount 汇总各片进入提交预检查的尝试数，包含预检查拒绝；不是成功入队数。
 func (mg *MultiGroup[T]) TotalTaskCount() int64 {
 	var total int64
 	for _, g := range mg.groups {

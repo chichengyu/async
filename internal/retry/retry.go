@@ -72,9 +72,10 @@ func RetryWithBackoff[T any](
 			return val, nil
 		}
 		if attempt == maxRetries {
-			return zero, fmt.Errorf("retry exhausted after %d attempts: %w", maxRetries+1, err)
+			// Convert before adding: MaxInt+1 fits uint but not int.
+			return zero, fmt.Errorf("retry exhausted after %d attempts: %w", uint(maxRetries)+1, err)
 		}
-		core.LogTaskFail(ctx, err, fmt.Sprintf("retry attempt %d/%d failed", attempt+1, maxRetries+1))
+		core.LogTaskFail(ctx, err, fmt.Sprintf("retry attempt %d/%d failed", attempt+1, uint(maxRetries)+1))
 		if backoff := computeBackoff(attempt, initialBackoff, maxBackoff); backoff > 0 {
 			timer := time.NewTimer(backoff)
 			select {
