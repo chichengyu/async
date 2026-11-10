@@ -2127,3 +2127,18 @@ Pipeline原文新增cancel-goexit场景，保持最终阶段业务Goexit同时�
 当前没有待修复的已确认问题。25项运行修复均有原症状复现与回归，关键修复另有模型/fuzz和可编译错误变体的行为检出。公开签名保持；正常值/error、取消、超时、结果所有权等已有契约通过对应回归。有限测试不能证明任意输入与并发调度绝对无bug，也不能保证用户自定义回调的副作用；这些是验证边界，不是本次已知未修复缺陷。审计工作在上述证据范围内闭合，未提交或推送现有工作区改动。
 
 交付前当前包级复跑：go test -race -tags audit -short -count=1 ./internal/pipeline ./docs ./docs/cmd/apidoc，三包分别20.202s、6.955s、2.088s通过（.gotmp/final-reviewed-packages.log）；文档更新后再验1415方法结构、378专题锚点/围栏与git diff --check均通过。正式独立审查报告和本次新增链接另按实际目标文件与行号核验。
+
+## 当前版本补充功能复核（2026-11-10）
+
+在提交 `2a49f6f` 的版本上，补充检查参数边界、结果保留、取消与关闭、阶段错误观察、重试计数、限流许可及容器所有权。本轮未确认新的功能缺陷，未修改库运行实现或测试代码。以下命令均已结束且退出码为 0，环境为 Windows amd64、Go 1.25.0、GOMAXPROCS=2。
+
+| 验证 | 命令与结果 |
+| --- | --- |
+| 全库随机顺序测试 | `go test -tags audit -short -count=1 -shuffle=on -timeout=20m ./...`；13 个有测试的包全部通过，根包 442.316s；基准包无匹配测试，辅助 test 包无测试文件 |
+| 内部包及文档 race | `go test -race -tags audit -short -count=1 -shuffle=on -timeout=10m ./internal/... ./docs/...`；10 个内部包、文档契约和生成器测试全部通过，基准包无匹配测试；本命令不包含根包 |
+| Pool 生命周期 race fuzz | `go test -race ./internal/pool -run '^$' -fuzz '^FuzzPoolRetainedLifecycle$' -fuzztime=15s -parallel=1`；12,927 次执行，通过 |
+| Flow 并发提交与关闭 race fuzz | `go test -race ./internal/pipeline -run '^$' -fuzz '^FuzzFlowConcurrentSubmitClose$' -fuzztime=15s -parallel=1`；31,299 次执行，通过 |
+| 静态检查 | `go vet ./...`；通过 |
+| 文档生成与编译 | `go run ./docs/cmd/apidoc -check -compile`；通过，1,388 个声明调用片段和 3 个完整 Markdown 程序可编译，不执行其中业务代码 |
+
+本轮日志位于 `.gotmp/followup-function-full-short.log`、`.gotmp/followup-function-internal-race.log`、`.gotmp/followup-pool-fuzz.log`、`.gotmp/followup-flow-fuzz.log`、`.gotmp/followup-function-doccheck.log`，属于本地验证产物。有限测试不能证明任意输入及并发调度绝对无缺陷；本轮未重新执行根包 race 或全库 nonshort，相关既有证据仍按前文的版本及范围理解。超时需要业务协作响应、逐项错误需要调用方检查、结果保留受配置限制等已说明的契约，不作为新发现的实现缺陷。
