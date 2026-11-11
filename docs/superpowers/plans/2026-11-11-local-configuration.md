@@ -30,3 +30,12 @@ Audited timeout, submit timeout, workers, shards, result retention, ring buffers
 - New tests and the existing defaults audit passed under `-race`.
 - Existing timeout capture, pool ring buffer, retry DefaultConfig, limiter defaults and mode-switch contract tests passed; `go vet ./...` and `git diff --check` passed.
 - A temporary Go overlay changed Pool.DefaultTimeout into a global reset; the sentinel test failed with `DefaultTimeout changed application-wide defaults`, proving the regression is detected without changing production source.
+
+## Final verification audit
+
+- Rechecked global configuration writes and public setter aliases, default factories, receiver-local configuration, value policies, autoscale copies, mode conversion, shard copies and borrowed-pool execution. No additional configuration-isolation defect was found. Production source was unchanged during this audit.
+- Fresh `go test -race ./... -short -count=1 -timeout=30m` passed all ten internal packages and documentation packages. The root process exhausted Windows memory commit in ThreadSanitizer (`TracePart`, error 1455); this run did not complete successfully.
+- Enumerated all 451 root `Test*` entries and reran them under `-race -short -count=1` in 23 batches. Twenty-two batches passed. The remaining batch encountered the same sanitizer allocation error; all 20 entries in that batch subsequently passed individually with process-local `GOMAXPROCS=4`. Thus all 451 root test entries completed successfully across these runs, subject to their existing short-mode skips. This does not claim that the monolithic root race run passed or that large non-short tiers ran.
+- Fresh `go vet ./...`, `go run ./docs/cmd/apidoc -check` and `git diff --check` passed.
+- Independent review could not be started because agent dispatch failed; this remains a self-review, not a completed independent review.
+- Evidence logs are in the ignored `.gotmp/configuration-isolation/` directory.
