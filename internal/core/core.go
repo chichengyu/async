@@ -764,8 +764,10 @@ func getTraceIDKey() interface{} {
 //	core.SetTraceIDKey("X-Trace-Id")
 //
 // 注意：请在最早期（init 或 main 开头）调用，避免并发读写导致的瞬时不一致。
+// key 必须非 nil 且其值可安全比较；结构体或数组中接口字段的动态值也须可比较。
+// 无效 key 会在更新全局配置前 panic。
 func SetTraceIDKey(key interface{}) {
-	if key == nil || !reflect.TypeOf(key).Comparable() {
+	if key == nil || !reflect.ValueOf(key).Comparable() {
 		panic("async: trace ID context key must be non-nil and comparable")
 	}
 	traceIDKeyStore.Store(traceIDKeyHolder{key})

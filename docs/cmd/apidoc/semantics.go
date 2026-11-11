@@ -925,7 +925,7 @@ func semanticCaution(e entry) string {
 		return "传非 nil context。EnsureTraceID 仅检查当前 key 的值是否为 nil，非 nil 时原样返回，包括空字符串和非 string；它不修复类型。WithTraceID 的空 id 委托 EnsureTraceID，保留已有值；非空 id 才覆盖。启用 TraceLog 时，仅生成/显式覆盖路径调用 logger.With/WithContext，后端必须返回有效 context。GetTraceID 对非 string 值会 panic。自定义 key 在初始化时固定，已有 context 的旧值不会自动迁移；继续传递返回 context。"
 	}
 	if e.name == "SetTraceIDKey" {
-		return "key 必须非 nil 且可比较，否则 panic。设置影响全库后续 context 读写；在启动时统一配置，已有 context 不会把旧 key 的值迁移到新 key。"
+		return "key 必须非 nil 且其值可安全比较；结构体或数组中接口字段的动态值也须可比较，否则在更新全局配置前 panic。设置影响全库后续 context 读写；在启动时统一配置，已有 context 不会把旧 key 的值迁移到新 key。"
 	}
 	if e.pkg == "retry" && (e.name == "WithTimeout" || e.name == "WithTimeoutVoid" || e.name == "WithDeadline" || e.name == "WithDeadlineVoid") {
 		return "同步直接调用 fn，不捕获 panic、不替回调返回 context 错误。即使 deadline 已过或 timeout 非正仍会调用 fn；回调须检查 context 并返回错误，否则仍可能返回成功或无限阻塞。"

@@ -100,7 +100,7 @@ async.DefaultPoolConfig()
 func EnsureTraceID(ctx context.Context) context.Context
 ```
 
-[实现](../../internal/core/core.go#L790) · [行为专题](../config.md)：EnsureTraceID 保留当前 key 下的已有非 nil 值；缺失时自动生成 trace_id。
+[实现](../../internal/core/core.go#L792) · [行为专题](../config.md)：EnsureTraceID 保留当前 key 下的已有非 nil 值；缺失时自动生成 trace_id。
 
 **源码说明与使用片段**（原文）：
 
@@ -400,7 +400,7 @@ async.GetTaskFailLogLevel()
 func GetTraceID(ctx context.Context) string
 ```
 
-[实现](../../internal/core/core.go#L807) · [行为专题](../config.md)：GetTraceID 从 ctx 中提取 trace_id，不存在则返回空字符串。
+[实现](../../internal/core/core.go#L809) · [行为专题](../config.md)：GetTraceID 从 ctx 中提取 trace_id，不存在则返回空字符串。
 
 **源码说明与使用片段**（原文）：
 
@@ -433,7 +433,7 @@ async.GetTraceID(ctx)
 func GetTraceIDKey() interface{}
 ```
 
-[实现](../../internal/core/core.go#L775) · [行为专题](../config.md)：GetTraceIDKey 返回当前生效的 trace_id context key。
+[实现](../../internal/core/core.go#L777) · [行为专题](../config.md)：GetTraceIDKey 返回当前生效的 trace_id context key。
 
 **源码说明与使用片段**（原文）：
 
@@ -1015,7 +1015,7 @@ async.NewPanicError(r)
 func NewTraceID() string
 ```
 
-[实现](../../internal/core/core.go#L844) · [行为专题](../config.md)：NewTraceID 生成新的随机 trace_id（32 位十六进制字符串）。
+[实现](../../internal/core/core.go#L846) · [行为专题](../config.md)：NewTraceID 生成新的随机 trace_id（32 位十六进制字符串）。
 
 **源码说明与使用片段**（原文）：
 
@@ -1552,7 +1552,7 @@ async.SetTaskFailLogLevel(level)
 func SetTraceIDKey(key interface{})
 ```
 
-[实现](../../internal/core/core.go#L767) · [行为专题](../config.md)：SetTraceIDKey 自定义 trace_id 的 context key。
+[实现](../../internal/core/core.go#L769) · [行为专题](../config.md)：SetTraceIDKey 自定义 trace_id 的 context key。
 
 **源码说明与使用片段**（原文）：
 
@@ -1575,7 +1575,7 @@ SetTraceIDKey 自定义 trace\_id 的 context key。 设置后将替换默认的
 	// 自定义字符串 key
 	core.SetTraceIDKey("X-Trace-Id")
 
-注意：请在最早期（init 或 main 开头）调用，避免并发读写导致的瞬时不一致。
+注意：请在最早期（init 或 main 开头）调用，避免并发读写导致的瞬时不一致。 key 必须非 nil 且其值可安全比较；结构体或数组中接口字段的动态值也须可比较。 无效 key 会在更新全局配置前 panic。
 
 
 **参数说明**：
@@ -1592,7 +1592,7 @@ async.SetTraceIDKey(key)
 
 **生产建议**：尽量在应用启动时设置全局状态；日志后端应支持并发调用。
 
-**注意事项**：key 必须非 nil 且可比较，否则 panic。设置影响全库后续 context 读写；在启动时统一配置，已有 context 不会把旧 key 的值迁移到新 key。
+**注意事项**：key 必须非 nil 且其值可安全比较；结构体或数组中接口字段的动态值也须可比较，否则在更新全局配置前 panic。设置影响全库后续 context 读写；在启动时统一配置，已有 context 不会把旧 key 的值迁移到新 key。
 
 ## `SetTraceLogEnabled`
 
@@ -1798,7 +1798,7 @@ async.WithConfig(configured)
 func WithTraceID(ctx context.Context, id string) context.Context
 ```
 
-[实现](../../internal/core/core.go#L826) · [行为专题](../config.md)：WithTraceID 设置指定的 trace_id 到 ctx 中。
+[实现](../../internal/core/core.go#L828) · [行为专题](../config.md)：WithTraceID 设置指定的 trace_id 到 ctx 中。
 
 **源码说明与使用片段**（原文）：
 
