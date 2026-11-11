@@ -123,7 +123,7 @@ func NewVoid(ctx context.Context) *RetryChain[struct{}] {
 
 // Context 链式设置上下文，自动注入 trace_id。
 func (c *RetryChain[T]) Context(ctx context.Context) *RetryChain[T] {
-	c.ctx = core.EnsureTraceID(ctx)
+	c.ctx = core.EnsureTraceID(core.CopyLogger(c.ctx, ctx))
 	return c
 }
 
@@ -448,11 +448,14 @@ func (c *RetryChain[T]) Shards(n int) *RetryChain[T] {
 	return c
 }
 
-// Logger 注入自定义日志实现，全局生效。
-func (c *RetryChain[T]) Logger(l core.Logger) *RetryChain[T] { core.SetLogger(l); return c }
+// Logger 仅为当前构建器及其后续执行设置日志器，不修改全局配置。
+func (c *RetryChain[T]) Logger(l core.Logger) *RetryChain[T] {
+	c.ctx = core.WithLogger(c.ctx, l)
+	return c
+}
 
-// DefaultLogger 重置为默认日志实现。
-func (c *RetryChain[T]) DefaultLogger() *RetryChain[T] { core.SetLogger(nil); return c }
+// DefaultLogger 清除当前日志器覆盖，恢复继承全局日志器。
+func (c *RetryChain[T]) DefaultLogger() *RetryChain[T] { c.ctx = core.WithLogger(c.ctx, nil); return c }
 
 // ── 终端方法 ──
 

@@ -558,6 +558,36 @@ core.CPU()
 
 **注意事项**：仅返回并发度建议值，不分配 worker 或测量实际负载。CPU 使用 NumCPU，IO 使用其两倍，IOMulti 的非正倍数按 2；均不依据 GOMAXPROCS。WithConfig 仅对非正配置回退 IO，不限制正值上界；生产需按资源预算与实际任务压测。
 
+## `CopyLogger`
+
+```go
+func CopyLogger(src, dst context.Context) context.Context
+```
+
+[实现](../../internal/core/local_logger.go#L25) · [行为专题](../config.md)：CopyLogger carries only the local logging setting to another context.
+
+**源码说明与使用片段**（原文）：
+
+CopyLogger carries only the local logging setting to another context. Cancellation, deadlines and business values remain those of dst.
+
+
+**参数说明**：
+
+- `src` (`context.Context`)：调用上下文，传有效的非 nil context；取消范围见本方法实现和专题。
+- `dst` (`context.Context`)：调用上下文，传有效的非 nil context；取消范围见本方法实现和专题。
+
+**返回值签名**：`context.Context`。
+
+**使用示例**（已初始化参数的调用片段）：
+
+```go
+core.CopyLogger(src, dst)
+```
+
+**生产建议**：尽量在应用启动时设置全局状态；日志后端应支持并发调用。
+
+**注意事项**：取消和超时依靠回调协作，不能强制结束忽略 context 的业务函数；配置与等待的作用范围见专题。
+
 ## `DefaultAutoScaleConfig`
 
 ```go
@@ -951,7 +981,7 @@ core.GetTaskFailLogLevel()
 
 **生产建议**：用专题中的构造入口初始化实例，明确资源所有者，并处理提交或执行返回的错误。
 
-**注意事项**：读取当前全局配置，不修改实例；并发读取同步，但先读再设置或连续读取多个字段不是原子事务。trace key 若运行中更换，已有 context 的旧值不会迁移；日志设置影响后续全库日志调用。
+**注意事项**：读取当前全局配置，不修改实例；并发读取同步，但先读再设置或连续读取多个字段不是原子事务。trace key 若运行中更换，已有 context 的旧值不会迁移；全局日志设置影响未单独配置日志器的后续调用。
 
 ## `GetTraceID`
 
@@ -1011,7 +1041,7 @@ core.GetTraceIDKey()
 
 **生产建议**：用专题中的构造入口初始化实例，明确资源所有者，并处理提交或执行返回的错误。
 
-**注意事项**：读取当前全局配置，不修改实例；并发读取同步，但先读再设置或连续读取多个字段不是原子事务。trace key 若运行中更换，已有 context 的旧值不会迁移；日志设置影响后续全库日志调用。
+**注意事项**：读取当前全局配置，不修改实例；并发读取同步，但先读再设置或连续读取多个字段不是原子事务。trace key 若运行中更换，已有 context 的旧值不会迁移；全局日志设置影响未单独配置日志器的后续调用。
 
 ## `GetTraceLogEnabled`
 
@@ -1038,7 +1068,7 @@ core.GetTraceLogEnabled()
 
 **生产建议**：用专题中的构造入口初始化实例，明确资源所有者，并处理提交或执行返回的错误。
 
-**注意事项**：读取当前全局配置，不修改实例；并发读取同步，但先读再设置或连续读取多个字段不是原子事务。trace key 若运行中更换，已有 context 的旧值不会迁移；日志设置影响后续全库日志调用。
+**注意事项**：读取当前全局配置，不修改实例；并发读取同步，但先读再设置或连续读取多个字段不是原子事务。trace key 若运行中更换，已有 context 的旧值不会迁移；全局日志设置影响未单独配置日志器的后续调用。
 
 ## `IO`
 
@@ -1118,6 +1148,36 @@ core.IOMulti(multiplier)
 
 **注意事项**：仅返回并发度建议值，不分配 worker 或测量实际负载。CPU 使用 NumCPU，IO 使用其两倍，IOMulti 的非正倍数按 2；均不依据 GOMAXPROCS。WithConfig 仅对非正配置回退 IO，不限制正值上界；生产需按资源预算与实际任务压测。
 
+## `InheritLogger`
+
+```go
+func InheritLogger(src, dst context.Context) context.Context
+```
+
+[实现](../../internal/core/local_logger.go#L36) · [行为专题](../config.md)：InheritLogger uses an instance logger only when the submitted work has no
+
+**源码说明与使用片段**（原文）：
+
+InheritLogger uses an instance logger only when the submitted work has no explicit scope of its own (for example work delegated by another builder).
+
+
+**参数说明**：
+
+- `src` (`context.Context`)：调用上下文，传有效的非 nil context；取消范围见本方法实现和专题。
+- `dst` (`context.Context`)：调用上下文，传有效的非 nil context；取消范围见本方法实现和专题。
+
+**返回值签名**：`context.Context`。
+
+**使用示例**（已初始化参数的调用片段）：
+
+```go
+core.InheritLogger(src, dst)
+```
+
+**生产建议**：尽量在应用启动时设置全局状态；日志后端应支持并发调用。
+
+**注意事项**：取消和超时依靠回调协作，不能强制结束忽略 context 的业务函数；配置与等待的作用范围见专题。
+
 ## `Int64`
 
 ```go
@@ -1196,7 +1256,7 @@ core.LogCtxDebug(ctx, msg, fields...)
 
 **生产建议**：按业务选择级别，在需要关联请求时使用 LogCtx 并传入含 trace_id 的 context；普通日志级别过滤与输出格式由注入后端管理。日志同步消耗调用方时间，后端须并发安全且及时返回；动态字段先脱敏，异步保存时管理引用快照。
 
-**注意事项**：同步调用当前全局 logger，不从 ctx 选择 logger。nil ctx、缺失/空/非 string TraceID 不附加字段；非空 string 自动作为第一个 trace_id 字段，调用者原字段随后追加，不去重。TraceLogEnabled 和 TaskFailLogLevel 都不过滤这些直接日志入口；后端 panic 向外传播，异步保存引用字段需自行复制。
+**注意事项**：同步调用 ctx 中的局部 logger，未设置或已清除覆盖时继承全局 logger。nil ctx、缺失/空/非 string TraceID 不附加字段；非空 string 自动作为第一个 trace_id 字段，调用者原字段随后追加，不去重。TraceLogEnabled 和 TaskFailLogLevel 都不过滤这些直接日志入口；后端 panic 向外传播，异步保存引用字段需自行复制。
 
 ## `LogCtxError`
 
@@ -1237,7 +1297,7 @@ core.LogCtxError(ctx, msg, fields...)
 
 **生产建议**：按业务选择级别，在需要关联请求时使用 LogCtx 并传入含 trace_id 的 context；普通日志级别过滤与输出格式由注入后端管理。日志同步消耗调用方时间，后端须并发安全且及时返回；动态字段先脱敏，异步保存时管理引用快照。
 
-**注意事项**：同步调用当前全局 logger，不从 ctx 选择 logger。nil ctx、缺失/空/非 string TraceID 不附加字段；非空 string 自动作为第一个 trace_id 字段，调用者原字段随后追加，不去重。TraceLogEnabled 和 TaskFailLogLevel 都不过滤这些直接日志入口；后端 panic 向外传播，异步保存引用字段需自行复制。
+**注意事项**：同步调用 ctx 中的局部 logger，未设置或已清除覆盖时继承全局 logger。nil ctx、缺失/空/非 string TraceID 不附加字段；非空 string 自动作为第一个 trace_id 字段，调用者原字段随后追加，不去重。TraceLogEnabled 和 TaskFailLogLevel 都不过滤这些直接日志入口；后端 panic 向外传播，异步保存引用字段需自行复制。
 
 ## `LogCtxInfo`
 
@@ -1278,7 +1338,7 @@ core.LogCtxInfo(ctx, msg, fields...)
 
 **生产建议**：按业务选择级别，在需要关联请求时使用 LogCtx 并传入含 trace_id 的 context；普通日志级别过滤与输出格式由注入后端管理。日志同步消耗调用方时间，后端须并发安全且及时返回；动态字段先脱敏，异步保存时管理引用快照。
 
-**注意事项**：同步调用当前全局 logger，不从 ctx 选择 logger。nil ctx、缺失/空/非 string TraceID 不附加字段；非空 string 自动作为第一个 trace_id 字段，调用者原字段随后追加，不去重。TraceLogEnabled 和 TaskFailLogLevel 都不过滤这些直接日志入口；后端 panic 向外传播，异步保存引用字段需自行复制。
+**注意事项**：同步调用 ctx 中的局部 logger，未设置或已清除覆盖时继承全局 logger。nil ctx、缺失/空/非 string TraceID 不附加字段；非空 string 自动作为第一个 trace_id 字段，调用者原字段随后追加，不去重。TraceLogEnabled 和 TaskFailLogLevel 都不过滤这些直接日志入口；后端 panic 向外传播，异步保存引用字段需自行复制。
 
 ## `LogCtxWarn`
 
@@ -1319,7 +1379,7 @@ core.LogCtxWarn(ctx, msg, fields...)
 
 **生产建议**：按业务选择级别，在需要关联请求时使用 LogCtx 并传入含 trace_id 的 context；普通日志级别过滤与输出格式由注入后端管理。日志同步消耗调用方时间，后端须并发安全且及时返回；动态字段先脱敏，异步保存时管理引用快照。
 
-**注意事项**：同步调用当前全局 logger，不从 ctx 选择 logger。nil ctx、缺失/空/非 string TraceID 不附加字段；非空 string 自动作为第一个 trace_id 字段，调用者原字段随后追加，不去重。TraceLogEnabled 和 TaskFailLogLevel 都不过滤这些直接日志入口；后端 panic 向外传播，异步保存引用字段需自行复制。
+**注意事项**：同步调用 ctx 中的局部 logger，未设置或已清除覆盖时继承全局 logger。nil ctx、缺失/空/非 string TraceID 不附加字段；非空 string 自动作为第一个 trace_id 字段，调用者原字段随后追加，不去重。TraceLogEnabled 和 TaskFailLogLevel 都不过滤这些直接日志入口；后端 panic 向外传播，异步保存引用字段需自行复制。
 
 ## `LogDebug`
 
@@ -1504,7 +1564,7 @@ core.LogTaskFail(ctx, err, msg)
 
 **生产建议**：按业务选择级别，在需要关联请求时使用 LogCtx 并传入含 trace_id 的 context；普通日志级别过滤与输出格式由注入后端管理。日志同步消耗调用方时间，后端须并发安全且及时返回；动态字段先脱敏，异步保存时管理引用快照。
 
-**注意事项**：只有 TaskFailLogLevel 的 Error/Warn/Info/Debug 四值会输出，Silent 和范围外值不输出；该过滤不作用于普通日志入口。LogTaskFail 即使 err 为 nil 也照常构造 error 字段，不代替业务错误判断。同步调用当前全局 logger，自动 trace 字段在调用者字段前，不去重；后端须并发安全、快速返回且不 panic。
+**注意事项**：只有 TaskFailLogLevel 的 Error/Warn/Info/Debug 四值会输出，Silent 和范围外值不输出；该过滤不作用于普通日志入口。LogTaskFail 即使 err 为 nil 也照常构造 error 字段，不代替业务错误判断。同步调用 context 中的局部 logger，未设置时继承全局 logger；自动 trace 字段在调用者字段前，不去重；后端须并发安全、快速返回且不 panic。
 
 ## `LogTaskFailCtx`
 
@@ -1541,7 +1601,7 @@ core.LogTaskFailCtx(ctx, msg, fields...)
 
 **生产建议**：按业务选择级别，在需要关联请求时使用 LogCtx 并传入含 trace_id 的 context；普通日志级别过滤与输出格式由注入后端管理。日志同步消耗调用方时间，后端须并发安全且及时返回；动态字段先脱敏，异步保存时管理引用快照。
 
-**注意事项**：只有 TaskFailLogLevel 的 Error/Warn/Info/Debug 四值会输出，Silent 和范围外值不输出；该过滤不作用于普通日志入口。LogTaskFail 即使 err 为 nil 也照常构造 error 字段，不代替业务错误判断。同步调用当前全局 logger，自动 trace 字段在调用者字段前，不去重；后端须并发安全、快速返回且不 panic。
+**注意事项**：只有 TaskFailLogLevel 的 Error/Warn/Info/Debug 四值会输出，Silent 和范围外值不输出；该过滤不作用于普通日志入口。LogTaskFail 即使 err 为 nil 也照常构造 error 字段，不代替业务错误判断。同步调用 context 中的局部 logger，未设置时继承全局 logger；自动 trace 字段在调用者字段前，不去重；后端须并发安全、快速返回且不 panic。
 
 ## `LogWarn`
 
@@ -1572,6 +1632,35 @@ LogWarn 输出全局 Warn 级别日志（不使用 ctx）。
 
 ```go
 core.LogWarn(msg, fields...)
+```
+
+**生产建议**：按业务选择级别，在需要关联请求时使用 LogCtx 并传入含 trace_id 的 context；普通日志级别过滤与输出格式由注入后端管理。日志同步消耗调用方时间，后端须并发安全且及时返回；动态字段先脱敏，异步保存时管理引用快照。
+
+**注意事项**：日志调用同步执行且不恢复后端 panic，后端须并发安全、及时返回。SetLogger(nil) 恢复静默实现；类型化 nil 指针仍是非 nil 接口，需由实现支持。LogField 不深拷贝引用内容，异步日志后端须管理数据快照；日志字段避免敏感信息。
+
+## `LoggerForContext`
+
+```go
+func LoggerForContext(ctx context.Context) Logger
+```
+
+[实现](../../internal/core/local_logger.go#L14) · [行为专题](../config.md)：LoggerForContext resolves a local logger before falling back to the global.
+
+**源码说明与使用片段**（原文）：
+
+LoggerForContext resolves a local logger before falling back to the global.
+
+
+**参数说明**：
+
+- `ctx` (`context.Context`)：调用上下文，传有效的非 nil context；取消范围见本方法实现和专题。
+
+**返回值签名**：`Logger`。
+
+**使用示例**（已初始化参数的调用片段）：
+
+```go
+core.LoggerForContext(ctx)
 ```
 
 **生产建议**：按业务选择级别，在需要关联请求时使用 LogCtx 并传入含 trace_id 的 context；普通日志级别过滤与输出格式由注入后端管理。日志同步消耗调用方时间，后端须并发安全且及时返回；动态字段先脱敏，异步保存时管理引用快照。
@@ -2344,6 +2433,36 @@ core.WithConfig(configured)
 **生产建议**：用专题中的构造入口初始化实例，明确资源所有者，并处理提交或执行返回的错误。
 
 **注意事项**：仅返回并发度建议值，不分配 worker 或测量实际负载。CPU 使用 NumCPU，IO 使用其两倍，IOMulti 的非正倍数按 2；均不依据 GOMAXPROCS。WithConfig 仅对非正配置回退 IO，不限制正值上界；生产需按资源预算与实际任务压测。
+
+## `WithLogger`
+
+```go
+func WithLogger(ctx context.Context, l Logger) context.Context
+```
+
+[实现](../../internal/core/local_logger.go#L9) · [行为专题](../config.md)：WithLogger sets an immutable logger override for this context only.
+
+**源码说明与使用片段**（原文）：
+
+WithLogger sets an immutable logger override for this context only. nil clears the local override and resumes inheriting the global logger.
+
+
+**参数说明**：
+
+- `ctx` (`context.Context`)：调用上下文，传有效的非 nil context；取消范围见本方法实现和专题。
+- `l` (`Logger`)：日志实现或日志级别；日志实现应支持并发调用，设置作用域见专题。
+
+**返回值签名**：`context.Context`。
+
+**使用示例**（已初始化参数的调用片段）：
+
+```go
+core.WithLogger(ctx, l)
+```
+
+**生产建议**：尽量在应用启动时设置全局状态；日志后端应支持并发调用。
+
+**注意事项**：取消和超时依靠回调协作，不能强制结束忽略 context 的业务函数；配置与等待的作用范围见专题。
 
 ## `WithTraceID`
 

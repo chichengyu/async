@@ -14,7 +14,7 @@ type MapSerial[K comparable, V any, R any] struct {
 }
 
 func (b *MapSerial[K, V, R]) Context(ctx context.Context) *MapSerial[K, V, R] {
-	b.ctx = core.EnsureTraceID(ctx)
+	b.ctx = core.EnsureTraceID(core.CopyLogger(b.ctx, ctx))
 	return b
 }
 
@@ -34,7 +34,10 @@ func (b *MapSerial[K, V, R]) DefaultTimeout() *MapSerial[K, V, R] {
 	b.policy = b.policy.TO(defaultMapTimeout)
 	return b
 }
-func (b *MapSerial[K, V, R]) Logger(l core.Logger) *MapSerial[K, V, R] { core.SetLogger(l); return b }
+func (b *MapSerial[K, V, R]) Logger(l core.Logger) *MapSerial[K, V, R] {
+	b.ctx = core.WithLogger(b.ctx, l)
+	return b
+}
 
 func (b *MapSerial[K, V, R]) ForEach(fn func(context.Context, K, V) error) *MapForEachResult {
 	total, failCnt, firstErr := NewMapRunner[K, V, R](b.ctx, b.data, b.policy).ForEach(fn)

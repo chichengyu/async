@@ -187,7 +187,7 @@ func logCtx(ctx context.Context, level LogLevel, msg string, fields ...LogField)
 		}
 	}
 	all = append(all, fields...)
-	GetLogger().Log(ctx, level, msg, all...)
+	LoggerForContext(ctx).Log(ctx, level, msg, all...)
 }
 
 func logGlobal(level LogLevel, msg string, fields ...LogField) {

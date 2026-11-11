@@ -7,7 +7,7 @@
 | 模块 | 条目数 | 行为文档 |
 |---|---:|---|
 | [async](async.md) | 55 | [config](../config.md) |
-| [core](core.md) | 80 | [config](../config.md) |
+| [core](core.md) | 84 | [config](../config.md) |
 | [group](group.md) | 171 | [group](../group.md) |
 | [maps](maps.md) | 170 | [mapreduce](../mapreduce.md) |
 | [pipeline](pipeline.md) | 78 | [pipeline](../pipeline.md) |

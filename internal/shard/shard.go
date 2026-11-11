@@ -662,6 +662,9 @@ func WithShardedPool[T any](shards int, sizePerShard int, fn func(sp *ShardedPoo
 func WithShardCfg[T any](ctx context.Context, cfg ShardPoolConfig[T], fn func(sp *ShardedPool[T]) error) error {
 	sp := NewShardedPool(cfg)
 	defer sp.Close()
+	for _, p := range sp.pools {
+		p.WithContext(core.CopyLogger(ctx, p.Ctx()))
+	}
 	pc := cfg.PoolCfg
 	if pc.Timeout > 0 {
 		sp.WithTimeout(pc.Timeout)

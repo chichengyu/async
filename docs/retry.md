@@ -131,7 +131,7 @@
 
 | 方法 | 说明 |
 |------|------|
-| `.Logger(l)` | 注入自定义日志（全局生效） |
+| `.Logger(l)` | 设置当前构建器的日志器（仅局部生效） |
 | `.DefaultLogger()` | 恢复默认日志 |
 
 ---
@@ -624,6 +624,6 @@ val, err := async.Retry[string](ctx).
 
 err = async.RetryVoid(ctx).
     Logger(myLogger).
-    DefaultLogger().      // 全局恢复默认
+    DefaultLogger().      // 当前构建器恢复继承全局日志器
     Run(func() error { return doSomethingWithoutContext() })
 ```

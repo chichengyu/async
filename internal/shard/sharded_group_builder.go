@@ -25,7 +25,7 @@ func NewGroupBuilder[T any]() *ShardedGroupBuilder[T] {
 
 // Context 链式设置上下文
 func (b *ShardedGroupBuilder[T]) Context(ctx context.Context) *ShardedGroupBuilder[T] {
-	b.ctx = core.EnsureTraceID(ctx)
+	b.ctx = core.EnsureTraceID(core.CopyLogger(b.ctx, ctx))
 	return b
 }
 
@@ -77,15 +77,15 @@ func (b *ShardedGroupBuilder[T]) Distribution(d Distribution) *ShardedGroupBuild
 	return b
 }
 
-// Logger 注入自定义日志实现，全局生效。
+// Logger 仅为当前构建器及其后续执行设置日志器，不修改全局配置。
 func (b *ShardedGroupBuilder[T]) Logger(l core.Logger) *ShardedGroupBuilder[T] {
-	core.SetLogger(l)
+	b.ctx = core.WithLogger(b.ctx, l)
 	return b
 }
 
-// DefaultLogger 重置为默认日志实现。
+// DefaultLogger 清除当前日志器覆盖，恢复继承全局日志器。
 func (b *ShardedGroupBuilder[T]) DefaultLogger() *ShardedGroupBuilder[T] {
-	core.SetLogger(nil)
+	b.ctx = core.WithLogger(b.ctx, nil)
 	return b
 }
 
@@ -94,5 +94,8 @@ func (b *ShardedGroupBuilder[T]) DefaultLogger() *ShardedGroupBuilder[T] {
 func (b *ShardedGroupBuilder[T]) Run(fn func(ctx context.Context, sg *ShardedGroup[T]) error) error {
 	sg := NewShardedGroup(b.cfg)
 	defer sg.Close()
+	for i := 0; i < sg.ShardCount(); i++ {
+		sg.GetShard(i).WithContext(core.CopyLogger(b.ctx, context.Background()))
+	}
 	return fn(b.ctx, sg)
 }

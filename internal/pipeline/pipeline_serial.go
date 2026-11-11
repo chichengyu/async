@@ -39,6 +39,11 @@ func (s *SerialChain[T]) ExecutePipe(fn func(context.Context, string, T) (T, err
 func (s *SerialChain[T]) Pipe() *PipelinePipeBuilder[T] {
 	base := *s.pipelineBase
 	return &PipelinePipeBuilder[T]{
-		execute: (&SerialChain[T]{pipelineBase: &base}).ExecutePipe,
+		ctx: base.ctx,
+		execute: func(ctx context.Context, fn func(context.Context, string, T) (T, error), buf int) <-chan core.Result[T] {
+			snapshot := base
+			snapshot.ctx = ctx
+			return (&SerialChain[T]{pipelineBase: &snapshot}).ExecutePipe(fn, buf)
+		},
 	}
 }

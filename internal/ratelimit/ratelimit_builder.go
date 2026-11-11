@@ -64,15 +64,21 @@ func (b *RatelimitBuilder) Sharded() *ShardedRatelimitBuilder {
 
 // Context 链式设置上下文，自动注入 trace_id。
 func (b *RatelimitBuilder) Context(ctx context.Context) *RatelimitBuilder {
-	b.ctx = core.EnsureTraceID(ctx)
+	b.ctx = core.EnsureTraceID(core.CopyLogger(b.ctx, ctx))
 	return b
 }
 
-// Logger 注入自定义日志实现，全局生效。
-func (b *RatelimitBuilder) Logger(l core.Logger) *RatelimitBuilder { core.SetLogger(l); return b }
+// Logger 仅为当前构建器及其后续执行设置日志器，不修改全局配置。
+func (b *RatelimitBuilder) Logger(l core.Logger) *RatelimitBuilder {
+	b.ctx = core.WithLogger(b.ctx, l)
+	return b
+}
 
-// DefaultLogger 重置为默认日志实现。
-func (b *RatelimitBuilder) DefaultLogger() *RatelimitBuilder { core.SetLogger(nil); return b }
+// DefaultLogger 清除当前日志器覆盖，恢复继承全局日志器。
+func (b *RatelimitBuilder) DefaultLogger() *RatelimitBuilder {
+	b.ctx = core.WithLogger(b.ctx, nil)
+	return b
+}
 
 // ──────────────────────────── RatelimiterSubBuilder ────────────────────────────
 
@@ -108,25 +114,32 @@ func (b *RatelimiterSubBuilder) Burst(n int) *RatelimiterSubBuilder {
 
 // Context 链式设置上下文，自动注入 trace_id。
 func (b *RatelimiterSubBuilder) Context(ctx context.Context) *RatelimiterSubBuilder {
-	b.ctx = core.EnsureTraceID(ctx)
+	b.ctx = core.EnsureTraceID(core.CopyLogger(b.ctx, ctx))
 	return b
 }
 
-// Logger 注入自定义日志实现，全局生效。
+// Logger 仅为当前构建器及其后续执行设置日志器，不修改全局配置。
 func (b *RatelimiterSubBuilder) Logger(l core.Logger) *RatelimiterSubBuilder {
-	core.SetLogger(l)
+	b.ctx = core.WithLogger(b.ctx, l)
 	return b
 }
 
-// DefaultLogger 重置为默认日志实现。
-func (b *RatelimiterSubBuilder) DefaultLogger() *RatelimiterSubBuilder { core.SetLogger(nil); return b }
+// DefaultLogger 清除当前日志器覆盖，恢复继承全局日志器。
+func (b *RatelimiterSubBuilder) DefaultLogger() *RatelimiterSubBuilder {
+	b.ctx = core.WithLogger(b.ctx, nil)
+	return b
+}
 
 // Build 构建 RateLimiter 实例。
 func (b *RatelimiterSubBuilder) Build() *RateLimiter {
+	var rl *RateLimiter
 	if b.burst > 0 {
-		return NewRateLimiterWithBurst(b.rate, b.perDuration, b.burst)
+		rl = NewRateLimiterWithBurst(b.rate, b.perDuration, b.burst)
+	} else {
+		rl = NewRateLimiter(b.rate, b.perDuration)
 	}
-	return NewRateLimiter(b.rate, b.perDuration)
+	rl.ctx = core.CopyLogger(b.ctx, rl.ctx)
+	return rl
 }
 
 // DefaultRate 使用默认速率（core.IO()）。
@@ -174,18 +187,21 @@ func (b *TokenBucketSubBuilder) Capacity(n float64) *TokenBucketSubBuilder {
 
 // Context 链式设置上下文，自动注入 trace_id。
 func (b *TokenBucketSubBuilder) Context(ctx context.Context) *TokenBucketSubBuilder {
-	b.ctx = core.EnsureTraceID(ctx)
+	b.ctx = core.EnsureTraceID(core.CopyLogger(b.ctx, ctx))
 	return b
 }
 
-// Logger 注入自定义日志实现，全局生效。
+// Logger 仅为当前构建器及其后续执行设置日志器，不修改全局配置。
 func (b *TokenBucketSubBuilder) Logger(l core.Logger) *TokenBucketSubBuilder {
-	core.SetLogger(l)
+	b.ctx = core.WithLogger(b.ctx, l)
 	return b
 }
 
-// DefaultLogger 重置为默认日志实现。
-func (b *TokenBucketSubBuilder) DefaultLogger() *TokenBucketSubBuilder { core.SetLogger(nil); return b }
+// DefaultLogger 清除当前日志器覆盖，恢复继承全局日志器。
+func (b *TokenBucketSubBuilder) DefaultLogger() *TokenBucketSubBuilder {
+	b.ctx = core.WithLogger(b.ctx, nil)
+	return b
+}
 
 // Build 构建 TokenBucket 实例。
 func (b *TokenBucketSubBuilder) Build() *TokenBucket {
@@ -231,19 +247,19 @@ func (b *SlidingWindowSubBuilder) Window(d time.Duration) *SlidingWindowSubBuild
 
 // Context 链式设置上下文，自动注入 trace_id。
 func (b *SlidingWindowSubBuilder) Context(ctx context.Context) *SlidingWindowSubBuilder {
-	b.ctx = core.EnsureTraceID(ctx)
+	b.ctx = core.EnsureTraceID(core.CopyLogger(b.ctx, ctx))
 	return b
 }
 
-// Logger 注入自定义日志实现，全局生效。
+// Logger 仅为当前构建器及其后续执行设置日志器，不修改全局配置。
 func (b *SlidingWindowSubBuilder) Logger(l core.Logger) *SlidingWindowSubBuilder {
-	core.SetLogger(l)
+	b.ctx = core.WithLogger(b.ctx, l)
 	return b
 }
 
-// DefaultLogger 重置为默认日志实现。
+// DefaultLogger 清除当前日志器覆盖，恢复继承全局日志器。
 func (b *SlidingWindowSubBuilder) DefaultLogger() *SlidingWindowSubBuilder {
-	core.SetLogger(nil)
+	b.ctx = core.WithLogger(b.ctx, nil)
 	return b
 }
 
@@ -291,15 +307,21 @@ func (b *AdaptiveSubBuilder) MaxWorker(n int) *AdaptiveSubBuilder {
 
 // Context 链式设置上下文，自动注入 trace_id。
 func (b *AdaptiveSubBuilder) Context(ctx context.Context) *AdaptiveSubBuilder {
-	b.ctx = core.EnsureTraceID(ctx)
+	b.ctx = core.EnsureTraceID(core.CopyLogger(b.ctx, ctx))
 	return b
 }
 
-// Logger 注入自定义日志实现，全局生效。
-func (b *AdaptiveSubBuilder) Logger(l core.Logger) *AdaptiveSubBuilder { core.SetLogger(l); return b }
+// Logger 仅为当前构建器及其后续执行设置日志器，不修改全局配置。
+func (b *AdaptiveSubBuilder) Logger(l core.Logger) *AdaptiveSubBuilder {
+	b.ctx = core.WithLogger(b.ctx, l)
+	return b
+}
 
-// DefaultLogger 重置为默认日志实现。
-func (b *AdaptiveSubBuilder) DefaultLogger() *AdaptiveSubBuilder { core.SetLogger(nil); return b }
+// DefaultLogger 清除当前日志器覆盖，恢复继承全局日志器。
+func (b *AdaptiveSubBuilder) DefaultLogger() *AdaptiveSubBuilder {
+	b.ctx = core.WithLogger(b.ctx, nil)
+	return b
+}
 
 // Build 构建 AdaptiveRateLimiter 实例。
 func (b *AdaptiveSubBuilder) Build() *AdaptiveRateLimiter {
@@ -348,19 +370,19 @@ func (b *ShardedRatelimitBuilder) Adaptive() *ShardedAdaptiveSubBuilder {
 
 // Context 链式设置上下文，自动注入 trace_id。
 func (b *ShardedRatelimitBuilder) Context(ctx context.Context) *ShardedRatelimitBuilder {
-	b.ctx = core.EnsureTraceID(ctx)
+	b.ctx = core.EnsureTraceID(core.CopyLogger(b.ctx, ctx))
 	return b
 }
 
-// Logger 注入自定义日志实现，全局生效。
+// Logger 仅为当前构建器及其后续执行设置日志器，不修改全局配置。
 func (b *ShardedRatelimitBuilder) Logger(l core.Logger) *ShardedRatelimitBuilder {
-	core.SetLogger(l)
+	b.ctx = core.WithLogger(b.ctx, l)
 	return b
 }
 
-// DefaultLogger 重置为默认日志实现。
+// DefaultLogger 清除当前日志器覆盖，恢复继承全局日志器。
 func (b *ShardedRatelimitBuilder) DefaultLogger() *ShardedRatelimitBuilder {
-	core.SetLogger(nil)
+	b.ctx = core.WithLogger(b.ctx, nil)
 	return b
 }
 
@@ -405,28 +427,34 @@ func (b *ShardedRatelimiterSubBuilder) Burst(n int) *ShardedRatelimiterSubBuilde
 
 // Context 链式设置上下文，自动注入 trace_id。
 func (b *ShardedRatelimiterSubBuilder) Context(ctx context.Context) *ShardedRatelimiterSubBuilder {
-	b.ctx = core.EnsureTraceID(ctx)
+	b.ctx = core.EnsureTraceID(core.CopyLogger(b.ctx, ctx))
 	return b
 }
 
-// Logger 注入自定义日志实现，全局生效。
+// Logger 仅为当前构建器及其后续执行设置日志器，不修改全局配置。
 func (b *ShardedRatelimiterSubBuilder) Logger(l core.Logger) *ShardedRatelimiterSubBuilder {
-	core.SetLogger(l)
+	b.ctx = core.WithLogger(b.ctx, l)
 	return b
 }
 
-// DefaultLogger 重置为默认日志实现。
+// DefaultLogger 清除当前日志器覆盖，恢复继承全局日志器。
 func (b *ShardedRatelimiterSubBuilder) DefaultLogger() *ShardedRatelimiterSubBuilder {
-	core.SetLogger(nil)
+	b.ctx = core.WithLogger(b.ctx, nil)
 	return b
 }
 
 // Build 构建 ShardedRateLimiter 实例。
 func (b *ShardedRatelimiterSubBuilder) Build() *ShardedRateLimiter {
+	var rl *ShardedRateLimiter
 	if b.burst > 0 {
-		return NewShardedRateLimiterWithBurst(b.shards, b.rate, b.perDuration, b.burst)
+		rl = NewShardedRateLimiterWithBurst(b.shards, b.rate, b.perDuration, b.burst)
+	} else {
+		rl = NewShardedRateLimiter(b.shards, b.rate, b.perDuration)
 	}
-	return NewShardedRateLimiter(b.shards, b.rate, b.perDuration)
+	for _, shard := range rl.limiters {
+		shard.ctx = core.CopyLogger(b.ctx, shard.ctx)
+	}
+	return rl
 }
 
 // DefaultShards 使用默认分片数（core.IO()，最少 2）。
@@ -487,19 +515,19 @@ func (b *ShardedTokenBucketSubBuilder) Capacity(n float64) *ShardedTokenBucketSu
 
 // Context 链式设置上下文，自动注入 trace_id。
 func (b *ShardedTokenBucketSubBuilder) Context(ctx context.Context) *ShardedTokenBucketSubBuilder {
-	b.ctx = core.EnsureTraceID(ctx)
+	b.ctx = core.EnsureTraceID(core.CopyLogger(b.ctx, ctx))
 	return b
 }
 
-// Logger 注入自定义日志实现，全局生效。
+// Logger 仅为当前构建器及其后续执行设置日志器，不修改全局配置。
 func (b *ShardedTokenBucketSubBuilder) Logger(l core.Logger) *ShardedTokenBucketSubBuilder {
-	core.SetLogger(l)
+	b.ctx = core.WithLogger(b.ctx, l)
 	return b
 }
 
-// DefaultLogger 重置为默认日志实现。
+// DefaultLogger 清除当前日志器覆盖，恢复继承全局日志器。
 func (b *ShardedTokenBucketSubBuilder) DefaultLogger() *ShardedTokenBucketSubBuilder {
-	core.SetLogger(nil)
+	b.ctx = core.WithLogger(b.ctx, nil)
 	return b
 }
 
@@ -560,19 +588,19 @@ func (b *ShardedSlidingWindowSubBuilder) Window(d time.Duration) *ShardedSliding
 
 // Context 链式设置上下文，自动注入 trace_id。
 func (b *ShardedSlidingWindowSubBuilder) Context(ctx context.Context) *ShardedSlidingWindowSubBuilder {
-	b.ctx = core.EnsureTraceID(ctx)
+	b.ctx = core.EnsureTraceID(core.CopyLogger(b.ctx, ctx))
 	return b
 }
 
-// Logger 注入自定义日志实现，全局生效。
+// Logger 仅为当前构建器及其后续执行设置日志器，不修改全局配置。
 func (b *ShardedSlidingWindowSubBuilder) Logger(l core.Logger) *ShardedSlidingWindowSubBuilder {
-	core.SetLogger(l)
+	b.ctx = core.WithLogger(b.ctx, l)
 	return b
 }
 
-// DefaultLogger 重置为默认日志实现。
+// DefaultLogger 清除当前日志器覆盖，恢复继承全局日志器。
 func (b *ShardedSlidingWindowSubBuilder) DefaultLogger() *ShardedSlidingWindowSubBuilder {
-	core.SetLogger(nil)
+	b.ctx = core.WithLogger(b.ctx, nil)
 	return b
 }
 
@@ -633,19 +661,19 @@ func (b *ShardedAdaptiveSubBuilder) MaxWorker(n int) *ShardedAdaptiveSubBuilder 
 
 // Context 链式设置上下文，自动注入 trace_id。
 func (b *ShardedAdaptiveSubBuilder) Context(ctx context.Context) *ShardedAdaptiveSubBuilder {
-	b.ctx = core.EnsureTraceID(ctx)
+	b.ctx = core.EnsureTraceID(core.CopyLogger(b.ctx, ctx))
 	return b
 }
 
-// Logger 注入自定义日志实现，全局生效。
+// Logger 仅为当前构建器及其后续执行设置日志器，不修改全局配置。
 func (b *ShardedAdaptiveSubBuilder) Logger(l core.Logger) *ShardedAdaptiveSubBuilder {
-	core.SetLogger(l)
+	b.ctx = core.WithLogger(b.ctx, l)
 	return b
 }
 
-// DefaultLogger 重置为默认日志实现。
+// DefaultLogger 清除当前日志器覆盖，恢复继承全局日志器。
 func (b *ShardedAdaptiveSubBuilder) DefaultLogger() *ShardedAdaptiveSubBuilder {
-	core.SetLogger(nil)
+	b.ctx = core.WithLogger(b.ctx, nil)
 	return b
 }
 

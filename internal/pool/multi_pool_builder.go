@@ -28,7 +28,7 @@ func NewMultiBuilder[T any]() *MultiPoolBuilder[T] {
 
 // Context 链式设置上下文
 func (b *MultiPoolBuilder[T]) Context(ctx context.Context) *MultiPoolBuilder[T] {
-	b.ctx = core.EnsureTraceID(ctx)
+	b.ctx = core.EnsureTraceID(core.CopyLogger(b.ctx, ctx))
 	return b
 }
 
@@ -182,11 +182,17 @@ func (b *MultiPoolBuilder[T]) Streaming(buf int) *MultiPoolBuilder[T] {
 	return b
 }
 
-// Logger 注入自定义日志实现，全局生效。
-func (b *MultiPoolBuilder[T]) Logger(l core.Logger) *MultiPoolBuilder[T] { core.SetLogger(l); return b }
+// Logger 仅为当前构建器及其后续执行设置日志器，不修改全局配置。
+func (b *MultiPoolBuilder[T]) Logger(l core.Logger) *MultiPoolBuilder[T] {
+	b.ctx = core.WithLogger(b.ctx, l)
+	return b
+}
 
-// DefaultLogger 重置为默认日志实现。
-func (b *MultiPoolBuilder[T]) DefaultLogger() *MultiPoolBuilder[T] { core.SetLogger(nil); return b }
+// DefaultLogger 清除当前日志器覆盖，恢复继承全局日志器。
+func (b *MultiPoolBuilder[T]) DefaultLogger() *MultiPoolBuilder[T] {
+	b.ctx = core.WithLogger(b.ctx, nil)
+	return b
+}
 
 // Pool 注入外部协程池，MultiPool 使用该池进行分片。
 // 注入后 Worker/Timeout 等保存到 cfg 的配置不再应用；Shards 仍决定分片数。
@@ -228,6 +234,7 @@ func (b *MultiPoolBuilder[T]) Run(fn func(ctx context.Context, mp *MultiPool[T])
 		p = b.extP
 	} else {
 		p = NewPool[T](b.cfg.Size)
+		p.ctx = core.CopyLogger(b.ctx, p.ctx)
 		if b.cfg.Timeout > 0 {
 			p.WithTimeout(b.cfg.Timeout)
 		}

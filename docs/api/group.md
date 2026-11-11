@@ -43,7 +43,7 @@ b.autoScale = config
 func (b *GroupBuilder[T]) Build() *Group[T]
 ```
 
-[实现](../../internal/group/group_builder.go#L166) · [行为专题](../group.md)：Build 创建并配置 Group，返回后调用方需自行管理生命周期（手动 Close / Wait）。
+[实现](../../internal/group/group_builder.go#L172) · [行为专题](../group.md)：Build 创建并配置 Group，返回后调用方需自行管理生命周期（手动 Close / Wait）。
 
 **源码说明与使用片段**（原文）：
 
@@ -126,11 +126,11 @@ instance.DefaultAutoScale()
 func (b *GroupBuilder[T]) DefaultLogger() *GroupBuilder[T]
 ```
 
-[实现](../../internal/group/group_builder.go#L155) · [行为专题](../group.md)：DefaultLogger 重置为默认日志实现。
+[实现](../../internal/group/group_builder.go#L158) · [行为专题](../group.md)：DefaultLogger 清除当前日志器覆盖，恢复继承全局日志器。
 
 **源码说明与使用片段**（原文）：
 
-DefaultLogger 重置为默认日志实现。
+DefaultLogger 清除当前日志器覆盖，恢复继承全局日志器。
 
 
 **参数说明**：无显式参数。
@@ -143,9 +143,9 @@ DefaultLogger 重置为默认日志实现。
 instance.DefaultLogger()
 ```
 
-**生产建议**：此方法会设置全局日志器；在应用启动阶段统一配置，避免多个构建器相互覆盖。
+**生产建议**：在 Build/Run 或终端操作之前完成链式配置；以返回值继续调用，避免多个 goroutine 同时修改同一个构建器。默认值和设置顺序见专题。
 
-**注意事项**：立即修改全库日志器，并非只配置当前构建器，也不等待 Build/Run 才生效。DefaultLogger 或 Logger(nil) 恢复静默实现；日志后端须并发安全、及时返回，调用不恢复其 panic。应在启动时统一设置，避免业务组件相互覆盖。
+**注意事项**：只配置当前构建器及其后续执行，不修改全局或其他实例。DefaultLogger 或 Logger(nil) 清除当前覆盖并继承全局日志器；Context 替换和模式切换保留当前日志设置，已构建实例不受构建器后续更改影响。日志后端须并发安全、及时返回，调用不恢复其 panic。
 
 ## `*GroupBuilder[T].DefaultPool`
 
@@ -153,7 +153,7 @@ instance.DefaultLogger()
 func (b *GroupBuilder[T]) DefaultPool() *GroupBuilder[T]
 ```
 
-[实现](../../internal/group/group_builder.go#L161) · [行为专题](../group.md)：DefaultPool 清除外部 Pool 引用，恢复由 Group 自有 worker 直接执行任务。
+[实现](../../internal/group/group_builder.go#L167) · [行为专题](../group.md)：DefaultPool 清除外部 Pool 引用，恢复由 Group 自有 worker 直接执行任务。
 
 **源码说明与使用片段**（原文）：
 
@@ -342,11 +342,11 @@ instance.FailFast()
 func (b *GroupBuilder[T]) Logger(l core.Logger) *GroupBuilder[T]
 ```
 
-[实现](../../internal/group/group_builder.go#L152) · [行为专题](../group.md)：Logger 注入自定义日志实现，全局生效。
+[实现](../../internal/group/group_builder.go#L152) · [行为专题](../group.md)：Logger 仅为当前构建器及其后续执行设置日志器，不修改全局配置。
 
 **源码说明与使用片段**（原文）：
 
-Logger 注入自定义日志实现，全局生效。
+Logger 仅为当前构建器及其后续执行设置日志器，不修改全局配置。
 
 
 **参数说明**：
@@ -361,9 +361,9 @@ Logger 注入自定义日志实现，全局生效。
 instance.Logger(l)
 ```
 
-**生产建议**：此方法会设置全局日志器；在应用启动阶段统一配置，避免多个构建器相互覆盖。
+**生产建议**：在 Build/Run 或终端操作之前完成链式配置；以返回值继续调用，避免多个 goroutine 同时修改同一个构建器。默认值和设置顺序见专题。
 
-**注意事项**：立即修改全库日志器，并非只配置当前构建器，也不等待 Build/Run 才生效。DefaultLogger 或 Logger(nil) 恢复静默实现；日志后端须并发安全、及时返回，调用不恢复其 panic。应在启动时统一设置，避免业务组件相互覆盖。
+**注意事项**：只配置当前构建器及其后续执行，不修改全局或其他实例。DefaultLogger 或 Logger(nil) 清除当前覆盖并继承全局日志器；Context 替换和模式切换保留当前日志设置，已构建实例不受构建器后续更改影响。日志后端须并发安全、及时返回，调用不恢复其 panic。
 
 ## `*GroupBuilder[T].Pool`
 
@@ -371,7 +371,7 @@ instance.Logger(l)
 func (b *GroupBuilder[T]) Pool(p *pool.Pool[T]) *GroupBuilder[T]
 ```
 
-[实现](../../internal/group/group_builder.go#L158) · [行为专题](../group.md)：Pool 注入外部协程池，构建的 Group 将使用该池执行任务。
+[实现](../../internal/group/group_builder.go#L164) · [行为专题](../group.md)：Pool 注入外部协程池，构建的 Group 将使用该池执行任务。
 
 **源码说明与使用片段**（原文）：
 
@@ -441,7 +441,7 @@ b.resultCb = fn
 func (b *GroupBuilder[T]) Run(fn func(ctx context.Context, g *Group[T]) error) error
 ```
 
-[实现](../../internal/group/group_builder.go#L215) · [行为专题](../group.md)：Run 创建→执行→关闭。
+[实现](../../internal/group/group_builder.go#L221) · [行为专题](../group.md)：Run 创建→执行→关闭。
 
 **源码说明与使用片段**（原文）：
 
@@ -660,7 +660,7 @@ b.autoScale = config
 func (b *GroupNoResultBuilder) Build() *NoResult
 ```
 
-[实现](../../internal/group/noresult_builder.go#L147) · [行为专题](../group.md)：Build 创建并配置 NoResult，返回后调用方需自行管理生命周期。
+[实现](../../internal/group/noresult_builder.go#L150) · [行为专题](../group.md)：Build 创建并配置 NoResult，返回后调用方需自行管理生命周期。
 
 **源码说明与使用片段**（原文）：
 
@@ -743,11 +743,11 @@ instance.DefaultAutoScale()
 func (b *GroupNoResultBuilder) DefaultLogger() *GroupNoResultBuilder
 ```
 
-[实现](../../internal/group/noresult_builder.go#L133) · [行为专题](../group.md)：DefaultLogger 重置为默认日志实现。
+[实现](../../internal/group/noresult_builder.go#L133) · [行为专题](../group.md)：DefaultLogger 清除当前日志器覆盖，恢复继承全局日志器。
 
 **源码说明与使用片段**（原文）：
 
-DefaultLogger 重置为默认日志实现。
+DefaultLogger 清除当前日志器覆盖，恢复继承全局日志器。
 
 
 **参数说明**：无显式参数。
@@ -760,9 +760,9 @@ DefaultLogger 重置为默认日志实现。
 instance.DefaultLogger()
 ```
 
-**生产建议**：此方法会设置全局日志器；在应用启动阶段统一配置，避免多个构建器相互覆盖。
+**生产建议**：在 Build/Run 或终端操作之前完成链式配置；以返回值继续调用，避免多个 goroutine 同时修改同一个构建器。默认值和设置顺序见专题。
 
-**注意事项**：立即修改全库日志器，并非只配置当前构建器，也不等待 Build/Run 才生效。DefaultLogger 或 Logger(nil) 恢复静默实现；日志后端须并发安全、及时返回，调用不恢复其 panic。应在启动时统一设置，避免业务组件相互覆盖。
+**注意事项**：只配置当前构建器及其后续执行，不修改全局或其他实例。DefaultLogger 或 Logger(nil) 清除当前覆盖并继承全局日志器；Context 替换和模式切换保留当前日志设置，已构建实例不受构建器后续更改影响。日志后端须并发安全、及时返回，调用不恢复其 panic。
 
 ## `*GroupNoResultBuilder.DefaultPool`
 
@@ -770,7 +770,7 @@ instance.DefaultLogger()
 func (b *GroupNoResultBuilder) DefaultPool() *GroupNoResultBuilder
 ```
 
-[实现](../../internal/group/noresult_builder.go#L142) · [行为专题](../group.md)：DefaultPool 清除外部 Pool 引用，恢复由 Group 自有 worker 直接执行任务。
+[实现](../../internal/group/noresult_builder.go#L145) · [行为专题](../group.md)：DefaultPool 清除外部 Pool 引用，恢复由 Group 自有 worker 直接执行任务。
 
 **源码说明与使用片段**（原文）：
 
@@ -932,11 +932,11 @@ instance.FailFast()
 func (b *GroupNoResultBuilder) Logger(l core.Logger) *GroupNoResultBuilder
 ```
 
-[实现](../../internal/group/noresult_builder.go#L127) · [行为专题](../group.md)：Logger 注入自定义日志实现，全局生效。
+[实现](../../internal/group/noresult_builder.go#L127) · [行为专题](../group.md)：Logger 仅为当前构建器及其后续执行设置日志器，不修改全局配置。
 
 **源码说明与使用片段**（原文）：
 
-Logger 注入自定义日志实现，全局生效。
+Logger 仅为当前构建器及其后续执行设置日志器，不修改全局配置。
 
 
 **参数说明**：
@@ -951,9 +951,9 @@ Logger 注入自定义日志实现，全局生效。
 instance.Logger(l)
 ```
 
-**生产建议**：此方法会设置全局日志器；在应用启动阶段统一配置，避免多个构建器相互覆盖。
+**生产建议**：在 Build/Run 或终端操作之前完成链式配置；以返回值继续调用，避免多个 goroutine 同时修改同一个构建器。默认值和设置顺序见专题。
 
-**注意事项**：立即修改全库日志器，并非只配置当前构建器，也不等待 Build/Run 才生效。DefaultLogger 或 Logger(nil) 恢复静默实现；日志后端须并发安全、及时返回，调用不恢复其 panic。应在启动时统一设置，避免业务组件相互覆盖。
+**注意事项**：只配置当前构建器及其后续执行，不修改全局或其他实例。DefaultLogger 或 Logger(nil) 清除当前覆盖并继承全局日志器；Context 替换和模式切换保留当前日志设置，已构建实例不受构建器后续更改影响。日志后端须并发安全、及时返回，调用不恢复其 panic。
 
 ## `*GroupNoResultBuilder.Pool`
 
@@ -961,7 +961,7 @@ instance.Logger(l)
 func (b *GroupNoResultBuilder) Pool(p *pool.Pool[struct{}]) *GroupNoResultBuilder
 ```
 
-[实现](../../internal/group/noresult_builder.go#L136) · [行为专题](../group.md)：Pool 注入外部协程池，构建的 Group 将使用该池执行任务。
+[实现](../../internal/group/noresult_builder.go#L139) · [行为专题](../group.md)：Pool 注入外部协程池，构建的 Group 将使用该池执行任务。
 
 **源码说明与使用片段**（原文）：
 
@@ -996,7 +996,7 @@ b.extPool = p
 func (b *GroupNoResultBuilder) Run(fn func(ctx context.Context, nr *NoResult) error) error
 ```
 
-[实现](../../internal/group/noresult_builder.go#L178) · [行为专题](../group.md)：Run 创建→执行→关闭。
+[实现](../../internal/group/noresult_builder.go#L181) · [行为专题](../group.md)：Run 创建→执行→关闭。
 
 **源码说明与使用片段**（原文）：
 
@@ -1165,7 +1165,7 @@ b.concurrency = n
 func (g *Group[T]) Active() int
 ```
 
-[实现](../../internal/group/group.go#L1041) · [行为专题](../group.md)：Active 返回已登记但尚未结束的任务数，包含等待入队、队列内和正在执行的任务。
+[实现](../../internal/group/group.go#L1047) · [行为专题](../group.md)：Active 返回已登记但尚未结束的任务数，包含等待入队、队列内和正在执行的任务。
 
 **源码说明与使用片段**（原文）：
 
@@ -1192,7 +1192,7 @@ instance.Active()
 func (g *Group[T]) Busy() int
 ```
 
-[实现](../../internal/group/group.go#L1046) · [行为专题](../group.md)：Busy 返回当前正在执行任务的数量，不包含排队任务。
+[实现](../../internal/group/group.go#L1052) · [行为专题](../group.md)：Busy 返回当前正在执行任务的数量，不包含排队任务。
 
 **源码说明与使用片段**（原文）：
 
@@ -1219,7 +1219,7 @@ instance.Busy()
 func (g *Group[T]) Close()
 ```
 
-[实现](../../internal/group/group.go#L1000) · [行为专题](../group.md)：Close 关闭任务组，等待所有已提交任务完成并清理资源。
+[实现](../../internal/group/group.go#L1006) · [行为专题](../group.md)：Close 关闭任务组，等待所有已提交任务完成并清理资源。
 
 **源码说明与使用片段**（原文）：
 
@@ -1246,7 +1246,7 @@ instance.Close()
 func (g *Group[T]) DefaultShard() *MultiGroup[T]
 ```
 
-[实现](../../internal/group/group.go#L1579) · [行为专题](../group.md)：DefaultShard 使用默认分片数（runtime.GOMAXPROCS(0)，最少 2）对当前 Group 进行水平分片。
+[实现](../../internal/group/group.go#L1585) · [行为专题](../group.md)：DefaultShard 使用默认分片数（runtime.GOMAXPROCS(0)，最少 2）对当前 Group 进行水平分片。
 
 **源码说明与使用片段**（原文）：
 
@@ -1279,7 +1279,7 @@ instance.DefaultShard()
 func (g *Group[T]) DisableAutoScale()
 ```
 
-[实现](../../internal/group/group.go#L1370) · [行为专题](../group.md)：DisableAutoScale 停止自动扩缩容，将并发度恢复到配置的 MinWorkers 值。
+[实现](../../internal/group/group.go#L1376) · [行为专题](../group.md)：DisableAutoScale 停止自动扩缩容，将并发度恢复到配置的 MinWorkers 值。
 
 **源码说明与使用片段**（原文）：
 
@@ -1308,7 +1308,7 @@ instance.DisableAutoScale()
 func (g *Group[T]) EnableAutoScale(config *core.AutoScaleConfig)
 ```
 
-[实现](../../internal/group/group.go#L1346) · [行为专题](../group.md)：EnableAutoScale 启用自动扩缩容。基于 busy/concurrency 比率周期性检测负载：
+[实现](../../internal/group/group.go#L1352) · [行为专题](../group.md)：EnableAutoScale 启用自动扩缩容。基于 busy/concurrency 比率周期性检测负载：
 
 **源码说明与使用片段**（原文）：
 
@@ -1357,7 +1357,7 @@ instance.EnableAutoScale(config)
 func (g *Group[T]) Errors() []error
 ```
 
-[实现](../../internal/group/group.go#L1095) · [行为专题](../group.md)：Errors 返回所有任务的错误切片。建议在 Wait 后调用以获取完整结果。
+[实现](../../internal/group/group.go#L1101) · [行为专题](../group.md)：Errors 返回所有任务的错误切片。建议在 Wait 后调用以获取完整结果。
 
 **源码说明与使用片段**（原文）：
 
@@ -1391,7 +1391,7 @@ instance.Errors()
 func (g *Group[T]) FailCount() int64
 ```
 
-[实现](../../internal/group/group.go#L1014) · [行为专题](../group.md)：FailCount 返回失败任务数（线程安全，可在 Wait 前调用）。
+[实现](../../internal/group/group.go#L1020) · [行为专题](../group.md)：FailCount 返回失败任务数（线程安全，可在 Wait 前调用）。
 
 **源码说明与使用片段**（原文）：
 
@@ -1418,7 +1418,7 @@ instance.FailCount()
 func (g *Group[T]) FirstError() error
 ```
 
-[实现](../../internal/group/group.go#L1111) · [行为专题](../group.md)：FirstError 返回第一个错误（按 results 顺序）。无错误返回 nil。
+[实现](../../internal/group/group.go#L1117) · [行为专题](../group.md)：FirstError 返回第一个错误（按 results 顺序）。无错误返回 nil。
 
 **源码说明与使用片段**（原文）：
 
@@ -1445,7 +1445,7 @@ instance.FirstError()
 func (g *Group[T]) Go(ctx context.Context, fn func(context.Context) (T, error)) error
 ```
 
-[实现](../../internal/group/group.go#L715) · [行为专题](../group.md)：Go 提交一个任务到 Group 中执行。fn 通过 context 支持取消和超时。
+[实现](../../internal/group/group.go#L721) · [行为专题](../group.md)：Go 提交一个任务到 Group 中执行。fn 通过 context 支持取消和超时。
 
 **源码说明与使用片段**（原文）：
 
@@ -1491,7 +1491,7 @@ instance.Go(ctx, fn)
 func (g *Group[T]) GoAt(index int, ctx context.Context, fn func(context.Context) (T, error)) error
 ```
 
-[实现](../../internal/group/group.go#L895) · [行为专题](../group.md)：GoAt 提交任务到指定索引位置，结果会写入 results[index]。
+[实现](../../internal/group/group.go#L901) · [行为专题](../group.md)：GoAt 提交任务到指定索引位置，结果会写入 results[index]。
 
 **源码说明与使用片段**（原文）：
 
@@ -1537,7 +1537,7 @@ instance.GoAt(index, ctx, fn)
 func (g *Group[T]) GoAtWithTimeout(index int, ctx context.Context, timeout time.Duration, fn func(context.Context) (T, error)) error
 ```
 
-[实现](../../internal/group/group.go#L782) · [行为专题](../group.md)：GoAtWithTimeout 提交任务到指定索引并单独设置超时时间。
+[实现](../../internal/group/group.go#L788) · [行为专题](../group.md)：GoAtWithTimeout 提交任务到指定索引并单独设置超时时间。
 
 **源码说明与使用片段**（原文）：
 
@@ -1581,7 +1581,7 @@ instance.GoAtWithTimeout(index, ctx, timeout, fn)
 func (g *Group[T]) GoWithTimeout(ctx context.Context, timeout time.Duration, fn func(context.Context) (T, error)) error
 ```
 
-[实现](../../internal/group/group.go#L749) · [行为专题](../group.md)：GoWithTimeout 提交任务并单独设置该任务的超时时间（覆盖 Group 级别的 timeout）。
+[实现](../../internal/group/group.go#L755) · [行为专题](../group.md)：GoWithTimeout 提交任务并单独设置该任务的超时时间（覆盖 Group 级别的 timeout）。
 
 **源码说明与使用片段**（原文）：
 
@@ -1625,7 +1625,7 @@ instance.GoWithTimeout(ctx, timeout, fn)
 func (g *Group[T]) HasError() bool
 ```
 
-[实现](../../internal/group/group.go#L1024) · [行为专题](../group.md)：HasError 检查是否有任务失败。
+[实现](../../internal/group/group.go#L1030) · [行为专题](../group.md)：HasError 检查是否有任务失败。
 
 **源码说明与使用片段**（原文）：
 
@@ -1652,7 +1652,7 @@ instance.HasError()
 func (g *Group[T]) IsAutoScaleEnabled() bool
 ```
 
-[实现](../../internal/group/group.go#L1385) · [行为专题](../group.md)：IsAutoScaleEnabled 返回是否已启用自动扩缩容。
+[实现](../../internal/group/group.go#L1391) · [行为专题](../group.md)：IsAutoScaleEnabled 返回是否已启用自动扩缩容。
 
 **源码说明与使用片段**（原文）：
 
@@ -1679,7 +1679,7 @@ instance.IsAutoScaleEnabled()
 func (g *Group[T]) JoinErrors() error
 ```
 
-[实现](../../internal/group/group.go#L1156) · [行为专题](../group.md)：JoinErrors 使用 errors.Join 合并所有错误。
+[实现](../../internal/group/group.go#L1162) · [行为专题](../group.md)：JoinErrors 使用 errors.Join 合并所有错误。
 
 **源码说明与使用片段**（原文）：
 
@@ -1713,7 +1713,7 @@ instance.JoinErrors()
 func (g *Group[T]) MergeFailFastCancel(cancel context.CancelFunc) *Group[T]
 ```
 
-[实现](../../internal/group/group.go#L211) · [行为专题](../group.md)：MergeFailFastCancel 将外部 cancel 函数合并到当前 failFast 取消链中。
+[实现](../../internal/group/group.go#L214) · [行为专题](../group.md)：MergeFailFastCancel 将外部 cancel 函数合并到当前 failFast 取消链中。
 
 **源码说明与使用片段**（原文）：
 
@@ -1742,7 +1742,7 @@ instance.MergeFailFastCancel(cancel)
 func (g *Group[T]) OkCount() int64
 ```
 
-[实现](../../internal/group/group.go#L1019) · [行为专题](../group.md)：OkCount 返回成功任务数。
+[实现](../../internal/group/group.go#L1025) · [行为专题](../group.md)：OkCount 返回成功任务数。
 
 **源码说明与使用片段**（原文）：
 
@@ -1769,7 +1769,7 @@ instance.OkCount()
 func (g *Group[T]) Reset() (*Group[T], error)
 ```
 
-[实现](../../internal/group/group.go#L1173) · [行为专题](../group.md)：Reset 重置 Group 状态以便复用。保留 timeout、submitTimeout、concurrency 配置。
+[实现](../../internal/group/group.go#L1179) · [行为专题](../group.md)：Reset 重置 Group 状态以便复用。保留 timeout、submitTimeout、concurrency 配置。
 
 **源码说明与使用片段**（原文）：
 
@@ -1807,7 +1807,7 @@ instance.Reset()
 func (g *Group[T]) Shard(shards int) *MultiGroup[T]
 ```
 
-[实现](../../internal/group/group.go#L1524) · [行为专题](../group.md)：Shard 把当前 Group 包装为多个 Group 实例，第 0 片复用当前 Group。
+[实现](../../internal/group/group.go#L1530) · [行为专题](../group.md)：Shard 把当前 Group 包装为多个 Group 实例，第 0 片复用当前 Group。
 
 **源码说明与使用片段**（原文）：
 
@@ -1842,7 +1842,7 @@ instance.Shard(shards)
 func (g *Group[T]) Stats() GroupStats
 ```
 
-[实现](../../internal/group/group.go#L1074) · [行为专题](../group.md)：Stats 获取当前 Group 的运行时统计快照。
+[实现](../../internal/group/group.go#L1080) · [行为专题](../group.md)：Stats 获取当前 Group 的运行时统计快照。
 
 **源码说明与使用片段**（原文）：
 
@@ -1875,7 +1875,7 @@ instance.Stats()
 func (g *Group[T]) StreamResults() <-chan core.Result[T]
 ```
 
-[实现](../../internal/group/group.go#L442) · [行为专题](../group.md)：StreamResults 返回流式结果的只读 channel。
+[实现](../../internal/group/group.go#L445) · [行为专题](../group.md)：StreamResults 返回流式结果的只读 channel。
 
 **源码说明与使用片段**（原文）：
 
@@ -1902,7 +1902,7 @@ instance.StreamResults()
 func (g *Group[T]) TotalCount() int64
 ```
 
-[实现](../../internal/group/group.go#L1030) · [行为专题](../group.md)：TotalCount 返回进入提交预检查的尝试数（包含预检查拒绝及执行成功/失败）。
+[实现](../../internal/group/group.go#L1036) · [行为专题](../group.md)：TotalCount 返回进入提交预检查的尝试数（包含预检查拒绝及执行成功/失败）。
 
 **源码说明与使用片段**（原文）：
 
@@ -1929,7 +1929,7 @@ instance.TotalCount()
 func (g *Group[T]) Values() []T
 ```
 
-[实现](../../internal/group/group.go#L1133) · [行为专题](../group.md)：Values 返回所有成功任务的结果值切片。建议在 Wait 后调用。
+[实现](../../internal/group/group.go#L1139) · [行为专题](../group.md)：Values 返回所有成功任务的结果值切片。建议在 Wait 后调用。
 
 **源码说明与使用片段**（原文）：
 
@@ -1963,7 +1963,7 @@ instance.Values()
 func (g *Group[T]) Wait() []core.Result[T]
 ```
 
-[实现](../../internal/group/group.go#L965) · [行为专题](../group.md)：Wait 等待所有任务完成并返回结果切片。调用后 Group 进入 waited 状态，不能再次提交任务。
+[实现](../../internal/group/group.go#L971) · [行为专题](../group.md)：Wait 等待所有任务完成并返回结果切片。调用后 Group 进入 waited 状态，不能再次提交任务。
 
 **源码说明与使用片段**（原文）：
 
@@ -1999,7 +1999,7 @@ instance.Wait()
 func (g *Group[T]) WaitContext(ctx context.Context) ([]core.Result[T], bool)
 ```
 
-[实现](../../internal/group/group.go#L1266) · [行为专题](../group.md)：WaitContext 等待所有任务完成或 ctx 取消。返回 (结果, true) 或 (部分结果, false)。
+[实现](../../internal/group/group.go#L1272) · [行为专题](../group.md)：WaitContext 等待所有任务完成或 ctx 取消。返回 (结果, true) 或 (部分结果, false)。
 
 **源码说明与使用片段**（原文）：
 
@@ -2038,7 +2038,7 @@ instance.WaitContext(ctx)
 func (g *Group[T]) WaitTimeout(d time.Duration) ([]core.Result[T], bool)
 ```
 
-[实现](../../internal/group/group.go#L1249) · [行为专题](../group.md)：WaitTimeout 等待所有任务完成，最多等待 d 时长。返回 (结果, true) 或 (部分结果, false)。
+[实现](../../internal/group/group.go#L1255) · [行为专题](../group.md)：WaitTimeout 等待所有任务完成，最多等待 d 时长。返回 (结果, true) 或 (部分结果, false)。
 
 **源码说明与使用片段**（原文）：
 
@@ -2078,7 +2078,7 @@ instance.WaitTimeout(d)
 func (g *Group[T]) WithContext(ctx context.Context) (*Group[T], context.Context)
 ```
 
-[实现](../../internal/group/group.go#L173) · [行为专题](../group.md)：WithContext 绑定 context，支持通过 cancel 统一取消所有任务。
+[实现](../../internal/group/group.go#L174) · [行为专题](../group.md)：WithContext 绑定 context，支持通过 cancel 统一取消所有任务。
 
 **源码说明与使用片段**（原文）：
 
@@ -2126,7 +2126,7 @@ g.ctx = ctx
 func (g *Group[T]) WithCtxSto(ctx context.Context, submitTimeout time.Duration) (*Group[T], context.Context)
 ```
 
-[实现](../../internal/group/group.go#L394) · [行为专题](../group.md)：WithCtxSto 设置 Context 和提交超时（Sto = SubmitTimeout）。
+[实现](../../internal/group/group.go#L397) · [行为专题](../group.md)：WithCtxSto 设置 Context 和提交超时（Sto = SubmitTimeout）。
 
 **源码说明与使用片段**（原文）：
 
@@ -2161,7 +2161,7 @@ instance.WithCtxSto(ctx, submitTimeout)
 func (g *Group[T]) WithCtxStoTID(ctx context.Context, submitTimeout time.Duration) (*Group[T], context.Context)
 ```
 
-[实现](../../internal/group/group.go#L405) · [行为专题](../group.md)：WithCtxStoTID 设置 Context、提交超时并注入 trace_id。
+[实现](../../internal/group/group.go#L408) · [行为专题](../group.md)：WithCtxStoTID 设置 Context、提交超时并注入 trace_id。
 
 **源码说明与使用片段**（原文）：
 
@@ -2196,7 +2196,7 @@ instance.WithCtxStoTID(ctx, submitTimeout)
 func (g *Group[T]) WithCtxTOTID(ctx context.Context, timeout time.Duration) (*Group[T], context.Context)
 ```
 
-[实现](../../internal/group/group.go#L357) · [行为专题](../group.md)：WithCtxTOTID 设置 Context、任务超时并注入 trace_id。
+[实现](../../internal/group/group.go#L360) · [行为专题](../group.md)：WithCtxTOTID 设置 Context、任务超时并注入 trace_id。
 
 **源码说明与使用片段**（原文）：
 
@@ -2231,7 +2231,7 @@ instance.WithCtxTOTID(ctx, timeout)
 func (g *Group[T]) WithCtxTimeout(ctx context.Context, timeout time.Duration) (*Group[T], context.Context)
 ```
 
-[实现](../../internal/group/group.go#L346) · [行为专题](../group.md)：WithCtxTimeout 设置 Context 和任务超时。
+[实现](../../internal/group/group.go#L349) · [行为专题](../group.md)：WithCtxTimeout 设置 Context 和任务超时。
 
 **源码说明与使用片段**（原文）：
 
@@ -2266,7 +2266,7 @@ instance.WithCtxTimeout(ctx, timeout)
 func (g *Group[T]) WithCtxTraceID(ctx context.Context) (*Group[T], context.Context)
 ```
 
-[实现](../../internal/group/group.go#L303) · [行为专题](../group.md)：WithCtxTraceID 设置 Context 并注入 trace_id。
+[实现](../../internal/group/group.go#L306) · [行为专题](../group.md)：WithCtxTraceID 设置 Context 并注入 trace_id。
 
 **源码说明与使用片段**（原文）：
 
@@ -2299,7 +2299,7 @@ instance.WithCtxTraceID(ctx)
 func (g *Group[T]) WithFFCtx(ctx context.Context) (*Group[T], context.Context)
 ```
 
-[实现](../../internal/group/group.go#L204) · [行为专题](../group.md)：WithFFCtx 等同 WithFailFast。提供更短的别名。
+[实现](../../internal/group/group.go#L207) · [行为专题](../group.md)：WithFFCtx 等同 WithFailFast。提供更短的别名。
 
 **源码说明与使用片段**（原文）：
 
@@ -2332,7 +2332,7 @@ instance.WithFFCtx(ctx)
 func (g *Group[T]) WithFFSto(ctx context.Context, submitTimeout time.Duration) (*Group[T], context.Context)
 ```
 
-[实现](../../internal/group/group.go#L272) · [行为专题](../group.md)：WithFFSto 启用 FailFast 并设置提交超时（Sto = SubmitTimeout）。
+[实现](../../internal/group/group.go#L275) · [行为专题](../group.md)：WithFFSto 启用 FailFast 并设置提交超时（Sto = SubmitTimeout）。
 
 **源码说明与使用片段**（原文）：
 
@@ -2367,7 +2367,7 @@ instance.WithFFSto(ctx, submitTimeout)
 func (g *Group[T]) WithFFStoTID(ctx context.Context, submitTimeout time.Duration) (*Group[T], context.Context)
 ```
 
-[实现](../../internal/group/group.go#L283) · [行为专题](../group.md)：WithFFStoTID 启用 FailFast、设置提交超时并注入 trace_id。
+[实现](../../internal/group/group.go#L286) · [行为专题](../group.md)：WithFFStoTID 启用 FailFast、设置提交超时并注入 trace_id。
 
 **源码说明与使用片段**（原文）：
 
@@ -2402,7 +2402,7 @@ instance.WithFFStoTID(ctx, submitTimeout)
 func (g *Group[T]) WithFFTOSto(ctx context.Context, timeout time.Duration, submitTimeout time.Duration) (*Group[T], context.Context)
 ```
 
-[实现](../../internal/group/group.go#L324) · [行为专题](../group.md)：WithFFTOSto 启用 FailFast、设置任务超时和提交超时（TO=Timeout, Sto=SubmitTimeout）。
+[实现](../../internal/group/group.go#L327) · [行为专题](../group.md)：WithFFTOSto 启用 FailFast、设置任务超时和提交超时（TO=Timeout, Sto=SubmitTimeout）。
 
 **源码说明与使用片段**（原文）：
 
@@ -2439,7 +2439,7 @@ instance.WithFFTOSto(ctx, timeout, submitTimeout)
 func (g *Group[T]) WithFFTOStoTID(ctx context.Context, timeout time.Duration, submitTimeout time.Duration) (*Group[T], context.Context)
 ```
 
-[实现](../../internal/group/group.go#L336) · [行为专题](../group.md)：WithFFTOStoTID 启用 FailFast、设置超时、提交超时并注入 trace_id（TO=Timeout, Sto=SubmitTimeout, TID=TraceID）。
+[实现](../../internal/group/group.go#L339) · [行为专题](../group.md)：WithFFTOStoTID 启用 FailFast、设置超时、提交超时并注入 trace_id（TO=Timeout, Sto=SubmitTimeout, TID=TraceID）。
 
 **源码说明与使用片段**（原文）：
 
@@ -2476,7 +2476,7 @@ instance.WithFFTOStoTID(ctx, timeout, submitTimeout)
 func (g *Group[T]) WithFFTOTID(ctx context.Context, timeout time.Duration) (*Group[T], context.Context)
 ```
 
-[实现](../../internal/group/group.go#L313) · [行为专题](../group.md)：WithFFTOTID 启用 FailFast、设置超时并注入 trace_id（TO = Timeout, TID = TraceID）。
+[实现](../../internal/group/group.go#L316) · [行为专题](../group.md)：WithFFTOTID 启用 FailFast、设置超时并注入 trace_id（TO = Timeout, TID = TraceID）。
 
 **源码说明与使用片段**（原文）：
 
@@ -2511,7 +2511,7 @@ instance.WithFFTOTID(ctx, timeout)
 func (g *Group[T]) WithFFTimeout(ctx context.Context, timeout time.Duration) (*Group[T], context.Context)
 ```
 
-[实现](../../internal/group/group.go#L293) · [行为专题](../group.md)：WithFFTimeout 启用 FailFast 并设置任务超时。
+[实现](../../internal/group/group.go#L296) · [行为专题](../group.md)：WithFFTimeout 启用 FailFast 并设置任务超时。
 
 **源码说明与使用片段**（原文）：
 
@@ -2546,7 +2546,7 @@ instance.WithFFTimeout(ctx, timeout)
 func (g *Group[T]) WithFFTraceID(ctx context.Context) (*Group[T], context.Context)
 ```
 
-[实现](../../internal/group/group.go#L262) · [行为专题](../group.md)：WithFFTraceID 启用 FailFast 并注入 trace_id。
+[实现](../../internal/group/group.go#L265) · [行为专题](../group.md)：WithFFTraceID 启用 FailFast 并注入 trace_id。
 
 **源码说明与使用片段**（原文）：
 
@@ -2579,7 +2579,7 @@ instance.WithFFTraceID(ctx)
 func (g *Group[T]) WithFailFast(ctx context.Context) (*Group[T], context.Context)
 ```
 
-[实现](../../internal/group/group.go#L190) · [行为专题](../group.md)：WithFailFast 启用快速失败模式：任一任务出错时取消所有其他任务。
+[实现](../../internal/group/group.go#L192) · [行为专题](../group.md)：WithFailFast 启用快速失败模式：任一任务出错时取消所有其他任务。
 
 **源码说明与使用片段**（原文）：
 
@@ -2622,7 +2622,7 @@ g.ctx = ctx
 func (g *Group[T]) WithPool(p *pool.Pool[T]) *Group[T]
 ```
 
-[实现](../../internal/group/group.go#L435) · [行为专题](../group.md)：WithPool 注入外部协程池，任务执行时通过 pool.Submit 调度而非内部 worker goroutine。
+[实现](../../internal/group/group.go#L438) · [行为专题](../group.md)：WithPool 注入外部协程池，任务执行时通过 pool.Submit 调度而非内部 worker goroutine。
 
 **源码说明与使用片段**（原文）：
 
@@ -2657,7 +2657,7 @@ g.pool = p
 func (g *Group[T]) WithResultCallback(fn func(core.Result[T])) *Group[T]
 ```
 
-[实现](../../internal/group/group.go#L427) · [行为专题](../group.md)：WithResultCallback 设置结果记录路径的同步回调。
+[实现](../../internal/group/group.go#L430) · [行为专题](../group.md)：WithResultCallback 设置结果记录路径的同步回调。
 
 **源码说明与使用片段**（原文）：
 
@@ -2692,7 +2692,7 @@ g.resultCb = fn
 func (g *Group[T]) WithStreaming(bufSize int) *Group[T]
 ```
 
-[实现](../../internal/group/group.go#L415) · [行为专题](../group.md)：WithStreaming 启用流式结果消费，结果通过 channel 实时发送。
+[实现](../../internal/group/group.go#L418) · [行为专题](../group.md)：WithStreaming 启用流式结果消费，结果通过 channel 实时发送。
 
 **源码说明与使用片段**（原文）：
 
@@ -2721,7 +2721,7 @@ instance.WithStreaming(bufSize)
 func (g *Group[T]) WithSubmitTimeout(d time.Duration) *Group[T]
 ```
 
-[实现](../../internal/group/group.go#L384) · [行为专题](../group.md)：WithSubmitTimeout 设置获取并发槽位的等待超时。0 表示无限等待。
+[实现](../../internal/group/group.go#L387) · [行为专题](../group.md)：WithSubmitTimeout 设置获取并发槽位的等待超时。0 表示无限等待。
 
 **源码说明与使用片段**（原文）：
 
@@ -2764,7 +2764,7 @@ g.submitTimeout = d
 func (g *Group[T]) WithTimeout(d time.Duration) *Group[T]
 ```
 
-[实现](../../internal/group/group.go#L370) · [行为专题](../group.md)：WithTimeout 设置每个任务的执行超时时间（默认 core.GetDefaultTimeout()）。
+[实现](../../internal/group/group.go#L373) · [行为专题](../group.md)：WithTimeout 设置每个任务的执行超时时间（默认 core.GetDefaultTimeout()）。
 
 **源码说明与使用片段**（原文）：
 
@@ -2850,7 +2850,7 @@ g.ctx = ctx
 func (g *Group[T]) Worker() int
 ```
 
-[实现](../../internal/group/group.go#L1035) · [行为专题](../group.md)：Worker 返回当前最大并发数（自动扩缩容时可能动态变化）。
+[实现](../../internal/group/group.go#L1041) · [行为专题](../group.md)：Worker 返回当前最大并发数（自动扩缩容时可能动态变化）。
 
 **源码说明与使用片段**（原文）：
 
@@ -2906,11 +2906,11 @@ instance.Context(ctx)
 func (b *MultiGroupBuilder[T]) DefaultLogger() *MultiGroupBuilder[T]
 ```
 
-[实现](../../internal/group/multi_group_builder.go#L73) · [行为专题](../group.md)：DefaultLogger 重置为默认日志实现。
+[实现](../../internal/group/multi_group_builder.go#L73) · [行为专题](../group.md)：DefaultLogger 清除当前日志器覆盖，恢复继承全局日志器。
 
 **源码说明与使用片段**（原文）：
 
-DefaultLogger 重置为默认日志实现。
+DefaultLogger 清除当前日志器覆盖，恢复继承全局日志器。
 
 
 **参数说明**：无显式参数。
@@ -2923,9 +2923,9 @@ DefaultLogger 重置为默认日志实现。
 instance.DefaultLogger()
 ```
 
-**生产建议**：此方法会设置全局日志器；在应用启动阶段统一配置，避免多个构建器相互覆盖。
+**生产建议**：在 Build/Run 或终端操作之前完成链式配置；以返回值继续调用，避免多个 goroutine 同时修改同一个构建器。默认值和设置顺序见专题。
 
-**注意事项**：立即修改全库日志器，并非只配置当前构建器，也不等待 Build/Run 才生效。DefaultLogger 或 Logger(nil) 恢复静默实现；日志后端须并发安全、及时返回，调用不恢复其 panic。应在启动时统一设置，避免业务组件相互覆盖。
+**注意事项**：只配置当前构建器及其后续执行，不修改全局或其他实例。DefaultLogger 或 Logger(nil) 清除当前覆盖并继承全局日志器；Context 替换和模式切换保留当前日志设置，已构建实例不受构建器后续更改影响。日志后端须并发安全、及时返回，调用不恢复其 panic。
 
 ## `*MultiGroupBuilder[T].FailFast`
 
@@ -2960,11 +2960,11 @@ instance.FailFast()
 func (b *MultiGroupBuilder[T]) Logger(l core.Logger) *MultiGroupBuilder[T]
 ```
 
-[实现](../../internal/group/multi_group_builder.go#L67) · [行为专题](../group.md)：Logger 注入自定义日志实现，全局生效。
+[实现](../../internal/group/multi_group_builder.go#L67) · [行为专题](../group.md)：Logger 仅为当前构建器及其后续执行设置日志器，不修改全局配置。
 
 **源码说明与使用片段**（原文）：
 
-Logger 注入自定义日志实现，全局生效。
+Logger 仅为当前构建器及其后续执行设置日志器，不修改全局配置。
 
 
 **参数说明**：
@@ -2979,9 +2979,9 @@ Logger 注入自定义日志实现，全局生效。
 instance.Logger(l)
 ```
 
-**生产建议**：此方法会设置全局日志器；在应用启动阶段统一配置，避免多个构建器相互覆盖。
+**生产建议**：在 Build/Run 或终端操作之前完成链式配置；以返回值继续调用，避免多个 goroutine 同时修改同一个构建器。默认值和设置顺序见专题。
 
-**注意事项**：立即修改全库日志器，并非只配置当前构建器，也不等待 Build/Run 才生效。DefaultLogger 或 Logger(nil) 恢复静默实现；日志后端须并发安全、及时返回，调用不恢复其 panic。应在启动时统一设置，避免业务组件相互覆盖。
+**注意事项**：只配置当前构建器及其后续执行，不修改全局或其他实例。DefaultLogger 或 Logger(nil) 清除当前覆盖并继承全局日志器；Context 替换和模式切换保留当前日志设置，已构建实例不受构建器后续更改影响。日志后端须并发安全、及时返回，调用不恢复其 panic。
 
 ## `*MultiGroupBuilder[T].Run`
 
@@ -2989,7 +2989,7 @@ instance.Logger(l)
 func (b *MultiGroupBuilder[T]) Run(fn func(ctx context.Context, mg *MultiGroup[T]) error) error
 ```
 
-[实现](../../internal/group/multi_group_builder.go#L76) · [行为专题](../group.md)：Run 终端方法：创建 Group → 应用配置 → 分片 → 执行 fn → Close 所有分片。
+[实现](../../internal/group/multi_group_builder.go#L79) · [行为专题](../group.md)：Run 终端方法：创建 Group → 应用配置 → 分片 → 执行 fn → Close 所有分片。
 
 **源码说明与使用片段**（原文）：
 
@@ -5260,7 +5260,7 @@ group.WithMultiGroup[T](concurrency, shards, fn)
 func (s GroupStats) String() string
 ```
 
-[实现](../../internal/group/group.go#L1062) · [行为专题](../group.md)：返回统计快照的格式化字符串。
+[实现](../../internal/group/group.go#L1068) · [行为专题](../group.md)：返回统计快照的格式化字符串。
 
 **参数说明**：无显式参数。
 

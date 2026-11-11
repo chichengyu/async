@@ -120,13 +120,19 @@ func (b *PipelineBuilder[T]) ExecutePipe(fn func(context.Context, string, T) (T,
 func (b *PipelineBuilder[T]) Pipe() *PipelinePipeBuilder[T] {
 	base := *b.pipelineBase
 	return &PipelinePipeBuilder[T]{
-		execute: (&PipelineBuilder[T]{pipelineBase: &base}).ExecutePipe,
+		ctx: base.ctx,
+		execute: func(ctx context.Context, fn func(context.Context, string, T) (T, error), buf int) <-chan core.Result[T] {
+			snapshot := base
+			snapshot.ctx = ctx
+			return (&PipelineBuilder[T]{pipelineBase: &snapshot}).ExecutePipe(fn, buf)
+		},
 	}
 }
 
 // PipelinePipeBuilder 管道输出构建器，由 PipelineBuilder.Pipe() 创建。
 type PipelinePipeBuilder[T any] struct {
-	execute func(func(context.Context, string, T) (T, error), int) <-chan core.Result[T]
+	ctx     context.Context
+	execute func(context.Context, func(context.Context, string, T) (T, error), int) <-chan core.Result[T]
 	buf     int
 }
 
@@ -142,21 +148,21 @@ func (b *PipelinePipeBuilder[T]) DefaultBuf() *PipelinePipeBuilder[T] {
 	return b
 }
 
-// Logger 注入自定义日志实现，全局生效。
+// Logger 仅为当前构建器及其后续执行设置日志器，不修改全局配置。
 func (b *PipelinePipeBuilder[T]) Logger(l core.Logger) *PipelinePipeBuilder[T] {
-	core.SetLogger(l)
+	b.ctx = core.WithLogger(b.ctx, l)
 	return b
 }
 
-// DefaultLogger 重置为默认日志实现。
+// DefaultLogger 清除当前日志器覆盖，恢复继承全局日志器。
 func (b *PipelinePipeBuilder[T]) DefaultLogger() *PipelinePipeBuilder[T] {
-	core.SetLogger(nil)
+	b.ctx = core.WithLogger(b.ctx, nil)
 	return b
 }
 
 // Run 启动管道，返回句柄。
 func (b *PipelinePipeBuilder[T]) Run(fn func(context.Context, string, T) (T, error)) *PipelinePipe[T] {
-	ch := b.execute(fn, b.buf)
+	ch := b.execute(b.ctx, fn, b.buf)
 	return &PipelinePipe[T]{ch: ch}
 }
 

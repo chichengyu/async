@@ -149,6 +149,7 @@ func DefaultGroup[T any]() *Group[T] {
 //
 //	g, ctx := group.DefaultGroup[string]().WithTraceID(ctx)
 func (g *Group[T]) WithTraceID(ctx context.Context) (*Group[T], context.Context) {
+	ctx = core.CopyLogger(g.groupContext(), ctx)
 	ctx = core.EnsureTraceID(ctx)
 	g.cancelMu.Lock()
 	g.ctx = ctx
@@ -171,6 +172,7 @@ func (g *Group[T]) WithTraceID(ctx context.Context) (*Group[T], context.Context)
 //	_ = g.Go(taskCtx, func(ctx context.Context) (string, error) { return fetch(ctx) })
 //	results := g.Wait() // 检查每项 Result.Err 后再使用 Value
 func (g *Group[T]) WithContext(ctx context.Context) (*Group[T], context.Context) {
+	ctx = core.CopyLogger(g.groupContext(), ctx)
 	ctx, cancel := context.WithCancel(ctx)
 	g.cancelMu.Lock()
 	g.cancel = core.MergeCancel(g.cancel, cancel)
@@ -188,6 +190,7 @@ func (g *Group[T]) WithContext(ctx context.Context) (*Group[T], context.Context)
 //
 //	g, ctx := group.DefaultGroup[string]().WithFailFast(ctx)
 func (g *Group[T]) WithFailFast(ctx context.Context) (*Group[T], context.Context) {
+	ctx = core.CopyLogger(g.groupContext(), ctx)
 	ctx, cancel := context.WithCancel(ctx)
 	g.cancelMu.Lock()
 	g.cancel = core.MergeCancel(g.cancel, cancel)
@@ -556,6 +559,9 @@ func (g *Group[T]) executeTask(task groupTask[T]) {
 // ──────────────────────────── Group 内部方法 ────────────────────────────
 
 func (g *Group[T]) groupPrecheck(ctx context.Context, record GroupRecordFunc[T], index int, caller string) (context.Context, context.CancelFunc, error) {
+	g.cancelMu.RLock()
+	ctx = core.InheritLogger(g.ctx, ctx)
+	g.cancelMu.RUnlock()
 	g.mu.Lock()
 	g.totalCnt.Add(1)
 	if g.waited.Load() {
@@ -1187,7 +1193,7 @@ func (g *Group[T]) Reset() (*Group[T], error) {
 	g.cancelMu.Lock()
 	g.cancel = nil
 	g.failCancel = nil
-	g.ctx = context.Background()
+	g.ctx = core.CopyLogger(g.ctx, context.Background())
 	g.cancelMu.Unlock()
 	g.failFast.Store(false)
 	g.waited.Store(false)
@@ -1227,7 +1233,7 @@ func (g *Group[T]) Reset() (*Group[T], error) {
 		g.workerWg.Add(1)
 		go g.worker()
 	}
-	core.LogCtxDebug(context.Background(), "async: Group.Reset completed, above config preserved across reset",
+	core.LogCtxDebug(g.groupContext(), "async: Group.Reset completed, above config preserved across reset",
 		core.Dur("timeout", savedTimeout),
 		core.Dur("submit_timeout", savedSubmitTimeout),
 		core.Int64("concurrency", int64(savedConcurrency)))

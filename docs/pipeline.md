@@ -725,7 +725,7 @@ for result := range parallelCh {
 |------|------|
 | `.Buf(n)` | channel 缓冲大小，<=0 使用默认值（自动计算） |
 | `.DefaultBuf()` | 恢复默认缓冲大小 |
-| `.Logger(l)` | 注入自定义日志（全局生效） |
+| `.Logger(l)` | 设置当前构建器的日志器（仅局部生效） |
 | `.DefaultLogger()` | 恢复默认日志 |
 
 ### PipelinePipe 句柄
@@ -878,7 +878,7 @@ defer fl.Close()
 | `.Stage(name, concurrency)` | 追加处理阶段 |
 | `.DefaultStage(name)` | 追加阶段（默认 IO 并发度） |
 | `.BufSize(n)` | 阶段间 channel 缓冲大小，<=0 使用默认值 256 |
-| `.Logger(l)` | 注入自定义日志（全局生效） |
+| `.Logger(l)` | 设置当前构建器的日志器（仅局部生效） |
 | `.Run(fn)` | 构建 Flow 并启动常驻 worker，使用 builder 内部 ctx |
 | `.Build(ctx, fn)` | 构建 Flow 并启动常驻 worker，使用指定 ctx |
 

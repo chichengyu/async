@@ -795,7 +795,7 @@ func EnsureTraceID(ctx context.Context) context.Context {
 	}
 	traceID := NewTraceID()
 	if atomic.LoadInt32(&traceLogEnabled) == 1 {
-		logger := GetLogger().With(Str("trace_id", traceID))
+		logger := LoggerForContext(ctx).With(Str("trace_id", traceID))
 		ctx = logger.WithContext(ctx)
 	}
 	ctx = context.WithValue(ctx, getTraceIDKey(), traceID)
@@ -830,7 +830,7 @@ func WithTraceID(ctx context.Context, id string) context.Context {
 		return EnsureTraceID(ctx)
 	}
 	if atomic.LoadInt32(&traceLogEnabled) == 1 {
-		logger := GetLogger().With(Str("trace_id", id))
+		logger := LoggerForContext(ctx).With(Str("trace_id", id))
 		ctx = logger.WithContext(ctx)
 	}
 	ctx = context.WithValue(ctx, getTraceIDKey(), id)

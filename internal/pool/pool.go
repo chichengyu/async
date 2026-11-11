@@ -311,6 +311,7 @@ func WithCfg[T any](ctx context.Context, cfg Config, fn func(p *Pool[T]) error) 
 //	p, ctx := pool.NewPool[string](4).WithTraceID(ctx)
 //	p.Submit(ctx, fn) // 使用带 trace_id 的 ctx 提交
 func (p *Pool[T]) WithTraceID(ctx context.Context) (*Pool[T], context.Context) {
+	ctx = core.CopyLogger(p.Ctx(), ctx)
 	ctx = core.EnsureTraceID(ctx)
 	p.cancelMu.Lock()
 	p.ctx = ctx
@@ -328,6 +329,7 @@ func (p *Pool[T]) WithTraceID(ctx context.Context) (*Pool[T], context.Context) {
 //	p, ctx := pool.NewPool[string](4).WithContext(ctx)
 //	// ctx 是可取消的子 context
 func (p *Pool[T]) WithContext(ctx context.Context) (*Pool[T], context.Context) {
+	ctx = core.CopyLogger(p.Ctx(), ctx)
 	ctx, cancel := context.WithCancel(ctx)
 	p.cancelMu.Lock()
 	p.cancel = core.MergeCancel(p.cancel, cancel)
@@ -349,6 +351,9 @@ func (p *Pool[T]) Ctx() context.Context {
 // applyConfig 将 Config 中的非零值配置应用到 Pool 上。
 // 全部复用已有的 WithXxx 方法，不引入新逻辑。
 func (p *Pool[T]) applyConfig(ctx context.Context, cfg Config) {
+	p.cancelMu.Lock()
+	p.ctx = core.CopyLogger(ctx, p.ctx)
+	p.cancelMu.Unlock()
 	if cfg.Timeout > 0 {
 		p.WithTimeout(cfg.Timeout)
 	}
@@ -391,6 +396,7 @@ func (p *Pool[T]) applyConfig(ctx context.Context, cfg Config) {
 //	}
 //	results := p.Wait()
 func (p *Pool[T]) WithFailFast(ctx context.Context) (*Pool[T], context.Context) {
+	ctx = core.CopyLogger(p.Ctx(), ctx)
 	ctx, cancel := context.WithCancel(ctx)
 	p.cancelMu.Lock()
 	p.cancel = core.MergeCancel(p.cancel, cancel)
@@ -1165,6 +1171,7 @@ func (p *Pool[T]) submitIndexed(ctx context.Context, fn func(context.Context) (T
 }
 
 func (p *Pool[T]) submitIndexedWithTimeout(ctx context.Context, fn func(context.Context) (T, error), timeout time.Duration, completion ...func(core.Result[T])) (index int, err error) {
+	ctx = core.InheritLogger(p.Ctx(), ctx)
 	// 进入临界区：标记本协程正在 precheck 与 wg.Add(1) 之间，
 	// 防止 Wait 系列方法在 submitGuard 设置后立即调用 wg.Wait() 产生竞态。
 	p.addInFlight.Add(1)
@@ -1327,6 +1334,7 @@ func (p *Pool[T]) SubmitAtWithResultTransform(index int, ctx context.Context, fn
 }
 
 func (p *Pool[T]) submitAt(index int, ctx context.Context, fn func(context.Context) (T, error), complete func(core.Result[T]), transform func(core.Result[T]) core.Result[T]) error {
+	ctx = core.InheritLogger(p.Ctx(), ctx)
 	if index < 0 || index > core.MaxPoolIndex {
 		return core.ErrInvalidIndex
 	}
@@ -1465,6 +1473,7 @@ func (p *Pool[T]) submitAt(index int, ctx context.Context, fn func(context.Conte
 //	    log.Println("队列已满，任务被丢弃")
 //	}
 func (p *Pool[T]) TrySubmit(ctx context.Context, fn func(context.Context) (T, error)) error {
+	ctx = core.InheritLogger(p.Ctx(), ctx)
 	p.addInFlight.Add(1)
 	if p.closed.Load() {
 		p.addInFlight.Add(-1)
@@ -2489,13 +2498,13 @@ func (p *Pool[T]) Reset() (*Pool[T], error) {
 	savedResultCb := p.resultCb
 	savedFailFast := p.failFast.Load()
 	p.cancelMu.Lock()
-	p.ctx = context.Background()
+	p.ctx = core.CopyLogger(p.ctx, context.Background())
 	p.failCancel = nil
 	p.errCnt.Store(0)
 	p.okCnt.Store(0)
 	p.failFast.Store(savedFailFast)
 	if savedFailFast {
-		ctx, cancel := context.WithCancel(context.Background())
+		ctx, cancel := context.WithCancel(p.ctx)
 		p.ctx = ctx
 		p.cancel = cancel
 	} else {

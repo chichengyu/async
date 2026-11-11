@@ -102,7 +102,7 @@ Slice 模块提供切片元素的并发/串行处理，支持 Map / ForEach / Re
 | `.DefaultChunk()` | 使用默认分块（100） | — |
 | `.Buf(size)` | Stream 缓冲区大小 | 0（自适应） |
 | `.DefaultBuf()` | 使用默认流式缓冲 | — |
-| `.Logger(l)` | 注入自定义日志（全局生效） | 静默 |
+| `.Logger(l)` | 设置当前构建器的日志器（仅局部生效） | 静默 |
 | `.DefaultLogger()` | 恢复默认日志 | — |
 
 使用 `.Pool(p)` 时，正数的 `.Timeout(d)` 仅应用于当前切片操作中的每个任务，优先于池原有的任务超时，不会更改池的超时配置。`.FailFast()` 在任务函数返回错误或发生 panic 时取消当前操作的其他任务；任务执行前被池拒绝或丢弃不会触发取消。执行后借用池的复位规则见下表，调用方负责关闭它。
@@ -683,7 +683,7 @@ results := async.Slice[string](ctx, items).
 | 默认分块 | `.DefaultChunk()` | **100** | 常量 `defaultBatchSize` |
 | 默认 Buf | `.DefaultBuf()` | **自适应**（≤0 时：n≤16384 则=n，否则=16384） | Stream channel 缓冲 |
 | 默认池 | `.DefaultPool()` | **终端执行时按 IO() 内部创建** | 不采用策略 Worker；清除外部池引用，此前外部池不由此设置关闭 |
-| 默认日志 | `.DefaultLogger()` | **静默** | `core.SetLogger(nil)` |
+| 默认日志 | `.DefaultLogger()` | **静默** | `清除当前覆盖，继承全局日志器` |
 
 ### 模式专属默认值
 
@@ -819,7 +819,7 @@ results := async.Slice[int](ctx, items).
 
 results = async.Slice[int](ctx, items).
     Logger(myLogger).
-    DefaultLogger().    // 全局恢复默认
+    DefaultLogger().    // 当前构建器恢复继承全局日志器
     Map(fn)
 ```
 
@@ -1020,7 +1020,7 @@ RemapKeys 和 Invert 遇到相同目标键时，保留后遍历的那个值；Go
 | `.DefaultBuf()` | 清除 Buf 设置 | — |
 | `.Chunk(size)` | 设置分块大小；非正数在批量执行时按 1 处理 | 未设置，批量执行时按 1 处理 |
 | `.DefaultChunk()` | 将分块大小设置为 100 | — |
-| `.Logger(l)` | 注入自定义日志（全局生效） | 静默 |
+| `.Logger(l)` | 设置当前构建器的日志器（仅局部生效） | 静默 |
 | `.DefaultLogger()` | 恢复默认日志 | — |
 
 MapChain 的 `Worker` 和 `DefaultWorker` 只更改并发度，保留超时、FailFast、池和其他设置。`Pool` / `PoolAuto` 适用于 Map、ForEach、Stream 和批量操作；Filter 和 Reduce 保持串行，`PoolAuto` 的池在操作结束时关闭。

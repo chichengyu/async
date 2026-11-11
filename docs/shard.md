@@ -76,7 +76,7 @@ Shard 提供水平分片能力，将任务分发到 N 个 Pool 或 Group 实例�
 | `.DefaultMaxResults()` | 恢复默认最大结果数（无限） |
 | `.DefaultShardPoolConfig()` | 重置所有配置为默认值 |
 | `.Config(func)` | 函数式配置，通过闭包修改完整配置 |
-| `.Logger(l)` | 注入自定义日志（全局生效） |
+| `.Logger(l)` | 设置当前构建器的日志器（仅局部生效） |
 | `.DefaultLogger()` | 恢复默认日志 |
 
 ### 终端方法
@@ -115,7 +115,7 @@ Shard 提供水平分片能力，将任务分发到 N 个 Pool 或 Group 实例�
 | `.DefaultDistribution()` | 恢复默认分发策略（RoundRobin） |
 | `.DefaultShardedGroupConfig()` | 重置所有配置为默认值 |
 | `.Config(func)` | 函数式配置，通过闭包修改完整配置 |
-| `.Logger(l)` | 注入自定义日志（全局生效） |
+| `.Logger(l)` | 设置当前构建器的日志器（仅局部生效） |
 | `.DefaultLogger()` | 恢复默认日志 |
 
 ### 终端方法
@@ -1021,7 +1021,7 @@ func processWithFailFast(ctx context.Context, items []string) error {
 | 最大排队 | `.DefaultMaxPending()` | **无限制**（0） | 清除排队限制 |
 | 最大结果 | `.DefaultMaxResults()` | 无限制 | 分片创建时非正值会应用为 `WithMaxResults(0)`，不会沿用 Pool 的全局默认上限 |
 | 完整配置 | `.DefaultShardPoolConfig()` | — | 将分片池配置恢复为 `DefaultShardConfig()`，保留 Builder context |
-| 日志 | `.DefaultLogger()` | **静默** | `core.SetLogger(nil)` |
+| 日志 | `.DefaultLogger()` | **静默** | `清除当前覆盖，继承全局日志器` |
 
 ### ShardedGroupBuilder 默认值
 
@@ -1031,7 +1031,7 @@ func processWithFailFast(ctx context.Context, items []string) error {
 | 每片并发度 | `.DefaultWorker()` | **`IO()`**（`NumCPU×2`） | `DefaultConcurrencyShard = 0`（0 自动=IO） |
 | 分发策略 | `.DefaultDistribution()` | **RoundRobin** | `DefaultDistribution = RoundRobin` |
 | 完整配置 | `.DefaultShardedGroupConfig()` | — | 清空为 `ShardGroupConfig{}`，构造时再填默认值，保留 Builder context |
-| 日志 | `.DefaultLogger()` | **静默** | `core.SetLogger(nil)` |
+| 日志 | `.DefaultLogger()` | **静默** | `清除当前覆盖，继承全局日志器` |
 
 ### 默认值覆盖优先级
 

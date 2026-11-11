@@ -38,7 +38,7 @@ func newFlowBuilder[T any](ctx context.Context, stages []Stage[T]) *FlowBuilder[
 
 // Context 设置上下文，自动注入 trace_id。
 func (fb *FlowBuilder[T]) Context(ctx context.Context) *FlowBuilder[T] {
-	fb.ctx = core.EnsureTraceID(ctx)
+	fb.ctx = core.EnsureTraceID(core.CopyLogger(fb.ctx, ctx))
 	return fb
 }
 
@@ -59,9 +59,9 @@ func (fb *FlowBuilder[T]) BufSize(n int) *FlowBuilder[T] {
 	return fb
 }
 
-// Logger 注入自定义日志实现，全局生效。
+// Logger 仅为当前构建器及其后续执行设置日志器，不修改全局配置。
 func (fb *FlowBuilder[T]) Logger(l core.Logger) *FlowBuilder[T] {
-	core.SetLogger(l)
+	fb.ctx = core.WithLogger(fb.ctx, l)
 	return fb
 }
 
@@ -91,5 +91,5 @@ func (fb *FlowBuilder[T]) Build(
 		Stages:  fb.stages,
 		BufSize: fb.bufSize,
 	}
-	return NewFlow(ctx, cfg, fn)
+	return NewFlow(core.CopyLogger(fb.ctx, ctx), cfg, fn)
 }

@@ -120,11 +120,11 @@ instance.DefaultFailFast()
 func (b *ShardPoolBuilder[T]) DefaultLogger() *ShardPoolBuilder[T]
 ```
 
-[实现](../../internal/shard/shard_builder.go#L139) · [行为专题](../shard.md)：DefaultLogger 重置为默认日志实现。
+[实现](../../internal/shard/shard_builder.go#L142) · [行为专题](../shard.md)：DefaultLogger 清除当前日志器覆盖，恢复继承全局日志器。
 
 **源码说明与使用片段**（原文）：
 
-DefaultLogger 重置为默认日志实现。
+DefaultLogger 清除当前日志器覆盖，恢复继承全局日志器。
 
 
 **参数说明**：无显式参数。
@@ -137,9 +137,9 @@ DefaultLogger 重置为默认日志实现。
 instance.DefaultLogger()
 ```
 
-**生产建议**：此方法会设置全局日志器；在应用启动阶段统一配置，避免多个构建器相互覆盖。
+**生产建议**：在 Build/Run 或终端操作之前完成链式配置；以返回值继续调用，避免多个 goroutine 同时修改同一个构建器。默认值和设置顺序见专题。
 
-**注意事项**：立即修改全库日志器，并非只配置当前构建器，也不等待 Build/Run 才生效。DefaultLogger 或 Logger(nil) 恢复静默实现；日志后端须并发安全、及时返回，调用不恢复其 panic。应在启动时统一设置，避免业务组件相互覆盖。
+**注意事项**：只配置当前构建器及其后续执行，不修改全局或其他实例。DefaultLogger 或 Logger(nil) 清除当前覆盖并继承全局日志器；Context 替换和模式切换保留当前日志设置，已构建实例不受构建器后续更改影响。日志后端须并发安全、及时返回，调用不恢复其 panic。
 
 ## `*ShardPoolBuilder[T].DefaultMaxPending`
 
@@ -406,11 +406,11 @@ b.cfg.KeyFn = fn
 func (b *ShardPoolBuilder[T]) Logger(l core.Logger) *ShardPoolBuilder[T]
 ```
 
-[实现](../../internal/shard/shard_builder.go#L136) · [行为专题](../shard.md)：Logger 注入自定义日志实现，全局生效。
+[实现](../../internal/shard/shard_builder.go#L136) · [行为专题](../shard.md)：Logger 仅为当前构建器及其后续执行设置日志器，不修改全局配置。
 
 **源码说明与使用片段**（原文）：
 
-Logger 注入自定义日志实现，全局生效。
+Logger 仅为当前构建器及其后续执行设置日志器，不修改全局配置。
 
 
 **参数说明**：
@@ -425,9 +425,9 @@ Logger 注入自定义日志实现，全局生效。
 instance.Logger(l)
 ```
 
-**生产建议**：此方法会设置全局日志器；在应用启动阶段统一配置，避免多个构建器相互覆盖。
+**生产建议**：在 Build/Run 或终端操作之前完成链式配置；以返回值继续调用，避免多个 goroutine 同时修改同一个构建器。默认值和设置顺序见专题。
 
-**注意事项**：立即修改全库日志器，并非只配置当前构建器，也不等待 Build/Run 才生效。DefaultLogger 或 Logger(nil) 恢复静默实现；日志后端须并发安全、及时返回，调用不恢复其 panic。应在启动时统一设置，避免业务组件相互覆盖。
+**注意事项**：只配置当前构建器及其后续执行，不修改全局或其他实例。DefaultLogger 或 Logger(nil) 清除当前覆盖并继承全局日志器；Context 替换和模式切换保留当前日志设置，已构建实例不受构建器后续更改影响。日志后端须并发安全、及时返回，调用不恢复其 panic。
 
 ## `*ShardPoolBuilder[T].MaxPending`
 
@@ -505,7 +505,7 @@ b.cfg.PoolCfg.MaxResults = n
 func (b *ShardPoolBuilder[T]) Run(fn func(ctx context.Context, sp *ShardedPool[T]) error) error
 ```
 
-[实现](../../internal/shard/shard_builder.go#L143) · [行为专题](../shard.md)：Run 终端方法：创建分片池，执行 fn，fn 返回后自动 Close 所有分片。
+[实现](../../internal/shard/shard_builder.go#L149) · [行为专题](../shard.md)：Run 终端方法：创建分片池，执行 fn，fn 返回后自动 Close 所有分片。
 
 **源码说明与使用片段**（原文）：
 
@@ -724,11 +724,11 @@ instance.DefaultDistribution()
 func (b *ShardedGroupBuilder[T]) DefaultLogger() *ShardedGroupBuilder[T]
 ```
 
-[实现](../../internal/shard/sharded_group_builder.go#L87) · [行为专题](../shard.md)：DefaultLogger 重置为默认日志实现。
+[实现](../../internal/shard/sharded_group_builder.go#L87) · [行为专题](../shard.md)：DefaultLogger 清除当前日志器覆盖，恢复继承全局日志器。
 
 **源码说明与使用片段**（原文）：
 
-DefaultLogger 重置为默认日志实现。
+DefaultLogger 清除当前日志器覆盖，恢复继承全局日志器。
 
 
 **参数说明**：无显式参数。
@@ -741,9 +741,9 @@ DefaultLogger 重置为默认日志实现。
 instance.DefaultLogger()
 ```
 
-**生产建议**：此方法会设置全局日志器；在应用启动阶段统一配置，避免多个构建器相互覆盖。
+**生产建议**：在 Build/Run 或终端操作之前完成链式配置；以返回值继续调用，避免多个 goroutine 同时修改同一个构建器。默认值和设置顺序见专题。
 
-**注意事项**：立即修改全库日志器，并非只配置当前构建器，也不等待 Build/Run 才生效。DefaultLogger 或 Logger(nil) 恢复静默实现；日志后端须并发安全、及时返回，调用不恢复其 panic。应在启动时统一设置，避免业务组件相互覆盖。
+**注意事项**：只配置当前构建器及其后续执行，不修改全局或其他实例。DefaultLogger 或 Logger(nil) 清除当前覆盖并继承全局日志器；Context 替换和模式切换保留当前日志设置，已构建实例不受构建器后续更改影响。日志后端须并发安全、及时返回，调用不恢复其 panic。
 
 ## `*ShardedGroupBuilder[T].DefaultShardedGroupConfig`
 
@@ -867,11 +867,11 @@ b.cfg.Distribution = d
 func (b *ShardedGroupBuilder[T]) Logger(l core.Logger) *ShardedGroupBuilder[T]
 ```
 
-[实现](../../internal/shard/sharded_group_builder.go#L81) · [行为专题](../shard.md)：Logger 注入自定义日志实现，全局生效。
+[实现](../../internal/shard/sharded_group_builder.go#L81) · [行为专题](../shard.md)：Logger 仅为当前构建器及其后续执行设置日志器，不修改全局配置。
 
 **源码说明与使用片段**（原文）：
 
-Logger 注入自定义日志实现，全局生效。
+Logger 仅为当前构建器及其后续执行设置日志器，不修改全局配置。
 
 
 **参数说明**：
@@ -886,9 +886,9 @@ Logger 注入自定义日志实现，全局生效。
 instance.Logger(l)
 ```
 
-**生产建议**：此方法会设置全局日志器；在应用启动阶段统一配置，避免多个构建器相互覆盖。
+**生产建议**：在 Build/Run 或终端操作之前完成链式配置；以返回值继续调用，避免多个 goroutine 同时修改同一个构建器。默认值和设置顺序见专题。
 
-**注意事项**：立即修改全库日志器，并非只配置当前构建器，也不等待 Build/Run 才生效。DefaultLogger 或 Logger(nil) 恢复静默实现；日志后端须并发安全、及时返回，调用不恢复其 panic。应在启动时统一设置，避免业务组件相互覆盖。
+**注意事项**：只配置当前构建器及其后续执行，不修改全局或其他实例。DefaultLogger 或 Logger(nil) 清除当前覆盖并继承全局日志器；Context 替换和模式切换保留当前日志设置，已构建实例不受构建器后续更改影响。日志后端须并发安全、及时返回，调用不恢复其 panic。
 
 ## `*ShardedGroupBuilder[T].Run`
 

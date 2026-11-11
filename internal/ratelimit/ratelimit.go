@@ -265,6 +265,9 @@ func (rl *RateLimiter) WithStrategy(s Strategy) *RateLimiter {
 //
 //	rl, ctx := ratelimit.NewRateLimiter(100, time.Second).WithTraceID(ctx)
 func (rl *RateLimiter) WithTraceID(ctx context.Context) (*RateLimiter, context.Context) {
+	rl.mu.Lock()
+	ctx = core.CopyLogger(rl.ctx, ctx)
+	rl.mu.Unlock()
 	ctx = core.EnsureTraceID(ctx)
 	rl.mu.Lock()
 	rl.ctx = ctx

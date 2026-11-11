@@ -25,7 +25,7 @@ func NewPoolBuilder[T any]() *ShardPoolBuilder[T] {
 
 // Context 链式设置上下文，自动注入 trace_id。
 func (b *ShardPoolBuilder[T]) Context(ctx context.Context) *ShardPoolBuilder[T] {
-	b.ctx = core.EnsureTraceID(ctx)
+	b.ctx = core.EnsureTraceID(core.CopyLogger(b.ctx, ctx))
 	return b
 }
 
@@ -132,11 +132,17 @@ func (b *ShardPoolBuilder[T]) DefaultMaxResults() *ShardPoolBuilder[T] {
 	return b
 }
 
-// Logger 注入自定义日志实现，全局生效。
-func (b *ShardPoolBuilder[T]) Logger(l core.Logger) *ShardPoolBuilder[T] { core.SetLogger(l); return b }
+// Logger 仅为当前构建器及其后续执行设置日志器，不修改全局配置。
+func (b *ShardPoolBuilder[T]) Logger(l core.Logger) *ShardPoolBuilder[T] {
+	b.ctx = core.WithLogger(b.ctx, l)
+	return b
+}
 
-// DefaultLogger 重置为默认日志实现。
-func (b *ShardPoolBuilder[T]) DefaultLogger() *ShardPoolBuilder[T] { core.SetLogger(nil); return b }
+// DefaultLogger 清除当前日志器覆盖，恢复继承全局日志器。
+func (b *ShardPoolBuilder[T]) DefaultLogger() *ShardPoolBuilder[T] {
+	b.ctx = core.WithLogger(b.ctx, nil)
+	return b
+}
 
 // Run 终端方法：创建分片池，执行 fn，fn 返回后自动 Close 所有分片。
 // FailFast 时 fn 接收跨片共享 context；各片正常 Wait 不提前取消它，整体收尾后释放。

@@ -62,7 +62,7 @@ func NewGroupBuilder[T any]() *GroupBuilder[T] {
 
 // Context 链式设置上下文，自动注入 trace_id。
 func (b *GroupBuilder[T]) Context(ctx context.Context) *GroupBuilder[T] {
-	b.ctx = core.EnsureTraceID(ctx)
+	b.ctx = core.EnsureTraceID(core.CopyLogger(b.ctx, ctx))
 	return b
 }
 
@@ -148,11 +148,17 @@ func (b *GroupBuilder[T]) DefaultAutoScale() *GroupBuilder[T] {
 	return b
 }
 
-// Logger 注入自定义日志实现，全局生效。
-func (b *GroupBuilder[T]) Logger(l core.Logger) *GroupBuilder[T] { core.SetLogger(l); return b }
+// Logger 仅为当前构建器及其后续执行设置日志器，不修改全局配置。
+func (b *GroupBuilder[T]) Logger(l core.Logger) *GroupBuilder[T] {
+	b.ctx = core.WithLogger(b.ctx, l)
+	return b
+}
 
-// DefaultLogger 重置为默认日志实现。
-func (b *GroupBuilder[T]) DefaultLogger() *GroupBuilder[T] { core.SetLogger(nil); return b }
+// DefaultLogger 清除当前日志器覆盖，恢复继承全局日志器。
+func (b *GroupBuilder[T]) DefaultLogger() *GroupBuilder[T] {
+	b.ctx = core.WithLogger(b.ctx, nil)
+	return b
+}
 
 // Pool 注入外部协程池，构建的 Group 将使用该池执行任务。
 func (b *GroupBuilder[T]) Pool(p *pool.Pool[T]) *GroupBuilder[T] { b.extPool = p; return b }

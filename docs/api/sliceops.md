@@ -374,7 +374,7 @@ instance.ForEachBatch(fn)
 func (b *ParallelSlice[T, R]) Logger(l core.Logger) *ParallelSlice[T, R]
 ```
 
-[实现](../../internal/sliceops/slice_parallel.go#L91) · [行为专题](../mapreduce.md)：设置全局日志实现，并返回当前构建器；不局限于本实例。
+[实现](../../internal/sliceops/slice_parallel.go#L91) · [行为专题](../mapreduce.md)：仅设置当前构建器及其后续执行使用的日志器，并返回自身；不修改全局或其他实例。
 
 **参数说明**：
 
@@ -390,7 +390,7 @@ instance.Logger(l)
 
 **生产建议**：尽量在应用启动时设置全局状态；日志后端应支持并发调用。
 
-**注意事项**：立即修改全库日志器，并非只配置当前构建器，也不等待 Build/Run 才生效。DefaultLogger 或 Logger(nil) 恢复静默实现；日志后端须并发安全、及时返回，调用不恢复其 panic。应在启动时统一设置，避免业务组件相互覆盖。
+**注意事项**：只配置当前构建器及其后续执行，不修改全局或其他实例。DefaultLogger 或 Logger(nil) 清除当前覆盖并继承全局日志器；Context 替换和模式切换保留当前日志设置，已构建实例不受构建器后续更改影响。日志后端须并发安全、及时返回，调用不恢复其 panic。
 
 ## `*ParallelSlice[T, R].Map`
 
@@ -879,7 +879,7 @@ instance.ForEach(fn)
 func (b *SerialSlice[T, R]) Logger(l core.Logger) *SerialSlice[T, R]
 ```
 
-[实现](../../internal/sliceops/slice_serial.go#L40) · [行为专题](../mapreduce.md)：设置全局日志实现，并返回当前构建器；不局限于本实例。
+[实现](../../internal/sliceops/slice_serial.go#L40) · [行为专题](../mapreduce.md)：仅设置当前构建器及其后续执行使用的日志器，并返回自身；不修改全局或其他实例。
 
 **参数说明**：
 
@@ -895,7 +895,7 @@ instance.Logger(l)
 
 **生产建议**：尽量在应用启动时设置全局状态；日志后端应支持并发调用。
 
-**注意事项**：立即修改全库日志器，并非只配置当前构建器，也不等待 Build/Run 才生效。DefaultLogger 或 Logger(nil) 恢复静默实现；日志后端须并发安全、及时返回，调用不恢复其 panic。应在启动时统一设置，避免业务组件相互覆盖。
+**注意事项**：只配置当前构建器及其后续执行，不修改全局或其他实例。DefaultLogger 或 Logger(nil) 清除当前覆盖并继承全局日志器；Context 替换和模式切换保留当前日志设置，已构建实例不受构建器后续更改影响。日志后端须并发安全、及时返回，调用不恢复其 panic。
 
 ## `*SerialSlice[T, R].Map`
 
@@ -1227,11 +1227,11 @@ instance.DefaultFailFast()
 func (b *SliceBuilder[T, R]) DefaultLogger() *SliceBuilder[T, R]
 ```
 
-[实现](../../internal/sliceops/slice_builder.go#L139) · [行为专题](../mapreduce.md)：DefaultLogger 重置为默认日志实现（静默模式）。
+[实现](../../internal/sliceops/slice_builder.go#L139) · [行为专题](../mapreduce.md)：DefaultLogger 清除当前日志器覆盖，恢复继承全局日志器。
 
 **源码说明与使用片段**（原文）：
 
-DefaultLogger 重置为默认日志实现（静默模式）。
+DefaultLogger 清除当前日志器覆盖，恢复继承全局日志器。
 
 	sb.DefaultLogger().Map(fn)
 
@@ -1246,9 +1246,9 @@ DefaultLogger 重置为默认日志实现（静默模式）。
 instance.DefaultLogger()
 ```
 
-**生产建议**：此方法会设置全局日志器；在应用启动阶段统一配置，避免多个构建器相互覆盖。
+**生产建议**：在 Build/Run 或终端操作之前完成链式配置；以返回值继续调用，避免多个 goroutine 同时修改同一个构建器。默认值和设置顺序见专题。
 
-**注意事项**：立即修改全库日志器，并非只配置当前构建器，也不等待 Build/Run 才生效。DefaultLogger 或 Logger(nil) 恢复静默实现；日志后端须并发安全、及时返回，调用不恢复其 panic。应在启动时统一设置，避免业务组件相互覆盖。
+**注意事项**：只配置当前构建器及其后续执行，不修改全局或其他实例。DefaultLogger 或 Logger(nil) 清除当前覆盖并继承全局日志器；Context 替换和模式切换保留当前日志设置，已构建实例不受构建器后续更改影响。日志后端须并发安全、及时返回，调用不恢复其 panic。
 
 ## `*SliceBuilder[T, R].DefaultPool`
 
@@ -1473,11 +1473,11 @@ instance.ForEachBatch(fn)
 func (b *SliceBuilder[T, R]) Logger(l core.Logger) *SliceBuilder[T, R]
 ```
 
-[实现](../../internal/sliceops/slice_builder.go#L131) · [行为专题](../mapreduce.md)：Logger 注入自定义日志实现，全局生效。
+[实现](../../internal/sliceops/slice_builder.go#L131) · [行为专题](../mapreduce.md)：Logger 仅为当前构建器及其后续执行设置日志器，不修改全局配置。
 
 **源码说明与使用片段**（原文）：
 
-Logger 注入自定义日志实现，全局生效。
+Logger 仅为当前构建器及其后续执行设置日志器，不修改全局配置。
 
 	l: core.Logger 接口实现。
 
@@ -1496,9 +1496,9 @@ Logger 注入自定义日志实现，全局生效。
 instance.Logger(l)
 ```
 
-**生产建议**：此方法会设置全局日志器；在应用启动阶段统一配置，避免多个构建器相互覆盖。
+**生产建议**：在 Build/Run 或终端操作之前完成链式配置；以返回值继续调用，避免多个 goroutine 同时修改同一个构建器。默认值和设置顺序见专题。
 
-**注意事项**：立即修改全库日志器，并非只配置当前构建器，也不等待 Build/Run 才生效。DefaultLogger 或 Logger(nil) 恢复静默实现；日志后端须并发安全、及时返回，调用不恢复其 panic。应在启动时统一设置，避免业务组件相互覆盖。
+**注意事项**：只配置当前构建器及其后续执行，不修改全局或其他实例。DefaultLogger 或 Logger(nil) 清除当前覆盖并继承全局日志器；Context 替换和模式切换保留当前日志设置，已构建实例不受构建器后续更改影响。日志后端须并发安全、及时返回，调用不恢复其 panic。
 
 ## `*SliceBuilder[T, R].Map`
 

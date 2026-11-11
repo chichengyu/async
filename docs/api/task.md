@@ -307,7 +307,7 @@ instance.WaitTimeout(timeout)
 func (r *BoundedRunner) Available() int
 ```
 
-[实现](../../internal/task/bounded.go#L103) · [行为专题](../task.md)：Available 返回当前可用的并发槽位数。
+[实现](../../internal/task/bounded.go#L109) · [行为专题](../task.md)：Available 返回当前可用的并发槽位数。
 
 **源码说明与使用片段**（原文）：
 
@@ -334,7 +334,7 @@ instance.Available()
 func (r *BoundedRunner) Busy() int
 ```
 
-[实现](../../internal/task/bounded.go#L109) · [行为专题](../task.md)：Busy 返回当前已占用槽位数，包含取得槽位后尚未开始执行的任务。
+[实现](../../internal/task/bounded.go#L115) · [行为专题](../task.md)：Busy 返回当前已占用槽位数，包含取得槽位后尚未开始执行的任务。
 
 **源码说明与使用片段**（原文）：
 
@@ -361,7 +361,7 @@ instance.Busy()
 func (r *BoundedRunner) Max() int
 ```
 
-[实现](../../internal/task/bounded.go#L98) · [行为专题](../task.md)：Max 返回业务许可容量，不是进程 goroutine 数上限。
+[实现](../../internal/task/bounded.go#L104) · [行为专题](../task.md)：Max 返回业务许可容量，不是进程 goroutine 数上限。
 
 **源码说明与使用片段**（原文）：
 
@@ -388,7 +388,7 @@ instance.Max()
 func (b *BoundedRunnerBuilder) Build() *BoundedRunner
 ```
 
-[实现](../../internal/task/bounded.go#L79) · [行为专题](../task.md)：Build 创建 BoundedRunner 实例。
+[实现](../../internal/task/bounded.go#L83) · [行为专题](../task.md)：Build 创建 BoundedRunner 实例。
 
 **源码说明与使用片段**（原文）：
 
@@ -415,11 +415,11 @@ instance.Build()
 func (b *BoundedRunnerBuilder) Context(ctx context.Context) *BoundedRunnerBuilder
 ```
 
-[实现](../../internal/task/bounded.go#L58) · [行为专题](../task.md)：Context 设置构建器上下文并注入 trace_id；Build 创建的执行器不保存该上下文。
+[实现](../../internal/task/bounded.go#L59) · [行为专题](../task.md)：Context 设置构建器上下文并注入 trace_id；Build 仅保留局部日志设置，不继承其取消和期限。
 
 **源码说明与使用片段**（原文）：
 
-Context 设置构建器上下文并注入 trace\_id；Build 创建的执行器不保存该上下文。
+Context 设置构建器上下文并注入 trace\_id；Build 仅保留局部日志设置，不继承其取消和期限。
 
 
 **参数说明**：
@@ -436,7 +436,7 @@ instance.Context(ctx)
 
 **生产建议**：在 Build/Run 或终端操作之前完成链式配置；以返回值继续调用，避免多个 goroutine 同时修改同一个构建器。默认值和设置顺序见专题。
 
-**注意事项**：只保存经 trace_id 处理的 context，须非 nil；Build 创建的 BoundedRunner 不保存此字段，不能用它取消后续任务。每次 BoundedGo/BoundedGoResult 必须另传业务 context，配置不与 Build 并发。
+**注意事项**：保存经 trace_id 处理的 context，须非 nil；Build 仅保留局部日志设置，不继承此 context 的取消、期限和业务值。每次 BoundedGo/BoundedGoResult 必须另传业务 context，配置不与 Build 并发。
 
 ## `*BoundedRunnerBuilder.DefaultLogger`
 
@@ -444,11 +444,11 @@ instance.Context(ctx)
 func (b *BoundedRunnerBuilder) DefaultLogger() *BoundedRunnerBuilder
 ```
 
-[实现](../../internal/task/bounded.go#L76) · [行为专题](../task.md)：DefaultLogger 重置为默认日志实现。
+[实现](../../internal/task/bounded.go#L77) · [行为专题](../task.md)：DefaultLogger 清除当前日志器覆盖，恢复继承全局日志器。
 
 **源码说明与使用片段**（原文）：
 
-DefaultLogger 重置为默认日志实现。
+DefaultLogger 清除当前日志器覆盖，恢复继承全局日志器。
 
 
 **参数说明**：无显式参数。
@@ -461,9 +461,9 @@ DefaultLogger 重置为默认日志实现。
 instance.DefaultLogger()
 ```
 
-**生产建议**：此方法会设置全局日志器；在应用启动阶段统一配置，避免多个构建器相互覆盖。
+**生产建议**：在 Build/Run 或终端操作之前完成链式配置；以返回值继续调用，避免多个 goroutine 同时修改同一个构建器。默认值和设置顺序见专题。
 
-**注意事项**：立即修改全库日志器，并非只配置当前构建器，也不等待 Build/Run 才生效。DefaultLogger 或 Logger(nil) 恢复静默实现；日志后端须并发安全、及时返回，调用不恢复其 panic。应在启动时统一设置，避免业务组件相互覆盖。
+**注意事项**：只配置当前构建器及其后续执行，不修改全局或其他实例。DefaultLogger 或 Logger(nil) 清除当前覆盖并继承全局日志器；Context 替换和模式切换保留当前日志设置，已构建实例不受构建器后续更改影响。日志后端须并发安全、及时返回，调用不恢复其 panic。
 
 ## `*BoundedRunnerBuilder.Logger`
 
@@ -471,11 +471,11 @@ instance.DefaultLogger()
 func (b *BoundedRunnerBuilder) Logger(l core.Logger) *BoundedRunnerBuilder
 ```
 
-[实现](../../internal/task/bounded.go#L70) · [行为专题](../task.md)：Logger 注入自定义日志实现，全局生效。
+[实现](../../internal/task/bounded.go#L71) · [行为专题](../task.md)：Logger 仅为当前构建器及其后续执行设置日志器，不修改全局配置。
 
 **源码说明与使用片段**（原文）：
 
-Logger 注入自定义日志实现，全局生效。
+Logger 仅为当前构建器及其后续执行设置日志器，不修改全局配置。
 
 
 **参数说明**：
@@ -490,9 +490,9 @@ Logger 注入自定义日志实现，全局生效。
 instance.Logger(l)
 ```
 
-**生产建议**：此方法会设置全局日志器；在应用启动阶段统一配置，避免多个构建器相互覆盖。
+**生产建议**：在 Build/Run 或终端操作之前完成链式配置；以返回值继续调用，避免多个 goroutine 同时修改同一个构建器。默认值和设置顺序见专题。
 
-**注意事项**：立即修改全库日志器，并非只配置当前构建器，也不等待 Build/Run 才生效。DefaultLogger 或 Logger(nil) 恢复静默实现；日志后端须并发安全、及时返回，调用不恢复其 panic。应在启动时统一设置，避免业务组件相互覆盖。
+**注意事项**：只配置当前构建器及其后续执行，不修改全局或其他实例。DefaultLogger 或 Logger(nil) 清除当前覆盖并继承全局日志器；Context 替换和模式切换保留当前日志设置，已构建实例不受构建器后续更改影响。日志后端须并发安全、及时返回，调用不恢复其 panic。
 
 ## `*BoundedRunnerBuilder.Max`
 
@@ -500,7 +500,7 @@ instance.Logger(l)
 func (b *BoundedRunnerBuilder) Max(n int) *BoundedRunnerBuilder
 ```
 
-[实现](../../internal/task/bounded.go#L64) · [行为专题](../task.md)：Max 设置业务许可容量。<=0 使用默认 IO 并发度。
+[实现](../../internal/task/bounded.go#L65) · [行为专题](../task.md)：Max 设置业务许可容量。<=0 使用默认 IO 并发度。
 
 **源码说明与使用片段**（原文）：
 
@@ -693,11 +693,11 @@ instance.DefaultBounded()
 func (b *TaskBuilder[T]) DefaultLogger() *TaskBuilder[T]
 ```
 
-[实现](../../internal/task/task_builder.go#L80) · [行为专题](../task.md)：DefaultLogger 重置为默认日志实现。
+[实现](../../internal/task/task_builder.go#L83) · [行为专题](../task.md)：DefaultLogger 清除当前日志器覆盖，恢复继承全局日志器。
 
 **源码说明与使用片段**（原文）：
 
-DefaultLogger 重置为默认日志实现。
+DefaultLogger 清除当前日志器覆盖，恢复继承全局日志器。
 
 
 **参数说明**：无显式参数。
@@ -710,9 +710,9 @@ DefaultLogger 重置为默认日志实现。
 instance.DefaultLogger()
 ```
 
-**生产建议**：此方法会设置全局日志器；在应用启动阶段统一配置，避免多个构建器相互覆盖。
+**生产建议**：在 Build/Run 或终端操作之前完成链式配置；以返回值继续调用，避免多个 goroutine 同时修改同一个构建器。默认值和设置顺序见专题。
 
-**注意事项**：立即修改全库日志器，并非只配置当前构建器，也不等待 Build/Run 才生效。DefaultLogger 或 Logger(nil) 恢复静默实现；日志后端须并发安全、及时返回，调用不恢复其 panic。应在启动时统一设置，避免业务组件相互覆盖。
+**注意事项**：只配置当前构建器及其后续执行，不修改全局或其他实例。DefaultLogger 或 Logger(nil) 清除当前覆盖并继承全局日志器；Context 替换和模式切换保留当前日志设置，已构建实例不受构建器后续更改影响。日志后端须并发安全、及时返回，调用不恢复其 panic。
 
 ## `*TaskBuilder[T].DefaultTimeout`
 
@@ -747,7 +747,7 @@ instance.DefaultTimeout()
 func (b *TaskBuilder[T]) Go(fn func(context.Context) (T, error)) *AsyncResult[T]
 ```
 
-[实现](../../internal/task/task_builder.go#L87) · [行为专题](../task.md)：Go 启动异步任务，返回 AsyncResult[T]。
+[实现](../../internal/task/task_builder.go#L93) · [行为专题](../task.md)：Go 启动异步任务，返回 AsyncResult[T]。
 
 **源码说明与使用片段**（原文）：
 
@@ -776,7 +776,7 @@ instance.Go(fn)
 func (b *TaskBuilder[T]) GoAct(fn func(context.Context) error) *AsyncResult[NoResult]
 ```
 
-[实现](../../internal/task/task_builder.go#L107) · [行为专题](../task.md)：GoAct 启动无返回值异步任务，返回 AsyncResult[NoResult]。
+[实现](../../internal/task/task_builder.go#L113) · [行为专题](../task.md)：GoAct 启动无返回值异步任务，返回 AsyncResult[NoResult]。
 
 **源码说明与使用片段**（原文）：
 
@@ -805,7 +805,7 @@ instance.GoAct(fn)
 func (b *TaskBuilder[T]) GoResult(fn func(context.Context) (T, error)) Task[T]
 ```
 
-[实现](../../internal/task/task_builder.go#L97) · [行为专题](../task.md)：GoResult 启动可取消的异步任务，返回 Task[T]。
+[实现](../../internal/task/task_builder.go#L103) · [行为专题](../task.md)：GoResult 启动可取消的异步任务，返回 Task[T]。
 
 **源码说明与使用片段**（原文）：
 
@@ -834,7 +834,7 @@ instance.GoResult(fn)
 func (b *TaskBuilder[T]) GoResultAct(fn func(context.Context) error) Task[NoResult]
 ```
 
-[实现](../../internal/task/task_builder.go#L117) · [行为专题](../task.md)：GoResultAct 启动无返回值的可取消异步任务，返回 Task[NoResult]。
+[实现](../../internal/task/task_builder.go#L123) · [行为专题](../task.md)：GoResultAct 启动无返回值的可取消异步任务，返回 Task[NoResult]。
 
 **源码说明与使用片段**（原文）：
 
@@ -863,11 +863,11 @@ instance.GoResultAct(fn)
 func (b *TaskBuilder[T]) Logger(l core.Logger) *TaskBuilder[T]
 ```
 
-[实现](../../internal/task/task_builder.go#L77) · [行为专题](../task.md)：Logger 注入自定义日志实现，全局生效。
+[实现](../../internal/task/task_builder.go#L77) · [行为专题](../task.md)：Logger 仅为当前构建器及其后续执行设置日志器，不修改全局配置。
 
 **源码说明与使用片段**（原文）：
 
-Logger 注入自定义日志实现，全局生效。
+Logger 仅为当前构建器及其后续执行设置日志器，不修改全局配置。
 
 
 **参数说明**：
@@ -882,9 +882,9 @@ Logger 注入自定义日志实现，全局生效。
 instance.Logger(l)
 ```
 
-**生产建议**：此方法会设置全局日志器；在应用启动阶段统一配置，避免多个构建器相互覆盖。
+**生产建议**：在 Build/Run 或终端操作之前完成链式配置；以返回值继续调用，避免多个 goroutine 同时修改同一个构建器。默认值和设置顺序见专题。
 
-**注意事项**：立即修改全库日志器，并非只配置当前构建器，也不等待 Build/Run 才生效。DefaultLogger 或 Logger(nil) 恢复静默实现；日志后端须并发安全、及时返回，调用不恢复其 panic。应在启动时统一设置，避免业务组件相互覆盖。
+**注意事项**：只配置当前构建器及其后续执行，不修改全局或其他实例。DefaultLogger 或 Logger(nil) 清除当前覆盖并继承全局日志器；Context 替换和模式切换保留当前日志设置，已构建实例不受构建器后续更改影响。日志后端须并发安全、及时返回，调用不恢复其 panic。
 
 ## `*TaskBuilder[T].WithTimeout`
 
@@ -927,7 +927,7 @@ b.timeout = d
 func BoundedGo[T any](r *BoundedRunner, ctx context.Context, fn func(context.Context) (T, error)) *AsyncResult[T]
 ```
 
-[实现](../../internal/task/bounded.go#L120) · [行为专题](../task.md)：BoundedGo 通过信号量限流后启动异步任务，返回 AsyncResult[T]。
+[实现](../../internal/task/bounded.go#L126) · [行为专题](../task.md)：BoundedGo 通过信号量限流后启动异步任务，返回 AsyncResult[T]。
 
 **源码说明与使用片段**（原文）：
 
@@ -960,7 +960,7 @@ task.BoundedGo[T](r, ctx, fn)
 func BoundedGoAct(r *BoundedRunner, ctx context.Context, fn func(context.Context) error) *AsyncResultNoResult
 ```
 
-[实现](../../internal/task/bounded.go#L149) · [行为专题](../task.md)：BoundedGoAct 带限流的无返回值异步任务，返回 AsyncResultNoResult。
+[实现](../../internal/task/bounded.go#L156) · [行为专题](../task.md)：BoundedGoAct 带限流的无返回值异步任务，返回 AsyncResultNoResult。
 
 **源码说明与使用片段**（原文）：
 
@@ -991,7 +991,7 @@ task.BoundedGoAct(r, ctx, fn)
 func BoundedGoResult[T any](r *BoundedRunner, ctx context.Context, fn func(context.Context) (T, error)) Task[T]
 ```
 
-[实现](../../internal/task/bounded.go#L175) · [行为专题](../task.md)：BoundedGoResult 带限流的可取消异步任务，返回 Task[T]。
+[实现](../../internal/task/bounded.go#L183) · [行为专题](../task.md)：BoundedGoResult 带限流的可取消异步任务，返回 Task[T]。
 
 **源码说明与使用片段**（原文）：
 
@@ -1199,7 +1199,7 @@ task.GoResultAct(ctx, fn)
 func NewBoundedRunner(max int) *BoundedRunner
 ```
 
-[实现](../../internal/task/bounded.go#L85) · [行为专题](../task.md)：NewBoundedRunner 创建一个限制同时持有许可的业务回调数的执行器。
+[实现](../../internal/task/bounded.go#L91) · [行为专题](../task.md)：NewBoundedRunner 创建一个限制同时持有许可的业务回调数的执行器。
 
 **源码说明与使用片段**（原文）：
 
@@ -1228,7 +1228,7 @@ task.NewBoundedRunner(max)
 func NewBoundedRunnerBuilder() *BoundedRunnerBuilder
 ```
 
-[实现](../../internal/task/bounded.go#L50) · [行为专题](../task.md)：NewBoundedRunnerBuilder 创建 BoundedRunner 链式构建器。
+[实现](../../internal/task/bounded.go#L51) · [行为专题](../task.md)：NewBoundedRunnerBuilder 创建 BoundedRunner 链式构建器。
 
 **源码说明与使用片段**（原文）：
 
@@ -1255,7 +1255,7 @@ task.NewBoundedRunnerBuilder()
 func NewDefaultBoundedRunner() *BoundedRunner
 ```
 
-[实现](../../internal/task/bounded.go#L93) · [行为专题](../task.md)：NewDefaultBoundedRunner 使用默认 IO 并发度创建执行器。
+[实现](../../internal/task/bounded.go#L99) · [行为专题](../task.md)：NewDefaultBoundedRunner 使用默认 IO 并发度创建执行器。
 
 **源码说明与使用片段**（原文）：
 

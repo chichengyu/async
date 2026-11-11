@@ -122,7 +122,7 @@ instance.Release()
 func (b *AdaptiveSubBuilder) Build() *AdaptiveRateLimiter
 ```
 
-[实现](../../internal/ratelimit/ratelimit_builder.go#L305) · [行为专题](../ratelimit.md)：Build 构建 AdaptiveRateLimiter 实例。
+[实现](../../internal/ratelimit/ratelimit_builder.go#L327) · [行为专题](../ratelimit.md)：Build 构建 AdaptiveRateLimiter 实例。
 
 **源码说明与使用片段**（原文）：
 
@@ -141,7 +141,7 @@ instance.Build()
 
 **生产建议**：在 Build/Run 或终端操作之前完成链式配置；以返回值继续调用，避免多个 goroutine 同时修改同一个构建器。默认值和设置顺序见专题。
 
-**注意事项**：每次创建独立实例，不回写规范化后的字段；保存的 context 不传入实例，阻塞获取须另传 context。单片最小值非正按 1，最大值不高于最小值时提升至最小值，初始为两者中点。分片先分配总最小/最大值，每片至少 1，再规范化；许可须成对释放。普通 Adaptive 无 Close 方法且无补充 goroutine，分片版本用完 Close。
+**注意事项**：每次创建独立实例，不回写规范化后的字段；不继承所保存 context 的取消、期限和业务值，RateLimiter 及其分片保留局部日志设置，阻塞获取须另传 context。单片最小值非正按 1，最大值不高于最小值时提升至最小值，初始为两者中点。分片先分配总最小/最大值，每片至少 1，再规范化；许可须成对释放。普通 Adaptive 无 Close 方法且无补充 goroutine，分片版本用完 Close。
 
 ## `*AdaptiveSubBuilder.Context`
 
@@ -149,7 +149,7 @@ instance.Build()
 func (b *AdaptiveSubBuilder) Context(ctx context.Context) *AdaptiveSubBuilder
 ```
 
-[实现](../../internal/ratelimit/ratelimit_builder.go#L293) · [行为专题](../ratelimit.md)：Context 链式设置上下文，自动注入 trace_id。
+[实现](../../internal/ratelimit/ratelimit_builder.go#L309) · [行为专题](../ratelimit.md)：Context 链式设置上下文，自动注入 trace_id。
 
 **源码说明与使用片段**（原文）：
 
@@ -170,7 +170,7 @@ instance.Context(ctx)
 
 **生产建议**：在 Build/Run 或终端操作之前完成链式配置；以返回值继续调用，避免多个 goroutine 同时修改同一个构建器。默认值和设置顺序见专题。
 
-**注意事项**：只替换构建器保存的 context 并确保 trace_id，须非 nil；当前 Build 不把此字段传入最终限流器。阻塞 Wait/Acquire 需另传可取消 context，关闭仍由实例所有者管理；已创建的子构建器不随父构建器变更。
+**注意事项**：替换构建器保存的 context 并确保 trace_id，须非 nil；保留当前局部日志设置，Build 不继承其取消、期限和业务值。RateLimiter 及其分片实例保留局部日志设置，WithTraceID 换绑后仍使用它；其他模式没有内部日志调用。阻塞 Wait/Acquire 需另传可取消 context，关闭仍由实例所有者管理；已创建的子构建器不随父构建器变更。
 
 ## `*AdaptiveSubBuilder.DefaultLogger`
 
@@ -178,11 +178,11 @@ instance.Context(ctx)
 func (b *AdaptiveSubBuilder) DefaultLogger() *AdaptiveSubBuilder
 ```
 
-[实现](../../internal/ratelimit/ratelimit_builder.go#L302) · [行为专题](../ratelimit.md)：DefaultLogger 重置为默认日志实现。
+[实现](../../internal/ratelimit/ratelimit_builder.go#L321) · [行为专题](../ratelimit.md)：DefaultLogger 清除当前日志器覆盖，恢复继承全局日志器。
 
 **源码说明与使用片段**（原文）：
 
-DefaultLogger 重置为默认日志实现。
+DefaultLogger 清除当前日志器覆盖，恢复继承全局日志器。
 
 
 **参数说明**：无显式参数。
@@ -195,9 +195,9 @@ DefaultLogger 重置为默认日志实现。
 instance.DefaultLogger()
 ```
 
-**生产建议**：此方法会设置全局日志器；在应用启动阶段统一配置，避免多个构建器相互覆盖。
+**生产建议**：在 Build/Run 或终端操作之前完成链式配置；以返回值继续调用，避免多个 goroutine 同时修改同一个构建器。默认值和设置顺序见专题。
 
-**注意事项**：立即修改全库日志器，并非只配置当前构建器，也不等待 Build/Run 才生效。DefaultLogger 或 Logger(nil) 恢复静默实现；日志后端须并发安全、及时返回，调用不恢复其 panic。应在启动时统一设置，避免业务组件相互覆盖。
+**注意事项**：只配置当前构建器及其后续执行，不修改全局或其他实例。DefaultLogger 或 Logger(nil) 清除当前覆盖并继承全局日志器；Context 替换和模式切换保留当前日志设置，已构建实例不受构建器后续更改影响。日志后端须并发安全、及时返回，调用不恢复其 panic。
 
 ## `*AdaptiveSubBuilder.DefaultMaxWorker`
 
@@ -205,7 +205,7 @@ instance.DefaultLogger()
 func (b *AdaptiveSubBuilder) DefaultMaxWorker() *AdaptiveSubBuilder
 ```
 
-[实现](../../internal/ratelimit/ratelimit_builder.go#L316) · [行为专题](../ratelimit.md)：DefaultMaxWorker 使用默认最大并发度（core.IO() × 10）。
+[实现](../../internal/ratelimit/ratelimit_builder.go#L338) · [行为专题](../ratelimit.md)：DefaultMaxWorker 使用默认最大并发度（core.IO() × 10）。
 
 **源码说明与使用片段**（原文）：
 
@@ -232,7 +232,7 @@ instance.DefaultMaxWorker()
 func (b *AdaptiveSubBuilder) DefaultMinWorker() *AdaptiveSubBuilder
 ```
 
-[实现](../../internal/ratelimit/ratelimit_builder.go#L310) · [行为专题](../ratelimit.md)：DefaultMinWorker 使用默认最小并发度（core.IO()）。
+[实现](../../internal/ratelimit/ratelimit_builder.go#L332) · [行为专题](../ratelimit.md)：DefaultMinWorker 使用默认最小并发度（core.IO()）。
 
 **源码说明与使用片段**（原文）：
 
@@ -259,11 +259,11 @@ instance.DefaultMinWorker()
 func (b *AdaptiveSubBuilder) Logger(l core.Logger) *AdaptiveSubBuilder
 ```
 
-[实现](../../internal/ratelimit/ratelimit_builder.go#L299) · [行为专题](../ratelimit.md)：Logger 注入自定义日志实现，全局生效。
+[实现](../../internal/ratelimit/ratelimit_builder.go#L315) · [行为专题](../ratelimit.md)：Logger 仅为当前构建器及其后续执行设置日志器，不修改全局配置。
 
 **源码说明与使用片段**（原文）：
 
-Logger 注入自定义日志实现，全局生效。
+Logger 仅为当前构建器及其后续执行设置日志器，不修改全局配置。
 
 
 **参数说明**：
@@ -278,9 +278,9 @@ Logger 注入自定义日志实现，全局生效。
 instance.Logger(l)
 ```
 
-**生产建议**：此方法会设置全局日志器；在应用启动阶段统一配置，避免多个构建器相互覆盖。
+**生产建议**：在 Build/Run 或终端操作之前完成链式配置；以返回值继续调用，避免多个 goroutine 同时修改同一个构建器。默认值和设置顺序见专题。
 
-**注意事项**：立即修改全库日志器，并非只配置当前构建器，也不等待 Build/Run 才生效。DefaultLogger 或 Logger(nil) 恢复静默实现；日志后端须并发安全、及时返回，调用不恢复其 panic。应在启动时统一设置，避免业务组件相互覆盖。
+**注意事项**：只配置当前构建器及其后续执行，不修改全局或其他实例。DefaultLogger 或 Logger(nil) 清除当前覆盖并继承全局日志器；Context 替换和模式切换保留当前日志设置，已构建实例不受构建器后续更改影响。日志后端须并发安全、及时返回，调用不恢复其 panic。
 
 ## `*AdaptiveSubBuilder.MaxWorker`
 
@@ -288,7 +288,7 @@ instance.Logger(l)
 func (b *AdaptiveSubBuilder) MaxWorker(n int) *AdaptiveSubBuilder
 ```
 
-[实现](../../internal/ratelimit/ratelimit_builder.go#L287) · [行为专题](../ratelimit.md)：MaxWorker 设置并发度的上限阈值。
+[实现](../../internal/ratelimit/ratelimit_builder.go#L303) · [行为专题](../ratelimit.md)：MaxWorker 设置并发度的上限阈值。
 
 **源码说明与使用片段**（原文）：
 
@@ -323,7 +323,7 @@ b.maxRate = n
 func (b *AdaptiveSubBuilder) MinWorker(n int) *AdaptiveSubBuilder
 ```
 
-[实现](../../internal/ratelimit/ratelimit_builder.go#L281) · [行为专题](../ratelimit.md)：MinWorker 设置最小并发度（负载低时不会低于此值）。
+[实现](../../internal/ratelimit/ratelimit_builder.go#L297) · [行为专题](../ratelimit.md)：MinWorker 设置最小并发度（负载低时不会低于此值）。
 
 **源码说明与使用片段**（原文）：
 
@@ -358,7 +358,7 @@ b.minRate = n
 func (rl *RateLimiter) Acquire(ctx context.Context) error
 ```
 
-[实现](../../internal/ratelimit/ratelimit.go#L288) · [行为专题](../ratelimit.md)：Acquire 根据当前策略获取令牌。默认 Block 先取可用令牌，无令牌时等待许可或 ctx 取消。
+[实现](../../internal/ratelimit/ratelimit.go#L291) · [行为专题](../ratelimit.md)：Acquire 根据当前策略获取令牌。默认 Block 先取可用令牌，无令牌时等待许可或 ctx 取消。
 
 **源码说明与使用片段**（原文）：
 
@@ -399,7 +399,7 @@ instance.Acquire(ctx)
 func (rl *RateLimiter) Available() int
 ```
 
-[实现](../../internal/ratelimit/ratelimit.go#L508) · [行为专题](../ratelimit.md)：Available 返回当前可用令牌数。
+[实现](../../internal/ratelimit/ratelimit.go#L511) · [行为专题](../ratelimit.md)：Available 返回当前可用令牌数。
 
 **源码说明与使用片段**（原文）：
 
@@ -426,7 +426,7 @@ instance.Available()
 func (rl *RateLimiter) Close()
 ```
 
-[实现](../../internal/ratelimit/ratelimit.go#L415) · [行为专题](../ratelimit.md)：Close 停止限流器的令牌补充 goroutine 并关闭令牌通道。并发调用均等待关闭完成。
+[实现](../../internal/ratelimit/ratelimit.go#L418) · [行为专题](../ratelimit.md)：Close 停止限流器的令牌补充 goroutine 并关闭令牌通道。并发调用均等待关闭完成。
 
 **源码说明与使用片段**（原文）：
 
@@ -458,7 +458,7 @@ instance.Close()
 func (rl *RateLimiter) Release()
 ```
 
-[实现](../../internal/ratelimit/ratelimit.go#L376) · [行为专题](../ratelimit.md)：Release 归还令牌到限流器。通常在 defer 中调用。
+[实现](../../internal/ratelimit/ratelimit.go#L379) · [行为专题](../ratelimit.md)：Release 归还令牌到限流器。通常在 defer 中调用。
 
 **源码说明与使用片段**（原文）：
 
@@ -493,7 +493,7 @@ instance.Release()
 func (rl *RateLimiter) Resize(newRate int)
 ```
 
-[实现](../../internal/ratelimit/ratelimit.go#L453) · [行为专题](../ratelimit.md)：Resize 动态调整限流速率。newRate <= 0 或等于当前值时忽略。
+[实现](../../internal/ratelimit/ratelimit.go#L456) · [行为专题](../ratelimit.md)：Resize 动态调整限流速率。newRate <= 0 或等于当前值时忽略。
 
 **源码说明与使用片段**（原文）：
 
@@ -531,7 +531,7 @@ instance.Resize(newRate)
 func (rl *RateLimiter) Size() int
 ```
 
-[实现](../../internal/ratelimit/ratelimit.go#L503) · [行为专题](../ratelimit.md)：Size 返回当前配置额度（每 perDuration 窗口补充的令牌数，不固定为每秒）。
+[实现](../../internal/ratelimit/ratelimit.go#L506) · [行为专题](../ratelimit.md)：Size 返回当前配置额度（每 perDuration 窗口补充的令牌数，不固定为每秒）。
 
 **源码说明与使用片段**（原文）：
 
@@ -585,7 +585,7 @@ instance.Stop()
 func (rl *RateLimiter) Token(ctx context.Context) (*Token, error)
 ```
 
-[实现](../../internal/ratelimit/ratelimit.go#L551) · [行为专题](../ratelimit.md)：Token 获取一个自动释放的令牌包装器，配合 defer 使用更安全。
+[实现](../../internal/ratelimit/ratelimit.go#L554) · [行为专题](../ratelimit.md)：Token 获取一个自动释放的令牌包装器，配合 defer 使用更安全。
 
 **源码说明与使用片段**（原文）：
 
@@ -765,7 +765,7 @@ instance.Adaptive()
 
 **生产建议**：在 Build/Run 或终端操作之前完成链式配置；以返回值继续调用，避免多个 goroutine 同时修改同一个构建器。默认值和设置顺序见专题。
 
-**注意事项**：每次分配新的子构建器，只复制当前 context，模式参数初始为零；不会沿用此前子构建器的设置。Default* 需显式调用，其值不一定等于零值构建行为；Build 不传入所保存的 context。
+**注意事项**：每次分配新的子构建器，复制当前 context 及其局部日志设置，模式参数初始为零；不会沿用此前子构建器的设置。Default* 需显式调用，其值不一定等于零值构建行为；Build 不继承所保存 context 的取消、期限和业务值。
 
 ## `*RatelimitBuilder.Context`
 
@@ -794,7 +794,7 @@ instance.Context(ctx)
 
 **生产建议**：在 Build/Run 或终端操作之前完成链式配置；以返回值继续调用，避免多个 goroutine 同时修改同一个构建器。默认值和设置顺序见专题。
 
-**注意事项**：只替换构建器保存的 context 并确保 trace_id，须非 nil；当前 Build 不把此字段传入最终限流器。阻塞 Wait/Acquire 需另传可取消 context，关闭仍由实例所有者管理；已创建的子构建器不随父构建器变更。
+**注意事项**：替换构建器保存的 context 并确保 trace_id，须非 nil；保留当前局部日志设置，Build 不继承其取消、期限和业务值。RateLimiter 及其分片实例保留局部日志设置，WithTraceID 换绑后仍使用它；其他模式没有内部日志调用。阻塞 Wait/Acquire 需另传可取消 context，关闭仍由实例所有者管理；已创建的子构建器不随父构建器变更。
 
 ## `*RatelimitBuilder.DefaultLogger`
 
@@ -802,11 +802,11 @@ instance.Context(ctx)
 func (b *RatelimitBuilder) DefaultLogger() *RatelimitBuilder
 ```
 
-[实现](../../internal/ratelimit/ratelimit_builder.go#L75) · [行为专题](../ratelimit.md)：DefaultLogger 重置为默认日志实现。
+[实现](../../internal/ratelimit/ratelimit_builder.go#L78) · [行为专题](../ratelimit.md)：DefaultLogger 清除当前日志器覆盖，恢复继承全局日志器。
 
 **源码说明与使用片段**（原文）：
 
-DefaultLogger 重置为默认日志实现。
+DefaultLogger 清除当前日志器覆盖，恢复继承全局日志器。
 
 
 **参数说明**：无显式参数。
@@ -819,9 +819,9 @@ DefaultLogger 重置为默认日志实现。
 instance.DefaultLogger()
 ```
 
-**生产建议**：此方法会设置全局日志器；在应用启动阶段统一配置，避免多个构建器相互覆盖。
+**生产建议**：在 Build/Run 或终端操作之前完成链式配置；以返回值继续调用，避免多个 goroutine 同时修改同一个构建器。默认值和设置顺序见专题。
 
-**注意事项**：立即修改全库日志器，并非只配置当前构建器，也不等待 Build/Run 才生效。DefaultLogger 或 Logger(nil) 恢复静默实现；日志后端须并发安全、及时返回，调用不恢复其 panic。应在启动时统一设置，避免业务组件相互覆盖。
+**注意事项**：只配置当前构建器及其后续执行，不修改全局或其他实例。DefaultLogger 或 Logger(nil) 清除当前覆盖并继承全局日志器；Context 替换和模式切换保留当前日志设置，已构建实例不受构建器后续更改影响。日志后端须并发安全、及时返回，调用不恢复其 panic。
 
 ## `*RatelimitBuilder.Logger`
 
@@ -829,11 +829,11 @@ instance.DefaultLogger()
 func (b *RatelimitBuilder) Logger(l core.Logger) *RatelimitBuilder
 ```
 
-[实现](../../internal/ratelimit/ratelimit_builder.go#L72) · [行为专题](../ratelimit.md)：Logger 注入自定义日志实现，全局生效。
+[实现](../../internal/ratelimit/ratelimit_builder.go#L72) · [行为专题](../ratelimit.md)：Logger 仅为当前构建器及其后续执行设置日志器，不修改全局配置。
 
 **源码说明与使用片段**（原文）：
 
-Logger 注入自定义日志实现，全局生效。
+Logger 仅为当前构建器及其后续执行设置日志器，不修改全局配置。
 
 
 **参数说明**：
@@ -848,9 +848,9 @@ Logger 注入自定义日志实现，全局生效。
 instance.Logger(l)
 ```
 
-**生产建议**：此方法会设置全局日志器；在应用启动阶段统一配置，避免多个构建器相互覆盖。
+**生产建议**：在 Build/Run 或终端操作之前完成链式配置；以返回值继续调用，避免多个 goroutine 同时修改同一个构建器。默认值和设置顺序见专题。
 
-**注意事项**：立即修改全库日志器，并非只配置当前构建器，也不等待 Build/Run 才生效。DefaultLogger 或 Logger(nil) 恢复静默实现；日志后端须并发安全、及时返回，调用不恢复其 panic。应在启动时统一设置，避免业务组件相互覆盖。
+**注意事项**：只配置当前构建器及其后续执行，不修改全局或其他实例。DefaultLogger 或 Logger(nil) 清除当前覆盖并继承全局日志器；Context 替换和模式切换保留当前日志设置，已构建实例不受构建器后续更改影响。日志后端须并发安全、及时返回，调用不恢复其 panic。
 
 ## `*RatelimitBuilder.RateLimiter`
 
@@ -877,7 +877,7 @@ instance.RateLimiter()
 
 **生产建议**：在 Build/Run 或终端操作之前完成链式配置；以返回值继续调用，避免多个 goroutine 同时修改同一个构建器。默认值和设置顺序见专题。
 
-**注意事项**：每次分配新的子构建器，只复制当前 context，模式参数初始为零；不会沿用此前子构建器的设置。Default* 需显式调用，其值不一定等于零值构建行为；Build 不传入所保存的 context。
+**注意事项**：每次分配新的子构建器，复制当前 context 及其局部日志设置，模式参数初始为零；不会沿用此前子构建器的设置。Default* 需显式调用，其值不一定等于零值构建行为；Build 不继承所保存 context 的取消、期限和业务值。
 
 ## `*RatelimitBuilder.Sharded`
 
@@ -904,7 +904,7 @@ instance.Sharded()
 
 **生产建议**：在 Build/Run 或终端操作之前完成链式配置；以返回值继续调用，避免多个 goroutine 同时修改同一个构建器。默认值和设置顺序见专题。
 
-**注意事项**：每次分配新的子构建器，只复制当前 context，模式参数初始为零；不会沿用此前子构建器的设置。Default* 需显式调用，其值不一定等于零值构建行为；Build 不传入所保存的 context。
+**注意事项**：每次分配新的子构建器，复制当前 context 及其局部日志设置，模式参数初始为零；不会沿用此前子构建器的设置。Default* 需显式调用，其值不一定等于零值构建行为；Build 不继承所保存 context 的取消、期限和业务值。
 
 ## `*RatelimitBuilder.SlidingWindow`
 
@@ -931,7 +931,7 @@ instance.SlidingWindow()
 
 **生产建议**：复用同一个实例以共享窗口计数；拒绝后自行选择退避或降级。窗口记录消耗内存，按业务峰值确定 Limit；无需 Release 或 Close。
 
-**注意事项**：每次分配新的子构建器，只复制当前 context，模式参数初始为零；不会沿用此前子构建器的设置。Default* 需显式调用，其值不一定等于零值构建行为；Build 不传入所保存的 context。
+**注意事项**：每次分配新的子构建器，复制当前 context 及其局部日志设置，模式参数初始为零；不会沿用此前子构建器的设置。Default* 需显式调用，其值不一定等于零值构建行为；Build 不继承所保存 context 的取消、期限和业务值。
 
 ## `*RatelimitBuilder.TokenBucket`
 
@@ -958,7 +958,7 @@ instance.TokenBucket()
 
 **生产建议**：复用同一个令牌桶以共享额度；Allow/AllowN 只做非阻塞检查，拒绝后自行选择退避或降级。令牌按调用时的经过时间补充，无后台 ticker，也没有 Release。
 
-**注意事项**：每次分配新的子构建器，只复制当前 context，模式参数初始为零；不会沿用此前子构建器的设置。Default* 需显式调用，其值不一定等于零值构建行为；Build 不传入所保存的 context。
+**注意事项**：每次分配新的子构建器，复制当前 context 及其局部日志设置，模式参数初始为零；不会沿用此前子构建器的设置。Default* 需显式调用，其值不一定等于零值构建行为；Build 不继承所保存 context 的取消、期限和业务值。
 
 ## `*RatelimiterSubBuilder.Build`
 
@@ -966,7 +966,7 @@ instance.TokenBucket()
 func (b *RatelimiterSubBuilder) Build() *RateLimiter
 ```
 
-[实现](../../internal/ratelimit/ratelimit_builder.go#L125) · [行为专题](../ratelimit.md)：Build 构建 RateLimiter 实例。
+[实现](../../internal/ratelimit/ratelimit_builder.go#L134) · [行为专题](../ratelimit.md)：Build 构建 RateLimiter 实例。
 
 **源码说明与使用片段**（原文）：
 
@@ -985,7 +985,7 @@ instance.Build()
 
 **生产建议**：在 Build/Run 或终端操作之前完成链式配置；以返回值继续调用，避免多个 goroutine 同时修改同一个构建器。默认值和设置顺序见专题。
 
-**注意事项**：每次创建独立实例，不回写规范化后的字段；保存的 context 不传入实例，阻塞获取须另传 context。单片非正 Rate 按 IO()，分片按总量分配且每片至少 1；正数 Burst 开启突发路径。未配置的 Per 为 0，每个 100ms tick 补满，DefaultPer 才设为 1 秒。用完必须 Close。
+**注意事项**：每次创建独立实例，不回写规范化后的字段；不继承所保存 context 的取消、期限和业务值，RateLimiter 及其分片保留局部日志设置，阻塞获取须另传 context。单片非正 Rate 按 IO()，分片按总量分配且每片至少 1；正数 Burst 开启突发路径。未配置的 Per 为 0，每个 100ms tick 补满，DefaultPer 才设为 1 秒。用完必须 Close。
 
 ## `*RatelimiterSubBuilder.Burst`
 
@@ -993,7 +993,7 @@ instance.Build()
 func (b *RatelimiterSubBuilder) Burst(n int) *RatelimiterSubBuilder
 ```
 
-[实现](../../internal/ratelimit/ratelimit_builder.go#L104) · [行为专题](../ratelimit.md)：Burst 设置突发容量，允许短时间超过 Rate 速率的请求数。
+[实现](../../internal/ratelimit/ratelimit_builder.go#L110) · [行为专题](../ratelimit.md)：Burst 设置突发容量，允许短时间超过 Rate 速率的请求数。
 
 **源码说明与使用片段**（原文）：
 
@@ -1028,7 +1028,7 @@ b.burst = n
 func (b *RatelimiterSubBuilder) Context(ctx context.Context) *RatelimiterSubBuilder
 ```
 
-[实现](../../internal/ratelimit/ratelimit_builder.go#L110) · [行为专题](../ratelimit.md)：Context 链式设置上下文，自动注入 trace_id。
+[实现](../../internal/ratelimit/ratelimit_builder.go#L116) · [行为专题](../ratelimit.md)：Context 链式设置上下文，自动注入 trace_id。
 
 **源码说明与使用片段**（原文）：
 
@@ -1049,7 +1049,7 @@ instance.Context(ctx)
 
 **生产建议**：在 Build/Run 或终端操作之前完成链式配置；以返回值继续调用，避免多个 goroutine 同时修改同一个构建器。默认值和设置顺序见专题。
 
-**注意事项**：只替换构建器保存的 context 并确保 trace_id，须非 nil；当前 Build 不把此字段传入最终限流器。阻塞 Wait/Acquire 需另传可取消 context，关闭仍由实例所有者管理；已创建的子构建器不随父构建器变更。
+**注意事项**：替换构建器保存的 context 并确保 trace_id，须非 nil；保留当前局部日志设置，Build 不继承其取消、期限和业务值。RateLimiter 及其分片实例保留局部日志设置，WithTraceID 换绑后仍使用它；其他模式没有内部日志调用。阻塞 Wait/Acquire 需另传可取消 context，关闭仍由实例所有者管理；已创建的子构建器不随父构建器变更。
 
 ## `*RatelimiterSubBuilder.DefaultBurst`
 
@@ -1057,7 +1057,7 @@ instance.Context(ctx)
 func (b *RatelimiterSubBuilder) DefaultBurst() *RatelimiterSubBuilder
 ```
 
-[实现](../../internal/ratelimit/ratelimit_builder.go#L145) · [行为专题](../ratelimit.md)：DefaultBurst 使用默认突发容量（core.IO() × 2）。
+[实现](../../internal/ratelimit/ratelimit_builder.go#L158) · [行为专题](../ratelimit.md)：DefaultBurst 使用默认突发容量（core.IO() × 2）。
 
 **源码说明与使用片段**（原文）：
 
@@ -1084,11 +1084,11 @@ instance.DefaultBurst()
 func (b *RatelimiterSubBuilder) DefaultLogger() *RatelimiterSubBuilder
 ```
 
-[实现](../../internal/ratelimit/ratelimit_builder.go#L122) · [行为专题](../ratelimit.md)：DefaultLogger 重置为默认日志实现。
+[实现](../../internal/ratelimit/ratelimit_builder.go#L128) · [行为专题](../ratelimit.md)：DefaultLogger 清除当前日志器覆盖，恢复继承全局日志器。
 
 **源码说明与使用片段**（原文）：
 
-DefaultLogger 重置为默认日志实现。
+DefaultLogger 清除当前日志器覆盖，恢复继承全局日志器。
 
 
 **参数说明**：无显式参数。
@@ -1101,9 +1101,9 @@ DefaultLogger 重置为默认日志实现。
 instance.DefaultLogger()
 ```
 
-**生产建议**：此方法会设置全局日志器；在应用启动阶段统一配置，避免多个构建器相互覆盖。
+**生产建议**：在 Build/Run 或终端操作之前完成链式配置；以返回值继续调用，避免多个 goroutine 同时修改同一个构建器。默认值和设置顺序见专题。
 
-**注意事项**：立即修改全库日志器，并非只配置当前构建器，也不等待 Build/Run 才生效。DefaultLogger 或 Logger(nil) 恢复静默实现；日志后端须并发安全、及时返回，调用不恢复其 panic。应在启动时统一设置，避免业务组件相互覆盖。
+**注意事项**：只配置当前构建器及其后续执行，不修改全局或其他实例。DefaultLogger 或 Logger(nil) 清除当前覆盖并继承全局日志器；Context 替换和模式切换保留当前日志设置，已构建实例不受构建器后续更改影响。日志后端须并发安全、及时返回，调用不恢复其 panic。
 
 ## `*RatelimiterSubBuilder.DefaultPer`
 
@@ -1111,7 +1111,7 @@ instance.DefaultLogger()
 func (b *RatelimiterSubBuilder) DefaultPer() *RatelimiterSubBuilder
 ```
 
-[实现](../../internal/ratelimit/ratelimit_builder.go#L139) · [行为专题](../ratelimit.md)：DefaultPer 使用默认时间窗口（1 秒）。
+[实现](../../internal/ratelimit/ratelimit_builder.go#L152) · [行为专题](../ratelimit.md)：DefaultPer 使用默认时间窗口（1 秒）。
 
 **源码说明与使用片段**（原文）：
 
@@ -1138,7 +1138,7 @@ instance.DefaultPer()
 func (b *RatelimiterSubBuilder) DefaultRate() *RatelimiterSubBuilder
 ```
 
-[实现](../../internal/ratelimit/ratelimit_builder.go#L133) · [行为专题](../ratelimit.md)：DefaultRate 使用默认速率（core.IO()）。
+[实现](../../internal/ratelimit/ratelimit_builder.go#L146) · [行为专题](../ratelimit.md)：DefaultRate 使用默认速率（core.IO()）。
 
 **源码说明与使用片段**（原文）：
 
@@ -1165,11 +1165,11 @@ instance.DefaultRate()
 func (b *RatelimiterSubBuilder) Logger(l core.Logger) *RatelimiterSubBuilder
 ```
 
-[实现](../../internal/ratelimit/ratelimit_builder.go#L116) · [行为专题](../ratelimit.md)：Logger 注入自定义日志实现，全局生效。
+[实现](../../internal/ratelimit/ratelimit_builder.go#L122) · [行为专题](../ratelimit.md)：Logger 仅为当前构建器及其后续执行设置日志器，不修改全局配置。
 
 **源码说明与使用片段**（原文）：
 
-Logger 注入自定义日志实现，全局生效。
+Logger 仅为当前构建器及其后续执行设置日志器，不修改全局配置。
 
 
 **参数说明**：
@@ -1184,9 +1184,9 @@ Logger 注入自定义日志实现，全局生效。
 instance.Logger(l)
 ```
 
-**生产建议**：此方法会设置全局日志器；在应用启动阶段统一配置，避免多个构建器相互覆盖。
+**生产建议**：在 Build/Run 或终端操作之前完成链式配置；以返回值继续调用，避免多个 goroutine 同时修改同一个构建器。默认值和设置顺序见专题。
 
-**注意事项**：立即修改全库日志器，并非只配置当前构建器，也不等待 Build/Run 才生效。DefaultLogger 或 Logger(nil) 恢复静默实现；日志后端须并发安全、及时返回，调用不恢复其 panic。应在启动时统一设置，避免业务组件相互覆盖。
+**注意事项**：只配置当前构建器及其后续执行，不修改全局或其他实例。DefaultLogger 或 Logger(nil) 清除当前覆盖并继承全局日志器；Context 替换和模式切换保留当前日志设置，已构建实例不受构建器后续更改影响。日志后端须并发安全、及时返回，调用不恢复其 panic。
 
 ## `*RatelimiterSubBuilder.Per`
 
@@ -1194,7 +1194,7 @@ instance.Logger(l)
 func (b *RatelimiterSubBuilder) Per(d time.Duration) *RatelimiterSubBuilder
 ```
 
-[实现](../../internal/ratelimit/ratelimit_builder.go#L98) · [行为专题](../ratelimit.md)：Per 设置时间窗口大小。
+[实现](../../internal/ratelimit/ratelimit_builder.go#L104) · [行为专题](../ratelimit.md)：Per 设置时间窗口大小。
 
 **源码说明与使用片段**（原文）：
 
@@ -1229,7 +1229,7 @@ b.perDuration = d
 func (b *RatelimiterSubBuilder) Rate(n int) *RatelimiterSubBuilder
 ```
 
-[实现](../../internal/ratelimit/ratelimit_builder.go#L92) · [行为专题](../ratelimit.md)：Rate 设置速率：每 PerDuration 内允许的操作次数。
+[实现](../../internal/ratelimit/ratelimit_builder.go#L98) · [行为专题](../ratelimit.md)：Rate 设置速率：每 PerDuration 内允许的操作次数。
 
 **源码说明与使用片段**（原文）：
 
@@ -1511,7 +1511,7 @@ instance.TotalMin()
 func (b *ShardedAdaptiveSubBuilder) Build() *ShardedAdaptiveRateLimiter
 ```
 
-[实现](../../internal/ratelimit/ratelimit_builder.go#L653) · [行为专题](../ratelimit.md)：Build 构建 ShardedAdaptiveRateLimiter 实例。
+[实现](../../internal/ratelimit/ratelimit_builder.go#L681) · [行为专题](../ratelimit.md)：Build 构建 ShardedAdaptiveRateLimiter 实例。
 
 **源码说明与使用片段**（原文）：
 
@@ -1530,7 +1530,7 @@ instance.Build()
 
 **生产建议**：在 Build/Run 或终端操作之前完成链式配置；以返回值继续调用，避免多个 goroutine 同时修改同一个构建器。默认值和设置顺序见专题。
 
-**注意事项**：每次创建独立实例，不回写规范化后的字段；保存的 context 不传入实例，阻塞获取须另传 context。单片最小值非正按 1，最大值不高于最小值时提升至最小值，初始为两者中点。分片先分配总最小/最大值，每片至少 1，再规范化；许可须成对释放。普通 Adaptive 无 Close 方法且无补充 goroutine，分片版本用完 Close。
+**注意事项**：每次创建独立实例，不回写规范化后的字段；不继承所保存 context 的取消、期限和业务值，RateLimiter 及其分片保留局部日志设置，阻塞获取须另传 context。单片最小值非正按 1，最大值不高于最小值时提升至最小值，初始为两者中点。分片先分配总最小/最大值，每片至少 1，再规范化；许可须成对释放。普通 Adaptive 无 Close 方法且无补充 goroutine，分片版本用完 Close。
 
 ## `*ShardedAdaptiveSubBuilder.Context`
 
@@ -1538,7 +1538,7 @@ instance.Build()
 func (b *ShardedAdaptiveSubBuilder) Context(ctx context.Context) *ShardedAdaptiveSubBuilder
 ```
 
-[实现](../../internal/ratelimit/ratelimit_builder.go#L635) · [行为专题](../ratelimit.md)：Context 链式设置上下文，自动注入 trace_id。
+[实现](../../internal/ratelimit/ratelimit_builder.go#L663) · [行为专题](../ratelimit.md)：Context 链式设置上下文，自动注入 trace_id。
 
 **源码说明与使用片段**（原文）：
 
@@ -1559,7 +1559,7 @@ instance.Context(ctx)
 
 **生产建议**：在 Build/Run 或终端操作之前完成链式配置；以返回值继续调用，避免多个 goroutine 同时修改同一个构建器。默认值和设置顺序见专题。
 
-**注意事项**：只替换构建器保存的 context 并确保 trace_id，须非 nil；当前 Build 不把此字段传入最终限流器。阻塞 Wait/Acquire 需另传可取消 context，关闭仍由实例所有者管理；已创建的子构建器不随父构建器变更。
+**注意事项**：替换构建器保存的 context 并确保 trace_id，须非 nil；保留当前局部日志设置，Build 不继承其取消、期限和业务值。RateLimiter 及其分片实例保留局部日志设置，WithTraceID 换绑后仍使用它；其他模式没有内部日志调用。阻塞 Wait/Acquire 需另传可取消 context，关闭仍由实例所有者管理；已创建的子构建器不随父构建器变更。
 
 ## `*ShardedAdaptiveSubBuilder.DefaultLogger`
 
@@ -1567,11 +1567,11 @@ instance.Context(ctx)
 func (b *ShardedAdaptiveSubBuilder) DefaultLogger() *ShardedAdaptiveSubBuilder
 ```
 
-[实现](../../internal/ratelimit/ratelimit_builder.go#L647) · [行为专题](../ratelimit.md)：DefaultLogger 重置为默认日志实现。
+[实现](../../internal/ratelimit/ratelimit_builder.go#L675) · [行为专题](../ratelimit.md)：DefaultLogger 清除当前日志器覆盖，恢复继承全局日志器。
 
 **源码说明与使用片段**（原文）：
 
-DefaultLogger 重置为默认日志实现。
+DefaultLogger 清除当前日志器覆盖，恢复继承全局日志器。
 
 
 **参数说明**：无显式参数。
@@ -1584,9 +1584,9 @@ DefaultLogger 重置为默认日志实现。
 instance.DefaultLogger()
 ```
 
-**生产建议**：此方法会设置全局日志器；在应用启动阶段统一配置，避免多个构建器相互覆盖。
+**生产建议**：在 Build/Run 或终端操作之前完成链式配置；以返回值继续调用，避免多个 goroutine 同时修改同一个构建器。默认值和设置顺序见专题。
 
-**注意事项**：立即修改全库日志器，并非只配置当前构建器，也不等待 Build/Run 才生效。DefaultLogger 或 Logger(nil) 恢复静默实现；日志后端须并发安全、及时返回，调用不恢复其 panic。应在启动时统一设置，避免业务组件相互覆盖。
+**注意事项**：只配置当前构建器及其后续执行，不修改全局或其他实例。DefaultLogger 或 Logger(nil) 清除当前覆盖并继承全局日志器；Context 替换和模式切换保留当前日志设置，已构建实例不受构建器后续更改影响。日志后端须并发安全、及时返回，调用不恢复其 panic。
 
 ## `*ShardedAdaptiveSubBuilder.DefaultMaxWorker`
 
@@ -1594,7 +1594,7 @@ instance.DefaultLogger()
 func (b *ShardedAdaptiveSubBuilder) DefaultMaxWorker() *ShardedAdaptiveSubBuilder
 ```
 
-[实现](../../internal/ratelimit/ratelimit_builder.go#L670) · [行为专题](../ratelimit.md)：DefaultMaxWorker 使用默认最大并发度（core.IO() × 10）。
+[实现](../../internal/ratelimit/ratelimit_builder.go#L698) · [行为专题](../ratelimit.md)：DefaultMaxWorker 使用默认最大并发度（core.IO() × 10）。
 
 **源码说明与使用片段**（原文）：
 
@@ -1621,7 +1621,7 @@ instance.DefaultMaxWorker()
 func (b *ShardedAdaptiveSubBuilder) DefaultMinWorker() *ShardedAdaptiveSubBuilder
 ```
 
-[实现](../../internal/ratelimit/ratelimit_builder.go#L664) · [行为专题](../ratelimit.md)：DefaultMinWorker 使用默认最小并发度（core.IO()）。
+[实现](../../internal/ratelimit/ratelimit_builder.go#L692) · [行为专题](../ratelimit.md)：DefaultMinWorker 使用默认最小并发度（core.IO()）。
 
 **源码说明与使用片段**（原文）：
 
@@ -1648,7 +1648,7 @@ instance.DefaultMinWorker()
 func (b *ShardedAdaptiveSubBuilder) DefaultShards() *ShardedAdaptiveSubBuilder
 ```
 
-[实现](../../internal/ratelimit/ratelimit_builder.go#L658) · [行为专题](../ratelimit.md)：DefaultShards 使用默认分片数（core.IO()，最少 2）。
+[实现](../../internal/ratelimit/ratelimit_builder.go#L686) · [行为专题](../ratelimit.md)：DefaultShards 使用默认分片数（core.IO()，最少 2）。
 
 **源码说明与使用片段**（原文）：
 
@@ -1675,11 +1675,11 @@ instance.DefaultShards()
 func (b *ShardedAdaptiveSubBuilder) Logger(l core.Logger) *ShardedAdaptiveSubBuilder
 ```
 
-[实现](../../internal/ratelimit/ratelimit_builder.go#L641) · [行为专题](../ratelimit.md)：Logger 注入自定义日志实现，全局生效。
+[实现](../../internal/ratelimit/ratelimit_builder.go#L669) · [行为专题](../ratelimit.md)：Logger 仅为当前构建器及其后续执行设置日志器，不修改全局配置。
 
 **源码说明与使用片段**（原文）：
 
-Logger 注入自定义日志实现，全局生效。
+Logger 仅为当前构建器及其后续执行设置日志器，不修改全局配置。
 
 
 **参数说明**：
@@ -1694,9 +1694,9 @@ Logger 注入自定义日志实现，全局生效。
 instance.Logger(l)
 ```
 
-**生产建议**：此方法会设置全局日志器；在应用启动阶段统一配置，避免多个构建器相互覆盖。
+**生产建议**：在 Build/Run 或终端操作之前完成链式配置；以返回值继续调用，避免多个 goroutine 同时修改同一个构建器。默认值和设置顺序见专题。
 
-**注意事项**：立即修改全库日志器，并非只配置当前构建器，也不等待 Build/Run 才生效。DefaultLogger 或 Logger(nil) 恢复静默实现；日志后端须并发安全、及时返回，调用不恢复其 panic。应在启动时统一设置，避免业务组件相互覆盖。
+**注意事项**：只配置当前构建器及其后续执行，不修改全局或其他实例。DefaultLogger 或 Logger(nil) 清除当前覆盖并继承全局日志器；Context 替换和模式切换保留当前日志设置，已构建实例不受构建器后续更改影响。日志后端须并发安全、及时返回，调用不恢复其 panic。
 
 ## `*ShardedAdaptiveSubBuilder.MaxWorker`
 
@@ -1704,7 +1704,7 @@ instance.Logger(l)
 func (b *ShardedAdaptiveSubBuilder) MaxWorker(n int) *ShardedAdaptiveSubBuilder
 ```
 
-[实现](../../internal/ratelimit/ratelimit_builder.go#L629) · [行为专题](../ratelimit.md)：MaxWorker 设置最大并发度，平均分配到各分片。
+[实现](../../internal/ratelimit/ratelimit_builder.go#L657) · [行为专题](../ratelimit.md)：MaxWorker 设置最大并发度，平均分配到各分片。
 
 **源码说明与使用片段**（原文）：
 
@@ -1739,7 +1739,7 @@ b.maxRate = n
 func (b *ShardedAdaptiveSubBuilder) MinWorker(n int) *ShardedAdaptiveSubBuilder
 ```
 
-[实现](../../internal/ratelimit/ratelimit_builder.go#L623) · [行为专题](../ratelimit.md)：MinWorker 设置最小并发度，平均分配到各分片。
+[实现](../../internal/ratelimit/ratelimit_builder.go#L651) · [行为专题](../ratelimit.md)：MinWorker 设置最小并发度，平均分配到各分片。
 
 **源码说明与使用片段**（原文）：
 
@@ -1774,7 +1774,7 @@ b.minRate = n
 func (b *ShardedAdaptiveSubBuilder) Shards(n int) *ShardedAdaptiveSubBuilder
 ```
 
-[实现](../../internal/ratelimit/ratelimit_builder.go#L617) · [行为专题](../ratelimit.md)：Shards 设置水平分片数。
+[实现](../../internal/ratelimit/ratelimit_builder.go#L645) · [行为专题](../ratelimit.md)：Shards 设置水平分片数。
 
 **源码说明与使用片段**（原文）：
 
@@ -2145,7 +2145,7 @@ instance.WithStrategy(s)
 func (b *ShardedRatelimitBuilder) Adaptive() *ShardedAdaptiveSubBuilder
 ```
 
-[实现](../../internal/ratelimit/ratelimit_builder.go#L345) · [行为专题](../ratelimit.md)：Adaptive 返回分片 Adaptive 子构建器。
+[实现](../../internal/ratelimit/ratelimit_builder.go#L367) · [行为专题](../ratelimit.md)：Adaptive 返回分片 Adaptive 子构建器。
 
 **源码说明与使用片段**（原文）：
 
@@ -2164,7 +2164,7 @@ instance.Adaptive()
 
 **生产建议**：在 Build/Run 或终端操作之前完成链式配置；以返回值继续调用，避免多个 goroutine 同时修改同一个构建器。默认值和设置顺序见专题。
 
-**注意事项**：每次分配新的子构建器，只复制当前 context，模式参数初始为零；不会沿用此前子构建器的设置。Default* 需显式调用，其值不一定等于零值构建行为；Build 不传入所保存的 context。
+**注意事项**：每次分配新的子构建器，复制当前 context 及其局部日志设置，模式参数初始为零；不会沿用此前子构建器的设置。Default* 需显式调用，其值不一定等于零值构建行为；Build 不继承所保存 context 的取消、期限和业务值。
 
 ## `*ShardedRatelimitBuilder.Context`
 
@@ -2172,7 +2172,7 @@ instance.Adaptive()
 func (b *ShardedRatelimitBuilder) Context(ctx context.Context) *ShardedRatelimitBuilder
 ```
 
-[实现](../../internal/ratelimit/ratelimit_builder.go#L350) · [行为专题](../ratelimit.md)：Context 链式设置上下文，自动注入 trace_id。
+[实现](../../internal/ratelimit/ratelimit_builder.go#L372) · [行为专题](../ratelimit.md)：Context 链式设置上下文，自动注入 trace_id。
 
 **源码说明与使用片段**（原文）：
 
@@ -2193,7 +2193,7 @@ instance.Context(ctx)
 
 **生产建议**：在 Build/Run 或终端操作之前完成链式配置；以返回值继续调用，避免多个 goroutine 同时修改同一个构建器。默认值和设置顺序见专题。
 
-**注意事项**：只替换构建器保存的 context 并确保 trace_id，须非 nil；当前 Build 不把此字段传入最终限流器。阻塞 Wait/Acquire 需另传可取消 context，关闭仍由实例所有者管理；已创建的子构建器不随父构建器变更。
+**注意事项**：替换构建器保存的 context 并确保 trace_id，须非 nil；保留当前局部日志设置，Build 不继承其取消、期限和业务值。RateLimiter 及其分片实例保留局部日志设置，WithTraceID 换绑后仍使用它；其他模式没有内部日志调用。阻塞 Wait/Acquire 需另传可取消 context，关闭仍由实例所有者管理；已创建的子构建器不随父构建器变更。
 
 ## `*ShardedRatelimitBuilder.DefaultLogger`
 
@@ -2201,11 +2201,11 @@ instance.Context(ctx)
 func (b *ShardedRatelimitBuilder) DefaultLogger() *ShardedRatelimitBuilder
 ```
 
-[实现](../../internal/ratelimit/ratelimit_builder.go#L362) · [行为专题](../ratelimit.md)：DefaultLogger 重置为默认日志实现。
+[实现](../../internal/ratelimit/ratelimit_builder.go#L384) · [行为专题](../ratelimit.md)：DefaultLogger 清除当前日志器覆盖，恢复继承全局日志器。
 
 **源码说明与使用片段**（原文）：
 
-DefaultLogger 重置为默认日志实现。
+DefaultLogger 清除当前日志器覆盖，恢复继承全局日志器。
 
 
 **参数说明**：无显式参数。
@@ -2218,9 +2218,9 @@ DefaultLogger 重置为默认日志实现。
 instance.DefaultLogger()
 ```
 
-**生产建议**：此方法会设置全局日志器；在应用启动阶段统一配置，避免多个构建器相互覆盖。
+**生产建议**：在 Build/Run 或终端操作之前完成链式配置；以返回值继续调用，避免多个 goroutine 同时修改同一个构建器。默认值和设置顺序见专题。
 
-**注意事项**：立即修改全库日志器，并非只配置当前构建器，也不等待 Build/Run 才生效。DefaultLogger 或 Logger(nil) 恢复静默实现；日志后端须并发安全、及时返回，调用不恢复其 panic。应在启动时统一设置，避免业务组件相互覆盖。
+**注意事项**：只配置当前构建器及其后续执行，不修改全局或其他实例。DefaultLogger 或 Logger(nil) 清除当前覆盖并继承全局日志器；Context 替换和模式切换保留当前日志设置，已构建实例不受构建器后续更改影响。日志后端须并发安全、及时返回，调用不恢复其 panic。
 
 ## `*ShardedRatelimitBuilder.Logger`
 
@@ -2228,11 +2228,11 @@ instance.DefaultLogger()
 func (b *ShardedRatelimitBuilder) Logger(l core.Logger) *ShardedRatelimitBuilder
 ```
 
-[实现](../../internal/ratelimit/ratelimit_builder.go#L356) · [行为专题](../ratelimit.md)：Logger 注入自定义日志实现，全局生效。
+[实现](../../internal/ratelimit/ratelimit_builder.go#L378) · [行为专题](../ratelimit.md)：Logger 仅为当前构建器及其后续执行设置日志器，不修改全局配置。
 
 **源码说明与使用片段**（原文）：
 
-Logger 注入自定义日志实现，全局生效。
+Logger 仅为当前构建器及其后续执行设置日志器，不修改全局配置。
 
 
 **参数说明**：
@@ -2247,9 +2247,9 @@ Logger 注入自定义日志实现，全局生效。
 instance.Logger(l)
 ```
 
-**生产建议**：此方法会设置全局日志器；在应用启动阶段统一配置，避免多个构建器相互覆盖。
+**生产建议**：在 Build/Run 或终端操作之前完成链式配置；以返回值继续调用，避免多个 goroutine 同时修改同一个构建器。默认值和设置顺序见专题。
 
-**注意事项**：立即修改全库日志器，并非只配置当前构建器，也不等待 Build/Run 才生效。DefaultLogger 或 Logger(nil) 恢复静默实现；日志后端须并发安全、及时返回，调用不恢复其 panic。应在启动时统一设置，避免业务组件相互覆盖。
+**注意事项**：只配置当前构建器及其后续执行，不修改全局或其他实例。DefaultLogger 或 Logger(nil) 清除当前覆盖并继承全局日志器；Context 替换和模式切换保留当前日志设置，已构建实例不受构建器后续更改影响。日志后端须并发安全、及时返回，调用不恢复其 panic。
 
 ## `*ShardedRatelimitBuilder.RateLimiter`
 
@@ -2257,7 +2257,7 @@ instance.Logger(l)
 func (b *ShardedRatelimitBuilder) RateLimiter() *ShardedRatelimiterSubBuilder
 ```
 
-[实现](../../internal/ratelimit/ratelimit_builder.go#L330) · [行为专题](../ratelimit.md)：RateLimiter 返回分片 RateLimiter 子构建器。
+[实现](../../internal/ratelimit/ratelimit_builder.go#L352) · [行为专题](../ratelimit.md)：RateLimiter 返回分片 RateLimiter 子构建器。
 
 **源码说明与使用片段**（原文）：
 
@@ -2276,7 +2276,7 @@ instance.RateLimiter()
 
 **生产建议**：在 Build/Run 或终端操作之前完成链式配置；以返回值继续调用，避免多个 goroutine 同时修改同一个构建器。默认值和设置顺序见专题。
 
-**注意事项**：每次分配新的子构建器，只复制当前 context，模式参数初始为零；不会沿用此前子构建器的设置。Default* 需显式调用，其值不一定等于零值构建行为；Build 不传入所保存的 context。
+**注意事项**：每次分配新的子构建器，复制当前 context 及其局部日志设置，模式参数初始为零；不会沿用此前子构建器的设置。Default* 需显式调用，其值不一定等于零值构建行为；Build 不继承所保存 context 的取消、期限和业务值。
 
 ## `*ShardedRatelimitBuilder.SlidingWindow`
 
@@ -2284,7 +2284,7 @@ instance.RateLimiter()
 func (b *ShardedRatelimitBuilder) SlidingWindow() *ShardedSlidingWindowSubBuilder
 ```
 
-[实现](../../internal/ratelimit/ratelimit_builder.go#L340) · [行为专题](../ratelimit.md)：SlidingWindow 返回分片 SlidingWindow 子构建器。
+[实现](../../internal/ratelimit/ratelimit_builder.go#L362) · [行为专题](../ratelimit.md)：SlidingWindow 返回分片 SlidingWindow 子构建器。
 
 **源码说明与使用片段**（原文）：
 
@@ -2303,7 +2303,7 @@ instance.SlidingWindow()
 
 **生产建议**：复用同一个实例以共享窗口计数；拒绝后自行选择退避或降级。窗口记录消耗内存，按业务峰值确定 Limit；无需 Release 或 Close。
 
-**注意事项**：每次分配新的子构建器，只复制当前 context，模式参数初始为零；不会沿用此前子构建器的设置。Default* 需显式调用，其值不一定等于零值构建行为；Build 不传入所保存的 context。
+**注意事项**：每次分配新的子构建器，复制当前 context 及其局部日志设置，模式参数初始为零；不会沿用此前子构建器的设置。Default* 需显式调用，其值不一定等于零值构建行为；Build 不继承所保存 context 的取消、期限和业务值。
 
 ## `*ShardedRatelimitBuilder.TokenBucket`
 
@@ -2311,7 +2311,7 @@ instance.SlidingWindow()
 func (b *ShardedRatelimitBuilder) TokenBucket() *ShardedTokenBucketSubBuilder
 ```
 
-[实现](../../internal/ratelimit/ratelimit_builder.go#L335) · [行为专题](../ratelimit.md)：TokenBucket 返回分片 TokenBucket 子构建器。
+[实现](../../internal/ratelimit/ratelimit_builder.go#L357) · [行为专题](../ratelimit.md)：TokenBucket 返回分片 TokenBucket 子构建器。
 
 **源码说明与使用片段**（原文）：
 
@@ -2330,7 +2330,7 @@ instance.TokenBucket()
 
 **生产建议**：复用同一个令牌桶以共享额度；Allow/AllowN 只做非阻塞检查，拒绝后自行选择退避或降级。令牌按调用时的经过时间补充，无后台 ticker，也没有 Release。
 
-**注意事项**：每次分配新的子构建器，只复制当前 context，模式参数初始为零；不会沿用此前子构建器的设置。Default* 需显式调用，其值不一定等于零值构建行为；Build 不传入所保存的 context。
+**注意事项**：每次分配新的子构建器，复制当前 context 及其局部日志设置，模式参数初始为零；不会沿用此前子构建器的设置。Default* 需显式调用，其值不一定等于零值构建行为；Build 不继承所保存 context 的取消、期限和业务值。
 
 ## `*ShardedRatelimiterSubBuilder.Build`
 
@@ -2338,7 +2338,7 @@ instance.TokenBucket()
 func (b *ShardedRatelimiterSubBuilder) Build() *ShardedRateLimiter
 ```
 
-[实现](../../internal/ratelimit/ratelimit_builder.go#L425) · [行为专题](../ratelimit.md)：Build 构建 ShardedRateLimiter 实例。
+[实现](../../internal/ratelimit/ratelimit_builder.go#L447) · [行为专题](../ratelimit.md)：Build 构建 ShardedRateLimiter 实例。
 
 **源码说明与使用片段**（原文）：
 
@@ -2357,7 +2357,7 @@ instance.Build()
 
 **生产建议**：在 Build/Run 或终端操作之前完成链式配置；以返回值继续调用，避免多个 goroutine 同时修改同一个构建器。默认值和设置顺序见专题。
 
-**注意事项**：每次创建独立实例，不回写规范化后的字段；保存的 context 不传入实例，阻塞获取须另传 context。单片非正 Rate 按 IO()，分片按总量分配且每片至少 1；正数 Burst 开启突发路径。未配置的 Per 为 0，每个 100ms tick 补满，DefaultPer 才设为 1 秒。用完必须 Close。
+**注意事项**：每次创建独立实例，不回写规范化后的字段；不继承所保存 context 的取消、期限和业务值，RateLimiter 及其分片保留局部日志设置，阻塞获取须另传 context。单片非正 Rate 按 IO()，分片按总量分配且每片至少 1；正数 Burst 开启突发路径。未配置的 Per 为 0，每个 100ms tick 补满，DefaultPer 才设为 1 秒。用完必须 Close。
 
 ## `*ShardedRatelimiterSubBuilder.Burst`
 
@@ -2365,7 +2365,7 @@ instance.Build()
 func (b *ShardedRatelimiterSubBuilder) Burst(n int) *ShardedRatelimiterSubBuilder
 ```
 
-[实现](../../internal/ratelimit/ratelimit_builder.go#L401) · [行为专题](../ratelimit.md)：Burst 设置突发容量。
+[实现](../../internal/ratelimit/ratelimit_builder.go#L423) · [行为专题](../ratelimit.md)：Burst 设置突发容量。
 
 **源码说明与使用片段**（原文）：
 
@@ -2400,7 +2400,7 @@ b.burst = n
 func (b *ShardedRatelimiterSubBuilder) Context(ctx context.Context) *ShardedRatelimiterSubBuilder
 ```
 
-[实现](../../internal/ratelimit/ratelimit_builder.go#L407) · [行为专题](../ratelimit.md)：Context 链式设置上下文，自动注入 trace_id。
+[实现](../../internal/ratelimit/ratelimit_builder.go#L429) · [行为专题](../ratelimit.md)：Context 链式设置上下文，自动注入 trace_id。
 
 **源码说明与使用片段**（原文）：
 
@@ -2421,7 +2421,7 @@ instance.Context(ctx)
 
 **生产建议**：在 Build/Run 或终端操作之前完成链式配置；以返回值继续调用，避免多个 goroutine 同时修改同一个构建器。默认值和设置顺序见专题。
 
-**注意事项**：只替换构建器保存的 context 并确保 trace_id，须非 nil；当前 Build 不把此字段传入最终限流器。阻塞 Wait/Acquire 需另传可取消 context，关闭仍由实例所有者管理；已创建的子构建器不随父构建器变更。
+**注意事项**：替换构建器保存的 context 并确保 trace_id，须非 nil；保留当前局部日志设置，Build 不继承其取消、期限和业务值。RateLimiter 及其分片实例保留局部日志设置，WithTraceID 换绑后仍使用它；其他模式没有内部日志调用。阻塞 Wait/Acquire 需另传可取消 context，关闭仍由实例所有者管理；已创建的子构建器不随父构建器变更。
 
 ## `*ShardedRatelimiterSubBuilder.DefaultBurst`
 
@@ -2429,7 +2429,7 @@ instance.Context(ctx)
 func (b *ShardedRatelimiterSubBuilder) DefaultBurst() *ShardedRatelimiterSubBuilder
 ```
 
-[实现](../../internal/ratelimit/ratelimit_builder.go#L451) · [行为专题](../ratelimit.md)：DefaultBurst 使用默认突发容量（core.IO() × 2）。
+[实现](../../internal/ratelimit/ratelimit_builder.go#L479) · [行为专题](../ratelimit.md)：DefaultBurst 使用默认突发容量（core.IO() × 2）。
 
 **源码说明与使用片段**（原文）：
 
@@ -2456,11 +2456,11 @@ instance.DefaultBurst()
 func (b *ShardedRatelimiterSubBuilder) DefaultLogger() *ShardedRatelimiterSubBuilder
 ```
 
-[实现](../../internal/ratelimit/ratelimit_builder.go#L419) · [行为专题](../ratelimit.md)：DefaultLogger 重置为默认日志实现。
+[实现](../../internal/ratelimit/ratelimit_builder.go#L441) · [行为专题](../ratelimit.md)：DefaultLogger 清除当前日志器覆盖，恢复继承全局日志器。
 
 **源码说明与使用片段**（原文）：
 
-DefaultLogger 重置为默认日志实现。
+DefaultLogger 清除当前日志器覆盖，恢复继承全局日志器。
 
 
 **参数说明**：无显式参数。
@@ -2473,9 +2473,9 @@ DefaultLogger 重置为默认日志实现。
 instance.DefaultLogger()
 ```
 
-**生产建议**：此方法会设置全局日志器；在应用启动阶段统一配置，避免多个构建器相互覆盖。
+**生产建议**：在 Build/Run 或终端操作之前完成链式配置；以返回值继续调用，避免多个 goroutine 同时修改同一个构建器。默认值和设置顺序见专题。
 
-**注意事项**：立即修改全库日志器，并非只配置当前构建器，也不等待 Build/Run 才生效。DefaultLogger 或 Logger(nil) 恢复静默实现；日志后端须并发安全、及时返回，调用不恢复其 panic。应在启动时统一设置，避免业务组件相互覆盖。
+**注意事项**：只配置当前构建器及其后续执行，不修改全局或其他实例。DefaultLogger 或 Logger(nil) 清除当前覆盖并继承全局日志器；Context 替换和模式切换保留当前日志设置，已构建实例不受构建器后续更改影响。日志后端须并发安全、及时返回，调用不恢复其 panic。
 
 ## `*ShardedRatelimiterSubBuilder.DefaultPer`
 
@@ -2483,7 +2483,7 @@ instance.DefaultLogger()
 func (b *ShardedRatelimiterSubBuilder) DefaultPer() *ShardedRatelimiterSubBuilder
 ```
 
-[实现](../../internal/ratelimit/ratelimit_builder.go#L445) · [行为专题](../ratelimit.md)：DefaultPer 使用默认时间窗口（1 秒）。
+[实现](../../internal/ratelimit/ratelimit_builder.go#L473) · [行为专题](../ratelimit.md)：DefaultPer 使用默认时间窗口（1 秒）。
 
 **源码说明与使用片段**（原文）：
 
@@ -2510,7 +2510,7 @@ instance.DefaultPer()
 func (b *ShardedRatelimiterSubBuilder) DefaultRate() *ShardedRatelimiterSubBuilder
 ```
 
-[实现](../../internal/ratelimit/ratelimit_builder.go#L439) · [行为专题](../ratelimit.md)：DefaultRate 使用默认速率（core.IO()）。
+[实现](../../internal/ratelimit/ratelimit_builder.go#L467) · [行为专题](../ratelimit.md)：DefaultRate 使用默认速率（core.IO()）。
 
 **源码说明与使用片段**（原文）：
 
@@ -2537,7 +2537,7 @@ instance.DefaultRate()
 func (b *ShardedRatelimiterSubBuilder) DefaultShards() *ShardedRatelimiterSubBuilder
 ```
 
-[实现](../../internal/ratelimit/ratelimit_builder.go#L433) · [行为专题](../ratelimit.md)：DefaultShards 使用默认分片数（core.IO()，最少 2）。
+[实现](../../internal/ratelimit/ratelimit_builder.go#L461) · [行为专题](../ratelimit.md)：DefaultShards 使用默认分片数（core.IO()，最少 2）。
 
 **源码说明与使用片段**（原文）：
 
@@ -2564,11 +2564,11 @@ instance.DefaultShards()
 func (b *ShardedRatelimiterSubBuilder) Logger(l core.Logger) *ShardedRatelimiterSubBuilder
 ```
 
-[实现](../../internal/ratelimit/ratelimit_builder.go#L413) · [行为专题](../ratelimit.md)：Logger 注入自定义日志实现，全局生效。
+[实现](../../internal/ratelimit/ratelimit_builder.go#L435) · [行为专题](../ratelimit.md)：Logger 仅为当前构建器及其后续执行设置日志器，不修改全局配置。
 
 **源码说明与使用片段**（原文）：
 
-Logger 注入自定义日志实现，全局生效。
+Logger 仅为当前构建器及其后续执行设置日志器，不修改全局配置。
 
 
 **参数说明**：
@@ -2583,9 +2583,9 @@ Logger 注入自定义日志实现，全局生效。
 instance.Logger(l)
 ```
 
-**生产建议**：此方法会设置全局日志器；在应用启动阶段统一配置，避免多个构建器相互覆盖。
+**生产建议**：在 Build/Run 或终端操作之前完成链式配置；以返回值继续调用，避免多个 goroutine 同时修改同一个构建器。默认值和设置顺序见专题。
 
-**注意事项**：立即修改全库日志器，并非只配置当前构建器，也不等待 Build/Run 才生效。DefaultLogger 或 Logger(nil) 恢复静默实现；日志后端须并发安全、及时返回，调用不恢复其 panic。应在启动时统一设置，避免业务组件相互覆盖。
+**注意事项**：只配置当前构建器及其后续执行，不修改全局或其他实例。DefaultLogger 或 Logger(nil) 清除当前覆盖并继承全局日志器；Context 替换和模式切换保留当前日志设置，已构建实例不受构建器后续更改影响。日志后端须并发安全、及时返回，调用不恢复其 panic。
 
 ## `*ShardedRatelimiterSubBuilder.Per`
 
@@ -2593,7 +2593,7 @@ instance.Logger(l)
 func (b *ShardedRatelimiterSubBuilder) Per(d time.Duration) *ShardedRatelimiterSubBuilder
 ```
 
-[实现](../../internal/ratelimit/ratelimit_builder.go#L395) · [行为专题](../ratelimit.md)：Per 设置时间窗口大小。
+[实现](../../internal/ratelimit/ratelimit_builder.go#L417) · [行为专题](../ratelimit.md)：Per 设置时间窗口大小。
 
 **源码说明与使用片段**（原文）：
 
@@ -2628,7 +2628,7 @@ b.perDuration = d
 func (b *ShardedRatelimiterSubBuilder) Rate(n int) *ShardedRatelimiterSubBuilder
 ```
 
-[实现](../../internal/ratelimit/ratelimit_builder.go#L389) · [行为专题](../ratelimit.md)：Rate 设置总速率（每 PerDuration），平均分配到各分片。
+[实现](../../internal/ratelimit/ratelimit_builder.go#L411) · [行为专题](../ratelimit.md)：Rate 设置总速率（每 PerDuration），平均分配到各分片。
 
 **源码说明与使用片段**（原文）：
 
@@ -2663,7 +2663,7 @@ b.rate = n
 func (b *ShardedRatelimiterSubBuilder) Shards(n int) *ShardedRatelimiterSubBuilder
 ```
 
-[实现](../../internal/ratelimit/ratelimit_builder.go#L383) · [行为专题](../ratelimit.md)：Shards 设置水平分片数。<=0 时构造函数使用 core.IO()。
+[实现](../../internal/ratelimit/ratelimit_builder.go#L405) · [行为专题](../ratelimit.md)：Shards 设置水平分片数。<=0 时构造函数使用 core.IO()。
 
 **源码说明与使用片段**（原文）：
 
@@ -2837,7 +2837,7 @@ instance.TotalLimit()
 func (b *ShardedSlidingWindowSubBuilder) Build() *ShardedSlidingWindowRateLimiter
 ```
 
-[实现](../../internal/ratelimit/ratelimit_builder.go#L580) · [行为专题](../ratelimit.md)：Build 构建 ShardedSlidingWindowRateLimiter 实例。
+[实现](../../internal/ratelimit/ratelimit_builder.go#L608) · [行为专题](../ratelimit.md)：Build 构建 ShardedSlidingWindowRateLimiter 实例。
 
 **源码说明与使用片段**（原文）：
 
@@ -2856,7 +2856,7 @@ instance.Build()
 
 **生产建议**：复用同一个实例以共享窗口计数；拒绝后自行选择退避或降级。窗口记录消耗内存，按业务峰值确定 Limit；无需 Release 或 Close。
 
-**注意事项**：每次创建独立实例，不回写规范化后的字段；保存的 context 不传入实例，阻塞获取须另传 context。Window 原样传入，非正值在后续检查立即过期；单片非正 Limit 拒绝正数请求，分片总 Limit 则分配至每片至少 1。需要有效窗口/额度时显式设置。
+**注意事项**：每次创建独立实例，不回写规范化后的字段；不继承所保存 context 的取消、期限和业务值，RateLimiter 及其分片保留局部日志设置，阻塞获取须另传 context。Window 原样传入，非正值在后续检查立即过期；单片非正 Limit 拒绝正数请求，分片总 Limit 则分配至每片至少 1。需要有效窗口/额度时显式设置。
 
 ## `*ShardedSlidingWindowSubBuilder.Context`
 
@@ -2864,7 +2864,7 @@ instance.Build()
 func (b *ShardedSlidingWindowSubBuilder) Context(ctx context.Context) *ShardedSlidingWindowSubBuilder
 ```
 
-[实现](../../internal/ratelimit/ratelimit_builder.go#L562) · [行为专题](../ratelimit.md)：Context 链式设置上下文，自动注入 trace_id。
+[实现](../../internal/ratelimit/ratelimit_builder.go#L590) · [行为专题](../ratelimit.md)：Context 链式设置上下文，自动注入 trace_id。
 
 **源码说明与使用片段**（原文）：
 
@@ -2885,7 +2885,7 @@ instance.Context(ctx)
 
 **生产建议**：复用同一个实例以共享窗口计数；拒绝后自行选择退避或降级。窗口记录消耗内存，按业务峰值确定 Limit；无需 Release 或 Close。
 
-**注意事项**：只替换构建器保存的 context 并确保 trace_id，须非 nil；当前 Build 不把此字段传入最终限流器。阻塞 Wait/Acquire 需另传可取消 context，关闭仍由实例所有者管理；已创建的子构建器不随父构建器变更。
+**注意事项**：替换构建器保存的 context 并确保 trace_id，须非 nil；保留当前局部日志设置，Build 不继承其取消、期限和业务值。RateLimiter 及其分片实例保留局部日志设置，WithTraceID 换绑后仍使用它；其他模式没有内部日志调用。阻塞 Wait/Acquire 需另传可取消 context，关闭仍由实例所有者管理；已创建的子构建器不随父构建器变更。
 
 ## `*ShardedSlidingWindowSubBuilder.DefaultLimit`
 
@@ -2893,7 +2893,7 @@ instance.Context(ctx)
 func (b *ShardedSlidingWindowSubBuilder) DefaultLimit() *ShardedSlidingWindowSubBuilder
 ```
 
-[实现](../../internal/ratelimit/ratelimit_builder.go#L591) · [行为专题](../ratelimit.md)：DefaultLimit 使用默认限制次数（core.IO()）。
+[实现](../../internal/ratelimit/ratelimit_builder.go#L619) · [行为专题](../ratelimit.md)：DefaultLimit 使用默认限制次数（core.IO()）。
 
 **源码说明与使用片段**（原文）：
 
@@ -2920,11 +2920,11 @@ instance.DefaultLimit()
 func (b *ShardedSlidingWindowSubBuilder) DefaultLogger() *ShardedSlidingWindowSubBuilder
 ```
 
-[实现](../../internal/ratelimit/ratelimit_builder.go#L574) · [行为专题](../ratelimit.md)：DefaultLogger 重置为默认日志实现。
+[实现](../../internal/ratelimit/ratelimit_builder.go#L602) · [行为专题](../ratelimit.md)：DefaultLogger 清除当前日志器覆盖，恢复继承全局日志器。
 
 **源码说明与使用片段**（原文）：
 
-DefaultLogger 重置为默认日志实现。
+DefaultLogger 清除当前日志器覆盖，恢复继承全局日志器。
 
 
 **参数说明**：无显式参数。
@@ -2939,7 +2939,7 @@ instance.DefaultLogger()
 
 **生产建议**：复用同一个实例以共享窗口计数；拒绝后自行选择退避或降级。窗口记录消耗内存，按业务峰值确定 Limit；无需 Release 或 Close。
 
-**注意事项**：立即修改全库日志器，并非只配置当前构建器，也不等待 Build/Run 才生效。DefaultLogger 或 Logger(nil) 恢复静默实现；日志后端须并发安全、及时返回，调用不恢复其 panic。应在启动时统一设置，避免业务组件相互覆盖。
+**注意事项**：只配置当前构建器及其后续执行，不修改全局或其他实例。DefaultLogger 或 Logger(nil) 清除当前覆盖并继承全局日志器；Context 替换和模式切换保留当前日志设置，已构建实例不受构建器后续更改影响。日志后端须并发安全、及时返回，调用不恢复其 panic。
 
 ## `*ShardedSlidingWindowSubBuilder.DefaultShards`
 
@@ -2947,7 +2947,7 @@ instance.DefaultLogger()
 func (b *ShardedSlidingWindowSubBuilder) DefaultShards() *ShardedSlidingWindowSubBuilder
 ```
 
-[实现](../../internal/ratelimit/ratelimit_builder.go#L585) · [行为专题](../ratelimit.md)：DefaultShards 使用默认分片数（core.IO()，最少 2）。
+[实现](../../internal/ratelimit/ratelimit_builder.go#L613) · [行为专题](../ratelimit.md)：DefaultShards 使用默认分片数（core.IO()，最少 2）。
 
 **源码说明与使用片段**（原文）：
 
@@ -2974,7 +2974,7 @@ instance.DefaultShards()
 func (b *ShardedSlidingWindowSubBuilder) DefaultWindow() *ShardedSlidingWindowSubBuilder
 ```
 
-[实现](../../internal/ratelimit/ratelimit_builder.go#L597) · [行为专题](../ratelimit.md)：DefaultWindow 使用默认时间窗口（1 秒）。
+[实现](../../internal/ratelimit/ratelimit_builder.go#L625) · [行为专题](../ratelimit.md)：DefaultWindow 使用默认时间窗口（1 秒）。
 
 **源码说明与使用片段**（原文）：
 
@@ -3001,7 +3001,7 @@ instance.DefaultWindow()
 func (b *ShardedSlidingWindowSubBuilder) Limit(n int) *ShardedSlidingWindowSubBuilder
 ```
 
-[实现](../../internal/ratelimit/ratelimit_builder.go#L550) · [行为专题](../ratelimit.md)：Limit 设置总限制次数（每窗口），平均分配到各分片。
+[实现](../../internal/ratelimit/ratelimit_builder.go#L578) · [行为专题](../ratelimit.md)：Limit 设置总限制次数（每窗口），平均分配到各分片。
 
 **源码说明与使用片段**（原文）：
 
@@ -3036,11 +3036,11 @@ b.limit = n
 func (b *ShardedSlidingWindowSubBuilder) Logger(l core.Logger) *ShardedSlidingWindowSubBuilder
 ```
 
-[实现](../../internal/ratelimit/ratelimit_builder.go#L568) · [行为专题](../ratelimit.md)：Logger 注入自定义日志实现，全局生效。
+[实现](../../internal/ratelimit/ratelimit_builder.go#L596) · [行为专题](../ratelimit.md)：Logger 仅为当前构建器及其后续执行设置日志器，不修改全局配置。
 
 **源码说明与使用片段**（原文）：
 
-Logger 注入自定义日志实现，全局生效。
+Logger 仅为当前构建器及其后续执行设置日志器，不修改全局配置。
 
 
 **参数说明**：
@@ -3057,7 +3057,7 @@ instance.Logger(l)
 
 **生产建议**：复用同一个实例以共享窗口计数；拒绝后自行选择退避或降级。窗口记录消耗内存，按业务峰值确定 Limit；无需 Release 或 Close。
 
-**注意事项**：立即修改全库日志器，并非只配置当前构建器，也不等待 Build/Run 才生效。DefaultLogger 或 Logger(nil) 恢复静默实现；日志后端须并发安全、及时返回，调用不恢复其 panic。应在启动时统一设置，避免业务组件相互覆盖。
+**注意事项**：只配置当前构建器及其后续执行，不修改全局或其他实例。DefaultLogger 或 Logger(nil) 清除当前覆盖并继承全局日志器；Context 替换和模式切换保留当前日志设置，已构建实例不受构建器后续更改影响。日志后端须并发安全、及时返回，调用不恢复其 panic。
 
 ## `*ShardedSlidingWindowSubBuilder.Shards`
 
@@ -3065,7 +3065,7 @@ instance.Logger(l)
 func (b *ShardedSlidingWindowSubBuilder) Shards(n int) *ShardedSlidingWindowSubBuilder
 ```
 
-[实现](../../internal/ratelimit/ratelimit_builder.go#L544) · [行为专题](../ratelimit.md)：Shards 设置水平分片数。
+[实现](../../internal/ratelimit/ratelimit_builder.go#L572) · [行为专题](../ratelimit.md)：Shards 设置水平分片数。
 
 **源码说明与使用片段**（原文）：
 
@@ -3100,7 +3100,7 @@ b.shards = n
 func (b *ShardedSlidingWindowSubBuilder) Window(d time.Duration) *ShardedSlidingWindowSubBuilder
 ```
 
-[实现](../../internal/ratelimit/ratelimit_builder.go#L556) · [行为专题](../ratelimit.md)：Window 设置时间窗口大小。
+[实现](../../internal/ratelimit/ratelimit_builder.go#L584) · [行为专题](../ratelimit.md)：Window 设置时间窗口大小。
 
 **源码说明与使用片段**（原文）：
 
@@ -3247,7 +3247,7 @@ instance.ShardCount()
 func (b *ShardedTokenBucketSubBuilder) Build() *ShardedTokenBucket
 ```
 
-[实现](../../internal/ratelimit/ratelimit_builder.go#L507) · [行为专题](../ratelimit.md)：Build 构建 ShardedTokenBucket 实例。
+[实现](../../internal/ratelimit/ratelimit_builder.go#L535) · [行为专题](../ratelimit.md)：Build 构建 ShardedTokenBucket 实例。
 
 **源码说明与使用片段**（原文）：
 
@@ -3266,7 +3266,7 @@ instance.Build()
 
 **生产建议**：复用同一个令牌桶以共享额度；Allow/AllowN 只做非阻塞检查，拒绝后自行选择退避或降级。令牌按调用时的经过时间补充，无后台 ticker，也没有 Release。
 
-**注意事项**：每次创建独立实例，不回写规范化后的字段；保存的 context 不传入实例，阻塞获取须另传 context。Rate/Capacity 原样传入，未配置仍为 0，不自动采用 DefaultRate/DefaultCapacity；须使用有限正数。分片对每片应用相同速率与容量。
+**注意事项**：每次创建独立实例，不回写规范化后的字段；不继承所保存 context 的取消、期限和业务值，RateLimiter 及其分片保留局部日志设置，阻塞获取须另传 context。Rate/Capacity 原样传入，未配置仍为 0，不自动采用 DefaultRate/DefaultCapacity；须使用有限正数。分片对每片应用相同速率与容量。
 
 ## `*ShardedTokenBucketSubBuilder.Capacity`
 
@@ -3274,7 +3274,7 @@ instance.Build()
 func (b *ShardedTokenBucketSubBuilder) Capacity(n float64) *ShardedTokenBucketSubBuilder
 ```
 
-[实现](../../internal/ratelimit/ratelimit_builder.go#L483) · [行为专题](../ratelimit.md)：Capacity 设置最大令牌容量。
+[实现](../../internal/ratelimit/ratelimit_builder.go#L511) · [行为专题](../ratelimit.md)：Capacity 设置最大令牌容量。
 
 **源码说明与使用片段**（原文）：
 
@@ -3309,7 +3309,7 @@ b.capacity = n
 func (b *ShardedTokenBucketSubBuilder) Context(ctx context.Context) *ShardedTokenBucketSubBuilder
 ```
 
-[实现](../../internal/ratelimit/ratelimit_builder.go#L489) · [行为专题](../ratelimit.md)：Context 链式设置上下文，自动注入 trace_id。
+[实现](../../internal/ratelimit/ratelimit_builder.go#L517) · [行为专题](../ratelimit.md)：Context 链式设置上下文，自动注入 trace_id。
 
 **源码说明与使用片段**（原文）：
 
@@ -3330,7 +3330,7 @@ instance.Context(ctx)
 
 **生产建议**：复用同一个令牌桶以共享额度；Allow/AllowN 只做非阻塞检查，拒绝后自行选择退避或降级。令牌按调用时的经过时间补充，无后台 ticker，也没有 Release。
 
-**注意事项**：只替换构建器保存的 context 并确保 trace_id，须非 nil；当前 Build 不把此字段传入最终限流器。阻塞 Wait/Acquire 需另传可取消 context，关闭仍由实例所有者管理；已创建的子构建器不随父构建器变更。
+**注意事项**：替换构建器保存的 context 并确保 trace_id，须非 nil；保留当前局部日志设置，Build 不继承其取消、期限和业务值。RateLimiter 及其分片实例保留局部日志设置，WithTraceID 换绑后仍使用它；其他模式没有内部日志调用。阻塞 Wait/Acquire 需另传可取消 context，关闭仍由实例所有者管理；已创建的子构建器不随父构建器变更。
 
 ## `*ShardedTokenBucketSubBuilder.DefaultCapacity`
 
@@ -3338,7 +3338,7 @@ instance.Context(ctx)
 func (b *ShardedTokenBucketSubBuilder) DefaultCapacity() *ShardedTokenBucketSubBuilder
 ```
 
-[实现](../../internal/ratelimit/ratelimit_builder.go#L524) · [行为专题](../ratelimit.md)：DefaultCapacity 使用默认容量（core.IO() × 2）。
+[实现](../../internal/ratelimit/ratelimit_builder.go#L552) · [行为专题](../ratelimit.md)：DefaultCapacity 使用默认容量（core.IO() × 2）。
 
 **源码说明与使用片段**（原文）：
 
@@ -3365,11 +3365,11 @@ instance.DefaultCapacity()
 func (b *ShardedTokenBucketSubBuilder) DefaultLogger() *ShardedTokenBucketSubBuilder
 ```
 
-[实现](../../internal/ratelimit/ratelimit_builder.go#L501) · [行为专题](../ratelimit.md)：DefaultLogger 重置为默认日志实现。
+[实现](../../internal/ratelimit/ratelimit_builder.go#L529) · [行为专题](../ratelimit.md)：DefaultLogger 清除当前日志器覆盖，恢复继承全局日志器。
 
 **源码说明与使用片段**（原文）：
 
-DefaultLogger 重置为默认日志实现。
+DefaultLogger 清除当前日志器覆盖，恢复继承全局日志器。
 
 
 **参数说明**：无显式参数。
@@ -3384,7 +3384,7 @@ instance.DefaultLogger()
 
 **生产建议**：复用同一个令牌桶以共享额度；Allow/AllowN 只做非阻塞检查，拒绝后自行选择退避或降级。令牌按调用时的经过时间补充，无后台 ticker，也没有 Release。
 
-**注意事项**：立即修改全库日志器，并非只配置当前构建器，也不等待 Build/Run 才生效。DefaultLogger 或 Logger(nil) 恢复静默实现；日志后端须并发安全、及时返回，调用不恢复其 panic。应在启动时统一设置，避免业务组件相互覆盖。
+**注意事项**：只配置当前构建器及其后续执行，不修改全局或其他实例。DefaultLogger 或 Logger(nil) 清除当前覆盖并继承全局日志器；Context 替换和模式切换保留当前日志设置，已构建实例不受构建器后续更改影响。日志后端须并发安全、及时返回，调用不恢复其 panic。
 
 ## `*ShardedTokenBucketSubBuilder.DefaultRate`
 
@@ -3392,7 +3392,7 @@ instance.DefaultLogger()
 func (b *ShardedTokenBucketSubBuilder) DefaultRate() *ShardedTokenBucketSubBuilder
 ```
 
-[实现](../../internal/ratelimit/ratelimit_builder.go#L518) · [行为专题](../ratelimit.md)：DefaultRate 使用默认令牌生成速率（core.IO()）。
+[实现](../../internal/ratelimit/ratelimit_builder.go#L546) · [行为专题](../ratelimit.md)：DefaultRate 使用默认令牌生成速率（core.IO()）。
 
 **源码说明与使用片段**（原文）：
 
@@ -3419,7 +3419,7 @@ instance.DefaultRate()
 func (b *ShardedTokenBucketSubBuilder) DefaultShards() *ShardedTokenBucketSubBuilder
 ```
 
-[实现](../../internal/ratelimit/ratelimit_builder.go#L512) · [行为专题](../ratelimit.md)：DefaultShards 使用默认分片数（core.IO()，最少 2）。
+[实现](../../internal/ratelimit/ratelimit_builder.go#L540) · [行为专题](../ratelimit.md)：DefaultShards 使用默认分片数（core.IO()，最少 2）。
 
 **源码说明与使用片段**（原文）：
 
@@ -3446,11 +3446,11 @@ instance.DefaultShards()
 func (b *ShardedTokenBucketSubBuilder) Logger(l core.Logger) *ShardedTokenBucketSubBuilder
 ```
 
-[实现](../../internal/ratelimit/ratelimit_builder.go#L495) · [行为专题](../ratelimit.md)：Logger 注入自定义日志实现，全局生效。
+[实现](../../internal/ratelimit/ratelimit_builder.go#L523) · [行为专题](../ratelimit.md)：Logger 仅为当前构建器及其后续执行设置日志器，不修改全局配置。
 
 **源码说明与使用片段**（原文）：
 
-Logger 注入自定义日志实现，全局生效。
+Logger 仅为当前构建器及其后续执行设置日志器，不修改全局配置。
 
 
 **参数说明**：
@@ -3467,7 +3467,7 @@ instance.Logger(l)
 
 **生产建议**：复用同一个令牌桶以共享额度；Allow/AllowN 只做非阻塞检查，拒绝后自行选择退避或降级。令牌按调用时的经过时间补充，无后台 ticker，也没有 Release。
 
-**注意事项**：立即修改全库日志器，并非只配置当前构建器，也不等待 Build/Run 才生效。DefaultLogger 或 Logger(nil) 恢复静默实现；日志后端须并发安全、及时返回，调用不恢复其 panic。应在启动时统一设置，避免业务组件相互覆盖。
+**注意事项**：只配置当前构建器及其后续执行，不修改全局或其他实例。DefaultLogger 或 Logger(nil) 清除当前覆盖并继承全局日志器；Context 替换和模式切换保留当前日志设置，已构建实例不受构建器后续更改影响。日志后端须并发安全、及时返回，调用不恢复其 panic。
 
 ## `*ShardedTokenBucketSubBuilder.Rate`
 
@@ -3475,7 +3475,7 @@ instance.Logger(l)
 func (b *ShardedTokenBucketSubBuilder) Rate(n float64) *ShardedTokenBucketSubBuilder
 ```
 
-[实现](../../internal/ratelimit/ratelimit_builder.go#L477) · [行为专题](../ratelimit.md)：Rate 设置每片每秒生成的令牌数。
+[实现](../../internal/ratelimit/ratelimit_builder.go#L505) · [行为专题](../ratelimit.md)：Rate 设置每片每秒生成的令牌数。
 
 **源码说明与使用片段**（原文）：
 
@@ -3510,7 +3510,7 @@ b.rate = n
 func (b *ShardedTokenBucketSubBuilder) Shards(n int) *ShardedTokenBucketSubBuilder
 ```
 
-[实现](../../internal/ratelimit/ratelimit_builder.go#L471) · [行为专题](../ratelimit.md)：Shards 设置水平分片数。
+[实现](../../internal/ratelimit/ratelimit_builder.go#L499) · [行为专题](../ratelimit.md)：Shards 设置水平分片数。
 
 **源码说明与使用片段**（原文）：
 
@@ -3605,7 +3605,7 @@ instance.AllowN(n)
 func (b *SlidingWindowSubBuilder) Build() *SlidingWindowRateLimiter
 ```
 
-[实现](../../internal/ratelimit/ratelimit_builder.go#L251) · [行为专题](../ratelimit.md)：Build 构建 SlidingWindowRateLimiter 实例。
+[实现](../../internal/ratelimit/ratelimit_builder.go#L267) · [行为专题](../ratelimit.md)：Build 构建 SlidingWindowRateLimiter 实例。
 
 **源码说明与使用片段**（原文）：
 
@@ -3624,7 +3624,7 @@ instance.Build()
 
 **生产建议**：复用同一个实例以共享窗口计数；拒绝后自行选择退避或降级。窗口记录消耗内存，按业务峰值确定 Limit；无需 Release 或 Close。
 
-**注意事项**：每次创建独立实例，不回写规范化后的字段；保存的 context 不传入实例，阻塞获取须另传 context。Window 原样传入，非正值在后续检查立即过期；单片非正 Limit 拒绝正数请求，分片总 Limit 则分配至每片至少 1。需要有效窗口/额度时显式设置。
+**注意事项**：每次创建独立实例，不回写规范化后的字段；不继承所保存 context 的取消、期限和业务值，RateLimiter 及其分片保留局部日志设置，阻塞获取须另传 context。Window 原样传入，非正值在后续检查立即过期；单片非正 Limit 拒绝正数请求，分片总 Limit 则分配至每片至少 1。需要有效窗口/额度时显式设置。
 
 ## `*SlidingWindowSubBuilder.Context`
 
@@ -3632,7 +3632,7 @@ instance.Build()
 func (b *SlidingWindowSubBuilder) Context(ctx context.Context) *SlidingWindowSubBuilder
 ```
 
-[实现](../../internal/ratelimit/ratelimit_builder.go#L233) · [行为专题](../ratelimit.md)：Context 链式设置上下文，自动注入 trace_id。
+[实现](../../internal/ratelimit/ratelimit_builder.go#L249) · [行为专题](../ratelimit.md)：Context 链式设置上下文，自动注入 trace_id。
 
 **源码说明与使用片段**（原文）：
 
@@ -3653,7 +3653,7 @@ instance.Context(ctx)
 
 **生产建议**：复用同一个实例以共享窗口计数；拒绝后自行选择退避或降级。窗口记录消耗内存，按业务峰值确定 Limit；无需 Release 或 Close。
 
-**注意事项**：只替换构建器保存的 context 并确保 trace_id，须非 nil；当前 Build 不把此字段传入最终限流器。阻塞 Wait/Acquire 需另传可取消 context，关闭仍由实例所有者管理；已创建的子构建器不随父构建器变更。
+**注意事项**：替换构建器保存的 context 并确保 trace_id，须非 nil；保留当前局部日志设置，Build 不继承其取消、期限和业务值。RateLimiter 及其分片实例保留局部日志设置，WithTraceID 换绑后仍使用它；其他模式没有内部日志调用。阻塞 Wait/Acquire 需另传可取消 context，关闭仍由实例所有者管理；已创建的子构建器不随父构建器变更。
 
 ## `*SlidingWindowSubBuilder.DefaultLimit`
 
@@ -3661,7 +3661,7 @@ instance.Context(ctx)
 func (b *SlidingWindowSubBuilder) DefaultLimit() *SlidingWindowSubBuilder
 ```
 
-[实现](../../internal/ratelimit/ratelimit_builder.go#L256) · [行为专题](../ratelimit.md)：DefaultLimit 使用默认限制次数（core.IO()）。
+[实现](../../internal/ratelimit/ratelimit_builder.go#L272) · [行为专题](../ratelimit.md)：DefaultLimit 使用默认限制次数（core.IO()）。
 
 **源码说明与使用片段**（原文）：
 
@@ -3688,11 +3688,11 @@ instance.DefaultLimit()
 func (b *SlidingWindowSubBuilder) DefaultLogger() *SlidingWindowSubBuilder
 ```
 
-[实现](../../internal/ratelimit/ratelimit_builder.go#L245) · [行为专题](../ratelimit.md)：DefaultLogger 重置为默认日志实现。
+[实现](../../internal/ratelimit/ratelimit_builder.go#L261) · [行为专题](../ratelimit.md)：DefaultLogger 清除当前日志器覆盖，恢复继承全局日志器。
 
 **源码说明与使用片段**（原文）：
 
-DefaultLogger 重置为默认日志实现。
+DefaultLogger 清除当前日志器覆盖，恢复继承全局日志器。
 
 
 **参数说明**：无显式参数。
@@ -3707,7 +3707,7 @@ instance.DefaultLogger()
 
 **生产建议**：复用同一个实例以共享窗口计数；拒绝后自行选择退避或降级。窗口记录消耗内存，按业务峰值确定 Limit；无需 Release 或 Close。
 
-**注意事项**：立即修改全库日志器，并非只配置当前构建器，也不等待 Build/Run 才生效。DefaultLogger 或 Logger(nil) 恢复静默实现；日志后端须并发安全、及时返回，调用不恢复其 panic。应在启动时统一设置，避免业务组件相互覆盖。
+**注意事项**：只配置当前构建器及其后续执行，不修改全局或其他实例。DefaultLogger 或 Logger(nil) 清除当前覆盖并继承全局日志器；Context 替换和模式切换保留当前日志设置，已构建实例不受构建器后续更改影响。日志后端须并发安全、及时返回，调用不恢复其 panic。
 
 ## `*SlidingWindowSubBuilder.DefaultWindow`
 
@@ -3715,7 +3715,7 @@ instance.DefaultLogger()
 func (b *SlidingWindowSubBuilder) DefaultWindow() *SlidingWindowSubBuilder
 ```
 
-[实现](../../internal/ratelimit/ratelimit_builder.go#L262) · [行为专题](../ratelimit.md)：DefaultWindow 使用默认时间窗口（1 秒）。
+[实现](../../internal/ratelimit/ratelimit_builder.go#L278) · [行为专题](../ratelimit.md)：DefaultWindow 使用默认时间窗口（1 秒）。
 
 **源码说明与使用片段**（原文）：
 
@@ -3742,7 +3742,7 @@ instance.DefaultWindow()
 func (b *SlidingWindowSubBuilder) Limit(n int) *SlidingWindowSubBuilder
 ```
 
-[实现](../../internal/ratelimit/ratelimit_builder.go#L221) · [行为专题](../ratelimit.md)：Limit 设置时间窗口内允许的最大请求数。
+[实现](../../internal/ratelimit/ratelimit_builder.go#L237) · [行为专题](../ratelimit.md)：Limit 设置时间窗口内允许的最大请求数。
 
 **源码说明与使用片段**（原文）：
 
@@ -3777,11 +3777,11 @@ b.limit = n
 func (b *SlidingWindowSubBuilder) Logger(l core.Logger) *SlidingWindowSubBuilder
 ```
 
-[实现](../../internal/ratelimit/ratelimit_builder.go#L239) · [行为专题](../ratelimit.md)：Logger 注入自定义日志实现，全局生效。
+[实现](../../internal/ratelimit/ratelimit_builder.go#L255) · [行为专题](../ratelimit.md)：Logger 仅为当前构建器及其后续执行设置日志器，不修改全局配置。
 
 **源码说明与使用片段**（原文）：
 
-Logger 注入自定义日志实现，全局生效。
+Logger 仅为当前构建器及其后续执行设置日志器，不修改全局配置。
 
 
 **参数说明**：
@@ -3798,7 +3798,7 @@ instance.Logger(l)
 
 **生产建议**：复用同一个实例以共享窗口计数；拒绝后自行选择退避或降级。窗口记录消耗内存，按业务峰值确定 Limit；无需 Release 或 Close。
 
-**注意事项**：立即修改全库日志器，并非只配置当前构建器，也不等待 Build/Run 才生效。DefaultLogger 或 Logger(nil) 恢复静默实现；日志后端须并发安全、及时返回，调用不恢复其 panic。应在启动时统一设置，避免业务组件相互覆盖。
+**注意事项**：只配置当前构建器及其后续执行，不修改全局或其他实例。DefaultLogger 或 Logger(nil) 清除当前覆盖并继承全局日志器；Context 替换和模式切换保留当前日志设置，已构建实例不受构建器后续更改影响。日志后端须并发安全、及时返回，调用不恢复其 panic。
 
 ## `*SlidingWindowSubBuilder.Window`
 
@@ -3806,7 +3806,7 @@ instance.Logger(l)
 func (b *SlidingWindowSubBuilder) Window(d time.Duration) *SlidingWindowSubBuilder
 ```
 
-[实现](../../internal/ratelimit/ratelimit_builder.go#L227) · [行为专题](../ratelimit.md)：Window 设置滑动窗口的时间范围。
+[实现](../../internal/ratelimit/ratelimit_builder.go#L243) · [行为专题](../ratelimit.md)：Window 设置滑动窗口的时间范围。
 
 **源码说明与使用片段**（原文）：
 
@@ -3841,7 +3841,7 @@ b.window = d
 func (t *Token) Release()
 ```
 
-[实现](../../internal/ratelimit/ratelimit.go#L530) · [行为专题](../ratelimit.md)：Release 归还令牌；重复或并发调用只归还一次。
+[实现](../../internal/ratelimit/ratelimit.go#L533) · [行为专题](../ratelimit.md)：Release 归还令牌；重复或并发调用只归还一次。
 
 **源码说明与使用片段**（原文）：
 
@@ -3928,7 +3928,7 @@ instance.AllowN(n)
 func (b *TokenBucketSubBuilder) Build() *TokenBucket
 ```
 
-[实现](../../internal/ratelimit/ratelimit_builder.go#L191) · [行为专题](../ratelimit.md)：Build 构建 TokenBucket 实例。
+[实现](../../internal/ratelimit/ratelimit_builder.go#L207) · [行为专题](../ratelimit.md)：Build 构建 TokenBucket 实例。
 
 **源码说明与使用片段**（原文）：
 
@@ -3947,7 +3947,7 @@ instance.Build()
 
 **生产建议**：复用同一个令牌桶以共享额度；Allow/AllowN 只做非阻塞检查，拒绝后自行选择退避或降级。令牌按调用时的经过时间补充，无后台 ticker，也没有 Release。
 
-**注意事项**：每次创建独立实例，不回写规范化后的字段；保存的 context 不传入实例，阻塞获取须另传 context。Rate/Capacity 原样传入，未配置仍为 0，不自动采用 DefaultRate/DefaultCapacity；须使用有限正数。分片对每片应用相同速率与容量。
+**注意事项**：每次创建独立实例，不回写规范化后的字段；不继承所保存 context 的取消、期限和业务值，RateLimiter 及其分片保留局部日志设置，阻塞获取须另传 context。Rate/Capacity 原样传入，未配置仍为 0，不自动采用 DefaultRate/DefaultCapacity；须使用有限正数。分片对每片应用相同速率与容量。
 
 ## `*TokenBucketSubBuilder.Capacity`
 
@@ -3955,7 +3955,7 @@ instance.Build()
 func (b *TokenBucketSubBuilder) Capacity(n float64) *TokenBucketSubBuilder
 ```
 
-[实现](../../internal/ratelimit/ratelimit_builder.go#L170) · [行为专题](../ratelimit.md)：Capacity 设置最大令牌容量（允许的突发流量）。
+[实现](../../internal/ratelimit/ratelimit_builder.go#L183) · [行为专题](../ratelimit.md)：Capacity 设置最大令牌容量（允许的突发流量）。
 
 **源码说明与使用片段**（原文）：
 
@@ -3990,7 +3990,7 @@ b.capacity = n
 func (b *TokenBucketSubBuilder) Context(ctx context.Context) *TokenBucketSubBuilder
 ```
 
-[实现](../../internal/ratelimit/ratelimit_builder.go#L176) · [行为专题](../ratelimit.md)：Context 链式设置上下文，自动注入 trace_id。
+[实现](../../internal/ratelimit/ratelimit_builder.go#L189) · [行为专题](../ratelimit.md)：Context 链式设置上下文，自动注入 trace_id。
 
 **源码说明与使用片段**（原文）：
 
@@ -4011,7 +4011,7 @@ instance.Context(ctx)
 
 **生产建议**：复用同一个令牌桶以共享额度；Allow/AllowN 只做非阻塞检查，拒绝后自行选择退避或降级。令牌按调用时的经过时间补充，无后台 ticker，也没有 Release。
 
-**注意事项**：只替换构建器保存的 context 并确保 trace_id，须非 nil；当前 Build 不把此字段传入最终限流器。阻塞 Wait/Acquire 需另传可取消 context，关闭仍由实例所有者管理；已创建的子构建器不随父构建器变更。
+**注意事项**：替换构建器保存的 context 并确保 trace_id，须非 nil；保留当前局部日志设置，Build 不继承其取消、期限和业务值。RateLimiter 及其分片实例保留局部日志设置，WithTraceID 换绑后仍使用它；其他模式没有内部日志调用。阻塞 Wait/Acquire 需另传可取消 context，关闭仍由实例所有者管理；已创建的子构建器不随父构建器变更。
 
 ## `*TokenBucketSubBuilder.DefaultCapacity`
 
@@ -4019,7 +4019,7 @@ instance.Context(ctx)
 func (b *TokenBucketSubBuilder) DefaultCapacity() *TokenBucketSubBuilder
 ```
 
-[实现](../../internal/ratelimit/ratelimit_builder.go#L202) · [行为专题](../ratelimit.md)：DefaultCapacity 使用默认容量（core.IO() × 2）。
+[实现](../../internal/ratelimit/ratelimit_builder.go#L218) · [行为专题](../ratelimit.md)：DefaultCapacity 使用默认容量（core.IO() × 2）。
 
 **源码说明与使用片段**（原文）：
 
@@ -4046,11 +4046,11 @@ instance.DefaultCapacity()
 func (b *TokenBucketSubBuilder) DefaultLogger() *TokenBucketSubBuilder
 ```
 
-[实现](../../internal/ratelimit/ratelimit_builder.go#L188) · [行为专题](../ratelimit.md)：DefaultLogger 重置为默认日志实现。
+[实现](../../internal/ratelimit/ratelimit_builder.go#L201) · [行为专题](../ratelimit.md)：DefaultLogger 清除当前日志器覆盖，恢复继承全局日志器。
 
 **源码说明与使用片段**（原文）：
 
-DefaultLogger 重置为默认日志实现。
+DefaultLogger 清除当前日志器覆盖，恢复继承全局日志器。
 
 
 **参数说明**：无显式参数。
@@ -4065,7 +4065,7 @@ instance.DefaultLogger()
 
 **生产建议**：复用同一个令牌桶以共享额度；Allow/AllowN 只做非阻塞检查，拒绝后自行选择退避或降级。令牌按调用时的经过时间补充，无后台 ticker，也没有 Release。
 
-**注意事项**：立即修改全库日志器，并非只配置当前构建器，也不等待 Build/Run 才生效。DefaultLogger 或 Logger(nil) 恢复静默实现；日志后端须并发安全、及时返回，调用不恢复其 panic。应在启动时统一设置，避免业务组件相互覆盖。
+**注意事项**：只配置当前构建器及其后续执行，不修改全局或其他实例。DefaultLogger 或 Logger(nil) 清除当前覆盖并继承全局日志器；Context 替换和模式切换保留当前日志设置，已构建实例不受构建器后续更改影响。日志后端须并发安全、及时返回，调用不恢复其 panic。
 
 ## `*TokenBucketSubBuilder.DefaultRate`
 
@@ -4073,7 +4073,7 @@ instance.DefaultLogger()
 func (b *TokenBucketSubBuilder) DefaultRate() *TokenBucketSubBuilder
 ```
 
-[实现](../../internal/ratelimit/ratelimit_builder.go#L196) · [行为专题](../ratelimit.md)：DefaultRate 使用默认令牌生成速率（core.IO()）。
+[实现](../../internal/ratelimit/ratelimit_builder.go#L212) · [行为专题](../ratelimit.md)：DefaultRate 使用默认令牌生成速率（core.IO()）。
 
 **源码说明与使用片段**（原文）：
 
@@ -4100,11 +4100,11 @@ instance.DefaultRate()
 func (b *TokenBucketSubBuilder) Logger(l core.Logger) *TokenBucketSubBuilder
 ```
 
-[实现](../../internal/ratelimit/ratelimit_builder.go#L182) · [行为专题](../ratelimit.md)：Logger 注入自定义日志实现，全局生效。
+[实现](../../internal/ratelimit/ratelimit_builder.go#L195) · [行为专题](../ratelimit.md)：Logger 仅为当前构建器及其后续执行设置日志器，不修改全局配置。
 
 **源码说明与使用片段**（原文）：
 
-Logger 注入自定义日志实现，全局生效。
+Logger 仅为当前构建器及其后续执行设置日志器，不修改全局配置。
 
 
 **参数说明**：
@@ -4121,7 +4121,7 @@ instance.Logger(l)
 
 **生产建议**：复用同一个令牌桶以共享额度；Allow/AllowN 只做非阻塞检查，拒绝后自行选择退避或降级。令牌按调用时的经过时间补充，无后台 ticker，也没有 Release。
 
-**注意事项**：立即修改全库日志器，并非只配置当前构建器，也不等待 Build/Run 才生效。DefaultLogger 或 Logger(nil) 恢复静默实现；日志后端须并发安全、及时返回，调用不恢复其 panic。应在启动时统一设置，避免业务组件相互覆盖。
+**注意事项**：只配置当前构建器及其后续执行，不修改全局或其他实例。DefaultLogger 或 Logger(nil) 清除当前覆盖并继承全局日志器；Context 替换和模式切换保留当前日志设置，已构建实例不受构建器后续更改影响。日志后端须并发安全、及时返回，调用不恢复其 panic。
 
 ## `*TokenBucketSubBuilder.Rate`
 
@@ -4129,7 +4129,7 @@ instance.Logger(l)
 func (b *TokenBucketSubBuilder) Rate(n float64) *TokenBucketSubBuilder
 ```
 
-[实现](../../internal/ratelimit/ratelimit_builder.go#L164) · [行为专题](../ratelimit.md)：Rate 设置每秒生成的令牌数。
+[实现](../../internal/ratelimit/ratelimit_builder.go#L177) · [行为专题](../ratelimit.md)：Rate 设置每秒生成的令牌数。
 
 **源码说明与使用片段**（原文）：
 

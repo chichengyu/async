@@ -119,25 +119,25 @@ func (b *SliceBuilder[T, R]) Parallel() *ParallelSlice[T, R] {
 
 // Context 链式设置上下文，自动注入 trace_id。
 func (b *SliceBuilder[T, R]) Context(ctx context.Context) *SliceBuilder[T, R] {
-	b.ctx = core.EnsureTraceID(ctx)
+	b.ctx = core.EnsureTraceID(core.CopyLogger(b.ctx, ctx))
 	return b
 }
 
-// Logger 注入自定义日志实现，全局生效。
+// Logger 仅为当前构建器及其后续执行设置日志器，不修改全局配置。
 //
 //	l: core.Logger 接口实现。
 //
 //	sb.Logger(&MyLogger{}).Map(fn)
 func (b *SliceBuilder[T, R]) Logger(l core.Logger) *SliceBuilder[T, R] {
-	core.SetLogger(l)
+	b.ctx = core.WithLogger(b.ctx, l)
 	return b
 }
 
-// DefaultLogger 重置为默认日志实现（静默模式）。
+// DefaultLogger 清除当前日志器覆盖，恢复继承全局日志器。
 //
 //	sb.DefaultLogger().Map(fn)
 func (b *SliceBuilder[T, R]) DefaultLogger() *SliceBuilder[T, R] {
-	core.SetLogger(nil)
+	b.ctx = core.WithLogger(b.ctx, nil)
 	return b
 }
 

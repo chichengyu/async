@@ -121,7 +121,7 @@ func (b *pipelineBase[T, S]) spawnParallel() *ParallelChain[T] {
 
 // Context 链式设置上下文，自动注入 trace_id。
 func (b *pipelineBase[T, S]) Context(ctx context.Context) S {
-	b.ctx = core.EnsureTraceID(ctx)
+	b.ctx = core.EnsureTraceID(core.CopyLogger(b.ctx, ctx))
 	return b.self
 }
 
@@ -161,15 +161,15 @@ func (b *pipelineBase[T, S]) DefaultFailFast() S {
 	return b.self
 }
 
-// Logger 注入自定义日志实现，全局生效。
+// Logger 仅为当前构建器及其后续执行设置日志器，不修改全局配置。
 func (b *pipelineBase[T, S]) Logger(l core.Logger) S {
-	core.SetLogger(l)
+	b.ctx = core.WithLogger(b.ctx, l)
 	return b.self
 }
 
-// DefaultLogger 重置为默认日志实现。
+// DefaultLogger 清除当前日志器覆盖，恢复继承全局日志器。
 func (b *pipelineBase[T, S]) DefaultLogger() S {
-	core.SetLogger(nil)
+	b.ctx = core.WithLogger(b.ctx, nil)
 	return b.self
 }
 

@@ -59,7 +59,7 @@ Task 提供单个异步任务的执行能力。通过 `Task[T]()` / `TaskVoid()`
 | `.DefaultTimeout()` | 清除超时设置 | — |
 | `.Bounded(max)` | 限制同时持有许可的业务回调数 | 无限制 |
 | `.DefaultBounded()` | 清除并发限制 | — |
-| `.Logger(l)` | 注入自定义日志（全局生效） | 静默 |
+| `.Logger(l)` | 设置当前构建器的日志器（仅局部生效） | 静默 |
 | `.DefaultLogger()` | 恢复默认日志 | — |
 
 ### 终端方法
@@ -525,7 +525,7 @@ builder := async.Task[int]().Context(ctx).Bounded(1000)
 | `NewBoundedRunnerBuilder()` | 入口 | — |
 | `.Context(ctx)` | 设置构建器上下文并注入 TraceID；`Build()` 不将其传给执行器 | `context.Background()` |
 | `.Max(n)` | 业务许可容量（≤0 使用 `IO()`） | `IO()` |
-| `.Logger(l)` | 注入自定义日志（全局生效） | 静默 |
+| `.Logger(l)` | 设置当前构建器的日志器（仅局部生效） | 静默 |
 | `.DefaultLogger()` | 恢复默认日志 | — |
 | `.Build()` | 创建 `*BoundedRunner` | — |
 
@@ -601,7 +601,7 @@ TaskBuilder 创建时默认不设超时，也不限制并发；它不读取全�
 |-----------------|----------|-------------|
 | `.DefaultTimeout()` | `b.timeout = 0`（清除 Builder 超时设置） | TaskBuilder[T] |
 | `.DefaultBounded()` | `b.bounded = nil`（清除并发限制） | TaskBuilder[T] |
-| `.DefaultLogger()` | `core.SetLogger(nil)`（恢复默认日志实现） | TaskBuilder[T] |
+| `.DefaultLogger()` | `清除当前覆盖，继承全局日志器`（恢复默认日志实现） | TaskBuilder[T] |
 
 ### 配置覆盖顺序
 
@@ -777,7 +777,7 @@ async.Task[int]().
 // 恢复默认日志（静默）
 async.Task[int]().
     Logger(myLogger).
-    DefaultLogger().     // 全局恢复
+    DefaultLogger().     // 当前构建器恢复继承全局日志器
     Go(fn)
 ```
 

@@ -16,7 +16,7 @@ type MapParallel[K comparable, V any, R any] struct {
 }
 
 func (b *MapParallel[K, V, R]) Context(ctx context.Context) *MapParallel[K, V, R] {
-	b.ctx = core.EnsureTraceID(ctx)
+	b.ctx = core.EnsureTraceID(core.CopyLogger(b.ctx, ctx))
 	return b
 }
 
@@ -92,7 +92,7 @@ func (b *MapParallel[K, V, R]) DefaultChunk() *MapParallel[K, V, R] {
 	return b
 }
 func (b *MapParallel[K, V, R]) Logger(l core.Logger) *MapParallel[K, V, R] {
-	core.SetLogger(l)
+	b.ctx = core.WithLogger(b.ctx, l)
 	return b
 }
 

@@ -332,11 +332,11 @@ instance.DefaultLimit()
 func (c *RetryChain[T]) DefaultLogger() *RetryChain[T]
 ```
 
-[实现](../../internal/retry/retry_builder.go#L455) · [行为专题](../retry.md)：DefaultLogger 重置为默认日志实现。
+[实现](../../internal/retry/retry_builder.go#L458) · [行为专题](../retry.md)：DefaultLogger 清除当前日志器覆盖，恢复继承全局日志器。
 
 **源码说明与使用片段**（原文）：
 
-DefaultLogger 重置为默认日志实现。
+DefaultLogger 清除当前日志器覆盖，恢复继承全局日志器。
 
 
 **参数说明**：无显式参数。
@@ -351,7 +351,7 @@ instance.DefaultLogger()
 
 **生产建议**：尽量在应用启动时设置全局状态；日志后端应支持并发调用。
 
-**注意事项**：立即修改全库日志器，并非只配置当前构建器，也不等待 Build/Run 才生效。DefaultLogger 或 Logger(nil) 恢复静默实现；日志后端须并发安全、及时返回，调用不恢复其 panic。应在启动时统一设置，避免业务组件相互覆盖。
+**注意事项**：只配置当前构建器及其后续执行，不修改全局或其他实例。DefaultLogger 或 Logger(nil) 清除当前覆盖并继承全局日志器；Context 替换和模式切换保留当前日志设置，已构建实例不受构建器后续更改影响。日志后端须并发安全、及时返回，调用不恢复其 panic。
 
 ## `*RetryChain[T].DefaultMaxRetries`
 
@@ -575,7 +575,7 @@ instance.DefaultWindow()
 func (c *RetryChain[T]) Execute(fn func(context.Context) (T, error)) (T, error)
 ```
 
-[实现](../../internal/retry/retry_builder.go#L471) · [行为专题](../retry.md)：Execute 执行重试链，返回 (T, error)。
+[实现](../../internal/retry/retry_builder.go#L474) · [行为专题](../retry.md)：Execute 执行重试链，返回 (T, error)。
 
 **源码说明与使用片段**（原文）：
 
@@ -612,7 +612,7 @@ instance.Execute(fn)
 func (c *RetryChain[T]) ExecuteVoid(fn func(context.Context) error) error
 ```
 
-[实现](../../internal/retry/retry_builder.go#L529) · [行为专题](../retry.md)：ExecuteVoid 无返回值版 Execute，fn 只返回 error。
+[实现](../../internal/retry/retry_builder.go#L532) · [行为专题](../retry.md)：ExecuteVoid 无返回值版 Execute，fn 只返回 error。
 
 **源码说明与使用片段**（原文）：
 
@@ -750,11 +750,11 @@ instance.Linear()
 func (c *RetryChain[T]) Logger(l core.Logger) *RetryChain[T]
 ```
 
-[实现](../../internal/retry/retry_builder.go#L452) · [行为专题](../retry.md)：Logger 注入自定义日志实现，全局生效。
+[实现](../../internal/retry/retry_builder.go#L452) · [行为专题](../retry.md)：Logger 仅为当前构建器及其后续执行设置日志器，不修改全局配置。
 
 **源码说明与使用片段**（原文）：
 
-Logger 注入自定义日志实现，全局生效。
+Logger 仅为当前构建器及其后续执行设置日志器，不修改全局配置。
 
 
 **参数说明**：
@@ -771,7 +771,7 @@ instance.Logger(l)
 
 **生产建议**：尽量在应用启动时设置全局状态；日志后端应支持并发调用。
 
-**注意事项**：立即修改全库日志器，并非只配置当前构建器，也不等待 Build/Run 才生效。DefaultLogger 或 Logger(nil) 恢复静默实现；日志后端须并发安全、及时返回，调用不恢复其 panic。应在启动时统一设置，避免业务组件相互覆盖。
+**注意事项**：只配置当前构建器及其后续执行，不修改全局或其他实例。DefaultLogger 或 Logger(nil) 清除当前覆盖并继承全局日志器；Context 替换和模式切换保留当前日志设置，已构建实例不受构建器后续更改影响。日志后端须并发安全、及时返回，调用不恢复其 panic。
 
 ## `*RetryChain[T].MaxRetries`
 
@@ -1048,7 +1048,7 @@ instance.RateLimiter()
 func (c *RetryChain[T]) Run(fn func() error) error
 ```
 
-[实现](../../internal/retry/retry_builder.go#L553) · [行为专题](../retry.md)：Run 统一执行方法，fn 签名为 func() error，不接收链内或单次调用的 context。
+[实现](../../internal/retry/retry_builder.go#L556) · [行为专题](../retry.md)：Run 统一执行方法，fn 签名为 func() error，不接收链内或单次调用的 context。
 
 **源码说明与使用片段**（原文）：
 
@@ -1091,7 +1091,7 @@ instance.Run(fn)
 func (c *RetryChain[T]) RunVoid(fn func(context.Context) error) error
 ```
 
-[实现](../../internal/retry/retry_builder.go#L570) · [行为专题](../retry.md)：RunVoid 与 ExecuteVoid 相同，fn 签名为 func(context.Context) error，使用 Run* 统一命名。
+[实现](../../internal/retry/retry_builder.go#L573) · [行为专题](../retry.md)：RunVoid 与 ExecuteVoid 相同，fn 签名为 func(context.Context) error，使用 Run* 统一命名。
 
 **源码说明与使用片段**（原文）：
 

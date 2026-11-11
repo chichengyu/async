@@ -93,11 +93,11 @@ instance.DefaultFailFast()
 func (b *MultiPoolBuilder[T]) DefaultLogger() *MultiPoolBuilder[T]
 ```
 
-[实现](../../internal/pool/multi_pool_builder.go#L189) · [行为专题](../pool.md)：DefaultLogger 重置为默认日志实现。
+[实现](../../internal/pool/multi_pool_builder.go#L192) · [行为专题](../pool.md)：DefaultLogger 清除当前日志器覆盖，恢复继承全局日志器。
 
 **源码说明与使用片段**（原文）：
 
-DefaultLogger 重置为默认日志实现。
+DefaultLogger 清除当前日志器覆盖，恢复继承全局日志器。
 
 
 **参数说明**：无显式参数。
@@ -110,9 +110,9 @@ DefaultLogger 重置为默认日志实现。
 instance.DefaultLogger()
 ```
 
-**生产建议**：此方法会设置全局日志器；在应用启动阶段统一配置，避免多个构建器相互覆盖。
+**生产建议**：在 Build/Run 或终端操作之前完成链式配置；以返回值继续调用，避免多个 goroutine 同时修改同一个构建器。默认值和设置顺序见专题。
 
-**注意事项**：立即修改全库日志器，并非只配置当前构建器，也不等待 Build/Run 才生效。DefaultLogger 或 Logger(nil) 恢复静默实现；日志后端须并发安全、及时返回，调用不恢复其 panic。应在启动时统一设置，避免业务组件相互覆盖。
+**注意事项**：只配置当前构建器及其后续执行，不修改全局或其他实例。DefaultLogger 或 Logger(nil) 清除当前覆盖并继承全局日志器；Context 替换和模式切换保留当前日志设置，已构建实例不受构建器后续更改影响。日志后端须并发安全、及时返回，调用不恢复其 panic。
 
 ## `*MultiPoolBuilder[T].DefaultMaxPending`
 
@@ -228,7 +228,7 @@ instance.DefaultOverflow()
 func (b *MultiPoolBuilder[T]) DefaultPool() *MultiPoolBuilder[T]
 ```
 
-[实现](../../internal/pool/multi_pool_builder.go#L219) · [行为专题](../pool.md)：DefaultPool 恢复为内部自动创建协程池（默认行为）。
+[实现](../../internal/pool/multi_pool_builder.go#L225) · [行为专题](../pool.md)：DefaultPool 恢复为内部自动创建协程池（默认行为）。
 
 **源码说明与使用片段**（原文）：
 
@@ -444,11 +444,11 @@ instance.FailFast()
 func (b *MultiPoolBuilder[T]) Logger(l core.Logger) *MultiPoolBuilder[T]
 ```
 
-[实现](../../internal/pool/multi_pool_builder.go#L186) · [行为专题](../pool.md)：Logger 注入自定义日志实现，全局生效。
+[实现](../../internal/pool/multi_pool_builder.go#L186) · [行为专题](../pool.md)：Logger 仅为当前构建器及其后续执行设置日志器，不修改全局配置。
 
 **源码说明与使用片段**（原文）：
 
-Logger 注入自定义日志实现，全局生效。
+Logger 仅为当前构建器及其后续执行设置日志器，不修改全局配置。
 
 
 **参数说明**：
@@ -463,9 +463,9 @@ Logger 注入自定义日志实现，全局生效。
 instance.Logger(l)
 ```
 
-**生产建议**：此方法会设置全局日志器；在应用启动阶段统一配置，避免多个构建器相互覆盖。
+**生产建议**：在 Build/Run 或终端操作之前完成链式配置；以返回值继续调用，避免多个 goroutine 同时修改同一个构建器。默认值和设置顺序见专题。
 
-**注意事项**：立即修改全库日志器，并非只配置当前构建器，也不等待 Build/Run 才生效。DefaultLogger 或 Logger(nil) 恢复静默实现；日志后端须并发安全、及时返回，调用不恢复其 panic。应在启动时统一设置，避免业务组件相互覆盖。
+**注意事项**：只配置当前构建器及其后续执行，不修改全局或其他实例。DefaultLogger 或 Logger(nil) 清除当前覆盖并继承全局日志器；Context 替换和模式切换保留当前日志设置，已构建实例不受构建器后续更改影响。日志后端须并发安全、及时返回，调用不恢复其 panic。
 
 ## `*MultiPoolBuilder[T].MaxPending`
 
@@ -659,7 +659,7 @@ instance.OverflowError()
 func (b *MultiPoolBuilder[T]) Pool(p *Pool[T]) *MultiPoolBuilder[T]
 ```
 
-[实现](../../internal/pool/multi_pool_builder.go#L213) · [行为专题](../pool.md)：Pool 注入外部协程池，MultiPool 使用该池进行分片。
+[实现](../../internal/pool/multi_pool_builder.go#L219) · [行为专题](../pool.md)：Pool 注入外部协程池，MultiPool 使用该池进行分片。
 
 **源码说明与使用片段**（原文）：
 
@@ -747,7 +747,7 @@ b.cfg.RingBufCap = cap
 func (b *MultiPoolBuilder[T]) Run(fn func(ctx context.Context, mp *MultiPool[T]) error) error
 ```
 
-[实现](../../internal/pool/multi_pool_builder.go#L225) · [行为专题](../pool.md)：Run 终端方法：创建 Pool（或使用外部注入的 Pool）→ 应用配置 → 分片 → 执行 fn → Close 所有分片。
+[实现](../../internal/pool/multi_pool_builder.go#L231) · [行为专题](../pool.md)：Run 终端方法：创建 Pool（或使用外部注入的 Pool）→ 应用配置 → 分片 → 执行 fn → Close 所有分片。
 
 **源码说明与使用片段**（原文）：
 
@@ -1722,11 +1722,11 @@ instance.DefaultFailFast()
 func (b *PoolBuilder[T]) DefaultLogger() *PoolBuilder[T]
 ```
 
-[实现](../../internal/pool/pool_builder.go#L172) · [行为专题](../pool.md)：DefaultLogger 重置为默认日志实现。
+[实现](../../internal/pool/pool_builder.go#L175) · [行为专题](../pool.md)：DefaultLogger 清除当前日志器覆盖，恢复继承全局日志器。
 
 **源码说明与使用片段**（原文）：
 
-DefaultLogger 重置为默认日志实现。
+DefaultLogger 清除当前日志器覆盖，恢复继承全局日志器。
 
 
 **参数说明**：无显式参数。
@@ -1739,9 +1739,9 @@ DefaultLogger 重置为默认日志实现。
 instance.DefaultLogger()
 ```
 
-**生产建议**：此方法会设置全局日志器；在应用启动阶段统一配置，避免多个构建器相互覆盖。
+**生产建议**：在 Build/Run 或终端操作之前完成链式配置；以返回值继续调用，避免多个 goroutine 同时修改同一个构建器。默认值和设置顺序见专题。
 
-**注意事项**：立即修改全库日志器，并非只配置当前构建器，也不等待 Build/Run 才生效。DefaultLogger 或 Logger(nil) 恢复静默实现；日志后端须并发安全、及时返回，调用不恢复其 panic。应在启动时统一设置，避免业务组件相互覆盖。
+**注意事项**：只配置当前构建器及其后续执行，不修改全局或其他实例。DefaultLogger 或 Logger(nil) 清除当前覆盖并继承全局日志器；Context 替换和模式切换保留当前日志设置，已构建实例不受构建器后续更改影响。日志后端须并发安全、及时返回，调用不恢复其 panic。
 
 ## `*PoolBuilder[T].DefaultMaxPending`
 
@@ -2019,11 +2019,11 @@ instance.FailFast()
 func (b *PoolBuilder[T]) Logger(l core.Logger) *PoolBuilder[T]
 ```
 
-[实现](../../internal/pool/pool_builder.go#L169) · [行为专题](../pool.md)：Logger 注入自定义日志实现，全局生效。
+[实现](../../internal/pool/pool_builder.go#L169) · [行为专题](../pool.md)：Logger 仅为当前构建器及其后续执行设置日志器，不修改全局配置。
 
 **源码说明与使用片段**（原文）：
 
-Logger 注入自定义日志实现，全局生效。
+Logger 仅为当前构建器及其后续执行设置日志器，不修改全局配置。
 
 
 **参数说明**：
@@ -2038,9 +2038,9 @@ Logger 注入自定义日志实现，全局生效。
 instance.Logger(l)
 ```
 
-**生产建议**：此方法会设置全局日志器；在应用启动阶段统一配置，避免多个构建器相互覆盖。
+**生产建议**：在 Build/Run 或终端操作之前完成链式配置；以返回值继续调用，避免多个 goroutine 同时修改同一个构建器。默认值和设置顺序见专题。
 
-**注意事项**：立即修改全库日志器，并非只配置当前构建器，也不等待 Build/Run 才生效。DefaultLogger 或 Logger(nil) 恢复静默实现；日志后端须并发安全、及时返回，调用不恢复其 panic。应在启动时统一设置，避免业务组件相互覆盖。
+**注意事项**：只配置当前构建器及其后续执行，不修改全局或其他实例。DefaultLogger 或 Logger(nil) 清除当前覆盖并继承全局日志器；Context 替换和模式切换保留当前日志设置，已构建实例不受构建器后续更改影响。日志后端须并发安全、及时返回，调用不恢复其 panic。
 
 ## `*PoolBuilder[T].MaxPending`
 
@@ -2269,7 +2269,7 @@ b.cfg.RingBufCap = cap
 func (b *PoolBuilder[T]) Run(fn func(ctx context.Context, p *Pool[T]) error) error
 ```
 
-[实现](../../internal/pool/pool_builder.go#L175) · [行为专题](../pool.md)：Run 终端方法：创建协程池，执行 fn，fn 返回后自动 Close。
+[实现](../../internal/pool/pool_builder.go#L181) · [行为专题](../pool.md)：Run 终端方法：创建协程池，执行 fn，fn 返回后自动 Close。
 
 **源码说明与使用片段**（原文）：
 
@@ -2438,7 +2438,7 @@ b.cfg.Size = n
 func (p *Pool[T]) Active() int
 ```
 
-[实现](../../internal/pool/pool.go#L2239) · [行为专题](../pool.md)：Active 返回当前活跃（取得任务）的 worker 数量。
+[实现](../../internal/pool/pool.go#L2248) · [行为专题](../pool.md)：Active 返回当前活跃（取得任务）的 worker 数量。
 
 **源码说明与使用片段**（原文）：
 
@@ -2465,7 +2465,7 @@ instance.Active()
 func (p *Pool[T]) Busy() int
 ```
 
-[实现](../../internal/pool/pool.go#L2244) · [行为专题](../pool.md)：Busy 返回当前正在执行任务的 worker 数量。
+[实现](../../internal/pool/pool.go#L2253) · [行为专题](../pool.md)：Busy 返回当前正在执行任务的 worker 数量。
 
 **源码说明与使用片段**（原文）：
 
@@ -2492,7 +2492,7 @@ instance.Busy()
 func (p *Pool[T]) Close()
 ```
 
-[实现](../../internal/pool/pool.go#L2056) · [行为专题](../pool.md)：Close 关闭协程池，等待所有 worker 退出后返回。
+[实现](../../internal/pool/pool.go#L2065) · [行为专题](../pool.md)：Close 关闭协程池，等待所有 worker 退出后返回。
 
 **源码说明与使用片段**（原文）：
 
@@ -2523,7 +2523,7 @@ instance.Close()
 func (p *Pool[T]) CloseAndWait()
 ```
 
-[实现](../../internal/pool/pool.go#L2110) · [行为专题](../pool.md)：CloseAndWait 关闭池并等待所有任务完成。
+[实现](../../internal/pool/pool.go#L2119) · [行为专题](../pool.md)：CloseAndWait 关闭池并等待所有任务完成。
 
 **源码说明与使用片段**（原文）：
 
@@ -2554,7 +2554,7 @@ instance.CloseAndWait()
 func (p *Pool[T]) CloseAndWaitTimeout(timeout time.Duration) (ok bool, workerDone <-chan struct{})
 ```
 
-[实现](../../internal/pool/pool.go#L2129) · [行为专题](../pool.md)：CloseAndWaitTimeout 启动关闭并限时等待；timeout 不覆盖取得 resizeMu 的锁等待。
+[实现](../../internal/pool/pool.go#L2138) · [行为专题](../pool.md)：CloseAndWaitTimeout 启动关闭并限时等待；timeout 不覆盖取得 resizeMu 的锁等待。
 
 **源码说明与使用片段**（原文）：
 
@@ -2593,7 +2593,7 @@ instance.CloseAndWaitTimeout(timeout)
 func (p *Pool[T]) CloseByIdle(timeout time.Duration)
 ```
 
-[实现](../../internal/pool/pool.go#L2189) · [行为专题](../pool.md)：CloseByIdle 最多等待 timeout 使池进入空闲状态，然后同步关闭池。
+[实现](../../internal/pool/pool.go#L2198) · [行为专题](../pool.md)：CloseByIdle 最多等待 timeout 使池进入空闲状态，然后同步关闭池。
 
 **源码说明与使用片段**（原文）：
 
@@ -2631,7 +2631,7 @@ instance.CloseByIdle(timeout)
 func (p *Pool[T]) Ctx() context.Context
 ```
 
-[实现](../../internal/pool/pool.go#L342) · [行为专题](../pool.md)：Ctx 返回 Pool 内部存储的上下文。
+[实现](../../internal/pool/pool.go#L344) · [行为专题](../pool.md)：Ctx 返回 Pool 内部存储的上下文。
 
 **源码说明与使用片段**（原文）：
 
@@ -2680,7 +2680,7 @@ instance.DefaultShard()
 func (p *Pool[T]) DisableAutoScale()
 ```
 
-[实现](../../internal/pool/pool.go#L2627) · [行为专题](../pool.md)：DisableAutoScale 停止自动扩缩容，将 worker 数量调整到配置的 MinWorkers。
+[实现](../../internal/pool/pool.go#L2636) · [行为专题](../pool.md)：DisableAutoScale 停止自动扩缩容，将 worker 数量调整到配置的 MinWorkers。
 
 **源码说明与使用片段**（原文）：
 
@@ -2709,7 +2709,7 @@ instance.DisableAutoScale()
 func (p *Pool[T]) EnableAutoScale(config *core.AutoScaleConfig)
 ```
 
-[实现](../../internal/pool/pool.go#L2598) · [行为专题](../pool.md)：EnableAutoScale 启用自动扩缩容。基于 busy/size 比率周期性检测负载：
+[实现](../../internal/pool/pool.go#L2607) · [行为专题](../pool.md)：EnableAutoScale 启用自动扩缩容。基于 busy/size 比率周期性检测负载：
 
 **源码说明与使用片段**（原文）：
 
@@ -2761,7 +2761,7 @@ p.autoScale = config
 func (p *Pool[T]) Errors() []error
 ```
 
-[实现](../../internal/pool/pool.go#L2301) · [行为专题](../pool.md)：Errors 返回主结果存储中的非 nil 错误（建议在 Wait 后调用）。
+[实现](../../internal/pool/pool.go#L2310) · [行为专题](../pool.md)：Errors 返回主结果存储中的非 nil 错误（建议在 Wait 后调用）。
 
 **源码说明与使用片段**（原文）：
 
@@ -2795,7 +2795,7 @@ instance.Errors()
 func (p *Pool[T]) FailCount() int64
 ```
 
-[实现](../../internal/pool/pool.go#L2206) · [行为专题](../pool.md)：FailCount 返回已记录的失败任务数，包含执行错误、取消和提交拒绝。
+[实现](../../internal/pool/pool.go#L2215) · [行为专题](../pool.md)：FailCount 返回已记录的失败任务数，包含执行错误、取消和提交拒绝。
 
 **源码说明与使用片段**（原文）：
 
@@ -2822,7 +2822,7 @@ instance.FailCount()
 func (p *Pool[T]) FirstError() error
 ```
 
-[实现](../../internal/pool/pool.go#L2325) · [行为专题](../pool.md)：FirstError 返回主结果存储中的首个任务错误（建议在 Wait 后调用）。
+[实现](../../internal/pool/pool.go#L2334) · [行为专题](../pool.md)：FirstError 返回主结果存储中的首个任务错误（建议在 Wait 后调用）。
 
 **源码说明与使用片段**（原文）：
 
@@ -2856,7 +2856,7 @@ instance.FirstError()
 func (p *Pool[T]) Flush(maxCount int) []core.Result[T]
 ```
 
-[实现](../../internal/pool/pool.go#L661) · [行为专题](../pool.md)：Flush 从环形缓冲区中取出最多 maxCount 个结果。
+[实现](../../internal/pool/pool.go#L667) · [行为专题](../pool.md)：Flush 从环形缓冲区中取出最多 maxCount 个结果。
 
 **源码说明与使用片段**（原文）：
 
@@ -2885,7 +2885,7 @@ instance.Flush(maxCount)
 func (p *Pool[T]) HasError() bool
 ```
 
-[实现](../../internal/pool/pool.go#L2222) · [行为专题](../pool.md)：HasError 返回是否有任务失败。
+[实现](../../internal/pool/pool.go#L2231) · [行为专题](../pool.md)：HasError 返回是否有任务失败。
 
 **源码说明与使用片段**（原文）：
 
@@ -2918,7 +2918,7 @@ instance.HasError()
 func (p *Pool[T]) IsAutoScaleEnabled() bool
 ```
 
-[实现](../../internal/pool/pool.go#L2646) · [行为专题](../pool.md)：IsAutoScaleEnabled 返回是否已启用自动扩缩容。
+[实现](../../internal/pool/pool.go#L2655) · [行为专题](../pool.md)：IsAutoScaleEnabled 返回是否已启用自动扩缩容。
 
 **源码说明与使用片段**（原文）：
 
@@ -2945,7 +2945,7 @@ instance.IsAutoScaleEnabled()
 func (p *Pool[T]) JoinErrors() error
 ```
 
-[实现](../../internal/pool/pool.go#L2349) · [行为专题](../pool.md)：JoinErrors 合并主结果存储中的错误（使用 errors.Join）。
+[实现](../../internal/pool/pool.go#L2358) · [行为专题](../pool.md)：JoinErrors 合并主结果存储中的错误（使用 errors.Join）。
 
 **源码说明与使用片段**（原文）：
 
@@ -2981,7 +2981,7 @@ instance.JoinErrors()
 func (p *Pool[T]) MergeFailFastCancel(cancel context.CancelFunc) *Pool[T]
 ```
 
-[实现](../../internal/pool/pool.go#L406) · [行为专题](../pool.md)：MergeFailFastCancel 将外部 cancel 函数合并到当前 failFast 取消链中。
+[实现](../../internal/pool/pool.go#L412) · [行为专题](../pool.md)：MergeFailFastCancel 将外部 cancel 函数合并到当前 failFast 取消链中。
 
 **源码说明与使用片段**（原文）：
 
@@ -3010,7 +3010,7 @@ instance.MergeFailFastCancel(cancel)
 func (p *Pool[T]) OkCount() int64
 ```
 
-[实现](../../internal/pool/pool.go#L2211) · [行为专题](../pool.md)：OkCount 返回执行成功的任务数。
+[实现](../../internal/pool/pool.go#L2220) · [行为专题](../pool.md)：OkCount 返回执行成功的任务数。
 
 **源码说明与使用片段**（原文）：
 
@@ -3037,7 +3037,7 @@ instance.OkCount()
 func (p *Pool[T]) Pending() int
 ```
 
-[实现](../../internal/pool/pool.go#L2249) · [行为专题](../pool.md)：Pending 返回排队中的任务数量。
+[实现](../../internal/pool/pool.go#L2258) · [行为专题](../pool.md)：Pending 返回排队中的任务数量。
 
 **源码说明与使用片段**（原文）：
 
@@ -3064,7 +3064,7 @@ instance.Pending()
 func (p *Pool[T]) QueueDepth() int
 ```
 
-[实现](../../internal/pool/pool.go#L724) · [行为专题](../pool.md)：QueueDepth 返回当前队列深度（等待中的任务数）。
+[实现](../../internal/pool/pool.go#L730) · [行为专题](../pool.md)：QueueDepth 返回当前队列深度（等待中的任务数）。
 
 **源码说明与使用片段**（原文）：
 
@@ -3091,7 +3091,7 @@ instance.QueueDepth()
 func (p *Pool[T]) Reset() (*Pool[T], error)
 ```
 
-[实现](../../internal/pool/pool.go#L2444) · [行为专题](../pool.md)：Reset 在同一 Pool 实例内等待旧 worker 退出并重建任务队列、worker、流和环形缓冲。
+[实现](../../internal/pool/pool.go#L2453) · [行为专题](../pool.md)：Reset 在同一 Pool 实例内等待旧 worker 退出并重建任务队列、worker、流和环形缓冲。
 
 **源码说明与使用片段**（原文）：
 
@@ -3127,7 +3127,7 @@ instance.Reset()
 func (p *Pool[T]) ResetWait() *Pool[T]
 ```
 
-[实现](../../internal/pool/pool.go#L2016) · [行为专题](../pool.md)：ResetWait 轻量复位池的 Wait/submit 状态以支持复用。
+[实现](../../internal/pool/pool.go#L2025) · [行为专题](../pool.md)：ResetWait 轻量复位池的 Wait/submit 状态以支持复用。
 
 **源码说明与使用片段**（原文）：
 
@@ -3162,7 +3162,7 @@ instance.ResetWait()
 func (p *Pool[T]) Resize(newSize int) int
 ```
 
-[实现](../../internal/pool/pool.go#L1601) · [行为专题](../pool.md)：Resize 动态调整 worker 数量，返回新增或移除的 worker 数量。
+[实现](../../internal/pool/pool.go#L1610) · [行为专题](../pool.md)：Resize 动态调整 worker 数量，返回新增或移除的 worker 数量。
 
 **源码说明与使用片段**（原文）：
 
@@ -3202,7 +3202,7 @@ instance.Resize(newSize)
 func (p *Pool[T]) ResizeAndWaitTimeout(newSize int, timeout time.Duration)
 ```
 
-[实现](../../internal/pool/pool.go#L1675) · [行为专题](../pool.md)：ResizeAndWaitTimeout 调整 worker 数量，随后限时等待已登记任务完成。
+[实现](../../internal/pool/pool.go#L1684) · [行为专题](../pool.md)：ResizeAndWaitTimeout 调整 worker 数量，随后限时等待已登记任务完成。
 
 **源码说明与使用片段**（原文）：
 
@@ -3242,7 +3242,7 @@ instance.ResizeAndWaitTimeout(newSize, timeout)
 func (p *Pool[T]) RingBufDropped() int64
 ```
 
-[实现](../../internal/pool/pool.go#L669) · [行为专题](../pool.md)：RingBufDropped 返回环形缓冲区因 OverflowDrop 覆盖丢弃的元素数。
+[实现](../../internal/pool/pool.go#L675) · [行为专题](../pool.md)：RingBufDropped 返回环形缓冲区因 OverflowDrop 覆盖丢弃的元素数。
 
 **源码说明与使用片段**（原文）：
 
@@ -3293,7 +3293,7 @@ instance.Shard(shards)
 func (p *Pool[T]) Size() int
 ```
 
-[实现](../../internal/pool/pool.go#L2234) · [行为专题](../pool.md)：Size 返回当前目标 worker 数量。
+[实现](../../internal/pool/pool.go#L2243) · [行为专题](../pool.md)：Size 返回当前目标 worker 数量。
 
 **源码说明与使用片段**（原文）：
 
@@ -3320,7 +3320,7 @@ instance.Size()
 func (p *Pool[T]) Stats() PoolStats
 ```
 
-[实现](../../internal/pool/pool.go#L2278) · [行为专题](../pool.md)：Stats 返回池的完整统计信息。
+[实现](../../internal/pool/pool.go#L2287) · [行为专题](../pool.md)：Stats 返回池的完整统计信息。
 
 **源码说明与使用片段**（原文）：
 
@@ -3353,7 +3353,7 @@ instance.Stats()
 func (p *Pool[T]) StreamDropped() int64
 ```
 
-[实现](../../internal/pool/pool.go#L633) · [行为专题](../pool.md)：StreamDropped 返回因 stream channel 满而被丢弃的结果数。
+[实现](../../internal/pool/pool.go#L639) · [行为专题](../pool.md)：StreamDropped 返回因 stream channel 满而被丢弃的结果数。
 
 **源码说明与使用片段**（原文）：
 
@@ -3380,7 +3380,7 @@ instance.StreamDropped()
 func (p *Pool[T]) StreamResults() <-chan core.Result[T]
 ```
 
-[实现](../../internal/pool/pool.go#L626) · [行为专题](../pool.md)：StreamResults 返回流式结果的只读 channel，必须在 WithStreaming 之后调用。
+[实现](../../internal/pool/pool.go#L632) · [行为专题](../pool.md)：StreamResults 返回流式结果的只读 channel，必须在 WithStreaming 之后调用。
 
 **源码说明与使用片段**（原文）：
 
@@ -3407,7 +3407,7 @@ instance.StreamResults()
 func (p *Pool[T]) Submit(ctx context.Context, fn func(context.Context) (T, error)) error
 ```
 
-[实现](../../internal/pool/pool.go#L980) · [行为专题](../pool.md)：Submit 向协程池提交一个任务，返回提交结果（无索引）。
+[实现](../../internal/pool/pool.go#L986) · [行为专题](../pool.md)：Submit 向协程池提交一个任务，返回提交结果（无索引）。
 
 **源码说明与使用片段**（原文）：
 
@@ -3451,7 +3451,7 @@ instance.Submit(ctx, fn)
 func (p *Pool[T]) SubmitAt(index int, ctx context.Context, fn func(context.Context) (T, error)) error
 ```
 
-[实现](../../internal/pool/pool.go#L1284) · [行为专题](../pool.md)：SubmitAt 在指定索引位置提交任务，保证结果的有序性。
+[实现](../../internal/pool/pool.go#L1291) · [行为专题](../pool.md)：SubmitAt 在指定索引位置提交任务，保证结果的有序性。
 
 **源码说明与使用片段**（原文）：
 
@@ -3497,7 +3497,7 @@ instance.SubmitAt(index, ctx, fn)
 func (p *Pool[T]) SubmitAtWithCompletion(index int, ctx context.Context, fn func(context.Context) (T, error), complete func(core.Result[T])) error
 ```
 
-[实现](../../internal/pool/pool.go#L1290) · [行为专题](../pool.md)：SubmitAtWithCompletion reports each terminal submission outcome to an internal adapter.
+[实现](../../internal/pool/pool.go#L1297) · [行为专题](../pool.md)：SubmitAtWithCompletion reports each terminal submission outcome to an internal adapter.
 
 **源码说明与使用片段**（原文）：
 
@@ -3529,7 +3529,7 @@ instance.SubmitAtWithCompletion(index, ctx, fn, complete)
 func (p *Pool[T]) SubmitAtWithResultTransform(index int, ctx context.Context, fn func(context.Context) (T, error), transform func(core.Result[T]) core.Result[T]) error
 ```
 
-[实现](../../internal/pool/pool.go#L1313) · [行为专题](../pool.md)：SubmitAtWithResultTransform lets an internal adapter transform a result before
+[实现](../../internal/pool/pool.go#L1320) · [行为专题](../pool.md)：SubmitAtWithResultTransform lets an internal adapter transform a result before
 
 **源码说明与使用片段**（原文）：
 
@@ -3561,7 +3561,7 @@ instance.SubmitAtWithResultTransform(index, ctx, fn, transform)
 func (p *Pool[T]) SubmitWithCompletion(ctx context.Context, fn func(context.Context) (T, error), complete func(core.Result[T])) error
 ```
 
-[实现](../../internal/pool/pool.go#L988) · [行为专题](../pool.md)：SubmitWithCompletion notifies internal adapters of every terminal outcome,
+[实现](../../internal/pool/pool.go#L994) · [行为专题](../pool.md)：SubmitWithCompletion notifies internal adapters of every terminal outcome,
 
 **源码说明与使用片段**（原文）：
 
@@ -3592,7 +3592,7 @@ instance.SubmitWithCompletion(ctx, fn, complete)
 func (p *Pool[T]) SubmitWithCompletionTimeout(ctx context.Context, fn func(context.Context) (T, error), complete func(core.Result[T]), timeout time.Duration) error
 ```
 
-[实现](../../internal/pool/pool.go#L993) · [行为专题](../pool.md)：SubmitWithCompletionTimeout overrides the timeout for this task when positive.
+[实现](../../internal/pool/pool.go#L999) · [行为专题](../pool.md)：SubmitWithCompletionTimeout overrides the timeout for this task when positive.
 
 **源码说明与使用片段**（原文）：
 
@@ -3624,7 +3624,7 @@ instance.SubmitWithCompletionTimeout(ctx, fn, complete, timeout)
 func (p *Pool[T]) TotalCount() int64
 ```
 
-[实现](../../internal/pool/pool.go#L2228) · [行为专题](../pool.md)：TotalCount 返回已记录的提交尝试数，包含已记录的拒绝和丢弃。
+[实现](../../internal/pool/pool.go#L2237) · [行为专题](../pool.md)：TotalCount 返回已记录的提交尝试数，包含已记录的拒绝和丢弃。
 
 **源码说明与使用片段**（原文）：
 
@@ -3651,7 +3651,7 @@ instance.TotalCount()
 func (p *Pool[T]) TrySubmit(ctx context.Context, fn func(context.Context) (T, error)) error
 ```
 
-[实现](../../internal/pool/pool.go#L1467) · [行为专题](../pool.md)：TrySubmit 非阻塞向协程池提交任务。如果任务队列已满则立即返回错误。
+[实现](../../internal/pool/pool.go#L1475) · [行为专题](../pool.md)：TrySubmit 非阻塞向协程池提交任务。如果任务队列已满则立即返回错误。
 
 **源码说明与使用片段**（原文）：
 
@@ -3693,7 +3693,7 @@ instance.TrySubmit(ctx, fn)
 func (p *Pool[T]) Values() []T
 ```
 
-[实现](../../internal/pool/pool.go#L2421) · [行为专题](../pool.md)：Values 提取主结果存储中成功的值（建议在 Wait 后调用）。
+[实现](../../internal/pool/pool.go#L2430) · [行为专题](../pool.md)：Values 提取主结果存储中成功的值（建议在 Wait 后调用）。
 
 **源码说明与使用片段**（原文）：
 
@@ -3726,7 +3726,7 @@ instance.Values()
 func (p *Pool[T]) Wait() []core.Result[T]
 ```
 
-[实现](../../internal/pool/pool.go#L1962) · [行为专题](../pool.md)：Wait 阻塞等待所有已提交的任务完成。主结果按提交顺序排列；
+[实现](../../internal/pool/pool.go#L1971) · [行为专题](../pool.md)：Wait 阻塞等待所有已提交的任务完成。主结果按提交顺序排列；
 
 **源码说明与使用片段**（原文）：
 
@@ -3764,7 +3764,7 @@ instance.Wait()
 func (p *Pool[T]) WaitAndClose() []core.Result[T]
 ```
 
-[实现](../../internal/pool/pool.go#L1996) · [行为专题](../pool.md)：WaitAndClose 等待所有任务完成后关闭池，返回结果。
+[实现](../../internal/pool/pool.go#L2005) · [行为专题](../pool.md)：WaitAndClose 等待所有任务完成后关闭池，返回结果。
 
 **源码说明与使用片段**（原文）：
 
@@ -3795,7 +3795,7 @@ instance.WaitAndClose()
 func (p *Pool[T]) WaitContext(ctx context.Context) ([]core.Result[T], bool)
 ```
 
-[实现](../../internal/pool/pool.go#L2380) · [行为专题](../pool.md)：WaitContext 使用 Context 控制等待，ctx 取消或超时后返回。
+[实现](../../internal/pool/pool.go#L2389) · [行为专题](../pool.md)：WaitContext 使用 Context 控制等待，ctx 取消或超时后返回。
 
 **源码说明与使用片段**（原文）：
 
@@ -3834,7 +3834,7 @@ instance.WaitContext(ctx)
 func (p *Pool[T]) WaitTimeout(d time.Duration) ([]core.Result[T], bool)
 ```
 
-[实现](../../internal/pool/pool.go#L2364) · [行为专题](../pool.md)：WaitTimeout 带超时的任务等待，ok 为 true 表示在超时前完成。
+[实现](../../internal/pool/pool.go#L2373) · [行为专题](../pool.md)：WaitTimeout 带超时的任务等待，ok 为 true 表示在超时前完成。
 
 **源码说明与使用片段**（原文）：
 
@@ -3874,7 +3874,7 @@ instance.WaitTimeout(d)
 func (p *Pool[T]) WithContext(ctx context.Context) (*Pool[T], context.Context)
 ```
 
-[实现](../../internal/pool/pool.go#L330) · [行为专题](../pool.md)：WithContext 设置池的上下文，基于传入 ctx 创建可取消的子 context。
+[实现](../../internal/pool/pool.go#L331) · [行为专题](../pool.md)：WithContext 设置池的上下文，基于传入 ctx 创建可取消的子 context。
 
 **源码说明与使用片段**（原文）：
 
@@ -3918,7 +3918,7 @@ p.ctx = ctx
 func (p *Pool[T]) WithCtxSto(ctx context.Context, submitTimeout time.Duration) (*Pool[T], context.Context)
 ```
 
-[实现](../../internal/pool/pool.go#L566) · [行为专题](../pool.md)：WithCtxSto 设置 Context 和提交超时（Sto = SubmitTimeout）。
+[实现](../../internal/pool/pool.go#L572) · [行为专题](../pool.md)：WithCtxSto 设置 Context 和提交超时（Sto = SubmitTimeout）。
 
 **源码说明与使用片段**（原文）：
 
@@ -3953,7 +3953,7 @@ instance.WithCtxSto(ctx, submitTimeout)
 func (p *Pool[T]) WithCtxStoTID(ctx context.Context, submitTimeout time.Duration) (*Pool[T], context.Context)
 ```
 
-[实现](../../internal/pool/pool.go#L577) · [行为专题](../pool.md)：WithCtxStoTID 设置 Context、提交超时并注入 trace_id。
+[实现](../../internal/pool/pool.go#L583) · [行为专题](../pool.md)：WithCtxStoTID 设置 Context、提交超时并注入 trace_id。
 
 **源码说明与使用片段**（原文）：
 
@@ -3988,7 +3988,7 @@ instance.WithCtxStoTID(ctx, submitTimeout)
 func (p *Pool[T]) WithCtxTOTID(ctx context.Context, timeout time.Duration) (*Pool[T], context.Context)
 ```
 
-[实现](../../internal/pool/pool.go#L530) · [行为专题](../pool.md)：WithCtxTOTID 设置 Context、任务超时并注入 trace_id。
+[实现](../../internal/pool/pool.go#L536) · [行为专题](../pool.md)：WithCtxTOTID 设置 Context、任务超时并注入 trace_id。
 
 **源码说明与使用片段**（原文）：
 
@@ -4023,7 +4023,7 @@ instance.WithCtxTOTID(ctx, timeout)
 func (p *Pool[T]) WithCtxTimeout(ctx context.Context, timeout time.Duration) (*Pool[T], context.Context)
 ```
 
-[实现](../../internal/pool/pool.go#L519) · [行为专题](../pool.md)：WithCtxTimeout 设置 Context 和任务超时。
+[实现](../../internal/pool/pool.go#L525) · [行为专题](../pool.md)：WithCtxTimeout 设置 Context 和任务超时。
 
 **源码说明与使用片段**（原文）：
 
@@ -4058,7 +4058,7 @@ instance.WithCtxTimeout(ctx, timeout)
 func (p *Pool[T]) WithCtxTraceID(ctx context.Context) (*Pool[T], context.Context)
 ```
 
-[实现](../../internal/pool/pool.go#L476) · [行为专题](../pool.md)：WithCtxTraceID 设置 Context 并注入 trace_id。
+[实现](../../internal/pool/pool.go#L482) · [行为专题](../pool.md)：WithCtxTraceID 设置 Context 并注入 trace_id。
 
 **源码说明与使用片段**（原文）：
 
@@ -4091,7 +4091,7 @@ instance.WithCtxTraceID(ctx)
 func (p *Pool[T]) WithFFCtx(ctx context.Context) (*Pool[T], context.Context)
 ```
 
-[实现](../../internal/pool/pool.go#L417) · [行为专题](../pool.md)：WithFFCtx 等价于 WithFailFast，是 FailFast + Context 的缩写形式。
+[实现](../../internal/pool/pool.go#L423) · [行为专题](../pool.md)：WithFFCtx 等价于 WithFailFast，是 FailFast + Context 的缩写形式。
 
 **源码说明与使用片段**（原文）：
 
@@ -4124,7 +4124,7 @@ instance.WithFFCtx(ctx)
 func (p *Pool[T]) WithFFSto(ctx context.Context, submitTimeout time.Duration) (*Pool[T], context.Context)
 ```
 
-[实现](../../internal/pool/pool.go#L440) · [行为专题](../pool.md)：WithFFSto 启用 FailFast 并设置提交超时（Sto = SubmitTimeout）。
+[实现](../../internal/pool/pool.go#L446) · [行为专题](../pool.md)：WithFFSto 启用 FailFast 并设置提交超时（Sto = SubmitTimeout）。
 
 **源码说明与使用片段**（原文）：
 
@@ -4163,7 +4163,7 @@ instance.WithFFSto(ctx, submitTimeout)
 func (p *Pool[T]) WithFFStoTID(ctx context.Context, submitTimeout time.Duration) (*Pool[T], context.Context)
 ```
 
-[实现](../../internal/pool/pool.go#L451) · [行为专题](../pool.md)：WithFFStoTID 启用 FailFast、设置提交超时并注入 trace_id。
+[实现](../../internal/pool/pool.go#L457) · [行为专题](../pool.md)：WithFFStoTID 启用 FailFast、设置提交超时并注入 trace_id。
 
 **源码说明与使用片段**（原文）：
 
@@ -4198,7 +4198,7 @@ instance.WithFFStoTID(ctx, submitTimeout)
 func (p *Pool[T]) WithFFTOSto(ctx context.Context, timeout, submitTimeout time.Duration) (*Pool[T], context.Context)
 ```
 
-[实现](../../internal/pool/pool.go#L497) · [行为专题](../pool.md)：WithFFTOSto 启用 FailFast、设置任务超时和提交超时（TO=Timeout, Sto=SubmitTimeout）。
+[实现](../../internal/pool/pool.go#L503) · [行为专题](../pool.md)：WithFFTOSto 启用 FailFast、设置任务超时和提交超时（TO=Timeout, Sto=SubmitTimeout）。
 
 **源码说明与使用片段**（原文）：
 
@@ -4235,7 +4235,7 @@ instance.WithFFTOSto(ctx, timeout, submitTimeout)
 func (p *Pool[T]) WithFFTOStoTID(ctx context.Context, timeout, submitTimeout time.Duration) (*Pool[T], context.Context)
 ```
 
-[实现](../../internal/pool/pool.go#L509) · [行为专题](../pool.md)：WithFFTOStoTID 启用 FailFast、设置超时、提交超时并注入 trace_id（TO=Timeout, Sto=SubmitTimeout, TID=TraceID）。
+[实现](../../internal/pool/pool.go#L515) · [行为专题](../pool.md)：WithFFTOStoTID 启用 FailFast、设置超时、提交超时并注入 trace_id（TO=Timeout, Sto=SubmitTimeout, TID=TraceID）。
 
 **源码说明与使用片段**（原文）：
 
@@ -4272,7 +4272,7 @@ instance.WithFFTOStoTID(ctx, timeout, submitTimeout)
 func (p *Pool[T]) WithFFTOTID(ctx context.Context, timeout time.Duration) (*Pool[T], context.Context)
 ```
 
-[实现](../../internal/pool/pool.go#L486) · [行为专题](../pool.md)：WithFFTOTID 启用 FailFast、设置超时并注入 trace_id（TO=Timeout, TID=TraceID）。
+[实现](../../internal/pool/pool.go#L492) · [行为专题](../pool.md)：WithFFTOTID 启用 FailFast、设置超时并注入 trace_id（TO=Timeout, TID=TraceID）。
 
 **源码说明与使用片段**（原文）：
 
@@ -4307,7 +4307,7 @@ instance.WithFFTOTID(ctx, timeout)
 func (p *Pool[T]) WithFFTimeout(ctx context.Context, timeout time.Duration) (*Pool[T], context.Context)
 ```
 
-[实现](../../internal/pool/pool.go#L466) · [行为专题](../pool.md)：WithFFTimeout 启用 FailFast 并设置每个任务的超时时间。
+[实现](../../internal/pool/pool.go#L472) · [行为专题](../pool.md)：WithFFTimeout 启用 FailFast 并设置每个任务的超时时间。
 
 **源码说明与使用片段**（原文）：
 
@@ -4347,7 +4347,7 @@ instance.WithFFTimeout(ctx, timeout)
 func (p *Pool[T]) WithFFTraceID(ctx context.Context) (*Pool[T], context.Context)
 ```
 
-[实现](../../internal/pool/pool.go#L425) · [行为专题](../pool.md)：WithFFTraceID 启用 FailFast 并注入 trace_id。
+[实现](../../internal/pool/pool.go#L431) · [行为专题](../pool.md)：WithFFTraceID 启用 FailFast 并注入 trace_id。
 
 **源码说明与使用片段**（原文）：
 
@@ -4380,7 +4380,7 @@ instance.WithFFTraceID(ctx)
 func (p *Pool[T]) WithFailFast(ctx context.Context) (*Pool[T], context.Context)
 ```
 
-[实现](../../internal/pool/pool.go#L393) · [行为专题](../pool.md)：WithFailFast 启用 FailFast 模式：任一任务失败后立即取消其余任务。
+[实现](../../internal/pool/pool.go#L398) · [行为专题](../pool.md)：WithFailFast 启用 FailFast 模式：任一任务失败后立即取消其余任务。
 
 **源码说明与使用片段**（原文）：
 
@@ -4429,7 +4429,7 @@ p.ctx = ctx
 func (p *Pool[T]) WithMaxPending(maxPending int) *Pool[T]
 ```
 
-[实现](../../internal/pool/pool.go#L700) · [行为专题](../pool.md)：WithMaxPending 设置最大等待任务数，配合 WithOverflow 使用。
+[实现](../../internal/pool/pool.go#L706) · [行为专题](../pool.md)：WithMaxPending 设置最大等待任务数，配合 WithOverflow 使用。
 
 **源码说明与使用片段**（原文）：
 
@@ -4464,7 +4464,7 @@ instance.WithMaxPending(maxPending)
 func (p *Pool[T]) WithMaxResults(maxResults int) *Pool[T]
 ```
 
-[实现](../../internal/pool/pool.go#L684) · [行为专题](../pool.md)：WithMaxResults 设置 results 切片的容量上限（0=无限；默认使用全局配置）。
+[实现](../../internal/pool/pool.go#L690) · [行为专题](../pool.md)：WithMaxResults 设置 results 切片的容量上限（0=无限；默认使用全局配置）。
 
 **源码说明与使用片段**（原文）：
 
@@ -4498,7 +4498,7 @@ instance.WithMaxResults(maxResults)
 func (p *Pool[T]) WithOverflow(strategy core.OverflowStrategy) *Pool[T]
 ```
 
-[实现](../../internal/pool/pool.go#L718) · [行为专题](../pool.md)：WithOverflow 设置队列溢出策略。
+[实现](../../internal/pool/pool.go#L724) · [行为专题](../pool.md)：WithOverflow 设置队列溢出策略。
 
 **源码说明与使用片段**（原文）：
 
@@ -4543,7 +4543,7 @@ p.overflowStrat = strategy
 func (p *Pool[T]) WithResultCallback(fn func(core.Result[T])) *Pool[T]
 ```
 
-[实现](../../internal/pool/pool.go#L618) · [行为专题](../pool.md)：WithResultCallback 设置结果回调，每个任务完成时同步调用。
+[实现](../../internal/pool/pool.go#L624) · [行为专题](../pool.md)：WithResultCallback 设置结果回调，每个任务完成时同步调用。
 
 **源码说明与使用片段**（原文）：
 
@@ -4586,7 +4586,7 @@ p.resultCb = fn
 func (p *Pool[T]) WithRingBuffer(capacity int, overflow core.OverflowStrategy) *Pool[T]
 ```
 
-[实现](../../internal/pool/pool.go#L652) · [行为专题](../pool.md)：WithRingBuffer 启用环形缓冲区；它不会单独限制 results 切片的增长。
+[实现](../../internal/pool/pool.go#L658) · [行为专题](../pool.md)：WithRingBuffer 启用环形缓冲区；它不会单独限制 results 切片的增长。
 
 **源码说明与使用片段**（原文）：
 
@@ -4628,7 +4628,7 @@ instance.WithRingBuffer(capacity, overflow)
 func (p *Pool[T]) WithStreaming(bufSize int) *Pool[T]
 ```
 
-[实现](../../internal/pool/pool.go#L599) · [行为专题](../pool.md)：WithStreaming 启用流式结果消费，结果通过 channel 实时发送。
+[实现](../../internal/pool/pool.go#L605) · [行为专题](../pool.md)：WithStreaming 启用流式结果消费，结果通过 channel 实时发送。
 
 **源码说明与使用片段**（原文）：
 
@@ -4671,7 +4671,7 @@ instance.WithStreaming(bufSize)
 func (p *Pool[T]) WithSubmitTimeout(d time.Duration) *Pool[T]
 ```
 
-[实现](../../internal/pool/pool.go#L556) · [行为专题](../pool.md)：WithSubmitTimeout 设置任务提交超时。超过此时间任务未能入队则丢弃。
+[实现](../../internal/pool/pool.go#L562) · [行为专题](../pool.md)：WithSubmitTimeout 设置任务提交超时。超过此时间任务未能入队则丢弃。
 
 **源码说明与使用片段**（原文）：
 
@@ -4714,7 +4714,7 @@ p.submitTimeout = d
 func (p *Pool[T]) WithTimeout(d time.Duration) *Pool[T]
 ```
 
-[实现](../../internal/pool/pool.go#L543) · [行为专题](../pool.md)：WithTimeout 设置每个任务的超时时间。
+[实现](../../internal/pool/pool.go#L549) · [行为专题](../pool.md)：WithTimeout 设置每个任务的超时时间。
 
 **源码说明与使用片段**（原文）：
 
@@ -5571,7 +5571,7 @@ c.Timeout = d
 func (s PoolStats) String() string
 ```
 
-[实现](../../internal/pool/pool.go#L2266) · [行为专题](../pool.md)：返回统计快照的格式化字符串。
+[实现](../../internal/pool/pool.go#L2275) · [行为专题](../pool.md)：返回统计快照的格式化字符串。
 
 **参数说明**：无显式参数。
 

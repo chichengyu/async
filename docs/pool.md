@@ -95,7 +95,7 @@
 | `.Config(fn)` | 函数式配置，通过闭包修改 `Config` | — |
 | `.DefaultPoolConfig()` | 重置所有配置为 `DefaultConfig()` | — |
 | `.Logger(l)` | 注入自定义日志（**全局生效**） | 静默 |
-| `.DefaultLogger()` | 恢复默认日志（`core.SetLogger(nil)`） | — |
+| `.DefaultLogger()` | 恢复默认日志（`清除当前覆盖，继承全局日志器`） | — |
 
 ### PoolBuilder 终端方法
 
@@ -180,7 +180,7 @@ _ = err
 | `.Config(fn)` | 函数式配置，通过闭包修改 `Config` | — |
 | `.DefaultMultiPoolConfig()` | 重置所有配置为 `DefaultConfig()` | — |
 | `.Logger(l)` | 注入自定义日志（**全局生效**） | 静默 |
-| `.DefaultLogger()` | 恢复默认日志（`core.SetLogger(nil)`） | — |
+| `.DefaultLogger()` | 恢复默认日志（`清除当前覆盖，继承全局日志器`） | — |
 
 ### MultiPoolBuilder 终端方法
 
@@ -466,7 +466,7 @@ Pool 的默认值遵循**三层架构**：全局级 → Builder 级 → 实例�
 | `.DefaultPool()` | `b.extP = nil`（恢复内部自动创建） | MultiPoolBuilder |
 | `.DefaultPoolConfig()` | `b.cfg = DefaultConfig()`（全部默认） | PoolBuilder |
 | `.DefaultMultiPoolConfig()` | `b.cfg = DefaultConfig()`（全部默认） | MultiPoolBuilder |
-| `.DefaultLogger()` | `core.SetLogger(nil)`（恢复全局静默日志） | PoolBuilder, MultiPoolBuilder |
+| `.DefaultLogger()` | `清除当前覆盖，继承全局日志器`（恢复全局静默日志） | PoolBuilder, MultiPoolBuilder |
 
 ### 三层：实例级 fallback
 
@@ -1296,7 +1296,7 @@ err := async.Pool[int]().
 
 err = async.Pool[int]().
     Logger(myLogger).
-    DefaultLogger().     // 全局恢复默认
+    DefaultLogger().     // 当前构建器恢复继承全局日志器
     Run(fn)
 ```
 

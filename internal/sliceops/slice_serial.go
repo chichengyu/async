@@ -38,7 +38,7 @@ func (b *SerialSlice[T, R]) DefaultTimeout() *SerialSlice[T, R] {
 }
 
 func (b *SerialSlice[T, R]) Logger(l core.Logger) *SerialSlice[T, R] {
-	core.SetLogger(l)
+	b.ctx = core.WithLogger(b.ctx, l)
 	return b
 }
 

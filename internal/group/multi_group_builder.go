@@ -29,7 +29,7 @@ func NewMultiBuilder[T any]() *MultiGroupBuilder[T] {
 
 // Context 链式设置上下文
 func (b *MultiGroupBuilder[T]) Context(ctx context.Context) *MultiGroupBuilder[T] {
-	b.ctx = core.EnsureTraceID(ctx)
+	b.ctx = core.EnsureTraceID(core.CopyLogger(b.ctx, ctx))
 	return b
 }
 
@@ -63,18 +63,22 @@ func (b *MultiGroupBuilder[T]) FailFast() *MultiGroupBuilder[T] {
 	return b
 }
 
-// Logger 注入自定义日志实现，全局生效。
+// Logger 仅为当前构建器及其后续执行设置日志器，不修改全局配置。
 func (b *MultiGroupBuilder[T]) Logger(l core.Logger) *MultiGroupBuilder[T] {
-	core.SetLogger(l)
+	b.ctx = core.WithLogger(b.ctx, l)
 	return b
 }
 
-// DefaultLogger 重置为默认日志实现。
-func (b *MultiGroupBuilder[T]) DefaultLogger() *MultiGroupBuilder[T] { core.SetLogger(nil); return b }
+// DefaultLogger 清除当前日志器覆盖，恢复继承全局日志器。
+func (b *MultiGroupBuilder[T]) DefaultLogger() *MultiGroupBuilder[T] {
+	b.ctx = core.WithLogger(b.ctx, nil)
+	return b
+}
 
 // Run 终端方法：创建 Group → 应用配置 → 分片 → 执行 fn → Close 所有分片。
 func (b *MultiGroupBuilder[T]) Run(fn func(ctx context.Context, mg *MultiGroup[T]) error) error {
 	g := NewGroup[T](b.concurrency)
+	g.ctx = core.CopyLogger(b.ctx, g.ctx)
 	if b.timeout > 0 {
 		g.WithTimeout(b.timeout)
 	}

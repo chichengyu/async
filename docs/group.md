@@ -1002,8 +1002,8 @@ Enable 保持初始 Worker，不立即调整到范围内；生产中应在配置
 | `.Timeout(d)` | 单任务超时 | `core.GetDefaultTimeout()`（默认 30s，可全局修改） |
 | `.SubmitTimeout(d)` | 提交超时 | 无限制 |
 | `.FailFast()` | 启用 FailFast；Run 回调收到跨分片共享的可取消上下文 | 关闭 |
-| `.Logger(l)` | 注入自定义日志（全局生效） | 静默 |
-| `.DefaultLogger()` | 恢复默认日志（调用 `core.SetLogger(nil)`） | — |
+| `.Logger(l)` | 设置当前构建器的日志器（仅局部生效） | 静默 |
+| `.DefaultLogger()` | 恢复默认日志（调用 `清除当前覆盖，继承全局日志器`） | — |
 | `.Run(fn)` | **终端**：创建 → 执行 → 自动 Close | — |
 
 ### 基础用法
@@ -1100,7 +1100,7 @@ nr := async.GroupVoid().
 >
 > `.Logger(l)` 内部调用 `core.SetLogger(l)` 设置全局日志器，会影响所有后续创建的 Group/Pool 等组件。
 >
-> `.DefaultLogger()` 内部调用 `core.SetLogger(nil)` 恢复默认日志实现。
+> `.DefaultLogger()` 内部调用 `清除当前覆盖，继承全局日志器` 恢复默认日志实现。
 
 ---
 
@@ -1142,7 +1142,7 @@ Group 的默认值分三层：**全局级** → **Builder 级** → **实例级*
 | `.DefaultStreaming()` | `b.streaming = 0`（不启用流式） | GroupBuilder, GroupNoResultBuilder |
 | `.DefaultResultCallback()` | `b.resultCb = nil`（取消回调） | 仅 GroupBuilder |
 | `.DefaultAutoScale()` | `b.autoScale = core.DefaultAutoScaleConfig()` | GroupBuilder, GroupNoResultBuilder |
-| `.DefaultLogger()` | `core.SetLogger(nil)`（恢复全局静默日志） | GroupBuilder, GroupNoResultBuilder, MultiGroupBuilder |
+| `.DefaultLogger()` | `清除当前覆盖，继承全局日志器`（恢复全局静默日志） | GroupBuilder, GroupNoResultBuilder, MultiGroupBuilder |
 | `.DefaultPool()` | `b.extPool = nil`（清除外部 Pool 注入） | GroupBuilder, GroupNoResultBuilder |
 
 > **⚠️ `Default*()` vs 直接设置的区别**

@@ -134,11 +134,11 @@ instance.DefaultStage(name)
 func (fb *FlowBuilder[T]) Logger(l core.Logger) *FlowBuilder[T]
 ```
 
-[实现](../../internal/pipeline/pipeline_flow_builder.go#L63) · [行为专题](../pipeline.md)：Logger 注入自定义日志实现，全局生效。
+[实现](../../internal/pipeline/pipeline_flow_builder.go#L63) · [行为专题](../pipeline.md)：Logger 仅为当前构建器及其后续执行设置日志器，不修改全局配置。
 
 **源码说明与使用片段**（原文）：
 
-Logger 注入自定义日志实现，全局生效。
+Logger 仅为当前构建器及其后续执行设置日志器，不修改全局配置。
 
 
 **参数说明**：
@@ -153,9 +153,9 @@ Logger 注入自定义日志实现，全局生效。
 instance.Logger(l)
 ```
 
-**生产建议**：此方法会设置全局日志器；在应用启动阶段统一配置，避免多个构建器相互覆盖。
+**生产建议**：在 Build/Run 或终端操作之前完成链式配置；以返回值继续调用，避免多个 goroutine 同时修改同一个构建器。默认值和设置顺序见专题。
 
-**注意事项**：立即修改全库日志器，并非只配置当前构建器，也不等待 Build/Run 才生效。DefaultLogger 或 Logger(nil) 恢复静默实现；日志后端须并发安全、及时返回，调用不恢复其 panic。应在启动时统一设置，避免业务组件相互覆盖。
+**注意事项**：只配置当前构建器及其后续执行，不修改全局或其他实例。DefaultLogger 或 Logger(nil) 清除当前覆盖并继承全局日志器；Context 替换和模式切换保留当前日志设置，已构建实例不受构建器后续更改影响。日志后端须并发安全、及时返回，调用不恢复其 panic。
 
 ## `*FlowBuilder[T].Run`
 
@@ -1140,7 +1140,7 @@ instance.Stream()
 func (b *PipelinePipeBuilder[T]) Buf(n int) *PipelinePipeBuilder[T]
 ```
 
-[实现](../../internal/pipeline/pipeline_builder.go#L134) · [行为专题](../pipeline.md)：Buf 设置 channel 缓冲大小（<=0 使用默认值）。
+[实现](../../internal/pipeline/pipeline_builder.go#L140) · [行为专题](../pipeline.md)：Buf 设置 channel 缓冲大小（<=0 使用默认值）。
 
 **源码说明与使用片段**（原文）：
 
@@ -1175,7 +1175,7 @@ b.buf = n
 func (b *PipelinePipeBuilder[T]) DefaultBuf() *PipelinePipeBuilder[T]
 ```
 
-[实现](../../internal/pipeline/pipeline_builder.go#L140) · [行为专题](../pipeline.md)：DefaultBuf 重置 channel 缓冲大小为默认值（自动计算）。
+[实现](../../internal/pipeline/pipeline_builder.go#L146) · [行为专题](../pipeline.md)：DefaultBuf 重置 channel 缓冲大小为默认值（自动计算）。
 
 **源码说明与使用片段**（原文）：
 
@@ -1202,11 +1202,11 @@ instance.DefaultBuf()
 func (b *PipelinePipeBuilder[T]) DefaultLogger() *PipelinePipeBuilder[T]
 ```
 
-[实现](../../internal/pipeline/pipeline_builder.go#L152) · [行为专题](../pipeline.md)：DefaultLogger 重置为默认日志实现。
+[实现](../../internal/pipeline/pipeline_builder.go#L158) · [行为专题](../pipeline.md)：DefaultLogger 清除当前日志器覆盖，恢复继承全局日志器。
 
 **源码说明与使用片段**（原文）：
 
-DefaultLogger 重置为默认日志实现。
+DefaultLogger 清除当前日志器覆盖，恢复继承全局日志器。
 
 
 **参数说明**：无显式参数。
@@ -1219,9 +1219,9 @@ DefaultLogger 重置为默认日志实现。
 instance.DefaultLogger()
 ```
 
-**生产建议**：此方法会设置全局日志器；在应用启动阶段统一配置，避免多个构建器相互覆盖。
+**生产建议**：在 Build/Run 或终端操作之前完成链式配置；以返回值继续调用，避免多个 goroutine 同时修改同一个构建器。默认值和设置顺序见专题。
 
-**注意事项**：立即修改全库日志器，并非只配置当前构建器，也不等待 Build/Run 才生效。DefaultLogger 或 Logger(nil) 恢复静默实现；日志后端须并发安全、及时返回，调用不恢复其 panic。应在启动时统一设置，避免业务组件相互覆盖。
+**注意事项**：只配置当前构建器及其后续执行，不修改全局或其他实例。DefaultLogger 或 Logger(nil) 清除当前覆盖并继承全局日志器；Context 替换和模式切换保留当前日志设置，已构建实例不受构建器后续更改影响。日志后端须并发安全、及时返回，调用不恢复其 panic。
 
 ## `*PipelinePipeBuilder[T].Logger`
 
@@ -1229,11 +1229,11 @@ instance.DefaultLogger()
 func (b *PipelinePipeBuilder[T]) Logger(l core.Logger) *PipelinePipeBuilder[T]
 ```
 
-[实现](../../internal/pipeline/pipeline_builder.go#L146) · [行为专题](../pipeline.md)：Logger 注入自定义日志实现，全局生效。
+[实现](../../internal/pipeline/pipeline_builder.go#L152) · [行为专题](../pipeline.md)：Logger 仅为当前构建器及其后续执行设置日志器，不修改全局配置。
 
 **源码说明与使用片段**（原文）：
 
-Logger 注入自定义日志实现，全局生效。
+Logger 仅为当前构建器及其后续执行设置日志器，不修改全局配置。
 
 
 **参数说明**：
@@ -1248,9 +1248,9 @@ Logger 注入自定义日志实现，全局生效。
 instance.Logger(l)
 ```
 
-**生产建议**：此方法会设置全局日志器；在应用启动阶段统一配置，避免多个构建器相互覆盖。
+**生产建议**：在 Build/Run 或终端操作之前完成链式配置；以返回值继续调用，避免多个 goroutine 同时修改同一个构建器。默认值和设置顺序见专题。
 
-**注意事项**：立即修改全库日志器，并非只配置当前构建器，也不等待 Build/Run 才生效。DefaultLogger 或 Logger(nil) 恢复静默实现；日志后端须并发安全、及时返回，调用不恢复其 panic。应在启动时统一设置，避免业务组件相互覆盖。
+**注意事项**：只配置当前构建器及其后续执行，不修改全局或其他实例。DefaultLogger 或 Logger(nil) 清除当前覆盖并继承全局日志器；Context 替换和模式切换保留当前日志设置，已构建实例不受构建器后续更改影响。日志后端须并发安全、及时返回，调用不恢复其 panic。
 
 ## `*PipelinePipeBuilder[T].Run`
 
@@ -1258,7 +1258,7 @@ instance.Logger(l)
 func (b *PipelinePipeBuilder[T]) Run(fn func(context.Context, string, T) (T, error)) *PipelinePipe[T]
 ```
 
-[实现](../../internal/pipeline/pipeline_builder.go#L158) · [行为专题](../pipeline.md)：Run 启动管道，返回句柄。
+[实现](../../internal/pipeline/pipeline_builder.go#L164) · [行为专题](../pipeline.md)：Run 启动管道，返回句柄。
 
 **源码说明与使用片段**（原文）：
 
@@ -1287,7 +1287,7 @@ instance.Run(fn)
 func (s *PipelinePipe[T]) Drain(fn func(core.Result[T]))
 ```
 
-[实现](../../internal/pipeline/pipeline_builder.go#L174) · [行为专题](../pipeline.md)：Drain 通过回调逐条消费结果。
+[实现](../../internal/pipeline/pipeline_builder.go#L180) · [行为专题](../pipeline.md)：Drain 通过回调逐条消费结果。
 
 **源码说明与使用片段**（原文）：
 
@@ -1316,7 +1316,7 @@ instance.Drain(fn)
 func (s *PipelinePipe[T]) Receive() <-chan core.Result[T]
 ```
 
-[实现](../../internal/pipeline/pipeline_builder.go#L169) · [行为专题](../pipeline.md)：Receive 返回结果 channel。
+[实现](../../internal/pipeline/pipeline_builder.go#L175) · [行为专题](../pipeline.md)：Receive 返回结果 channel。
 
 **源码说明与使用片段**（原文）：
 
@@ -1835,11 +1835,11 @@ instance.DefaultFailFast()
 func (b *pipelineBase[T, S]) DefaultLogger() S
 ```
 
-[实现](../../internal/pipeline/pipeline_base.go#L171) · [行为专题](../pipeline.md)：DefaultLogger 重置为默认日志实现。
+[实现](../../internal/pipeline/pipeline_base.go#L171) · [行为专题](../pipeline.md)：DefaultLogger 清除当前日志器覆盖，恢复继承全局日志器。
 
 **源码说明与使用片段**（原文）：
 
-DefaultLogger 重置为默认日志实现。
+DefaultLogger 清除当前日志器覆盖，恢复继承全局日志器。
 
 
 **参数说明**：无显式参数。
@@ -1854,7 +1854,7 @@ instance.DefaultLogger()
 
 **生产建议**：尽量在应用启动时设置全局状态；日志后端应支持并发调用。
 
-**注意事项**：立即修改全库日志器，并非只配置当前构建器，也不等待 Build/Run 才生效。DefaultLogger 或 Logger(nil) 恢复静默实现；日志后端须并发安全、及时返回，调用不恢复其 panic。应在启动时统一设置，避免业务组件相互覆盖。
+**注意事项**：只配置当前构建器及其后续执行，不修改全局或其他实例。DefaultLogger 或 Logger(nil) 清除当前覆盖并继承全局日志器；Context 替换和模式切换保留当前日志设置，已构建实例不受构建器后续更改影响。日志后端须并发安全、及时返回，调用不恢复其 panic。
 
 ## `*pipelineBase[T, S].DefaultOnResult`
 
@@ -1972,11 +1972,11 @@ instance.FailFast()
 func (b *pipelineBase[T, S]) Logger(l core.Logger) S
 ```
 
-[实现](../../internal/pipeline/pipeline_base.go#L165) · [行为专题](../pipeline.md)：Logger 注入自定义日志实现，全局生效。
+[实现](../../internal/pipeline/pipeline_base.go#L165) · [行为专题](../pipeline.md)：Logger 仅为当前构建器及其后续执行设置日志器，不修改全局配置。
 
 **源码说明与使用片段**（原文）：
 
-Logger 注入自定义日志实现，全局生效。
+Logger 仅为当前构建器及其后续执行设置日志器，不修改全局配置。
 
 
 **参数说明**：
@@ -1993,7 +1993,7 @@ instance.Logger(l)
 
 **生产建议**：尽量在应用启动时设置全局状态；日志后端应支持并发调用。
 
-**注意事项**：立即修改全库日志器，并非只配置当前构建器，也不等待 Build/Run 才生效。DefaultLogger 或 Logger(nil) 恢复静默实现；日志后端须并发安全、及时返回，调用不恢复其 panic。应在启动时统一设置，避免业务组件相互覆盖。
+**注意事项**：只配置当前构建器及其后续执行，不修改全局或其他实例。DefaultLogger 或 Logger(nil) 清除当前覆盖并继承全局日志器；Context 替换和模式切换保留当前日志设置，已构建实例不受构建器后续更改影响。日志后端须并发安全、及时返回，调用不恢复其 panic。
 
 ## `*pipelineBase[T, S].MaxResults`
 

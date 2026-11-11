@@ -1168,7 +1168,7 @@ func SafeCallWithResult[T any, R any](ctx context.Context, item T, fn func(conte
 			if more {
 				fnName = frame.Function
 			}
-			core.LogError("async path panic recovered",
+			core.LogCtxError(ctx, "async path panic recovered",
 				core.Str("fn", fnName),
 				core.Any("panic", r),
 				core.Bytes("stack", pe.Stack))

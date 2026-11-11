@@ -657,9 +657,9 @@ func semanticCaution(e entry) string {
 		case "SetTraceLogEnabled":
 			return "只控制新 TraceID 或显式非空覆盖时的日志 context 注入；已有值不补做注入。false 不关闭日志，也不屏蔽 LogCtx 从 context 自动追加 trace_id；原子设置不迁移已有 context 或后端状态。"
 		case "LogTaskFail", "LogTaskFailCtx":
-			return "只有 TaskFailLogLevel 的 Error/Warn/Info/Debug 四值会输出，Silent 和范围外值不输出；该过滤不作用于普通日志入口。LogTaskFail 即使 err 为 nil 也照常构造 error 字段，不代替业务错误判断。同步调用当前全局 logger，自动 trace 字段在调用者字段前，不去重；后端须并发安全、快速返回且不 panic。"
+			return "只有 TaskFailLogLevel 的 Error/Warn/Info/Debug 四值会输出，Silent 和范围外值不输出；该过滤不作用于普通日志入口。LogTaskFail 即使 err 为 nil 也照常构造 error 字段，不代替业务错误判断。同步调用 context 中的局部 logger，未设置时继承全局 logger；自动 trace 字段在调用者字段前，不去重；后端须并发安全、快速返回且不 panic。"
 		case "LogCtxDebug", "LogCtxInfo", "LogCtxWarn", "LogCtxError":
-			return "同步调用当前全局 logger，不从 ctx 选择 logger。nil ctx、缺失/空/非 string TraceID 不附加字段；非空 string 自动作为第一个 trace_id 字段，调用者原字段随后追加，不去重。TraceLogEnabled 和 TaskFailLogLevel 都不过滤这些直接日志入口；后端 panic 向外传播，异步保存引用字段需自行复制。"
+			return "同步调用 ctx 中的局部 logger，未设置或已清除覆盖时继承全局 logger。nil ctx、缺失/空/非 string TraceID 不附加字段；非空 string 自动作为第一个 trace_id 字段，调用者原字段随后追加，不去重。TraceLogEnabled 和 TaskFailLogLevel 都不过滤这些直接日志入口；后端 panic 向外传播，异步保存引用字段需自行复制。"
 		case "CPU", "IO", "IOMulti", "WithConfig":
 			return "仅返回并发度建议值，不分配 worker 或测量实际负载。CPU 使用 NumCPU，IO 使用其两倍，IOMulti 的非正倍数按 2；均不依据 GOMAXPROCS。WithConfig 仅对非正配置回退 IO，不限制正值上界；生产需按资源预算与实际任务压测。"
 		case "SafeCall", "SafeCallVoid":
@@ -669,7 +669,7 @@ func semanticCaution(e entry) string {
 		case "DefaultAutoScaleConfig":
 			return "每次返回独立配置指针，数值是起点建议，不根据业务动态测算。修改后需校验 worker 上下界、阈值及扩缩倍数，Normalize 只补齐非正值；通过构建器保存指针时须在终端创建前完成配置。"
 		case "GetTraceIDKey", "GetTaskFailLogLevel", "GetTraceLogEnabled":
-			return "读取当前全局配置，不修改实例；并发读取同步，但先读再设置或连续读取多个字段不是原子事务。trace key 若运行中更换，已有 context 的旧值不会迁移；日志设置影响后续全库日志调用。"
+			return "读取当前全局配置，不修改实例；并发读取同步，但先读再设置或连续读取多个字段不是原子事务。trace key 若运行中更换，已有 context 的旧值不会迁移；全局日志设置影响未单独配置日志器的后续调用。"
 		}
 		if strings.HasPrefix(e.receiver, "Result[") {
 			return "Ok 只检查 Err 是否为 nil，零值 Result 也返回 true；Error 原样返回 Err，不清除同时保存的 Value。Occupied 是否有意义由产生结果的入口决定。IsPanic 使用 errors.As，支持包装/多错误链；Err 是类型化 nil 的 *PanicError 时也为 true，提取后仍须判空。String 优先格式化非 nil Err，否则格式化 Value；对整个 Result 使用 %+v 不会把 '+' 传给内部错误，需提取 PanicError 再输出栈。"
@@ -802,7 +802,7 @@ func semanticCaution(e entry) string {
 			case "Pool", "DefaultPool":
 				return "只影响后续 Build/Run；Pool(nil) 与 DefaultPool 清除外部池引用。外部池归调用方管理，Group 的等待和 Reset 不负责复位外部池；外部池自身的超时和队列配置仍可能影响执行。"
 			default:
-				return "原地配置当前构建器并返回自身，只影响后续 Build/Run；须在终端方法之前完成配置，不能与构建或其他配置并发修改。同一字段以后一次设置为准；Logger/DefaultLogger 直接修改全局日志器。"
+				return "原地配置当前构建器并返回自身，只影响后续 Build/Run；须在终端方法之前完成配置，不能与构建或其他配置并发修改。同一字段以后一次设置为准；Logger/DefaultLogger 仅修改当前日志器覆盖，不修改全局或其他实例。"
 			}
 		}
 		switch e.name {
@@ -1151,9 +1151,9 @@ func methodSummary(e entry) string {
 	case "ToParallel", "Parallel":
 		return "保留输入引用和 context，创建默认并行构建器并重置执行策略。"
 	case "Logger":
-		return "设置全局日志实现，并返回当前构建器；不局限于本实例。"
+		return "仅设置当前构建器及其后续执行使用的日志器，并返回自身；不修改全局或其他实例。"
 	case "DefaultLogger":
-		return "恢复全局空日志实现，返回自身。"
+		return "清除当前构建器日志器覆盖，恢复继承全局日志器，返回自身。"
 	case "Worker":
 		return "设置后续终端操作的并发度，非正值使用 core.IO()。"
 	case "DefaultWorker":

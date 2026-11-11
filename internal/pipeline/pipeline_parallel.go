@@ -99,6 +99,11 @@ func (b *ParallelChain[T]) ExecutePipe(fn func(context.Context, string, T) (T, e
 func (b *ParallelChain[T]) Pipe() *PipelinePipeBuilder[T] {
 	base := *b.pipelineBase
 	return &PipelinePipeBuilder[T]{
-		execute: (&ParallelChain[T]{pipelineBase: &base}).ExecutePipe,
+		ctx: base.ctx,
+		execute: func(ctx context.Context, fn func(context.Context, string, T) (T, error), buf int) <-chan core.Result[T] {
+			snapshot := base
+			snapshot.ctx = ctx
+			return (&ParallelChain[T]{pipelineBase: &snapshot}).ExecutePipe(fn, buf)
+		},
 	}
 }

@@ -531,7 +531,7 @@ instance.Values()
 func (b *MapChain[K, V, R]) All(fn func(K, V) bool) bool
 ```
 
-[实现](../../internal/maps/map_builder.go#L157) · [行为专题](../mapreduce.md)：委托同名实现：所有条目都匹配时返回 true；空 map 返回 true。
+[实现](../../internal/maps/map_builder.go#L163) · [行为专题](../mapreduce.md)：委托同名实现：所有条目都匹配时返回 true；空 map 返回 true。
 
 **参数说明**：
 
@@ -555,7 +555,7 @@ instance.All(fn)
 func (b *MapChain[K, V, R]) Any(fn func(K, V) bool) bool
 ```
 
-[实现](../../internal/maps/map_builder.go#L158) · [行为专题](../mapreduce.md)：委托同名实现：存在匹配条目时返回 true；空 map 返回 false。
+[实现](../../internal/maps/map_builder.go#L164) · [行为专题](../mapreduce.md)：委托同名实现：存在匹配条目时返回 true；空 map 返回 false。
 
 **参数说明**：
 
@@ -579,7 +579,7 @@ instance.Any(fn)
 func (b *MapChain[K, V, R]) Buf(size int) *MapChain[K, V, R]
 ```
 
-[实现](../../internal/maps/map_builder.go#L93) · [行为专题](../mapreduce.md)：设置流式结果的 channel 缓冲元素数；较大缓冲不替代消费。
+[实现](../../internal/maps/map_builder.go#L99) · [行为专题](../mapreduce.md)：设置流式结果的 channel 缓冲元素数；较大缓冲不替代消费。
 
 **参数说明**：
 
@@ -603,7 +603,7 @@ instance.Buf(size)
 func (b *MapChain[K, V, R]) Chunk(size int) *MapChain[K, V, R]
 ```
 
-[实现](../../internal/maps/map_builder.go#L96) · [行为专题](../mapreduce.md)：设置批处理或分块调度的元素数；每批回调与逐元素回调的区别见终端方法。
+[实现](../../internal/maps/map_builder.go#L102) · [行为专题](../mapreduce.md)：设置批处理或分块调度的元素数；每批回调与逐元素回调的区别见终端方法。
 
 **参数说明**：
 
@@ -627,7 +627,7 @@ instance.Chunk(size)
 func (b *MapChain[K, V, R]) Clear() *MapChain[K, V, R]
 ```
 
-[实现](../../internal/maps/map_builder.go#L153) · [行为专题](../mapreduce.md)：委托同名实现：原地删除全部条目，返回自身。
+[实现](../../internal/maps/map_builder.go#L159) · [行为专题](../mapreduce.md)：委托同名实现：原地删除全部条目，返回自身。
 
 **参数说明**：无显式参数。
 
@@ -673,7 +673,7 @@ instance.Context(ctx)
 func (b *MapChain[K, V, R]) Count(fn func(K, V) bool) int
 ```
 
-[实现](../../internal/maps/map_builder.go#L159) · [行为专题](../mapreduce.md)：委托同名实现：返回同步遍历中匹配的条目数量。
+[实现](../../internal/maps/map_builder.go#L165) · [行为专题](../mapreduce.md)：委托同名实现：返回同步遍历中匹配的条目数量。
 
 **参数说明**：
 
@@ -697,7 +697,7 @@ instance.Count(fn)
 func (b *MapChain[K, V, R]) DefaultBuf() *MapChain[K, V, R]
 ```
 
-[实现](../../internal/maps/map_builder.go#L94) · [行为专题](../mapreduce.md)：将策略 buf 配置设为 0，实际 channel 大小由终端方法确定。
+[实现](../../internal/maps/map_builder.go#L100) · [行为专题](../mapreduce.md)：将策略 buf 配置设为 0，实际 channel 大小由终端方法确定。
 
 **参数说明**：无显式参数。
 
@@ -719,7 +719,7 @@ instance.DefaultBuf()
 func (b *MapChain[K, V, R]) DefaultChunk() *MapChain[K, V, R]
 ```
 
-[实现](../../internal/maps/map_builder.go#L100) · [行为专题](../mapreduce.md)：将分块大小显式设置为模块默认批量大小。
+[实现](../../internal/maps/map_builder.go#L106) · [行为专题](../mapreduce.md)：将分块大小显式设置为模块默认批量大小。
 
 **参数说明**：无显式参数。
 
@@ -741,7 +741,7 @@ instance.DefaultChunk()
 func (b *MapChain[K, V, R]) DefaultFailFast() *MapChain[K, V, R]
 ```
 
-[实现](../../internal/maps/map_builder.go#L80) · [行为专题](../mapreduce.md)：关闭快速失败，允许后续条目在前一项业务失败后继续处理；不恢复已取消的 context。
+[实现](../../internal/maps/map_builder.go#L86) · [行为专题](../mapreduce.md)：关闭快速失败，允许后续条目在前一项业务失败后继续处理；不恢复已取消的 context。
 
 **参数说明**：无显式参数。
 
@@ -763,7 +763,7 @@ instance.DefaultFailFast()
 func (b *MapChain[K, V, R]) DefaultLogger() *MapChain[K, V, R]
 ```
 
-[实现](../../internal/maps/map_builder.go#L53) · [行为专题](../mapreduce.md)：恢复全局空日志实现，返回自身。
+[实现](../../internal/maps/map_builder.go#L56) · [行为专题](../mapreduce.md)：清除当前构建器日志器覆盖，恢复继承全局日志器，返回自身。
 
 **参数说明**：无显式参数。
 
@@ -777,7 +777,7 @@ instance.DefaultLogger()
 
 **生产建议**：尽量在应用启动时设置全局状态；日志后端应支持并发调用。
 
-**注意事项**：立即修改全库日志器，并非只配置当前构建器，也不等待 Build/Run 才生效。DefaultLogger 或 Logger(nil) 恢复静默实现；日志后端须并发安全、及时返回，调用不恢复其 panic。应在启动时统一设置，避免业务组件相互覆盖。
+**注意事项**：只配置当前构建器及其后续执行，不修改全局或其他实例。DefaultLogger 或 Logger(nil) 清除当前覆盖并继承全局日志器；Context 替换和模式切换保留当前日志设置，已构建实例不受构建器后续更改影响。日志后端须并发安全、及时返回，调用不恢复其 panic。
 
 ## `*MapChain[K, V, R].DefaultPool`
 
@@ -785,7 +785,7 @@ instance.DefaultLogger()
 func (b *MapChain[K, V, R]) DefaultPool() *MapChain[K, V, R]
 ```
 
-[实现](../../internal/maps/map_builder.go#L59) · [行为专题](../mapreduce.md)：标记后续终端操作使用内部创建的默认池，完成后关闭。
+[实现](../../internal/maps/map_builder.go#L65) · [行为专题](../mapreduce.md)：标记后续终端操作使用内部创建的默认池，完成后关闭。
 
 **参数说明**：无显式参数。
 
@@ -807,7 +807,7 @@ instance.DefaultPool()
 func (b *MapChain[K, V, R]) DefaultShard() *MapChain[K, V, R]
 ```
 
-[实现](../../internal/maps/map_builder.go#L85) · [行为专题](../mapreduce.md)：设置执行策略分片数量为 GOMAXPROCS，至少为 2。
+[实现](../../internal/maps/map_builder.go#L91) · [行为专题](../mapreduce.md)：设置执行策略分片数量为 GOMAXPROCS，至少为 2。
 
 **参数说明**：无显式参数。
 
@@ -829,7 +829,7 @@ instance.DefaultShard()
 func (b *MapChain[K, V, R]) DefaultTimeout() *MapChain[K, V, R]
 ```
 
-[实现](../../internal/maps/map_builder.go#L75) · [行为专题](../mapreduce.md)：将策略超时显式设置为当前模块的默认常量（见赋值及专题）。
+[实现](../../internal/maps/map_builder.go#L81) · [行为专题](../mapreduce.md)：将策略超时显式设置为当前模块的默认常量（见赋值及专题）。
 
 **参数说明**：无显式参数。
 
@@ -851,7 +851,7 @@ instance.DefaultTimeout()
 func (b *MapChain[K, V, R]) DefaultWorker() *MapChain[K, V, R]
 ```
 
-[实现](../../internal/maps/map_builder.go#L55) · [行为专题](../mapreduce.md)：显式将 worker 配置恢复为 core.IO()。
+[实现](../../internal/maps/map_builder.go#L61) · [行为专题](../mapreduce.md)：显式将 worker 配置恢复为 core.IO()。
 
 **参数说明**：无显式参数。
 
@@ -873,7 +873,7 @@ instance.DefaultWorker()
 func (b *MapChain[K, V, R]) Delete(keys ...K) *MapChain[K, V, R]
 ```
 
-[实现](../../internal/maps/map_builder.go#L149) · [行为专题](../mapreduce.md)：委托同名实现：原地删除指定键，不存在时无操作，返回自身。
+[实现](../../internal/maps/map_builder.go#L155) · [行为专题](../mapreduce.md)：委托同名实现：原地删除指定键，不存在时无操作，返回自身。
 
 **参数说明**：
 
@@ -897,7 +897,7 @@ instance.Delete(keys...)
 func (b *MapChain[K, V, R]) FailFast() *MapChain[K, V, R]
 ```
 
-[实现](../../internal/maps/map_builder.go#L79) · [行为专题](../mapreduce.md)：启用快速失败：无池路径遇错后停止后续调度，池化路径取消当前操作的派生 context；均不能强制停止业务函数。
+[实现](../../internal/maps/map_builder.go#L85) · [行为专题](../mapreduce.md)：启用快速失败：无池路径遇错后停止后续调度，池化路径取消当前操作的派生 context；均不能强制停止业务函数。
 
 **参数说明**：无显式参数。
 
@@ -919,7 +919,7 @@ instance.FailFast()
 func (b *MapChain[K, V, R]) Filter(fn func(context.Context, K, V) bool) (*Map[K, V], error)
 ```
 
-[实现](../../internal/maps/map_builder.go#L120) · [行为专题](../mapreduce.md)：同步遍历并返回匹配条目的新容器；不修改输入，不使用并行调度或 panic 恢复。
+[实现](../../internal/maps/map_builder.go#L126) · [行为专题](../mapreduce.md)：同步遍历并返回匹配条目的新容器；不修改输入，不使用并行调度或 panic 恢复。
 
 **参数说明**：
 
@@ -943,7 +943,7 @@ instance.Filter(fn)
 func (b *MapChain[K, V, R]) FilterKV(fn func(K, V) bool) *MapChain[K, V, R]
 ```
 
-[实现](../../internal/maps/map_builder.go#L164) · [行为专题](../mapreduce.md)：同步原地过滤，保留回调返回 true 的条目，返回自身。
+[实现](../../internal/maps/map_builder.go#L170) · [行为专题](../mapreduce.md)：同步原地过滤，保留回调返回 true 的条目，返回自身。
 
 **参数说明**：
 
@@ -967,7 +967,7 @@ instance.FilterKV(fn)
 func (b *MapChain[K, V, R]) Find(fn func(K, V) bool) (K, V, bool)
 ```
 
-[实现](../../internal/maps/map_builder.go#L154) · [行为专题](../mapreduce.md)：委托同名实现：返回遍历中首个匹配的键值和存在标记；map 顺序不确定。
+[实现](../../internal/maps/map_builder.go#L160) · [行为专题](../mapreduce.md)：委托同名实现：返回遍历中首个匹配的键值和存在标记；map 顺序不确定。
 
 **参数说明**：
 
@@ -991,7 +991,7 @@ instance.Find(fn)
 func (b *MapChain[K, V, R]) ForEach(fn func(context.Context, K, V) error) *MapForEachResult
 ```
 
-[实现](../../internal/maps/map_builder.go#L105) · [行为专题](../mapreduce.md)：按配置策略逐项执行，返回总数、失败数和首个错误的汇总。
+[实现](../../internal/maps/map_builder.go#L111) · [行为专题](../mapreduce.md)：按配置策略逐项执行，返回总数、失败数和首个错误的汇总。
 
 **参数说明**：
 
@@ -1015,7 +1015,7 @@ instance.ForEach(fn)
 func (b *MapChain[K, V, R]) ForEachBatch(fn func(context.Context, []MapEntry[K, V]) error) *MapForEachResult
 ```
 
-[实现](../../internal/maps/map_builder.go#L132) · [行为专题](../mapreduce.md)：按 Chunk 分组，每批执行一次回调；统计单位为元素，失败批次按其元素数累计失败。map 遍历顺序不确定。
+[实现](../../internal/maps/map_builder.go#L138) · [行为专题](../mapreduce.md)：按 Chunk 分组，每批执行一次回调；统计单位为元素，失败批次按其元素数累计失败。map 遍历顺序不确定。
 
 **参数说明**：
 
@@ -1039,7 +1039,7 @@ instance.ForEachBatch(fn)
 func (b *MapChain[K, V, R]) Get(key K) (V, bool)
 ```
 
-[实现](../../internal/maps/map_builder.go#L140) · [行为专题](../mapreduce.md)：委托同名实现：返回键的值和存在标记；缺失时返回零值和 false。
+[实现](../../internal/maps/map_builder.go#L146) · [行为专题](../mapreduce.md)：委托同名实现：返回键的值和存在标记；缺失时返回零值和 false。
 
 **参数说明**：
 
@@ -1063,7 +1063,7 @@ instance.Get(key)
 func (b *MapChain[K, V, R]) Has(key K) bool
 ```
 
-[实现](../../internal/maps/map_builder.go#L139) · [行为专题](../mapreduce.md)：委托同名实现：检查键是否存在。
+[实现](../../internal/maps/map_builder.go#L145) · [行为专题](../mapreduce.md)：委托同名实现：检查键是否存在。
 
 **参数说明**：
 
@@ -1087,7 +1087,7 @@ instance.Has(key)
 func (b *MapChain[K, V, R]) Logger(l core.Logger) *MapChain[K, V, R]
 ```
 
-[实现](../../internal/maps/map_builder.go#L52) · [行为专题](../mapreduce.md)：设置全局日志实现，并返回当前构建器；不局限于本实例。
+[实现](../../internal/maps/map_builder.go#L52) · [行为专题](../mapreduce.md)：仅设置当前构建器及其后续执行使用的日志器，并返回自身；不修改全局或其他实例。
 
 **参数说明**：
 
@@ -1103,7 +1103,7 @@ instance.Logger(l)
 
 **生产建议**：尽量在应用启动时设置全局状态；日志后端应支持并发调用。
 
-**注意事项**：立即修改全库日志器，并非只配置当前构建器，也不等待 Build/Run 才生效。DefaultLogger 或 Logger(nil) 恢复静默实现；日志后端须并发安全、及时返回，调用不恢复其 panic。应在启动时统一设置，避免业务组件相互覆盖。
+**注意事项**：只配置当前构建器及其后续执行，不修改全局或其他实例。DefaultLogger 或 Logger(nil) 清除当前覆盖并继承全局日志器；Context 替换和模式切换保留当前日志设置，已构建实例不受构建器后续更改影响。日志后端须并发安全、及时返回，调用不恢复其 panic。
 
 ## `*MapChain[K, V, R].Map`
 
@@ -1111,7 +1111,7 @@ instance.Logger(l)
 func (b *MapChain[K, V, R]) Map(fn func(context.Context, K, V) (R, error)) *MapResult[K, R]
 ```
 
-[实现](../../internal/maps/map_builder.go#L111) · [行为专题](../mapreduce.md)：Map transforms values, returning *MapResult with embedded error. Mirrors SliceBuilder.Map.
+[实现](../../internal/maps/map_builder.go#L117) · [行为专题](../mapreduce.md)：Map transforms values, returning *MapResult with embedded error. Mirrors SliceBuilder.Map.
 
 **源码说明与使用片段**（原文）：
 
@@ -1140,7 +1140,7 @@ instance.Map(fn)
 func (b *MapChain[K, V, R]) MapBatch(fn func(context.Context, []MapEntry[K, V]) (R, error)) *MapResult[K, R]
 ```
 
-[实现](../../internal/maps/map_builder.go#L129) · [行为专题](../mapreduce.md)：按 Chunk 分组，每批调用一次映射回调，返回结果容器。
+[实现](../../internal/maps/map_builder.go#L135) · [行为专题](../mapreduce.md)：按 Chunk 分组，每批调用一次映射回调，返回结果容器。
 
 **参数说明**：
 
@@ -1164,7 +1164,7 @@ instance.MapBatch(fn)
 func (b *MapChain[K, V, R]) MapToFn(fn func(context.Context, K, V) (R, error)) *MapResult[K, R]
 ```
 
-[实现](../../internal/maps/map_builder.go#L116) · [行为专题](../mapreduce.md)：MapToFn transforms values and returns a MapResult containing any error.
+[实现](../../internal/maps/map_builder.go#L122) · [行为专题](../mapreduce.md)：MapToFn transforms values and returns a MapResult containing any error.
 
 **源码说明与使用片段**（原文）：
 
@@ -1193,7 +1193,7 @@ instance.MapToFn(fn)
 func (b *MapChain[K, V, R]) MapValues(fn func(K, V) V) *MapChain[K, V, R]
 ```
 
-[实现](../../internal/maps/map_builder.go#L172) · [行为专题](../mapreduce.md)：委托同名实现：同步原地更新每个键的值；顺序不确定。
+[实现](../../internal/maps/map_builder.go#L178) · [行为专题](../mapreduce.md)：委托同名实现：同步原地更新每个键的值；顺序不确定。
 
 **参数说明**：
 
@@ -1217,7 +1217,7 @@ instance.MapValues(fn)
 func (b *MapChain[K, V, R]) Merge(other map[K]V) *MapChain[K, V, R]
 ```
 
-[实现](../../internal/maps/map_builder.go#L176) · [行为专题](../mapreduce.md)：委托同名实现：把其他 map 的键值写入当前 map，同名键覆盖；返回自身。
+[实现](../../internal/maps/map_builder.go#L182) · [行为专题](../mapreduce.md)：委托同名实现：把其他 map 的键值写入当前 map，同名键覆盖；返回自身。
 
 **参数说明**：
 
@@ -1241,7 +1241,7 @@ instance.Merge(other)
 func (b *MapChain[K, V, R]) MergeMap(m *Map[K, V]) *MapChain[K, V, R]
 ```
 
-[实现](../../internal/maps/map_builder.go#L180) · [行为专题](../mapreduce.md)：委托同名实现：把其他 map 的键值写入当前 map，同名键覆盖；返回自身。
+[实现](../../internal/maps/map_builder.go#L186) · [行为专题](../mapreduce.md)：委托同名实现：把其他 map 的键值写入当前 map，同名键覆盖；返回自身。
 
 **参数说明**：
 
@@ -1265,7 +1265,7 @@ instance.MergeMap(m)
 func (b *MapChain[K, V, R]) MergeWithDefault(other map[K]V) *MapChain[K, V, R]
 ```
 
-[实现](../../internal/maps/map_builder.go#L184) · [行为专题](../mapreduce.md)：委托同名实现：仅写入当前 map 不存在的键，保留已有值。
+[实现](../../internal/maps/map_builder.go#L190) · [行为专题](../mapreduce.md)：委托同名实现：仅写入当前 map 不存在的键，保留已有值。
 
 **参数说明**：
 
@@ -1311,7 +1311,7 @@ instance.Parallel()
 func (b *MapChain[K, V, R]) Pool(p *pool.Pool[R]) *MapChain[K, V, R]
 ```
 
-[实现](../../internal/maps/map_builder.go#L63) · [行为专题](../mapreduce.md)：注入外部池，调用方保留生命周期责任；结果类型必须匹配。
+[实现](../../internal/maps/map_builder.go#L69) · [行为专题](../mapreduce.md)：注入外部池，调用方保留生命周期责任；结果类型必须匹配。
 
 **参数说明**：
 
@@ -1335,7 +1335,7 @@ instance.Pool(p)
 func (b *MapChain[K, V, R]) PoolAuto(p *pool.Pool[R]) *MapChain[K, V, R]
 ```
 
-[实现](../../internal/maps/map_builder.go#L67) · [行为专题](../mapreduce.md)：注入外部池并转移生命周期责任，终端操作完成后关闭池。
+[实现](../../internal/maps/map_builder.go#L73) · [行为专题](../mapreduce.md)：注入外部池并转移生命周期责任，终端操作完成后关闭池。
 
 **参数说明**：
 
@@ -1359,7 +1359,7 @@ instance.PoolAuto(p)
 func (b *MapChain[K, V, R]) Range(fn func(K, V) bool) *MapChain[K, V, R]
 ```
 
-[实现](../../internal/maps/map_builder.go#L160) · [行为专题](../mapreduce.md)：委托同名实现：同步遍历键值，回调返回 false 时停止；顺序不确定。
+[实现](../../internal/maps/map_builder.go#L166) · [行为专题](../mapreduce.md)：委托同名实现：同步遍历键值，回调返回 false 时停止；顺序不确定。
 
 **参数说明**：
 
@@ -1383,7 +1383,7 @@ instance.Range(fn)
 func (b *MapChain[K, V, R]) Reduce(initial R, fn func(context.Context, R, K, V) (R, error)) (R, error)
 ```
 
-[实现](../../internal/maps/map_builder.go#L126) · [行为专题](../mapreduce.md)：同步按 map 遍历顺序累积；顺序不确定，遇错误返回该次回调给出的累积值和错误；不恢复回调 panic。
+[实现](../../internal/maps/map_builder.go#L132) · [行为专题](../mapreduce.md)：同步按 map 遍历顺序累积；顺序不确定，遇错误返回该次回调给出的累积值和错误；不恢复回调 panic。
 
 **参数说明**：
 
@@ -1408,7 +1408,7 @@ instance.Reduce(initial, fn)
 func (b *MapChain[K, V, R]) Reject(fn func(K, V) bool) *MapChain[K, V, R]
 ```
 
-[实现](../../internal/maps/map_builder.go#L168) · [行为专题](../mapreduce.md)：委托同名实现：同步原地过滤，删除回调返回 true 的条目。
+[实现](../../internal/maps/map_builder.go#L174) · [行为专题](../mapreduce.md)：委托同名实现：同步原地过滤，删除回调返回 true 的条目。
 
 **参数说明**：
 
@@ -1454,7 +1454,7 @@ instance.Serial()
 func (b *MapChain[K, V, R]) Set(key K, value V) *MapChain[K, V, R]
 ```
 
-[实现](../../internal/maps/map_builder.go#L141) · [行为专题](../mapreduce.md)：委托同名实现：原地写入键值，同名键覆盖；返回自身，调用方须同步共享 map 的访问。
+[实现](../../internal/maps/map_builder.go#L147) · [行为专题](../mapreduce.md)：委托同名实现：原地写入键值，同名键覆盖；返回自身，调用方须同步共享 map 的访问。
 
 **参数说明**：
 
@@ -1479,7 +1479,7 @@ instance.Set(key, value)
 func (b *MapChain[K, V, R]) SetAll(entries map[K]V) *MapChain[K, V, R]
 ```
 
-[实现](../../internal/maps/map_builder.go#L145) · [行为专题](../mapreduce.md)：委托同名实现：原地写入键值，同名键覆盖；返回自身，调用方须同步共享 map 的访问。
+[实现](../../internal/maps/map_builder.go#L151) · [行为专题](../mapreduce.md)：委托同名实现：原地写入键值，同名键覆盖；返回自身，调用方须同步共享 map 的访问。
 
 **参数说明**：
 
@@ -1503,7 +1503,7 @@ instance.SetAll(entries)
 func (b *MapChain[K, V, R]) Shards(n int) *MapChain[K, V, R]
 ```
 
-[实现](../../internal/maps/map_builder.go#L84) · [行为专题](../mapreduce.md)：设置执行策略分片数量，非正值采用 GOMAXPROCS 且至少为 2。
+[实现](../../internal/maps/map_builder.go#L90) · [行为专题](../mapreduce.md)：设置执行策略分片数量，非正值采用 GOMAXPROCS 且至少为 2。
 
 **参数说明**：
 
@@ -1527,7 +1527,7 @@ instance.Shards(n)
 func (b *MapChain[K, V, R]) Stream(fn func(context.Context, K, V) (R, error), bufSize int) <-chan core.Result[R]
 ```
 
-[实现](../../internal/maps/map_builder.go#L123) · [行为专题](../mapreduce.md)：按执行策略映射并通过只读 channel 输出；提前停止消费时取消执行上下文。
+[实现](../../internal/maps/map_builder.go#L129) · [行为专题](../mapreduce.md)：按执行策略映射并通过只读 channel 输出；提前停止消费时取消执行上下文。
 
 **参数说明**：
 
@@ -1552,7 +1552,7 @@ instance.Stream(fn, bufSize)
 func (b *MapChain[K, V, R]) Timeout(d time.Duration) *MapChain[K, V, R]
 ```
 
-[实现](../../internal/maps/map_builder.go#L71) · [行为专题](../mapreduce.md)：设置执行策略中的单任务超时，回调须响应 context。
+[实现](../../internal/maps/map_builder.go#L77) · [行为专题](../mapreduce.md)：设置执行策略中的单任务超时，回调须响应 context。
 
 **参数说明**：
 
@@ -1576,7 +1576,7 @@ instance.Timeout(d)
 func (b *MapChain[K, V, R]) Worker(n int) *MapChain[K, V, R]
 ```
 
-[实现](../../internal/maps/map_builder.go#L54) · [行为专题](../mapreduce.md)：设置后续终端操作的并发度，非正值使用 core.IO()。
+[实现](../../internal/maps/map_builder.go#L60) · [行为专题](../mapreduce.md)：设置后续终端操作的并发度，非正值使用 core.IO()。
 
 **参数说明**：
 
@@ -2030,7 +2030,7 @@ instance.ForEachBatch(fn)
 func (b *MapParallel[K, V, R]) Logger(l core.Logger) *MapParallel[K, V, R]
 ```
 
-[实现](../../internal/maps/map_parallel.go#L94) · [行为专题](../mapreduce.md)：设置全局日志实现，并返回当前构建器；不局限于本实例。
+[实现](../../internal/maps/map_parallel.go#L94) · [行为专题](../mapreduce.md)：仅设置当前构建器及其后续执行使用的日志器，并返回自身；不修改全局或其他实例。
 
 **参数说明**：
 
@@ -2046,7 +2046,7 @@ instance.Logger(l)
 
 **生产建议**：尽量在应用启动时设置全局状态；日志后端应支持并发调用。
 
-**注意事项**：立即修改全库日志器，并非只配置当前构建器，也不等待 Build/Run 才生效。DefaultLogger 或 Logger(nil) 恢复静默实现；日志后端须并发安全、及时返回，调用不恢复其 panic。应在启动时统一设置，避免业务组件相互覆盖。
+**注意事项**：只配置当前构建器及其后续执行，不修改全局或其他实例。DefaultLogger 或 Logger(nil) 清除当前覆盖并继承全局日志器；Context 替换和模式切换保留当前日志设置，已构建实例不受构建器后续更改影响。日志后端须并发安全、及时返回，调用不恢复其 panic。
 
 ## `*MapParallel[K, V, R].Map`
 
@@ -2814,7 +2814,7 @@ instance.FailFast()
 func (b *MapSerial[K, V, R]) Filter(fn func(context.Context, K, V) bool) (*Map[K, V], error)
 ```
 
-[实现](../../internal/maps/map_serial.go#L54) · [行为专题](../mapreduce.md)：同步遍历并返回匹配条目的新容器；不修改输入，不使用并行调度或 panic 恢复。
+[实现](../../internal/maps/map_serial.go#L57) · [行为专题](../mapreduce.md)：同步遍历并返回匹配条目的新容器；不修改输入，不使用并行调度或 panic 恢复。
 
 **参数说明**：
 
@@ -2838,7 +2838,7 @@ instance.Filter(fn)
 func (b *MapSerial[K, V, R]) ForEach(fn func(context.Context, K, V) error) *MapForEachResult
 ```
 
-[实现](../../internal/maps/map_serial.go#L39) · [行为专题](../mapreduce.md)：按配置策略逐项执行，返回总数、失败数和首个错误的汇总。
+[实现](../../internal/maps/map_serial.go#L42) · [行为专题](../mapreduce.md)：按配置策略逐项执行，返回总数、失败数和首个错误的汇总。
 
 **参数说明**：
 
@@ -2862,7 +2862,7 @@ instance.ForEach(fn)
 func (b *MapSerial[K, V, R]) Logger(l core.Logger) *MapSerial[K, V, R]
 ```
 
-[实现](../../internal/maps/map_serial.go#L37) · [行为专题](../mapreduce.md)：设置全局日志实现，并返回当前构建器；不局限于本实例。
+[实现](../../internal/maps/map_serial.go#L37) · [行为专题](../mapreduce.md)：仅设置当前构建器及其后续执行使用的日志器，并返回自身；不修改全局或其他实例。
 
 **参数说明**：
 
@@ -2878,7 +2878,7 @@ instance.Logger(l)
 
 **生产建议**：尽量在应用启动时设置全局状态；日志后端应支持并发调用。
 
-**注意事项**：立即修改全库日志器，并非只配置当前构建器，也不等待 Build/Run 才生效。DefaultLogger 或 Logger(nil) 恢复静默实现；日志后端须并发安全、及时返回，调用不恢复其 panic。应在启动时统一设置，避免业务组件相互覆盖。
+**注意事项**：只配置当前构建器及其后续执行，不修改全局或其他实例。DefaultLogger 或 Logger(nil) 清除当前覆盖并继承全局日志器；Context 替换和模式切换保留当前日志设置，已构建实例不受构建器后续更改影响。日志后端须并发安全、及时返回，调用不恢复其 panic。
 
 ## `*MapSerial[K, V, R].Map`
 
@@ -2886,7 +2886,7 @@ instance.Logger(l)
 func (b *MapSerial[K, V, R]) Map(fn func(context.Context, K, V) (R, error)) *MapResult[K, R]
 ```
 
-[实现](../../internal/maps/map_serial.go#L45) · [行为专题](../mapreduce.md)：Map transforms values in serial mode, returning *MapResult with embedded error.
+[实现](../../internal/maps/map_serial.go#L48) · [行为专题](../mapreduce.md)：Map transforms values in serial mode, returning *MapResult with embedded error.
 
 **源码说明与使用片段**（原文）：
 
@@ -2915,7 +2915,7 @@ instance.Map(fn)
 func (b *MapSerial[K, V, R]) MapToFn(fn func(context.Context, K, V) (R, error)) *MapResult[K, R]
 ```
 
-[实现](../../internal/maps/map_serial.go#L50) · [行为专题](../mapreduce.md)：MapToFn backward compatible.
+[实现](../../internal/maps/map_serial.go#L53) · [行为专题](../mapreduce.md)：MapToFn backward compatible.
 
 **源码说明与使用片段**（原文）：
 
@@ -2966,7 +2966,7 @@ instance.NoFailFast()
 func (b *MapSerial[K, V, R]) Reduce(initial R, fn func(context.Context, R, K, V) (R, error)) (R, error)
 ```
 
-[实现](../../internal/maps/map_serial.go#L60) · [行为专题](../mapreduce.md)：同步按 map 遍历顺序累积；顺序不确定，遇错误返回该次回调给出的累积值和错误；不恢复回调 panic。
+[实现](../../internal/maps/map_serial.go#L63) · [行为专题](../mapreduce.md)：同步按 map 遍历顺序累积；顺序不确定，遇错误返回该次回调给出的累积值和错误；不恢复回调 panic。
 
 **参数说明**：
 
@@ -2991,7 +2991,7 @@ instance.Reduce(initial, fn)
 func (b *MapSerial[K, V, R]) Stream(fn func(context.Context, K, V) (R, error), bufSize int) <-chan core.Result[R]
 ```
 
-[实现](../../internal/maps/map_serial.go#L57) · [行为专题](../mapreduce.md)：按执行策略映射并通过只读 channel 输出；提前停止消费时取消执行上下文。
+[实现](../../internal/maps/map_serial.go#L60) · [行为专题](../mapreduce.md)：按执行策略映射并通过只读 channel 输出；提前停止消费时取消执行上下文。
 
 **参数说明**：
 

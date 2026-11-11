@@ -31,7 +31,8 @@ import (
 //	    })
 //	}
 type BoundedRunner struct {
-	sem chan struct{}
+	sem       chan struct{}
+	loggerCtx context.Context
 }
 
 // BoundedRunnerBuilder 链式构建 BoundedRunner。
@@ -54,9 +55,9 @@ func NewBoundedRunnerBuilder() *BoundedRunnerBuilder {
 	}
 }
 
-// Context 设置构建器上下文并注入 trace_id；Build 创建的执行器不保存该上下文。
+// Context 设置构建器上下文并注入 trace_id；Build 仅保留局部日志设置，不继承其取消和期限。
 func (b *BoundedRunnerBuilder) Context(ctx context.Context) *BoundedRunnerBuilder {
-	b.ctx = core.EnsureTraceID(ctx)
+	b.ctx = core.EnsureTraceID(core.CopyLogger(b.ctx, ctx))
 	return b
 }
 
@@ -66,18 +67,23 @@ func (b *BoundedRunnerBuilder) Max(n int) *BoundedRunnerBuilder {
 	return b
 }
 
-// Logger 注入自定义日志实现，全局生效。
+// Logger 仅为当前构建器及其后续执行设置日志器，不修改全局配置。
 func (b *BoundedRunnerBuilder) Logger(l core.Logger) *BoundedRunnerBuilder {
-	core.SetLogger(l)
+	b.ctx = core.WithLogger(b.ctx, l)
 	return b
 }
 
-// DefaultLogger 重置为默认日志实现。
-func (b *BoundedRunnerBuilder) DefaultLogger() *BoundedRunnerBuilder { core.SetLogger(nil); return b }
+// DefaultLogger 清除当前日志器覆盖，恢复继承全局日志器。
+func (b *BoundedRunnerBuilder) DefaultLogger() *BoundedRunnerBuilder {
+	b.ctx = core.WithLogger(b.ctx, nil)
+	return b
+}
 
 // Build 创建 BoundedRunner 实例。
 func (b *BoundedRunnerBuilder) Build() *BoundedRunner {
-	return NewBoundedRunner(b.max)
+	r := NewBoundedRunner(b.max)
+	r.loggerCtx = core.CopyLogger(b.ctx, context.Background())
+	return r
 }
 
 // NewBoundedRunner 创建一个限制同时持有许可的业务回调数的执行器。
@@ -118,6 +124,7 @@ func (r *BoundedRunner) Busy() int {
 // 对应的信号量槽位将永久占用，最终耗尽所有槽位导致 BoundedRunner 完全阻塞。
 // 建议在 fn 内部所有 I/O 操作中传递 ctx，或设置合理的业务超时。
 func BoundedGo[T any](r *BoundedRunner, ctx context.Context, fn func(context.Context) (T, error)) *AsyncResult[T] {
+	ctx = core.CopyLogger(r.loggerCtx, ctx)
 	select {
 	case r.sem <- struct{}{}:
 	case <-ctx.Done():
@@ -147,6 +154,7 @@ func BoundedGo[T any](r *BoundedRunner, ctx context.Context, fn func(context.Con
 // BoundedGoAct 带限流的无返回值异步任务，返回 AsyncResultNoResult。
 // 关于 ctx 响应的注意事项与 BoundedGo 相同。
 func BoundedGoAct(r *BoundedRunner, ctx context.Context, fn func(context.Context) error) *AsyncResultNoResult {
+	ctx = core.CopyLogger(r.loggerCtx, ctx)
 	select {
 	case r.sem <- struct{}{}:
 	case <-ctx.Done():
@@ -173,6 +181,7 @@ func BoundedGoAct(r *BoundedRunner, ctx context.Context, fn func(context.Context
 // BoundedGoResult 带限流的可取消异步任务，返回 Task[T]。
 // 关于 ctx 响应的注意事项与 BoundedGo 相同。
 func BoundedGoResult[T any](r *BoundedRunner, ctx context.Context, fn func(context.Context) (T, error)) Task[T] {
+	ctx = core.CopyLogger(r.loggerCtx, ctx)
 	select {
 	case r.sem <- struct{}{}:
 	case <-ctx.Done():

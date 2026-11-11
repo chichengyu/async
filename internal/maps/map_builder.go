@@ -33,7 +33,7 @@ func NewMapChainWith[K comparable, V any, R any](ctx context.Context, data map[K
 }
 
 func (b *MapChain[K, V, R]) Context(ctx context.Context) *MapChain[K, V, R] {
-	b.ctx = core.EnsureTraceID(ctx)
+	b.ctx = core.EnsureTraceID(core.CopyLogger(b.ctx, ctx))
 	return b
 }
 
@@ -49,9 +49,15 @@ func (b *MapChain[K, V, R]) Parallel() *MapParallel[K, V, R] {
 	return p
 }
 
-func (b *MapChain[K, V, R]) Logger(l core.Logger) *MapChain[K, V, R] { core.SetLogger(l); return b }
-func (b *MapChain[K, V, R]) DefaultLogger() *MapChain[K, V, R]       { core.SetLogger(nil); return b }
-func (b *MapChain[K, V, R]) Worker(n int) *MapChain[K, V, R]         { b.policy = b.policy.Worker(n); return b }
+func (b *MapChain[K, V, R]) Logger(l core.Logger) *MapChain[K, V, R] {
+	b.ctx = core.WithLogger(b.ctx, l)
+	return b
+}
+func (b *MapChain[K, V, R]) DefaultLogger() *MapChain[K, V, R] {
+	b.ctx = core.WithLogger(b.ctx, nil)
+	return b
+}
+func (b *MapChain[K, V, R]) Worker(n int) *MapChain[K, V, R] { b.policy = b.policy.Worker(n); return b }
 func (b *MapChain[K, V, R]) DefaultWorker() *MapChain[K, V, R] {
 	b.policy = b.policy.Worker(0)
 	return b

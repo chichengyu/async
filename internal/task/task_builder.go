@@ -44,7 +44,7 @@ func NewTaskBuilder[T any]() *TaskBuilder[T] {
 
 // Context 链式设置上下文，自动注入 trace_id。
 func (b *TaskBuilder[T]) Context(ctx context.Context) *TaskBuilder[T] {
-	b.ctx = core.EnsureTraceID(ctx)
+	b.ctx = core.EnsureTraceID(core.CopyLogger(b.ctx, ctx))
 	return b
 }
 
@@ -73,11 +73,17 @@ func (b *TaskBuilder[T]) DefaultBounded() *TaskBuilder[T] {
 	return b
 }
 
-// Logger 注入自定义日志实现，全局生效。
-func (b *TaskBuilder[T]) Logger(l core.Logger) *TaskBuilder[T] { core.SetLogger(l); return b }
+// Logger 仅为当前构建器及其后续执行设置日志器，不修改全局配置。
+func (b *TaskBuilder[T]) Logger(l core.Logger) *TaskBuilder[T] {
+	b.ctx = core.WithLogger(b.ctx, l)
+	return b
+}
 
-// DefaultLogger 重置为默认日志实现。
-func (b *TaskBuilder[T]) DefaultLogger() *TaskBuilder[T] { core.SetLogger(nil); return b }
+// DefaultLogger 清除当前日志器覆盖，恢复继承全局日志器。
+func (b *TaskBuilder[T]) DefaultLogger() *TaskBuilder[T] {
+	b.ctx = core.WithLogger(b.ctx, nil)
+	return b
+}
 
 // ── 终端方法 ──
 

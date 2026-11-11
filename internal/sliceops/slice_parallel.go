@@ -89,7 +89,7 @@ func (b *ParallelSlice[T, R]) DefaultChunk() *ParallelSlice[T, R] {
 }
 
 func (b *ParallelSlice[T, R]) Logger(l core.Logger) *ParallelSlice[T, R] {
-	core.SetLogger(l)
+	b.ctx = core.WithLogger(b.ctx, l)
 	return b
 }
 

@@ -23,7 +23,7 @@ func NewBuilder[T any]() *PoolBuilder[T] {
 
 // Context 链式设置上下文，自动注入 trace_id。
 func (b *PoolBuilder[T]) Context(ctx context.Context) *PoolBuilder[T] {
-	b.ctx = core.EnsureTraceID(ctx)
+	b.ctx = core.EnsureTraceID(core.CopyLogger(b.ctx, ctx))
 	return b
 }
 
@@ -165,11 +165,17 @@ func (b *PoolBuilder[T]) Streaming(buf int) *PoolBuilder[T] {
 	return b
 }
 
-// Logger 注入自定义日志实现，全局生效。
-func (b *PoolBuilder[T]) Logger(l core.Logger) *PoolBuilder[T] { core.SetLogger(l); return b }
+// Logger 仅为当前构建器及其后续执行设置日志器，不修改全局配置。
+func (b *PoolBuilder[T]) Logger(l core.Logger) *PoolBuilder[T] {
+	b.ctx = core.WithLogger(b.ctx, l)
+	return b
+}
 
-// DefaultLogger 重置为默认日志实现。
-func (b *PoolBuilder[T]) DefaultLogger() *PoolBuilder[T] { core.SetLogger(nil); return b }
+// DefaultLogger 清除当前日志器覆盖，恢复继承全局日志器。
+func (b *PoolBuilder[T]) DefaultLogger() *PoolBuilder[T] {
+	b.ctx = core.WithLogger(b.ctx, nil)
+	return b
+}
 
 // Run 终端方法：创建协程池，执行 fn，fn 返回后自动 Close。
 func (b *PoolBuilder[T]) Run(fn func(ctx context.Context, p *Pool[T]) error) error {

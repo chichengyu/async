@@ -301,6 +301,9 @@ func GetTraceIDKey() any
 
 ## Logger 接口
 
+所有核心模块的链式 Logger(l) 只设置当前构建器及其后续执行的日志器，不改写全局。DefaultLogger() 或 Logger(nil) 清除当前覆盖，恢复继承全局日志器；已构建实例及其他构建器不受影响。只有显式 async.SetLogger(l) 修改全局。
+
+
 ```go
 type Logger interface {
     Log(ctx context.Context, level LogLevel, msg string, fields ...LogField)
@@ -311,7 +314,7 @@ type Logger interface {
 
 `LogField` 包含 `Key string` 和 `Value any`。实现应支持并发调用；`SetLogger(nil)` 恢复静默 logger。
 
-SetLogger/GetLogger 通过原子容器切换和读取接口，后续内部 Log 调用使用当时的全局 logger；已有 context 中由后端保存的状态不会迁移到新 logger。Log/With/WithContext 同步调用，不恢复后端 panic；后端须快速返回，With 返回可用 logger，WithContext 返回非 nil context。类型化 nil 指针仍是非 nil 接口，SetLogger 不会替它恢复静默实现。
+SetLogger/GetLogger 通过原子容器切换和读取接口，后续未设置局部日志器的内部 Log 调用使用当时的全局 logger；已有 context 中由后端保存的状态不会迁移到新 logger。Log/With/WithContext 同步调用，不恢复后端 panic；后端须快速返回，With 返回可用 logger，WithContext 返回非 nil context。类型化 nil 指针仍是非 nil 接口，SetLogger 不会替它恢复静默实现。
 
 ---
 

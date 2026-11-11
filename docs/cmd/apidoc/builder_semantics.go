@@ -6,7 +6,7 @@ import "strings"
 // their terminal constructors, rather than inferred from Default* names.
 func builderCaution(e entry) string {
 	if e.name == "Logger" || e.name == "DefaultLogger" {
-		return "立即修改全库日志器，并非只配置当前构建器，也不等待 Build/Run 才生效。DefaultLogger 或 Logger(nil) 恢复静默实现；日志后端须并发安全、及时返回，调用不恢复其 panic。应在启动时统一设置，避免业务组件相互覆盖。"
+		return "只配置当前构建器及其后续执行，不修改全局或其他实例。DefaultLogger 或 Logger(nil) 清除当前覆盖并继承全局日志器；Context 替换和模式切换保留当前日志设置，已构建实例不受构建器后续更改影响。日志后端须并发安全、及时返回，调用不恢复其 panic。"
 	}
 	if e.pkg == "group" && strings.Contains(e.receiver, "Builder") {
 		switch e.name {
@@ -31,7 +31,7 @@ func builderCaution(e entry) string {
 	if strings.Contains(e.receiver, "BoundedRunnerBuilder") {
 		switch e.name {
 		case "Context":
-			return "只保存经 trace_id 处理的 context，须非 nil；Build 创建的 BoundedRunner 不保存此字段，不能用它取消后续任务。每次 BoundedGo/BoundedGoResult 必须另传业务 context，配置不与 Build 并发。"
+			return "保存经 trace_id 处理的 context，须非 nil；Build 仅保留局部日志设置，不继承此 context 的取消、期限和业务值。每次 BoundedGo/BoundedGoResult 必须另传业务 context，配置不与 Build 并发。"
 		case "Max", "Build":
 			return "Max 保存数值，Build 每次创建独立信号量；非正并发度构建时按 IO()，不限制正值上界。同一执行器须在循环外复用才能限制整体并发；等待空位发生在提交方，无 Close 或统一 Wait，分别保存/等待任务句柄。"
 		}
@@ -81,11 +81,11 @@ func builderCaution(e entry) string {
 	if e.pkg == "ratelimit" && strings.Contains(e.receiver, "Builder") {
 		switch e.name {
 		case "Context":
-			return "只替换构建器保存的 context 并确保 trace_id，须非 nil；当前 Build 不把此字段传入最终限流器。阻塞 Wait/Acquire 需另传可取消 context，关闭仍由实例所有者管理；已创建的子构建器不随父构建器变更。"
+			return "替换构建器保存的 context 并确保 trace_id，须非 nil；保留当前局部日志设置，Build 不继承其取消、期限和业务值。RateLimiter 及其分片实例保留局部日志设置，WithTraceID 换绑后仍使用它；其他模式没有内部日志调用。阻塞 Wait/Acquire 需另传可取消 context，关闭仍由实例所有者管理；已创建的子构建器不随父构建器变更。"
 		case "RateLimiter", "TokenBucket", "SlidingWindow", "Adaptive", "Sharded":
-			return "每次分配新的子构建器，只复制当前 context，模式参数初始为零；不会沿用此前子构建器的设置。Default* 需显式调用，其值不一定等于零值构建行为；Build 不传入所保存的 context。"
+			return "每次分配新的子构建器，复制当前 context 及其局部日志设置，模式参数初始为零；不会沿用此前子构建器的设置。Default* 需显式调用，其值不一定等于零值构建行为；Build 不继承所保存 context 的取消、期限和业务值。"
 		case "Build":
-			advice := "每次创建独立实例，不回写规范化后的字段；保存的 context 不传入实例，阻塞获取须另传 context。"
+			advice := "每次创建独立实例，不回写规范化后的字段；不继承所保存 context 的取消、期限和业务值，RateLimiter 及其分片保留局部日志设置，阻塞获取须另传 context。"
 			switch {
 			case strings.Contains(e.receiver, "TokenBucket"):
 				advice += "Rate/Capacity 原样传入，未配置仍为 0，不自动采用 DefaultRate/DefaultCapacity；须使用有限正数。分片对每片应用相同速率与容量。"
