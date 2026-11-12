@@ -94,7 +94,7 @@
 | `.DefaultStreaming()` | 恢复默认（禁用流式，0） | — |
 | `.Config(fn)` | 函数式配置，通过闭包修改 `Config` | — |
 | `.DefaultPoolConfig()` | 重置所有配置为 `DefaultConfig()` | — |
-| `.Logger(l)` | 注入自定义日志（**全局生效**） | 静默 |
+| `.Logger(l)` | 为当前构建器及其后续执行设置日志器 | 继承全局配置 |
 | `.DefaultLogger()` | 恢复默认日志（`清除当前覆盖，继承全局日志器`） | — |
 
 ### PoolBuilder 终端方法
@@ -179,7 +179,7 @@ _ = err
 | `.DefaultPool()` | 清除外部池注入，恢复内部自动创建 | — |
 | `.Config(fn)` | 函数式配置，通过闭包修改 `Config` | — |
 | `.DefaultMultiPoolConfig()` | 重置所有配置为 `DefaultConfig()` | — |
-| `.Logger(l)` | 注入自定义日志（**全局生效**） | 静默 |
+| `.Logger(l)` | 为当前构建器及其后续执行设置日志器 | 继承全局配置 |
 | `.DefaultLogger()` | 恢复默认日志（`清除当前覆盖，继承全局日志器`） | — |
 
 ### MultiPoolBuilder 终端方法
@@ -466,7 +466,7 @@ Pool 的默认值遵循**三层架构**：全局级 → Builder 级 → 实例�
 | `.DefaultPool()` | `b.extP = nil`（恢复内部自动创建） | MultiPoolBuilder |
 | `.DefaultPoolConfig()` | `b.cfg = DefaultConfig()`（全部默认） | PoolBuilder |
 | `.DefaultMultiPoolConfig()` | `b.cfg = DefaultConfig()`（全部默认） | MultiPoolBuilder |
-| `.DefaultLogger()` | `清除当前覆盖，继承全局日志器`（恢复全局静默日志） | PoolBuilder, MultiPoolBuilder |
+| `.DefaultLogger()` | 清除当前覆盖，继承全局日志器 | PoolBuilder, MultiPoolBuilder |
 
 ### 三层：实例级 fallback
 
@@ -1291,7 +1291,7 @@ err := async.Pool[int]().Context(ctx).Worker(8).
 
 ```go
 err := async.Pool[int]().
-    Logger(myLogger).    // 全局生效
+    Logger(myLogger).    // 只配置当前构建器及其后续执行
     Run(fn)
 
 err = async.Pool[int]().
@@ -1384,7 +1384,7 @@ err = async.Pool[int]().
       })
   ```
 
-- **❌ Logger 全局副作用**：`.Logger(l)` 影响**全局**所有 Pool/Group/Retry 等组件（内部调用 `core.SetLogger(l)`）。在测试或需要隔离日志时，记得用 `.DefaultLogger()` 恢复。
+- **Logger 隔离**：`.Logger(l)` 只配置当前构建器及其后续执行。`.DefaultLogger()` 或 `.Logger(nil)` 清除当前覆盖，恢复继承全局日志器；其他构建器及已创建的实例不受影响。
 
 - **❌ EnableAutoScale(config) 传入 nil 的歧义**：`config == nil` 时自动使用 `DefaultAutoScaleConfig()`，也就是说 `EnableAutoScale(nil)` 会启用扩缩容而非禁用。要禁调用 `DisableAutoScale()`。
 

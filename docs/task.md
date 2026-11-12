@@ -601,7 +601,7 @@ TaskBuilder 创建时默认不设超时，也不限制并发；它不读取全�
 |-----------------|----------|-------------|
 | `.DefaultTimeout()` | `b.timeout = 0`（清除 Builder 超时设置） | TaskBuilder[T] |
 | `.DefaultBounded()` | `b.bounded = nil`（清除并发限制） | TaskBuilder[T] |
-| `.DefaultLogger()` | `清除当前覆盖，继承全局日志器`（恢复默认日志实现） | TaskBuilder[T] |
+| `.DefaultLogger()` | 清除当前覆盖，继承全局日志器 | TaskBuilder[T] |
 
 ### 配置覆盖顺序
 
@@ -771,7 +771,7 @@ async.TaskVoid().Context(ctx).
 ```go
 // 注入自定义日志
 async.Task[int]().
-    Logger(myLogger).    // 全局生效
+    Logger(myLogger).    // 只配置当前构建器及其后续任务
     Go(fn)
 
 // 恢复默认日志（静默）

@@ -17,7 +17,7 @@ Pipeline 提供多阶段数据流处理能力，通过链式 Builder 模式声�
 
 > **⚠️ 模式切换后公共配置继承**
 >
-> 切换到 `Serial/Parallel/Stream` 时会复制公共配置，但各执行路径不一定使用每个配置，例如 `MaxResults` 仅用于并行路径创建的内部 Pool。`Logger` 调用会立即修改全局日志器。切换到 `Flow` 时仅复制 context 和 stages，Timeout/FailFast/OnResult 等一次性执行配置会被忽略。
+> 切换到 `Serial/Parallel/Stream` 时会复制公共配置，但各执行路径不一定使用每个配置，例如 `MaxResults` 仅用于并行路径创建的内部 Pool。`Logger` 仅配置当前构建器及其后续执行，模式切换保留该设置。切换到 `Flow` 时复制 context（含局部日志设置）和 stages，Timeout/FailFast/OnResult 等一次性执行配置会被忽略。
 
 > 测试与吞吐记录仅反映对应环境和测试场景；生产使用时应针对实际回调、负载及取消行为验证。
 

@@ -62,7 +62,7 @@ async 提供四种限流器，覆盖不同场景。所有限流器通过 `async.
 |------|------|
 | `async.Ratelimit(ctx)` | 创建限流器链式构建器 |
 
-入口及其各模式构建器提供 `Context(ctx)`、`Logger(l)` 和 `DefaultLogger()`：`Context` 保存经 trace ID 处理的上下文并返回当前构建器，但当前各模式的 `Build()` 不将该上下文传给所创建的限流器；阻塞获取时仍须向 `Wait(ctx)`、`Acquire(ctx)` 或 `Token(ctx)` 传入用于取消等待的 context。`Logger(l)` 通过 `async.Logger` 接口设置全局日志器，`DefaultLogger()` 恢复默认日志器；两者影响全库，而非仅影响当前实例。建议在应用初始化时统一配置，避免不同组件相互覆盖。
+入口及其各模式构建器提供 `Context(ctx)`、`Logger(l)` 和 `DefaultLogger()`：`Context` 保存经 trace ID 处理的上下文并返回当前构建器。`Build()` 不继承该上下文的取消和截止时间；阻塞获取时仍须向 `Wait(ctx)`、`Acquire(ctx)` 或 `Token(ctx)` 传入用于取消等待的 context。`Logger(l)` 仅设置当前构建器及其后续执行的日志器；`DefaultLogger()` 或 `Logger(nil)` 清除当前覆盖，恢复继承全局日志器。RateLimiter 及其分片在构建时保存局部日志设置，之后调用实例 `WithTraceID` 仍保留它；TokenBucket、SlidingWindow 和 Adaptive 当前没有使用构建器日志设置的日志输出路径。修改构建器不会更新已构建实例；全局日志器通过 `async.SetLogger(l)` 配置。
 
 ```go
 builder := async.Ratelimit(ctx).Logger(myLogger)
@@ -72,7 +72,7 @@ if err := rl.Acquire(ctx); err != nil {
     return err
 }
 defer rl.Release()
-// 如需恢复全局默认日志器：builder.DefaultLogger()
+// 仅清除入口构建器的覆盖，供后续创建的子构建器继承：builder.DefaultLogger()
 ```
 
 ### 普通模式构建链路

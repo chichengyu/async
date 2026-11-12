@@ -813,7 +813,7 @@ if err := batchResults.Error(); err != nil {
 
 ```go
 results := async.Slice[int](ctx, items).
-    Logger(myLogger).   // 全局生效
+    Logger(myLogger).   // 只配置当前构建器及其后续执行
     Worker(8).
     Map(fn)
 

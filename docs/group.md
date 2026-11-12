@@ -115,7 +115,7 @@
 | `.DefaultAutoScale()` | 用默认配置启用（MinWorkers=`NumCPU×2`, MaxWorkers=`NumCPU×100`，阈值 0.7→0.2，CheckInterval 5s） | — |
 | `.Pool(p)` | 注入外部协程池（用户自行管理生命周期） | 无（内部创建 worker） |
 | `.DefaultPool()` | 清除外部池注入，恢复内部 worker 模式 | — |
-| `.Logger(l)` | 注入自定义日志（**全局生效**） | 静默 |
+| `.Logger(l)` | 为当前构建器及其后续实例设置日志器 | 继承全局配置 |
 | `.DefaultLogger()` | 恢复默认日志 | — |
 
 `ResultCallback`/实例 `WithResultCallback` 观察记录结果的路径，但最早的“已在等待/已经等待完成”提交预检查会直接追加错误而不通知回调。回调次数不能作为全部提交尝试数；始终检查每次 `Go` 返回的提交错误，并在最终等待后核对结果。回调可能并发执行，不在其中同步等待或关闭所属组。
@@ -160,7 +160,7 @@
 | `.DefaultAutoScale()` | 用默认配置启用（MinWorkers=`NumCPU×2`, MaxWorkers=`NumCPU×100`，阈值 0.7→0.2，CheckInterval 5s） | — |
 | `.Pool(p)` | 注入外部协程池（`*pool.Pool[struct{}]`） | 无（内部创建 worker） |
 | `.DefaultPool()` | 清除外部池注入，恢复内部 worker 模式 | — |
-| `.Logger(l)` | 注入自定义日志（**全局生效**） | 静默 |
+| `.Logger(l)` | 为当前构建器及其后续实例设置日志器 | 继承全局配置 |
 | `.DefaultLogger()` | 恢复默认日志 | — |
 
 ### GroupNoResultBuilder 终端方法
@@ -1096,11 +1096,11 @@ nr := async.GroupVoid().
     Build()
 ```
 
-> **⚠️ Logger 是全局生效的**
+> **Logger 的作用范围**
 >
-> `.Logger(l)` 内部调用 `core.SetLogger(l)` 设置全局日志器，会影响所有后续创建的 Group/Pool 等组件。
+> `.Logger(l)` 仅配置当前构建器及其后续创建的实例。替换 Context 时会保留该设置，其他构建器及已构建实例不受影响。
 >
-> `.DefaultLogger()` 内部调用 `清除当前覆盖，继承全局日志器` 恢复默认日志实现。
+> `.DefaultLogger()` 或 `.Logger(nil)` 清除当前覆盖，恢复继承全局日志器；全局配置由 `async.SetLogger(l)` 设置。
 
 ---
 
@@ -1142,7 +1142,7 @@ Group 的默认值分三层：**全局级** → **Builder 级** → **实例级*
 | `.DefaultStreaming()` | `b.streaming = 0`（不启用流式） | GroupBuilder, GroupNoResultBuilder |
 | `.DefaultResultCallback()` | `b.resultCb = nil`（取消回调） | 仅 GroupBuilder |
 | `.DefaultAutoScale()` | `b.autoScale = core.DefaultAutoScaleConfig()` | GroupBuilder, GroupNoResultBuilder |
-| `.DefaultLogger()` | `清除当前覆盖，继承全局日志器`（恢复全局静默日志） | GroupBuilder, GroupNoResultBuilder, MultiGroupBuilder |
+| `.DefaultLogger()` | 清除当前覆盖，继承全局日志器 | GroupBuilder, GroupNoResultBuilder, MultiGroupBuilder |
 | `.DefaultPool()` | `b.extPool = nil`（清除外部 Pool 注入） | GroupBuilder, GroupNoResultBuilder |
 
 > **⚠️ `Default*()` vs 直接设置的区别**
@@ -1593,7 +1593,7 @@ for _, r := range results {
       Build()
   ```
 
-- **❌ Logger 全局副作用**：`.Logger(l)` 影响全局所有组件（内部调用 `core.SetLogger(l)`）。测试隔离用 `.DefaultLogger()` 恢复。
+- **Logger 隔离**：`.Logger(l)` 只配置当前构建器及其后续实例。`.DefaultLogger()` 只清除当前覆盖，不重置应用的全局日志器，也不修改其他实例。
 
 - **❌ 依赖重复的 GoAt 索引保持提交顺序**：同一 index 的多个任务都会提交；后完成的结果占据该索引，原有结果移到其他空槽或追加。并发时完成顺序不确定，需要稳定的索引对应关系时应使用不同索引。
 

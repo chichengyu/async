@@ -617,7 +617,7 @@ if writeErr != nil { return writeErr }
 
 ```go
 val, err := async.Retry[string](ctx).
-    Logger(myLogger).     // 全局生效
+    Logger(myLogger).     // 只配置当前重试链及其后续执行
     Exponential().MaxRetries(3).
     Backoff(100*time.Millisecond, 5*time.Second).
     Execute(fn)
